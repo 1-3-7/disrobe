@@ -16,6 +16,7 @@ pub mod entropy;
 pub use entropy::{shannon_entropy_bits, shannon_entropy_bits as shannon_entropy};
 pub mod error;
 pub mod graph;
+pub mod neutralize;
 pub mod pass;
 pub mod progress;
 pub mod provenance;

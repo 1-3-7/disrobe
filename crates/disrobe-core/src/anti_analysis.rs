@@ -892,8 +892,10 @@ fn packing_defeat(chain: &ChainEvidence) -> DefeatStatus {
                 .to_string(),
         }
     } else {
-        DefeatStatus::OvercomeBy {
-            mechanism: Mechanism::StubEmu,
+        DefeatStatus::DetectedNotDefeated {
+            reason: "packer marker present but no unpack pass ran in this run; run native unpack \
+                     or the recovery chain to produce the clean layer"
+                .to_string(),
         }
     }
 }
@@ -1818,6 +1820,178 @@ mod decode {
         window_end: u64,
     }
 
+    const DUMP_STAGE_WINDOW: u32 = 24;
+    const HEADER_PROTECT_APIS: [&[u8]; 4] = [
+        b"VirtualProtect",
+        b"NtProtectVirtualMemory",
+        b"ZwProtectVirtualMemory",
+        b"ZwUnmapViewOfSection",
+    ];
+
+    #[derive(Clone, Copy)]
+    struct DumpStage {
+        ip: u64,
+        remaining: u32,
+    }
+
+    impl DumpStage {
+        const fn open(ip: u64) -> Self {
+            Self {
+                ip,
+                remaining: DUMP_STAGE_WINDOW,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    pub(super) struct DumpTracker {
+        peb: Option<DumpStage>,
+        ldr: Option<DumpStage>,
+        image_base: Option<DumpStage>,
+        lfanew: Option<DumpStage>,
+    }
+
+    impl DumpTracker {
+        const fn tick(stage: &mut Option<DumpStage>) {
+            if let Some(s) = stage.as_mut() {
+                s.remaining = s.remaining.saturating_sub(1);
+                if s.remaining == 0 {
+                    *stage = None;
+                }
+            }
+        }
+
+        fn is_store(insn: &Instruction) -> bool {
+            insn.op0_kind() == OpKind::Memory
+                && matches!(
+                    insn.mnemonic(),
+                    Mnemonic::Mov
+                        | Mnemonic::And
+                        | Mnemonic::Or
+                        | Mnemonic::Xor
+                        | Mnemonic::Add
+                        | Mnemonic::Sub
+                )
+        }
+
+        fn is_load(insn: &Instruction) -> bool {
+            insn.op1_kind() == OpKind::Memory
+                && matches!(
+                    insn.mnemonic(),
+                    Mnemonic::Mov | Mnemonic::Movzx | Mnemonic::Movsxd
+                )
+                && insn.memory_segment() != Register::FS
+                && insn.memory_segment() != Register::GS
+        }
+
+        pub(super) fn observe(
+            &mut self,
+            insn: &Instruction,
+            bits: u32,
+            protect_api_named: bool,
+            acc: &mut TechniqueAccumulator,
+        ) {
+            Self::tick(&mut self.peb);
+            Self::tick(&mut self.ldr);
+            Self::tick(&mut self.image_base);
+            Self::tick(&mut self.lfanew);
+            let ip: u64 = insn.ip();
+            if peb_base_load_label(insn, bits).is_some() {
+                self.peb = Some(DumpStage::open(ip));
+                return;
+            }
+            let (ldr_off, image_base_off, size_of_image_off): (u64, u64, u64) = if bits == 64 {
+                (0x18, 0x10, 0x40)
+            } else {
+                (0x0C, 0x08, 0x20)
+            };
+            let disp: u64 = insn.memory_displacement64();
+            if Self::is_load(insn) {
+                if disp == 0x3C && insn.memory_base() != Register::None {
+                    self.lfanew = Some(DumpStage::open(ip));
+                }
+                if self.peb.is_some() {
+                    if disp == ldr_off {
+                        self.ldr = Some(DumpStage::open(ip));
+                    } else if disp == image_base_off {
+                        self.image_base = Some(DumpStage::open(ip));
+                    }
+                }
+                return;
+            }
+            let rep_store: bool = matches!(
+                insn.mnemonic(),
+                Mnemonic::Stosb | Mnemonic::Stosd | Mnemonic::Stosq | Mnemonic::Stosw
+            ) && insn.has_rep_prefix();
+            if Self::is_store(insn) {
+                if let Some(stage) = self.ldr
+                    && disp == size_of_image_off
+                {
+                    acc.add(
+                        Technique::AntiDump,
+                        Confidence::High,
+                        "ldr sizeofimage tamper",
+                        Some(ip as usize),
+                        format!(
+                            "peb ldr module list walked at offset 0x{:x} then SizeOfImage (+0x{size_of_image_off:x}) overwritten at offset 0x{ip:x}",
+                            stage.ip
+                        ),
+                        SignalCorroboration::Standalone,
+                    );
+                    self.ldr = None;
+                    self.peb = None;
+                    return;
+                }
+                if let Some(stage) = self.lfanew
+                    && disp == 0x50
+                    && insn.op1_kind() != OpKind::Register
+                {
+                    acc.add(
+                        Technique::AntiDump,
+                        Confidence::High,
+                        "nt header sizeofimage tamper",
+                        Some(ip as usize),
+                        format!(
+                            "e_lfanew read at offset 0x{:x} then OptionalHeader.SizeOfImage (+0x50) overwritten at offset 0x{ip:x}",
+                            stage.ip
+                        ),
+                        SignalCorroboration::Standalone,
+                    );
+                    self.lfanew = None;
+                    return;
+                }
+            }
+            if let Some(stage) = self.image_base
+                && ((Self::is_store(insn) && disp == 0 && insn.memory_base() != Register::None)
+                    || rep_store)
+            {
+                let (confidence, role): (Confidence, SignalCorroboration) = if protect_api_named {
+                    (Confidence::High, SignalCorroboration::Standalone)
+                } else {
+                    (Confidence::Low, SignalCorroboration::Supporting)
+                };
+                acc.add(
+                    Technique::AntiDump,
+                    confidence,
+                    "pe header erase",
+                    Some(ip as usize),
+                    format!(
+                        "peb ImageBaseAddress read at offset 0x{:x} then the mapped header written at offset 0x{ip:x}{}",
+                        stage.ip,
+                        if protect_api_named {
+                            " with a page-protection api named in the image"
+                        } else {
+                            " without a page-protection api named in the image"
+                        }
+                    ),
+                    role,
+                );
+                self.image_base = None;
+                self.peb = None;
+            }
+        }
+    }
+
     pub(super) fn scan_exec_region(
         slice: &[u8],
         base: usize,
@@ -1858,6 +2032,10 @@ mod decode {
         let mut info_factory: InstructionInfoFactory = InstructionInfoFactory::new();
         let mut eax_leaf: Option<LeafFeed> = None;
         let mut fed_leaves: Vec<LeafFeed> = Vec::new();
+        let mut dump: DumpTracker = DumpTracker::default();
+        let protect_api_named: bool = HEADER_PROTECT_APIS
+            .iter()
+            .any(|name: &&[u8]| byte_search::contains(whole, name));
 
         while decoder.can_decode() {
             decoder.decode_out(&mut insn);
@@ -1927,6 +2105,7 @@ mod decode {
             }
 
             update_peb(&insn, bits, &mut peb_pending, acc);
+            dump.observe(&insn, bits, protect_api_named, acc);
         }
 
         let context_flag_present: bool = imm_hits
@@ -3576,16 +3755,24 @@ mod tests {
     }
 
     #[test]
-    fn upx_packing_overcome_only_when_chain_unpacked() {
+    fn upx_packing_is_overcome_only_when_an_unpack_pass_produced_the_layer() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(b"......UPX!......compressed");
         let no_chain: AntiAnalysisReport = scan(&buf, None);
         let f: &AntiAnalysisFinding =
             finding(&no_chain, Technique::Packing).expect("packing detected");
-        assert!(
-            f.defeated_by.is_overcome(),
-            "upx without recorded chain still maps to the stub-emu defeat path"
-        );
+        match &f.defeated_by {
+            DefeatStatus::DetectedNotDefeated { reason } => {
+                assert!(
+                    reason.contains("no unpack pass ran"),
+                    "a scan without an unpack pass must name the missing pass: {reason}"
+                );
+            }
+            overcome @ DefeatStatus::OvercomeBy { .. } => {
+                panic!("nothing unpacked this image, so it cannot be overcome: {overcome:?}")
+            }
+        }
+        assert_eq!(no_chain.overcome_count(), 0);
 
         let chain: ChainEvidence = ChainEvidence {
             executed_pass_ids: vec!["native.packer-unpack".to_string()],
@@ -4006,6 +4193,113 @@ mod tests {
             f.defeated_by,
             DefeatStatus::DetectedNotDefeated { .. }
         ));
+    }
+
+    const X64_PEB_LOAD: [u8; 9] = [0x65, 0x48, 0x8B, 0x04, 0x25, 0x60, 0x00, 0x00, 0x00];
+
+    #[test]
+    fn ldr_sizeofimage_overwrite_after_a_peb_walk_is_anti_dump() {
+        let mut payload: Vec<u8> = X64_PEB_LOAD.to_vec();
+        payload.extend_from_slice(&[0x48, 0x8B, 0x40, 0x18]);
+        payload.extend_from_slice(&[0x48, 0x8B, 0x40, 0x10]);
+        payload.extend_from_slice(&[0xC7, 0x40, 0x40, 0x00, 0x10, 0x00, 0x00]);
+        payload.extend_from_slice(&[0xC3]);
+        let report: AntiAnalysisReport = scan(&pe_with_code(&payload, true), None);
+        let f: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiDump).expect("anti-dump sizeofimage tamper");
+        assert!(f.detected);
+        assert_eq!(f.confidence, Confidence::High);
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e: &String| e.contains("SizeOfImage (+0x40)")),
+            "{f:?}"
+        );
+        assert!(matches!(
+            f.defeated_by,
+            DefeatStatus::DetectedNotDefeated { .. }
+        ));
+    }
+
+    #[test]
+    fn x86_ldr_sizeofimage_overwrite_uses_the_32_bit_offsets() {
+        let mut payload: Vec<u8> = vec![0x64, 0xA1, 0x30, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(&[0x8B, 0x40, 0x0C]);
+        payload.extend_from_slice(&[0x8B, 0x40, 0x0C]);
+        payload.extend_from_slice(&[0xC7, 0x40, 0x20, 0x00, 0x10, 0x00, 0x00]);
+        payload.extend_from_slice(&[0xC3]);
+        let report: AntiAnalysisReport = scan(&pe_with_code(&payload, false), None);
+        let f: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiDump).expect("anti-dump sizeofimage tamper");
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e: &String| e.contains("SizeOfImage (+0x20)")),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn nt_header_sizeofimage_overwrite_after_e_lfanew_read_is_anti_dump() {
+        let payload: Vec<u8> = vec![
+            0x8B, 0x48, 0x3C, 0x48, 0x01, 0xC1, 0xC7, 0x41, 0x50, 0x00, 0x10, 0x00, 0x00, 0xC3,
+        ];
+        let report: AntiAnalysisReport = scan(&pe_with_code(&payload, true), None);
+        let f: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiDump).expect("nt header tamper");
+        assert!(f.detected);
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e: &String| e.contains("OptionalHeader.SizeOfImage (+0x50)")),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn header_erase_after_image_base_read_needs_a_protect_api_to_reach_verdict() {
+        let mut payload: Vec<u8> = X64_PEB_LOAD.to_vec();
+        payload.extend_from_slice(&[0x48, 0x8B, 0x40, 0x10]);
+        payload.extend_from_slice(&[0x48, 0x89, 0xC7]);
+        payload.extend_from_slice(&[0x31, 0xC0]);
+        payload.extend_from_slice(&[0xB9, 0x00, 0x10, 0x00, 0x00]);
+        payload.extend_from_slice(&[0xF3, 0xAA]);
+        payload.extend_from_slice(&[0xC3]);
+        let bare: AntiAnalysisReport = scan(&pe_with_code(&payload, true), None);
+        let bare_finding: Option<&AntiAnalysisFinding> = finding(&bare, Technique::AntiDump);
+        assert!(
+            bare_finding.is_none_or(|f: &AntiAnalysisFinding| !f.detected),
+            "a header write without a page-protection api stays below verdict: {bare_finding:?}"
+        );
+
+        let mut with_api: Vec<u8> = payload.clone();
+        with_api.extend_from_slice(b"\x00VirtualProtect\x00");
+        let report: AntiAnalysisReport = scan(&pe_with_code(&with_api, true), None);
+        let f: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiDump).expect("header erase with VirtualProtect");
+        assert!(f.detected);
+        assert_eq!(f.confidence, Confidence::High);
+        assert!(
+            f.evidence
+                .iter()
+                .any(|e: &String| e.contains("mapped header written")),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn a_sizeofimage_shaped_store_without_the_peb_walk_is_not_anti_dump() {
+        let payload: Vec<u8> = vec![
+            0x48, 0x8B, 0x40, 0x18, 0x48, 0x8B, 0x40, 0x10, 0xC7, 0x40, 0x40, 0x00, 0x10, 0x00,
+            0x00, 0xC7, 0x41, 0x50, 0x00, 0x10, 0x00, 0x00, 0xC3,
+        ];
+        let mut img: Vec<u8> = pe_with_code(&payload, true);
+        img.extend_from_slice(b"\x00VirtualProtect\x00");
+        let report: AntiAnalysisReport = scan(&img, None);
+        assert!(
+            finding(&report, Technique::AntiDump).is_none(),
+            "plain struct stores at +0x40/+0x50 are everyday code: {report:?}"
+        );
     }
 
     #[test]
