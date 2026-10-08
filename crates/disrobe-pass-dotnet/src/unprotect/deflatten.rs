@@ -175,8 +175,6 @@ fn layout_order(recovered: &Recovered) -> Vec<&RecoveredBlock> {
         let Some(block): Option<&&RecoveredBlock> = by_id.get(&id) else {
             continue;
         };
-        // the fallthrough successor is pushed last so it is visited first and lands right
-        // after its predecessor in reverse postorder, as a compiler lays out a condition chain
         match &block.edge {
             Edge::Goto(target) => stack.push((*target, false)),
             Edge::Cond {

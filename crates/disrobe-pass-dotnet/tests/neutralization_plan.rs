@@ -161,8 +161,6 @@ fn original_matches_input(image: &[u8], patch: &Patch) {
 #[test]
 fn confuserex_plans_name_the_module_initializer_calls_they_remove() {
     for (rel, techniques) in CONFUSEREX_PLANNED {
-        // the worker bodies sit in the anti-tamper section, so they are read from the
-        // decrypted image while the patch bytes are checked against the input
         let (image, decrypted, plan): (Vec<u8>, Vec<u8>, NeutralizationPlan) =
             plan_and_image_of(rel);
         let parsed: Parsed = parse_image(&decrypted);

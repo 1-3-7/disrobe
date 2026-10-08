@@ -154,8 +154,6 @@ fn resolve_hooks(
         if a == b {
             return true;
         }
-        // a dummy standing in for an instance method is static and spells the receiver as
-        // its first parameter
         b.has_this
             && !a.has_this
             && a.return_type == b.return_type
@@ -171,10 +169,6 @@ fn resolve_hooks(
     if direct.len() == hook_pairs.len() {
         return Ok(direct.into_iter().collect());
     }
-    // registration tokens are the rows the protector saw before it wrote the file: user
-    // methods numbered in order, then the dummies it appended; the written file puts its own
-    // members (<Module>, decryptor, hook plumbing) in front of or between them, so the stale
-    // row maps onto the n-th surviving user method in token order
     let candidates: Vec<u32> = model
         .types
         .iter()
@@ -314,8 +308,6 @@ impl BitMonoLayer {
             .iter()
             .find(|t: &&TypeModel| t.full_name == "<Module>");
         if let Some(module) = module {
-            // BitMono emits its own module members without HideBySig, while methods the
-            // protector moved out of user types keep the flag the C# compiler set
             for m in &module.methods {
                 let generated: bool = m.name == ".cctor"
                     || m.flags & METHOD_HIDE_BY_SIG == 0

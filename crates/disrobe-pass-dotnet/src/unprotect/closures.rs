@@ -341,8 +341,6 @@ pub(crate) fn closure_renames(
                 let owner_index: u32 =
                     lambda_owner.map_or(index, |(ordinal, _): (u32, &MethodModel)| ordinal);
                 if !singleton && !delegates.contains(&m.token) {
-                    // a closure method never loaded as a function pointer is a captured local
-                    // function called directly, so it takes the local-function mangling
                     out.members.insert(
                         m.token,
                         format!(

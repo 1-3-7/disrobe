@@ -185,8 +185,6 @@ pub(crate) fn repair_identifiers(
             continue;
         };
         if shares_bytes(index, len) {
-            // the heap bytes are shared with another name, so this row is renamed in the
-            // resolver instead of in place
             if let (Some(token), Ok(name)) = (token, String::from_utf8(fixed)) {
                 match role {
                     NameRole::Type => {

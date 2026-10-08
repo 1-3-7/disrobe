@@ -1162,8 +1162,6 @@ fn exception_sections(bytes: &[u8], code_end: usize) -> Result<ExceptionSections
             .checked_add(data_size)
             .ok_or(Error::CilTruncated(usize::MAX))?;
         let is_eh: bool = kind_byte & SECT_EH_TABLE != 0;
-        // the runtime counts clauses as DataSize / clause size, so a writer that omits the
-        // four header bytes from DataSize still gets every clause it wrote; follow the runtime
         let clause_size: usize = if is_fat { 24 } else { 12 };
         let data_end: usize = if is_eh {
             let clauses: usize = data_size / clause_size;

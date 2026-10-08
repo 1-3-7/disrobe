@@ -855,8 +855,6 @@ impl<'a, N: TokenNamer> Structurer<'a, N> {
             return transfer;
         }
         if self.reaches(target, outer_stop) {
-            // with a join of its own the if continues at that join, so an arm that leaves
-            // for the enclosing follow must transfer there instead of falling into the join
             return if join.is_some() {
                 self.goto(target)
             } else {
