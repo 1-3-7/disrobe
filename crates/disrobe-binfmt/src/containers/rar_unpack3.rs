@@ -585,7 +585,11 @@ fn read_ppm_header(
                 "rar 2.9/3.x ppmd model requests more than {PPM_MEMORY_CEILING} bytes"
             ))
         })?;
-    let mut fresh: Ppmd7 = Ppmd7::new(max_order, mem_bytes);
+    let mut fresh: Ppmd7 = Ppmd7::new(max_order, mem_bytes).ok_or_else(|| {
+        Error::Decompression(format!(
+            "rar 2.9/3.x ppmd model memory of {mem_bytes} bytes is not available"
+        ))
+    })?;
     fresh.restart_model();
     *model = Some(fresh);
     Ok(())

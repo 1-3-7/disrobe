@@ -38,7 +38,7 @@ struct Suballoc {
 }
 
 impl Suballoc {
-    fn new(size: u32) -> Self {
+    fn new(size: u32) -> Option<Self> {
         let mut indx2units: [u8; PPMD_NUM_INDEXES] = [0u8; PPMD_NUM_INDEXES];
         let mut units2indx: [u8; 128] = [0u8; 128];
         let mut k: usize = 0;
@@ -56,8 +56,11 @@ impl Suballoc {
         }
         let align_offset: u32 = 4u32.wrapping_sub(size) & 3;
         let alloc_len: usize = (align_offset + size + UNIT_SIZE) as usize;
-        Self {
-            base: vec![0u8; alloc_len],
+        let mut base: Vec<u8> = Vec::new();
+        base.try_reserve_exact(alloc_len).ok()?;
+        base.resize(alloc_len, 0);
+        Some(Self {
+            base,
             size,
             lo_unit: 0,
             hi_unit: 0,
@@ -67,7 +70,7 @@ impl Suballoc {
             free_list: [0u32; PPMD_NUM_INDEXES],
             indx2units,
             units2indx,
-        }
+        })
     }
 
     const fn align_offset(&self) -> u32 {
@@ -325,7 +328,7 @@ pub(crate) struct Ppmd7 {
 }
 
 impl Ppmd7 {
-    pub(crate) fn new(max_order: u32, mem_size: u32) -> Self {
+    pub(crate) fn new(max_order: u32, mem_size: u32) -> Option<Self> {
         let mut ns2indx: [u8; 256] = [0u8; 256];
         let mut ns2bsindx: [u8; 256] = [0u8; 256];
         let mut hb2flag: [u8; 256] = [0u8; 256];
@@ -361,8 +364,8 @@ impl Ppmd7 {
                 count: 0,
             });
         }
-        Self {
-            sa: Suballoc::new(mem_size),
+        Some(Self {
+            sa: Suballoc::new(mem_size)?,
             min_context: 0,
             max_context: 0,
             found_state: 0,
@@ -383,7 +386,7 @@ impl Ppmd7 {
             },
             see,
             bin_summ: [[0u16; 64]; 128],
-        }
+        })
     }
 
     fn ctx_num_stats(&self, c: u32) -> u16 {
@@ -1241,7 +1244,7 @@ mod tests {
 
     #[test]
     fn suballoc_index_tables_match_spec() {
-        let sa: Suballoc = Suballoc::new(1 << 20);
+        let sa: Suballoc = Suballoc::new(1 << 20).expect("a 1 MiB sub-allocator is available");
         assert_eq!(sa.indx2units[0], 1);
         assert_eq!(sa.indx2units[1], 2);
         assert_eq!(sa.indx2units[2], 3);
@@ -1254,7 +1257,7 @@ mod tests {
 
     #[test]
     fn ns2indx_first_entries_match_spec() {
-        let m: Ppmd7 = Ppmd7::new(16, 1 << 20);
+        let m: Ppmd7 = Ppmd7::new(16, 1 << 20).expect("a 1 MiB ppmd model is available");
         assert_eq!(m.ns2indx[0], 0);
         assert_eq!(m.ns2indx[1], 1);
         assert_eq!(m.ns2indx[2], 2);

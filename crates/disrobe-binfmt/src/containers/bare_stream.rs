@@ -789,7 +789,7 @@ pub fn decompress_brotli(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
         brotli::HeapAlloc<u8>,
         brotli::HeapAlloc<u32>,
         brotli::HeapAlloc<brotli::HuffmanCode>,
-    > = brotli::BrotliState::new(
+    > = brotli::BrotliState::new_strict(
         brotli::HeapAlloc::new(0u8),
         brotli::HeapAlloc::new(0u32),
         brotli::HeapAlloc::new(brotli::HuffmanCode::default()),
