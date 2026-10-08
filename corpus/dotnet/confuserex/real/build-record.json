@@ -1,0 +1,98 @@
+{
+  "files": {
+    "files/BehaviourSuite.aggressive.exe": "7ebf1ab4cce4a0f2d03bbe075e0647cf6587d288f266826509069b2639f88b5e",
+    "files/BehaviourSuite.clean.exe": "7c6156e68c5e9d8ab286e36b638493482190cb687fff860958a17e8926551a54",
+    "files/BehaviourSuite.maximum.exe": "cfa76cb2604c16fb9ca8d5579fd6d818ea5bcb75a69c6f20d896c03657b738bb",
+    "files/BehaviourSuite.minimum.exe": "2677992ffb845f320677f8ad9120b4a0214ebd2554d440143971d54e6bd7d37c",
+    "files/BehaviourSuite.normal.exe": "0f7ee215bf66565c0ca993d1ab9ee19dfc1bfe89186f0b34566b301b92c28103",
+    "files/GauntletSample.aggressive.exe": "c47f835ee48ba13827a165090c08a2e24c0dc5b80fc4c44e3651a1229d62cc4a",
+    "files/GauntletSample.clean.exe": "0b6a65e971c85c2468282e8658cc45db138e59906fc58f17ddbbb2a5346f3e59",
+    "files/GauntletSample.maximum.exe": "8f1cdfd6aab5eb1c5f0e0aa6489f1c9b2e7308607fc479ad78b378616346ff6c",
+    "files/GauntletSample.minimum.exe": "06ba56f452d58d228193a3ba3d43f31a4de9733a391c99b323d53ac5f8e4db2c",
+    "files/GauntletSample.normal.exe": "02ea3bf3ad34a1f1073152c45e1191b9d528ee40818eb5b8a0f1c4319cc86cd0"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n GauntletSample.crproj (preset=minimum, rule pattern=true)",
+      "input": "corpus/dotnet/confuserex/gauntlet/GauntletSample.cs",
+      "input_sha256": "686a7cbb916f6ef4bb357b284798beee89d31f28c5e66af899fdc0bfc08a8ef7",
+      "output": "files/GauntletSample.minimum.exe",
+      "output_bytes": 9728,
+      "output_sha256": "06ba56f452d58d228193a3ba3d43f31a4de9733a391c99b323d53ac5f8e4db2c"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n GauntletSample.crproj (preset=normal, rule pattern=true)",
+      "input": "corpus/dotnet/confuserex/gauntlet/GauntletSample.cs",
+      "input_sha256": "686a7cbb916f6ef4bb357b284798beee89d31f28c5e66af899fdc0bfc08a8ef7",
+      "output": "files/GauntletSample.normal.exe",
+      "output_bytes": 49152,
+      "output_sha256": "02ea3bf3ad34a1f1073152c45e1191b9d528ee40818eb5b8a0f1c4319cc86cd0"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n GauntletSample.crproj (preset=aggressive, rule pattern=true)",
+      "input": "corpus/dotnet/confuserex/gauntlet/GauntletSample.cs",
+      "input_sha256": "686a7cbb916f6ef4bb357b284798beee89d31f28c5e66af899fdc0bfc08a8ef7",
+      "output": "files/GauntletSample.aggressive.exe",
+      "output_bytes": 49152,
+      "output_sha256": "c47f835ee48ba13827a165090c08a2e24c0dc5b80fc4c44e3651a1229d62cc4a"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n GauntletSample.crproj (preset=maximum, rule pattern=true)",
+      "input": "corpus/dotnet/confuserex/gauntlet/GauntletSample.cs",
+      "input_sha256": "686a7cbb916f6ef4bb357b284798beee89d31f28c5e66af899fdc0bfc08a8ef7",
+      "output": "files/GauntletSample.maximum.exe",
+      "output_bytes": 59392,
+      "output_sha256": "8f1cdfd6aab5eb1c5f0e0aa6489f1c9b2e7308607fc479ad78b378616346ff6c"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n BehaviourSuite.crproj (preset=minimum, rule pattern=true)",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "02f81217a4054e07f2b4cb7114719970800c66eaf07a7bb446750ee358ee600f",
+      "output": "files/BehaviourSuite.minimum.exe",
+      "output_bytes": 15360,
+      "output_sha256": "2677992ffb845f320677f8ad9120b4a0214ebd2554d440143971d54e6bd7d37c"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n BehaviourSuite.crproj (preset=normal, rule pattern=true)",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "02f81217a4054e07f2b4cb7114719970800c66eaf07a7bb446750ee358ee600f",
+      "output": "files/BehaviourSuite.normal.exe",
+      "output_bytes": 54784,
+      "output_sha256": "0f7ee215bf66565c0ca993d1ab9ee19dfc1bfe89186f0b34566b301b92c28103"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n BehaviourSuite.crproj (preset=aggressive, rule pattern=true)",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "02f81217a4054e07f2b4cb7114719970800c66eaf07a7bb446750ee358ee600f",
+      "output": "files/BehaviourSuite.aggressive.exe",
+      "output_bytes": 54784,
+      "output_sha256": "7ebf1ab4cce4a0f2d03bbe075e0647cf6587d288f266826509069b2639f88b5e"
+    },
+    {
+      "behaviour": "same",
+      "command": "Confuser.CLI.exe -n BehaviourSuite.crproj (preset=maximum, rule pattern=true)",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "02f81217a4054e07f2b4cb7114719970800c66eaf07a7bb446750ee358ee600f",
+      "output": "files/BehaviourSuite.maximum.exe",
+      "output_bytes": 65024,
+      "output_sha256": "cfa76cb2604c16fb9ca8d5579fd6d818ea5bcb75a69c6f20d896c03657b738bb"
+    }
+  ],
+  "recipe": "confuserex",
+  "repository_commit": "dfcef116dbc83b19d82839b6339a10baae5f9283",
+  "runner_image": "win25-vs2026 20260925.250.1",
+  "tool": {
+    "name": "ConfuserEx (yck1509 original)",
+    "runtime": "10.0.401 SDK building net48; outputs executed on the Windows runner's .NET Framework",
+    "url": "https://github.com/yck1509/ConfuserEx/releases/download/v1.0.0/ConfuserEx_bin.zip",
+    "version": "ConfuserEx 1.0.0 ConfuserEx_bin.zip sha256 \\7810adc7b8650ae4590190798da35f6a4cb491bd2c71e122ee2f2468f8eb1374; Confuser.CLI.exe sha256 \\2b3e5cb7f96589e5377700a5f7f25e9fc6a14539e85256e6ac6e85c07f769f61"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37625640371"
+}

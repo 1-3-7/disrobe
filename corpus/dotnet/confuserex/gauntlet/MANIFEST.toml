@@ -44,5 +44,8 @@ DISROBE_GAUNTLET_API_KEY_7749 = "recovered from constants pool after xorshift se
 DISROBE_SECRET_TOKEN_ALPHA = "recovered from constants pool after xorshift seed recovery"
 "gauntlet-build-v1" = "recovered from constants pool after xorshift seed recovery"
 
+[recovered_behaviour]
+note = "disrobe dotnet decompile inlines all 8 constant-decoder call sites from the LZMA pool (seed 0x27e4eb38), rebuilds all 36 flattened user methods into direct control flow, removes the 8 zero-length branches, drops the injected runtime (5 decoders, LZMA decoder types, module constructor, ConfusedByAttribute), and emits C# that Roslyn csc compiles against the .NET Framework 4.8 reference set; the recovered program prints the same 9 lines and exit code as the program built from GauntletSample.cs (crates/disrobe-pass-dotnet/tests/protector_reexec_strict.rs)"
+
 [walled]
-note = "Anti-tamper and full control-flow reconstruction are walled: anti-tamper's decryption key is derived at runtime from an in-memory image hash (not present statically). Control-flow deflattening is a separate pass (cff_deflatten) already proven on CffSample/CffPred fixtures. Structure recovery and rename reversal require de4dot delegation (plan_execution -> DelegatedToDe4dot)."
+note = "Original identifiers are not recoverable: the recovered program keeps the ConfuserEx rename output spelled as _uXXXX_ identifiers. This sample carries no anti-tamper section; the anti-tamper decryption is graded on HelloAppLegacy.confuserex2.dll and EdgeCases.confuserex2.dll."

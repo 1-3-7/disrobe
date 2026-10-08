@@ -1,0 +1,78 @@
+{
+  "files": {
+    "files/BehaviourSuite.Balanced.dll": "9807569b56292ca56f674dd6de88e535c7593886444bc5f8d469d73c56dcaa58",
+    "files/BehaviourSuite.Maximum.dll": "1b72299bf06933fda88af10d41a0b980042d43a4f9b7b995ff78b8397bcb56da",
+    "files/BehaviourSuite.Minimal.dll": "b4b3fb3daf954e3bcfc0efeab709f55246225d6985c529c40525977befe7bc3c",
+    "files/BehaviourSuite.clean.dll": "45a9862ace88d2c7b81dc639f47c944b0c5810e3ca0ba14bb5317a1d03298614",
+    "files/GauntletBitMono.Balanced.dll": "92c654b44c265588cd38a5c01ad395371d86ca14022afb223b178eb7f24db31a",
+    "files/GauntletBitMono.Maximum.dll": "0a0d1aa2f348d4f811d7c36b42525d6a7fd6b0c458532bffb16d413eee9b0c5a",
+    "files/GauntletBitMono.Minimal.dll": "2233ec8940c00d31acb0f8d9438e71f06f81b07a39edf92483a0281c2768d4fe",
+    "files/GauntletBitMono.clean.dll": "0e6c05ff9ecc7829c621f2a9c36f655560980dbd880e14228ef0df9a2eda42a2"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "bitmono.console -f GauntletBitMono.dll -l <net8 shared runtime dir> -o out --preset Minimal --no-watermark",
+      "input": "corpus/dotnet/obfuscators/bitmono/gauntlet/clean_original.cs",
+      "input_sha256": "5344641ae949d503033360a3a23802037e2f2e56894824a7a00cd49ea1eb23f3",
+      "output": "files/GauntletBitMono.Minimal.dll",
+      "output_bytes": 5632,
+      "output_sha256": "2233ec8940c00d31acb0f8d9438e71f06f81b07a39edf92483a0281c2768d4fe"
+    },
+    {
+      "behaviour": "same",
+      "command": "bitmono.console -f GauntletBitMono.dll -l <net8 shared runtime dir> -o out --preset Balanced --no-watermark",
+      "input": "corpus/dotnet/obfuscators/bitmono/gauntlet/clean_original.cs",
+      "input_sha256": "5344641ae949d503033360a3a23802037e2f2e56894824a7a00cd49ea1eb23f3",
+      "output": "files/GauntletBitMono.Balanced.dll",
+      "output_bytes": 109056,
+      "output_sha256": "92c654b44c265588cd38a5c01ad395371d86ca14022afb223b178eb7f24db31a"
+    },
+    {
+      "behaviour": "differs",
+      "command": "bitmono.console -f GauntletBitMono.dll -l <net8 shared runtime dir> -o out --preset Maximum --no-watermark",
+      "input": "corpus/dotnet/obfuscators/bitmono/gauntlet/clean_original.cs",
+      "input_sha256": "5344641ae949d503033360a3a23802037e2f2e56894824a7a00cd49ea1eb23f3",
+      "output": "files/GauntletBitMono.Maximum.dll",
+      "output_bytes": 111616,
+      "output_sha256": "0a0d1aa2f348d4f811d7c36b42525d6a7fd6b0c458532bffb16d413eee9b0c5a"
+    },
+    {
+      "behaviour": "same",
+      "command": "bitmono.console -f BehaviourSuite.dll -l <net8 shared runtime dir> -o out --preset Minimal --no-watermark",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "6d3d040ae1d594f8bb58a037b6737f99e455c292561a61e6939d6e140094c2b4",
+      "output": "files/BehaviourSuite.Minimal.dll",
+      "output_bytes": 12800,
+      "output_sha256": "b4b3fb3daf954e3bcfc0efeab709f55246225d6985c529c40525977befe7bc3c"
+    },
+    {
+      "behaviour": "same",
+      "command": "bitmono.console -f BehaviourSuite.dll -l <net8 shared runtime dir> -o out --preset Balanced --no-watermark",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "6d3d040ae1d594f8bb58a037b6737f99e455c292561a61e6939d6e140094c2b4",
+      "output": "files/BehaviourSuite.Balanced.dll",
+      "output_bytes": 121344,
+      "output_sha256": "9807569b56292ca56f674dd6de88e535c7593886444bc5f8d469d73c56dcaa58"
+    },
+    {
+      "behaviour": "differs",
+      "command": "bitmono.console -f BehaviourSuite.dll -l <net8 shared runtime dir> -o out --preset Maximum --no-watermark",
+      "input": "crates/disrobe-pass-dotnet/tests/fixtures/behaviour",
+      "input_sha256": "6d3d040ae1d594f8bb58a037b6737f99e455c292561a61e6939d6e140094c2b4",
+      "output": "files/BehaviourSuite.Maximum.dll",
+      "output_bytes": 127488,
+      "output_sha256": "1b72299bf06933fda88af10d41a0b980042d43a4f9b7b995ff78b8397bcb56da"
+    }
+  ],
+  "recipe": "bitmono",
+  "repository_commit": "dd6bec0d79fbfe744461619e1c01174381603661",
+  "runner_image": "ubuntu24 20260927.320.1",
+  "tool": {
+    "name": "BitMono",
+    "runtime": "10.0.401 SDK; outputs executed with the same runtime",
+    "url": "https://www.nuget.org/packages/BitMono.GlobalTool/0.45.0",
+    "version": "BitMono.GlobalTool 0.45.0 nupkg sha512 (base64) x0XKcX3itW1YuXQiVJah1zDNlGvKCpW7ncIdOTcYGU+yjqOq0gQvUaVHvpQgr4H+HNtuqyVaI+VaLOy61mUF2Q=="
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37627323405"
+}
