@@ -8,7 +8,7 @@ gems="$RUNNER_TEMP/jsobfu-gems"
 mkdir -p "$gems"
 (cd "$gems" && gem fetch jsobfu --version "$gem_version" > /dev/null)
 echo "$gem_sha256  $gems/jsobfu-$gem_version.gem" | sha256sum --check
-gem install --local --install-dir "$gems/install" --no-document "$gems/jsobfu-$gem_version.gem" > /dev/null
+gem install --install-dir "$gems/install" --no-document "$gems/jsobfu-$gem_version.gem" > /dev/null
 export GEM_PATH="$gems/install"
 jsobfu="$gems/install/bin/jsobfu"
 test -x "$jsobfu"

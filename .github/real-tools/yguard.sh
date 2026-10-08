@@ -17,7 +17,7 @@ export JAVA_HOME="$jdk"
 java="$jdk/bin/java"
 javac="$jdk/bin/javac"
 jar="$jdk/bin/jar"
-ant --version
+ant -version
 
 cat > "$OUT/tool.env" <<EOF
 name=yGuard
