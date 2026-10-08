@@ -60,8 +60,7 @@ impl Detector for DotnetDetector {
         }
         let pe: PeImage = parse_pe(bytes).ok()?;
         if let Some(dir) = pe.clr_directory()
-            && dir.rva != 0
-            && dir.size != 0
+            && clr_directory_present(bytes, &pe, dir)
         {
             return Some(verdict_clr(dir));
         }
@@ -115,7 +114,8 @@ impl Pass for DotnetPass {
             CoreError::PassFailure(format!("DR-DOTNET-0902: PE parse: {e}"))
         })?;
         let clr: Option<DataDirectory> = pe.clr_directory();
-        if clr.is_none_or(|directory: DataDirectory| directory.rva == 0 || directory.size == 0) {
+        if clr.is_none_or(|directory: DataDirectory| !clr_directory_present(bytes, &pe, directory))
+        {
             let report: AotReport = detect_aot(bytes);
             if report.ready_to_run.is_none() {
                 return Err(CoreError::PassFailure(
@@ -432,6 +432,14 @@ fn render_csharp_source(assembly: &DecompiledAssembly, recovered_constants: &[St
         }
     }
     out
+}
+
+fn clr_directory_present(bytes: &[u8], pe: &PeImage, dir: DataDirectory) -> bool {
+    dir.rva != 0
+        && (dir.size != 0
+            || parse_clr_header(bytes, pe)
+                .and_then(|clr: ClrHeader| crate::metadata::parse_metadata_root(bytes, pe, &clr))
+                .is_ok())
 }
 
 fn verdict_clr(dir: DataDirectory) -> DetectVerdict {
@@ -1332,6 +1340,30 @@ mod tests {
         bytes[0] = b'M';
         bytes[1] = b'Z';
         assert!(Detector::detect(&DotnetDetector, &ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn detect_accepts_bitmono_header_corruption_when_the_clr_header_parses() {
+        let path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpus/dotnet/obfuscators/bitmono/real/GauntletBitMono.Maximum.dll");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("fixture {} must be present: {error}", path.display()));
+        let pe: PeImage = parse_pe(&bytes).expect("the corrupted image still parses");
+        let dir: DataDirectory = pe.clr_directory().expect("clr directory");
+        assert_eq!(
+            dir.size, 0,
+            "the fixture carries BitMono's zeroed CLR directory size"
+        );
+        let verdict: DetectVerdict =
+            Detector::detect(&DotnetDetector, &ctx(&bytes)).expect("detected as a CLR image");
+        assert_eq!(verdict.format_tag, TAG_PE_CLR);
+        let header_offset: usize = pe.rva_to_offset(dir.rva).expect("header offset");
+        let mut broken: Vec<u8> = bytes;
+        broken[header_offset + 8..header_offset + 16].fill(0);
+        assert!(
+            Detector::detect(&DotnetDetector, &ctx(&broken)).is_none(),
+            "a zero-size directory whose header points at no metadata root is not a CLR image"
+        );
     }
 
     #[test]

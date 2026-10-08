@@ -703,13 +703,13 @@ fn emulated_pool(
                     }
                     Ok(_) => {
                         last_error =
-                            format!("initializer {:#x} decompressed to an empty pool", m.token)
+                            format!("initializer {:#x} decompressed to an empty pool", m.token);
                     }
                     Err(e) => {
                         last_error = format!(
                             "initializer {:#x}: the captured buffer is not an LZMA stream ({e})",
                             m.token
-                        )
+                        );
                     }
                 }
             }
@@ -717,7 +717,7 @@ fn emulated_pool(
                 last_error = format!(
                     "initializer {:#x} did not emulate to the decompressor call: {e:?}",
                     m.token
-                )
+                );
             }
         }
     }
