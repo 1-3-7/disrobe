@@ -30,6 +30,7 @@ mod obfuscxx_gauntlet;
 mod obfush_gauntlet;
 mod obfusheader_gauntlet;
 mod ollvm_passes;
+mod ollvm_real_fold;
 mod ollvm_real_tool_reference;
 mod opaque_predicate_ground_truth;
 mod rust_obfuscator_gauntlet;

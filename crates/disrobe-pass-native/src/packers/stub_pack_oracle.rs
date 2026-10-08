@@ -26,9 +26,52 @@ pub struct SectionSpec<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum StubKind {
     LzDecompress,
-    StreamDecrypt { key0: u8, key_step: u8 },
-    StreamDecryptPoly { key0: u8, key_step: u8, seed: u8 },
+    StreamDecrypt {
+        key0: u8,
+        key_step: u8,
+    },
+    StreamDecryptPoly {
+        key0: u8,
+        key_step: u8,
+        seed: u8,
+    },
+    GuardedStreamDecrypt {
+        key0: u8,
+        key_step: u8,
+        inverted: bool,
+    },
 }
+
+pub const GUARDED_STUB_SIZE: usize = 0x500;
+pub const GUARD_IMPORT_DIR: u32 = 0x300;
+const GUARD_IMPORT_DIR_SIZE: u32 = 60;
+pub const GUARD_K32_ILT: u32 = 0x340;
+pub const GUARD_K32_IAT: u32 = 0x350;
+const GUARD_NT_ILT: u32 = 0x360;
+const GUARD_NT_IAT: u32 = 0x368;
+const GUARD_NAME_IS_DEBUGGER_PRESENT: u32 = 0x380;
+const GUARD_NAME_GET_TICK_COUNT: u32 = 0x3A0;
+const GUARD_NAME_ADD_VEH: u32 = 0x3B0;
+const GUARD_NAME_NT_QIP: u32 = 0x3D0;
+const GUARD_NAME_KERNEL32: u32 = 0x3F0;
+const GUARD_NAME_NTDLL: u32 = 0x400;
+pub const GUARD_TLS_DIR: u32 = 0x410;
+const GUARD_TLS_DIR_SIZE: u32 = 24;
+pub const GUARD_TLS_CALLBACKS: u32 = 0x430;
+const GUARD_TLS_RAW: u32 = 0x440;
+const GUARD_TLS_INDEX: u32 = 0x444;
+const GUARD_QIP_OUT: u32 = 0x448;
+const GUARD_QIP_RETLEN: u32 = 0x44C;
+pub const GUARD_TLS_MARKER: u32 = 0x450;
+const GUARD_VEH_HANDLER: u32 = 0x460;
+const GUARD_TLS_CALLBACK: u32 = 0x480;
+
+pub const GUARDED_IMPORT_NAMES: [&str; 4] = [
+    "IsDebuggerPresent",
+    "GetTickCount",
+    "AddVectoredExceptionHandler",
+    "NtQueryInformationProcess",
+];
 
 fn align_up(v: u32, a: u32) -> u32 {
     v.div_ceil(a) * a
@@ -407,6 +450,238 @@ fn emit_stream_decrypt_stub(
     a.code
 }
 
+struct GuardAsm {
+    a: Asm,
+    bad_fixups: Vec<usize>,
+    inverted: bool,
+}
+
+impl GuardAsm {
+    fn jcc_bad(&mut self, cc: u8) {
+        let opcode: u8 = if self.inverted { cc ^ 1 } else { cc };
+        self.a.bytes(&[0x0F, opcode]);
+        self.bad_fixups.push(self.a.code.len());
+        self.a.imm32(0);
+    }
+
+    fn call_iat(&mut self, slot_va: u32) {
+        self.a.bytes(&[0xFF, 0x15]);
+        self.a.imm32(slot_va);
+    }
+
+    fn mov_eax_fs30(&mut self) {
+        self.a.bytes(&[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00]);
+    }
+
+    fn test_eax_eax(&mut self) {
+        self.a.bytes(&[0x85, 0xC0]);
+    }
+}
+
+const JCC_E: u8 = 0x84;
+const JCC_NE: u8 = 0x85;
+const JCC_A: u8 = 0x87;
+const JCC_B: u8 = 0x82;
+
+fn emit_guarded_stub(
+    stub_va: u32,
+    enc_va: u32,
+    enc_len: u32,
+    key0: u8,
+    key_step: u8,
+    oep_va: u32,
+    inverted: bool,
+) -> Vec<u8> {
+    let va = |off: u32| -> u32 { stub_va + off };
+    let mut g: GuardAsm = GuardAsm {
+        a: Asm::new(),
+        bad_fixups: Vec::new(),
+        inverted,
+    };
+
+    g.a.bytes(&[0x80, 0x3D]);
+    g.a.imm32(va(GUARD_TLS_MARKER));
+    g.a.b(0x01);
+    g.jcc_bad(JCC_NE);
+
+    g.call_iat(va(GUARD_K32_IAT));
+    g.test_eax_eax();
+    g.jcc_bad(JCC_NE);
+
+    g.mov_eax_fs30();
+    g.a.bytes(&[0x0F, 0xB6, 0x40, 0x02]);
+    g.test_eax_eax();
+    g.jcc_bad(JCC_NE);
+
+    g.mov_eax_fs30();
+    g.a.bytes(&[0x8B, 0x40, 0x68]);
+    g.a.bytes(&[0x83, 0xE0, 0x70]);
+    g.jcc_bad(JCC_NE);
+
+    g.mov_eax_fs30();
+    g.a.bytes(&[0x8B, 0x40, 0x18]);
+    g.a.bytes(&[0x8B, 0x48, 0x44]);
+    g.a.bytes(&[0x85, 0xC9]);
+    g.jcc_bad(JCC_NE);
+
+    g.a.bytes(&[0x0F, 0x31, 0x89, 0xC3, 0x0F, 0x31, 0x29, 0xD8]);
+    g.a.b(0x3D);
+    g.a.imm32(0x0001_0000);
+    g.jcc_bad(JCC_A);
+
+    g.a.mov_eax_imm(1);
+    g.a.bytes(&[0x0F, 0xA2, 0x0F, 0xBA, 0xE1, 0x1F]);
+    g.jcc_bad(JCC_B);
+
+    g.a.b(0x68);
+    g.a.imm32(va(GUARD_QIP_RETLEN));
+    g.a.bytes(&[0x6A, 0x04]);
+    g.a.b(0x68);
+    g.a.imm32(va(GUARD_QIP_OUT));
+    g.a.bytes(&[0x6A, 0x07, 0x6A, 0xFF]);
+    g.call_iat(va(GUARD_NT_IAT));
+    g.test_eax_eax();
+    g.jcc_bad(JCC_NE);
+    g.a.b(0xA1);
+    g.a.imm32(va(GUARD_QIP_OUT));
+    g.test_eax_eax();
+    g.jcc_bad(JCC_NE);
+
+    g.call_iat(va(GUARD_K32_IAT + 4));
+    g.a.bytes(&[0x89, 0xC3]);
+    g.call_iat(va(GUARD_K32_IAT + 4));
+    g.a.bytes(&[0x29, 0xD8]);
+    g.a.b(0x3D);
+    g.a.imm32(1000);
+    g.jcc_bad(JCC_A);
+
+    g.a.b(0x68);
+    g.a.imm32(va(GUARD_VEH_HANDLER));
+    g.a.bytes(&[0x6A, 0x01]);
+    g.call_iat(va(GUARD_K32_IAT + 8));
+    g.test_eax_eax();
+    g.jcc_bad(JCC_E);
+    g.a.bytes(&[0x31, 0xDB, 0xCD, 0x2D, 0x90, 0x83, 0xFB, 0x01]);
+    g.jcc_bad(JCC_NE);
+
+    let a: &mut Asm = &mut g.a;
+    a.mov_esi_imm(enc_va);
+    a.mov_ecx_imm(enc_len);
+    a.bytes(&[0xB3, key0]);
+    a.bytes(&[0x31, 0xD2]);
+    let top: usize = a.code.len();
+    a.bytes(&[0x85, 0xC9]);
+    let jz_done_pos: usize = a.code.len() + 2;
+    a.bytes(&[0x0F, 0x84]);
+    a.imm32(0);
+    a.bytes(&[0x8A, 0x06, 0x30, 0xD8, 0x88, 0x06, 0x46]);
+    a.bytes(&[0x00, 0xD3]);
+    a.bytes(&[0x80, 0xC3, key_step]);
+    a.bytes(&[0xFE, 0xC2, 0x49]);
+    let jmp_top_pos: usize = a.code.len() + 1;
+    a.b(0xE9);
+    a.imm32(0);
+    let done_label: usize = a.code.len();
+    a.mov_eax_imm(oep_va);
+    a.jmp_eax();
+    let bad_label: usize = a.code.len();
+    a.bytes(&[0xEB, 0xFE]);
+    patch_rel32(&mut a.code, jz_done_pos, done_label);
+    patch_rel32(&mut a.code, jmp_top_pos, top);
+    for pos in &g.bad_fixups {
+        patch_rel32(&mut g.a.code, *pos, bad_label);
+    }
+    assert!(
+        g.a.code.len() <= GUARD_IMPORT_DIR as usize,
+        "guard code must stay below the import directory"
+    );
+
+    let mut section: Vec<u8> = g.a.code;
+    section.resize(GUARD_IMPORT_DIR as usize, 0x90);
+    section.resize(GUARDED_STUB_SIZE, 0);
+    let put32 = |s: &mut Vec<u8>, off: u32, v: u32| {
+        let o: usize = off as usize;
+        s[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    };
+    let put_bytes = |s: &mut Vec<u8>, off: u32, b: &[u8]| {
+        let o: usize = off as usize;
+        s[o..o + b.len()].copy_from_slice(b);
+    };
+
+    let descriptors: [(u32, u32, u32); 2] = [
+        (GUARD_K32_ILT, GUARD_NAME_KERNEL32, GUARD_K32_IAT),
+        (GUARD_NT_ILT, GUARD_NAME_NTDLL, GUARD_NT_IAT),
+    ];
+    for (i, (ilt, name, iat)) in descriptors.iter().enumerate() {
+        let d: u32 = GUARD_IMPORT_DIR + i as u32 * 20;
+        put32(&mut section, d, va_to_rva(va(*ilt)));
+        put32(&mut section, d + 12, va_to_rva(va(*name)));
+        put32(&mut section, d + 16, va_to_rva(va(*iat)));
+    }
+    let k32_names: [u32; 3] = [
+        GUARD_NAME_IS_DEBUGGER_PRESENT,
+        GUARD_NAME_GET_TICK_COUNT,
+        GUARD_NAME_ADD_VEH,
+    ];
+    for (i, name_off) in k32_names.iter().enumerate() {
+        let rva: u32 = va_to_rva(va(*name_off));
+        put32(&mut section, GUARD_K32_ILT + i as u32 * 4, rva);
+        put32(&mut section, GUARD_K32_IAT + i as u32 * 4, rva);
+    }
+    let nt_rva: u32 = va_to_rva(va(GUARD_NAME_NT_QIP));
+    put32(&mut section, GUARD_NT_ILT, nt_rva);
+    put32(&mut section, GUARD_NT_IAT, nt_rva);
+    for (off, name) in [
+        (GUARD_NAME_IS_DEBUGGER_PRESENT, GUARDED_IMPORT_NAMES[0]),
+        (GUARD_NAME_GET_TICK_COUNT, GUARDED_IMPORT_NAMES[1]),
+        (GUARD_NAME_ADD_VEH, GUARDED_IMPORT_NAMES[2]),
+        (GUARD_NAME_NT_QIP, GUARDED_IMPORT_NAMES[3]),
+    ] {
+        put_bytes(&mut section, off, &[0, 0]);
+        put_bytes(&mut section, off + 2, name.as_bytes());
+    }
+    put_bytes(&mut section, GUARD_NAME_KERNEL32, b"kernel32.dll\0");
+    put_bytes(&mut section, GUARD_NAME_NTDLL, b"ntdll.dll\0");
+
+    put32(&mut section, GUARD_TLS_DIR, va(GUARD_TLS_RAW));
+    put32(&mut section, GUARD_TLS_DIR + 4, va(GUARD_TLS_RAW) + 4);
+    put32(&mut section, GUARD_TLS_DIR + 8, va(GUARD_TLS_INDEX));
+    put32(&mut section, GUARD_TLS_DIR + 12, va(GUARD_TLS_CALLBACKS));
+    put32(&mut section, GUARD_TLS_DIR + 16, 0);
+    put32(&mut section, GUARD_TLS_DIR + 20, 0);
+    put32(&mut section, GUARD_TLS_CALLBACKS, va(GUARD_TLS_CALLBACK));
+    put32(&mut section, GUARD_TLS_CALLBACKS + 4, 0);
+    put32(&mut section, GUARD_TLS_RAW, 0);
+    put32(&mut section, GUARD_TLS_INDEX, 0);
+    put32(&mut section, GUARD_QIP_OUT, 0xDEAD_BEEF);
+    put32(&mut section, GUARD_QIP_RETLEN, 0);
+    section[GUARD_TLS_MARKER as usize] = 0;
+
+    put_bytes(
+        &mut section,
+        GUARD_VEH_HANDLER,
+        &[
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x40, 0x04, 0xC7, 0x80, 0xA4, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3,
+        ],
+    );
+    let mut tls: Asm = Asm::new();
+    tls.bytes(&[0x64, 0xA1, 0x30, 0x00, 0x00, 0x00]);
+    tls.bytes(&[0x0F, 0xB6, 0x40, 0x02]);
+    tls.bytes(&[0x85, 0xC0]);
+    tls.bytes(&[0x75, 0x07]);
+    tls.bytes(&[0xC6, 0x05]);
+    tls.imm32(va(GUARD_TLS_MARKER));
+    tls.b(0x01);
+    tls.bytes(&[0xC2, 0x0C, 0x00]);
+    put_bytes(&mut section, GUARD_TLS_CALLBACK, &tls.code);
+    section
+}
+
+fn va_to_rva(target_va: u32) -> u32 {
+    target_va - IMAGE_BASE
+}
+
 fn patch_rel32(code: &mut [u8], operand_pos: usize, target: usize) {
     let next_ip: i64 = (operand_pos + 4) as i64;
     let rel: i32 = (target as i64 - next_ip) as i32;
@@ -489,10 +764,42 @@ pub fn build_packed(
             );
             (sections, code)
         }
+        StubKind::GuardedStreamDecrypt {
+            key0,
+            key_step,
+            inverted,
+        } => {
+            let mut sections: Vec<RawSection> = Vec::new();
+            let s: &SectionSpec<'_> = &content[0];
+            let enc: Vec<u8> = stream_encrypt(&s.body, key0, key_step);
+            sections.push((s.name.to_vec(), s.rva, enc));
+            for extra in &content[1..] {
+                sections.push((extra.name.to_vec(), extra.rva, extra.body.clone()));
+            }
+            let code: Vec<u8> = emit_guarded_stub(
+                IMAGE_BASE + stub_rva,
+                IMAGE_BASE + s.rva,
+                s.body.len() as u32,
+                key0,
+                key_step,
+                oep_va,
+                inverted,
+            );
+            (sections, code)
+        }
     };
 
+    let directories: Vec<(usize, u32, u32)> = match kind {
+        StubKind::GuardedStreamDecrypt { .. } => vec![
+            (1, stub_rva + GUARD_IMPORT_DIR, GUARD_IMPORT_DIR_SIZE),
+            (9, stub_rva + GUARD_TLS_DIR, GUARD_TLS_DIR_SIZE),
+        ],
+        StubKind::LzDecompress
+        | StubKind::StreamDecrypt { .. }
+        | StubKind::StreamDecryptPoly { .. } => Vec::new(),
+    };
     packed_sections.push((stub_name.to_vec(), stub_rva, stub_code));
-    let bytes: Vec<u8> = assemble_pe(&packed_sections, stub_rva);
+    let bytes: Vec<u8> = assemble_pe_with_dirs(&packed_sections, stub_rva, &directories);
 
     PackedImage {
         bytes,
@@ -512,6 +819,14 @@ fn build_original(content: &[SectionSpec<'_>], oep_rva: u32) -> Vec<u8> {
 }
 
 fn assemble_pe(sections: &[RawSection], entry_rva: u32) -> Vec<u8> {
+    assemble_pe_with_dirs(sections, entry_rva, &[])
+}
+
+fn assemble_pe_with_dirs(
+    sections: &[RawSection],
+    entry_rva: u32,
+    directories: &[(usize, u32, u32)],
+) -> Vec<u8> {
     let header_len: usize = 0x400;
     let mut buf: Vec<u8> = vec![0u8; header_len];
     buf[0] = b'M';
@@ -530,6 +845,14 @@ fn assemble_pe(sections: &[RawSection], entry_rva: u32) -> Vec<u8> {
     buf[opt + 28..opt + 32].copy_from_slice(&IMAGE_BASE.to_le_bytes());
     buf[opt + 32..opt + 36].copy_from_slice(&SECT_ALIGN.to_le_bytes());
     buf[opt + 36..opt + 40].copy_from_slice(&FILE_ALIGN.to_le_bytes());
+    if !directories.is_empty() {
+        buf[opt + 92..opt + 96].copy_from_slice(&16u32.to_le_bytes());
+    }
+    for (index, rva, size) in directories {
+        let entry: usize = opt + 96 + index * 8;
+        buf[entry..entry + 4].copy_from_slice(&rva.to_le_bytes());
+        buf[entry + 4..entry + 8].copy_from_slice(&size.to_le_bytes());
+    }
 
     let max_end_rva: u32 = sections
         .iter()

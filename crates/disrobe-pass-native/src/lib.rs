@@ -14,6 +14,7 @@
     clippy::redundant_else
 )]
 
+pub mod anti_runtime;
 pub mod api_hash;
 pub mod arch;
 pub mod authenticode;
@@ -78,6 +79,7 @@ pub mod vm_devirt;
 pub mod entropy;
 pub mod entropy_viz;
 
+pub use anti_runtime::{RuntimeCheckScan, plan_runtime_check_neutralization};
 pub use api_hash::{
     ApiHashHit, HashFamily, harvested_hash_constants, resolve_hash, resolve_hash_any_family,
     resolve_imports_by_hash,

@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use disrobe_core::debug::DebugLog;
+use disrobe_core::neutralize::{Anchor, NeutralizedCheck, RuntimeCheck};
 use iced_x86::{
     Code, ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction, OpKind, Register,
 };
@@ -24,6 +27,10 @@ pub enum ExitReason {
 
 pub trait HostCall {
     fn dispatch(&mut self, target: u64, regs: &mut Regs, mem: &mut Memory) -> Result<bool>;
+
+    fn take_vectored_registrations(&mut self) -> Vec<(bool, u64)> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +38,15 @@ struct SehDispatch {
     context: u64,
     frame: u64,
     previous_chain_head: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VehDispatch {
+    context: u64,
+    pointers: u64,
+    resume_ip: u64,
+    exception_code: u32,
+    next_handler: usize,
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +58,14 @@ impl HostCall for NoopHost {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadWatch {
+    pub start: u64,
+    pub len: u64,
+    pub check: RuntimeCheck,
+    pub field: &'static str,
+}
+
 #[derive(Debug)]
 pub struct Cpu {
     pub regs: Regs,
@@ -51,6 +75,13 @@ pub struct Cpu {
     gs_base: u64,
     seh_dispatch: bool,
     pending_contexts: Vec<SehDispatch>,
+    vectored_handlers: Vec<u64>,
+    pending_vectored: Vec<VehDispatch>,
+    tsc: u64,
+    events: Vec<NeutralizedCheck>,
+    events_seen: BTreeSet<(RuntimeCheck, u64)>,
+    events_dropped: u64,
+    read_watches: Vec<ReadWatch>,
     steps_executed: u64,
     host_calls_dispatched: u64,
 }
@@ -66,6 +97,13 @@ impl Cpu {
             gs_base: 0,
             seh_dispatch: false,
             pending_contexts: Vec::new(),
+            vectored_handlers: Vec::new(),
+            pending_vectored: Vec::new(),
+            tsc: Self::TSC_START,
+            events: Vec::new(),
+            events_seen: BTreeSet::new(),
+            events_dropped: 0,
+            read_watches: Vec::new(),
             steps_executed: 0,
             host_calls_dispatched: 0,
         }
@@ -77,12 +115,125 @@ impl Cpu {
         let _ = self
             .mem
             .map(Self::SEH_CONTINUE_SENTINEL, PAGE_SIZE as u64, Perm::RX);
+        let _ = self
+            .mem
+            .map(Self::VEH_CONTINUE_SENTINEL, PAGE_SIZE as u64, Perm::RX);
+    }
+
+    pub fn add_vectored_handler(&mut self, first: bool, handler: u64) -> bool {
+        if handler == 0 || self.vectored_handlers.len() >= Self::VEH_MAX_HANDLERS {
+            return false;
+        }
+        if first {
+            self.vectored_handlers.insert(0, handler);
+        } else {
+            self.vectored_handlers.push(handler);
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn vectored_handlers(&self) -> &[u64] {
+        &self.vectored_handlers
+    }
+
+    #[must_use]
+    pub fn neutralized(&self) -> &[NeutralizedCheck] {
+        &self.events
+    }
+
+    #[must_use]
+    pub const fn neutralized_dropped(&self) -> u64 {
+        self.events_dropped
+    }
+
+    pub fn watch_read(&mut self, watch: ReadWatch) -> bool {
+        if watch.len == 0 || self.read_watches.len() >= Self::MAX_READ_WATCHES {
+            return false;
+        }
+        self.read_watches.push(watch);
+        true
+    }
+
+    fn observe_watched_read(&mut self, insn: &Instruction) {
+        use iced_x86::Mnemonic as M;
+        let touches_memory: bool =
+            (0..insn.op_count()).any(|i: u32| insn.op_kind(i) == OpKind::Memory);
+        let pure_store: bool = insn.op0_kind() == OpKind::Memory && insn.mnemonic() == M::Mov;
+        if !touches_memory || pure_store || insn.mnemonic() == M::Lea {
+            return;
+        }
+        let Ok(addr) = self.effective_addr(insn) else {
+            return;
+        };
+        let size: u64 = (insn.memory_size().size() as u64).max(1);
+        let hit: Option<ReadWatch> = self
+            .read_watches
+            .iter()
+            .find(|w: &&ReadWatch| {
+                addr < w.start.saturating_add(w.len) && w.start < addr.saturating_add(size)
+            })
+            .copied();
+        if let Some(watch) = hit {
+            let text: String = format!("{:?}", insn.mnemonic()).to_ascii_lowercase();
+            self.record_event(
+                watch.check,
+                insn.ip(),
+                &text,
+                format!(
+                    "{} read at {addr:#x} answered with the not-debugged value",
+                    watch.field
+                ),
+            );
+        }
+    }
+
+    fn record_event(
+        &mut self,
+        check: RuntimeCheck,
+        address: u64,
+        instruction: &str,
+        pattern: String,
+    ) {
+        if self.events_seen.contains(&(check, address)) {
+            return;
+        }
+        if self.events.len() >= Self::MAX_EVENTS {
+            self.events_dropped = self.events_dropped.saturating_add(1);
+            return;
+        }
+        self.events_seen.insert((check, address));
+        self.events.push(NeutralizedCheck {
+            check,
+            anchor: Anchor {
+                address,
+                instruction: instruction.to_owned(),
+                pattern,
+            },
+            outcome: "served the not-debugged value inside the emulator sandbox".to_owned(),
+        });
+    }
+
+    fn absorb_vectored_registrations<H: HostCall>(&mut self, host: &mut H) {
+        for (first, handler) in host.take_vectored_registrations() {
+            let _ = self.add_vectored_handler(first, handler);
+        }
     }
 
     const NULL_GUARD_LIMIT: u64 = PAGE_SIZE as u64;
 
     const SEH_MAX_DEPTH: u32 = 16;
     const SEH_END_OF_CHAIN: u64 = 0xFFFF_FFFF;
+
+    pub const VEH_MAX_HANDLERS: usize = 16;
+    pub const VEH_MAX_DEPTH: usize = 16;
+    pub const MAX_EVENTS: usize = 256;
+    pub const MAX_READ_WATCHES: usize = 8;
+    const VEH_CONTINUE_SENTINEL: u64 = 0x7FF2_0000;
+    const EXCEPTION_CONTINUE_EXECUTION: u32 = 0xFFFF_FFFF;
+    const EXCEPTION_POINTERS_SIZE: u64 = 0x10;
+    const TSC_START: u64 = 0x0000_0001_0000_0000;
+    const TSC_STEP: u64 = 0x40;
 
     const SEH_CONTINUE_SENTINEL: u64 = 0x7FF0_0000;
     const DISPATCHER_HANDLER_MARKER: u64 = 0x7FF1_0000;
@@ -158,6 +309,17 @@ impl Cpu {
                     }
                 }
             }
+            if self.seh_dispatch && ip == Self::VEH_CONTINUE_SENTINEL {
+                match self.veh_continue_from_sentinel() {
+                    Some(()) => continue,
+                    None => {
+                        break ExitReason::GuestFault(
+                            "veh: every vectored handler continued the search and no frame handler took the exception"
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
             if !self.mem.is_mapped(ip) {
                 break ExitReason::JumpedOutOfRange { from: ip, to: ip };
             }
@@ -186,7 +348,9 @@ impl Cpu {
                 Ok(Some(reason)) => break reason,
                 Ok(None) => {}
                 Err(e) => {
-                    if self.seh_dispatch && self.dispatch_seh(ip, Self::STATUS_ACCESS_VIOLATION) {
+                    if self.seh_dispatch
+                        && self.dispatch_exception(ip, Self::STATUS_ACCESS_VIOLATION)
+                    {
                         continue;
                     }
                     break ExitReason::GuestFault(e.to_string());
@@ -211,6 +375,112 @@ impl Cpu {
             }
         }
         Ok(result)
+    }
+
+    fn dispatch_exception(&mut self, resume_ip: u64, exception_code: u32) -> bool {
+        if self.try_vectored(resume_ip, exception_code, 0) {
+            return true;
+        }
+        self.dispatch_seh(resume_ip, exception_code)
+    }
+
+    fn try_vectored(&mut self, resume_ip: u64, exception_code: u32, first_handler: usize) -> bool {
+        if self.mode != CpuMode::Bits32 || first_handler >= self.vectored_handlers.len() {
+            return false;
+        }
+        if self.pending_vectored.len() >= Self::VEH_MAX_DEPTH {
+            crate::debug::dbg_line(|| {
+                format!(
+                    "veh: nesting depth {} reached, exception 0x{exception_code:08x} at 0x{resume_ip:08x} falls through to frame handlers",
+                    Self::VEH_MAX_DEPTH
+                )
+            });
+            return false;
+        }
+        let handler: u64 = self.vectored_handlers[first_handler];
+        if !self.mem.is_mapped(handler) {
+            return false;
+        }
+        let fault_esp: u64 = self.regs.get(Reg::Rsp) & 0xFFFF_FFFF;
+        let ctx: u64 = (fault_esp.wrapping_sub(Self::CONTEXT_SIZE + 0x40)) & !0xFu64;
+        let exc_rec: u64 = (ctx.wrapping_sub(Self::EXCEPTION_RECORD_SIZE)) & !0xFu64;
+        let pointers: u64 = (exc_rec.wrapping_sub(Self::EXCEPTION_POINTERS_SIZE)) & !0xFu64;
+        if self
+            .write_context_record(ctx, resume_ip, fault_esp)
+            .is_err()
+            || self
+                .write_exception_record(exc_rec, exception_code, resume_ip)
+                .is_err()
+            || self.mem.write_u32(pointers, exc_rec as u32).is_err()
+            || self.mem.write_u32(pointers + 4, ctx as u32).is_err()
+        {
+            return false;
+        }
+        let dispatch: VehDispatch = VehDispatch {
+            context: ctx,
+            pointers,
+            resume_ip,
+            exception_code,
+            next_handler: first_handler + 1,
+        };
+        if !self.enter_vectored_handler(handler, dispatch) {
+            return false;
+        }
+        let trap_text: String = format!("exception {exception_code:#010x}");
+        self.record_event(
+            RuntimeCheck::VectoredExceptionHandler,
+            resume_ip,
+            &trap_text,
+            format!("{trap_text} at {resume_ip:#x} delivered to vectored handler {handler:#x} before any frame handler"),
+        );
+        true
+    }
+
+    fn enter_vectored_handler(&mut self, handler: u64, dispatch: VehDispatch) -> bool {
+        let mut sp: u64 = (dispatch.pointers.wrapping_sub(Self::DISPATCH_FRAME_GAP)) & !0xFu64;
+        let push = |cpu: &mut Self, sp: &mut u64, v: u64| -> bool {
+            *sp = sp.wrapping_sub(4);
+            cpu.mem.write_u32(*sp, v as u32).is_ok()
+        };
+        if !push(self, &mut sp, dispatch.pointers)
+            || !push(self, &mut sp, Self::VEH_CONTINUE_SENTINEL)
+        {
+            return false;
+        }
+        self.pending_vectored.push(dispatch);
+        self.regs.set(Reg::Rsp, sp);
+        self.regs.rip = handler;
+        crate::debug::dbg_line(|| {
+            format!(
+                "veh: exception 0x{:08x} at 0x{:08x} -> vectored handler 0x{handler:08x}",
+                dispatch.exception_code, dispatch.resume_ip
+            )
+        });
+        true
+    }
+
+    fn veh_continue_from_sentinel(&mut self) -> Option<()> {
+        let dispatch: VehDispatch = self.pending_vectored.pop()?;
+        let disposition: u32 = self.regs.get(Reg::Rax) as u32;
+        if disposition == Self::EXCEPTION_CONTINUE_EXECUTION {
+            self.load_context_record(dispatch.context);
+            return Some(());
+        }
+        if dispatch.next_handler < self.vectored_handlers.len() {
+            let handler: u64 = self.vectored_handlers[dispatch.next_handler];
+            let next: VehDispatch = VehDispatch {
+                next_handler: dispatch.next_handler + 1,
+                ..dispatch
+            };
+            if self.mem.is_mapped(handler) && self.enter_vectored_handler(handler, next) {
+                return Some(());
+            }
+        }
+        self.load_context_record(dispatch.context);
+        if self.dispatch_seh(dispatch.resume_ip, dispatch.exception_code) {
+            return Some(());
+        }
+        None
     }
 
     fn dispatch_seh(&mut self, resume_ip: u64, exception_code: u32) -> bool {
@@ -426,7 +696,26 @@ impl Cpu {
             Some(ip) => ip,
             None => return false,
         };
-        self.dispatch_seh(resume_ip, Self::STATUS_BREAKPOINT)
+        let trap: Option<(RuntimeCheck, &'static str)> = match insn.code() {
+            Code::Int_imm8 if insn.immediate8() == 0x2D => {
+                Some((RuntimeCheck::Int2dTrap, "int 2dh"))
+            }
+            Code::Int1 => Some((RuntimeCheck::IcebpTrap, "icebp")),
+            _ => None,
+        };
+        let handled: bool = self.dispatch_exception(resume_ip, Self::STATUS_BREAKPOINT);
+        if handled && let Some((check, text)) = trap {
+            self.record_event(
+                check,
+                insn.ip(),
+                text,
+                format!(
+                    "{text} at {:#x} raised STATUS_BREAKPOINT to the registered handler",
+                    insn.ip()
+                ),
+            );
+        }
+        handled
     }
 
     fn software_exception_resume(insn: &Instruction) -> Option<u64> {
@@ -453,6 +742,9 @@ impl Cpu {
         host: &mut H,
     ) -> Result<Option<ExitReason>> {
         let code: Code = insn.code();
+        if !self.read_watches.is_empty() {
+            self.observe_watched_read(insn);
+        }
         match insn.flow_control() {
             FlowControl::Next => {}
             FlowControl::UnconditionalBranch => {
@@ -497,6 +789,7 @@ impl Cpu {
                     let ret: u64 = self.pop()?;
                     self.host_calls_dispatched = self.host_calls_dispatched.saturating_add(1);
                     let cont: bool = host.dispatch(target, &mut self.regs, &mut self.mem)?;
+                    self.absorb_vectored_registrations(host);
                     if !cont {
                         return Ok(Some(ExitReason::HostHalt(format!(
                             "host refused call to 0x{target:016x}"
@@ -546,6 +839,7 @@ impl Cpu {
                     let ret: u64 = self.pop()?;
                     self.host_calls_dispatched = self.host_calls_dispatched.saturating_add(1);
                     let cont: bool = host.dispatch(target, &mut self.regs, &mut self.mem)?;
+                    self.absorb_vectored_registrations(host);
                     if !cont {
                         return Ok(Some(ExitReason::HostHalt(format!(
                             "host refused indirect call to 0x{target:016x}"
@@ -568,6 +862,9 @@ impl Cpu {
             }
         }
 
+        if self.try_env_op(insn) {
+            return Ok(None);
+        }
         if let Some(truncated) = self.try_string_op(insn)? {
             if truncated {
                 return Ok(Some(ExitReason::RepLimit(Self::REP_ITER_CAP)));
@@ -584,6 +881,77 @@ impl Cpu {
             ip: insn.ip(),
             mnemonic: format!("{code:?}"),
         }))
+    }
+
+    fn try_env_op(&mut self, insn: &Instruction) -> bool {
+        use iced_x86::Mnemonic as M;
+        match insn.mnemonic() {
+            M::Rdtsc | M::Rdtscp => {
+                let value: u64 = self.tsc;
+                self.tsc = self.tsc.wrapping_add(Self::TSC_STEP);
+                self.regs.write_sized(Reg::Rax, value & 0xFFFF_FFFF, 32);
+                self.regs.write_sized(Reg::Rdx, value >> 32, 32);
+                let text: &str = if insn.mnemonic() == M::Rdtscp {
+                    self.regs.write_sized(Reg::Rcx, 0, 32);
+                    "rdtscp"
+                } else {
+                    "rdtsc"
+                };
+                self.record_event(
+                    RuntimeCheck::RdtscDelta,
+                    insn.ip(),
+                    text,
+                    format!(
+                        "{text} served the pinned monotonic counter {value:#x} (+{:#x} per read)",
+                        Self::TSC_STEP
+                    ),
+                );
+                true
+            }
+            M::Cpuid => {
+                let leaf: u32 = self.regs.read_sized(Reg::Rax, 32) as u32;
+                let subleaf: u32 = self.regs.read_sized(Reg::Rcx, 32) as u32;
+                let [a, b, c, d]: [u32; 4] = Self::cpuid_table(leaf, subleaf);
+                self.regs.write_sized(Reg::Rax, u64::from(a), 32);
+                self.regs.write_sized(Reg::Rbx, u64::from(b), 32);
+                self.regs.write_sized(Reg::Rcx, u64::from(c), 32);
+                self.regs.write_sized(Reg::Rdx, u64::from(d), 32);
+                match leaf {
+                    1 => self.record_event(
+                        RuntimeCheck::CpuidHypervisorBit,
+                        insn.ip(),
+                        "cpuid",
+                        "cpuid leaf 1 answered with ECX bit 31 (hypervisor present) clear"
+                            .to_owned(),
+                    ),
+                    0x4000_0000..=0x4000_00FF => self.record_event(
+                        RuntimeCheck::CpuidHypervisorLeaf,
+                        insn.ip(),
+                        "cpuid",
+                        format!("cpuid leaf {leaf:#x} answered with no hypervisor vendor"),
+                    ),
+                    _ => {}
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    const fn cpuid_table(leaf: u32, subleaf: u32) -> [u32; 4] {
+        match leaf {
+            0x0 => [0x0000_000D, 0x756E_6547, 0x6C65_746E, 0x4965_6E69],
+            0x1 => [0x0009_06EA, 0x0010_0800, 0x7FFA_FBBF, 0xBFEB_FBFF],
+            0x7 if subleaf == 0 => [0, 0x029C_67AF, 0, 0],
+            0x4000_0000..=0x4000_00FF => [0, 0, 0, 0],
+            0x8000_0000 => [0x8000_0008, 0, 0, 0],
+            0x8000_0001 => [0, 0, 0x0000_0121, 0x2C10_0800],
+            0x8000_0002 => [0x7273_6964, 0x2065_626F, 0x6E6E_6970, 0x6320_6465],
+            0x8000_0003 => [0x2075_7063, 0x6C65_646F, 0x2020_2020, 0x2020_2020],
+            0x8000_0004 => [0x2020_2020, 0x2020_2020, 0x2020_2020, 0x0020_2020],
+            0x8000_0008 => [0x0000_3027, 0, 0, 0],
+            _ => [0, 0, 0, 0],
+        }
     }
 
     fn branch_target(&self, insn: &Instruction) -> Result<u64> {
@@ -2742,6 +3110,254 @@ mod tests {
             "the only registered handler is unmapped, so the trap has nowhere to go and must \
              surface at the trap address instead of resuming the instruction after it, got {exit:?}",
         );
+    }
+
+    fn run_flat(prog: &[u8], steps: u64) -> (Cpu, ExitReason) {
+        let mut cpu: Cpu = build_cpu_with(prog, 0x4000);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, steps).unwrap();
+        (cpu, exit)
+    }
+
+    #[test]
+    fn rdtsc_is_pinned_and_monotonic_and_reported_once_per_site() {
+        let prog: [u8; 10] = [0x0F, 0x31, 0x89, 0xC3, 0x0F, 0x31, 0x29, 0xD8, 0xEB, 0xFE];
+        let (cpu, exit): (Cpu, ExitReason) = run_flat(&prog, 50);
+        assert!(matches!(exit, ExitReason::StepCap(_)), "{exit:?}");
+        assert_eq!(
+            cpu.regs.get(Reg::Rax),
+            Cpu::TSC_STEP,
+            "second read minus first"
+        );
+        assert_eq!(
+            cpu.regs.get(Reg::Rdx),
+            (Cpu::TSC_START + Cpu::TSC_STEP) >> 32
+        );
+        let events: &[NeutralizedCheck] = cpu.neutralized();
+        assert_eq!(events.len(), 2, "two distinct rdtsc sites: {events:?}");
+        assert!(events.iter().all(|e| e.check == RuntimeCheck::RdtscDelta));
+        assert_eq!(events[0].anchor.address, 0x4000);
+        assert_eq!(events[1].anchor.address, 0x4004);
+    }
+
+    #[test]
+    fn cpuid_leaf_one_reports_no_hypervisor_and_leaf_zero_names_a_real_vendor() {
+        let prog: [u8; 20] = [
+            0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA2, 0x89, 0xCE, 0x31, 0xC0, 0x0F, 0xA2, 0x89,
+            0xDF, 0x89, 0xD5, 0xEB, 0xFE, 0x90,
+        ];
+        let (cpu, exit): (Cpu, ExitReason) = run_flat(&prog, 50);
+        assert!(matches!(exit, ExitReason::StepCap(_)), "{exit:?}");
+        let leaf1_ecx: u64 = cpu.regs.get(Reg::Rsi);
+        assert_eq!(leaf1_ecx & (1 << 31), 0, "hypervisor-present bit clear");
+        assert_eq!(
+            cpu.regs.get(Reg::Rdi),
+            0x756E_6547,
+            "vendor bytes 0..4 of GenuineIntel"
+        );
+        assert_eq!(
+            cpu.regs.get(Reg::Rbp),
+            0x4965_6E69,
+            "vendor bytes 4..8 of GenuineIntel"
+        );
+        let checks: Vec<RuntimeCheck> = cpu.neutralized().iter().map(|e| e.check).collect();
+        assert_eq!(checks, vec![RuntimeCheck::CpuidHypervisorBit]);
+    }
+
+    #[test]
+    fn cpuid_hypervisor_leaf_answers_zero_and_is_reported() {
+        let prog: [u8; 9] = [0xB8, 0x00, 0x00, 0x00, 0x40, 0x0F, 0xA2, 0xEB, 0xFE];
+        let (cpu, _): (Cpu, ExitReason) = run_flat(&prog, 20);
+        assert_eq!(cpu.regs.get(Reg::Rax), 0);
+        assert_eq!(cpu.regs.get(Reg::Rbx), 0);
+        assert_eq!(cpu.regs.get(Reg::Rcx), 0);
+        assert_eq!(cpu.regs.get(Reg::Rdx), 0);
+        assert_eq!(
+            cpu.neutralized()[0].check,
+            RuntimeCheck::CpuidHypervisorLeaf
+        );
+    }
+
+    #[test]
+    fn a_cpuid_loop_is_bounded_by_the_step_cap_and_the_event_cap() {
+        let prog: [u8; 7] = [0x31, 0xC0, 0x40, 0x0F, 0xA2, 0xEB, 0xF9];
+        let (cpu, exit): (Cpu, ExitReason) = run_flat(&prog, 100_000);
+        assert!(matches!(exit, ExitReason::StepCap(100_000)), "{exit:?}");
+        assert!(cpu.neutralized().len() <= Cpu::MAX_EVENTS);
+    }
+
+    #[test]
+    fn a_watched_read_is_reported_once_per_site_and_stores_and_lea_are_not() {
+        let prog: [u8; 18] = [
+            0xA0, 0x02, 0x30, 0x00, 0x00, 0xA2, 0x02, 0x30, 0x00, 0x00, 0x8D, 0x05, 0x02, 0x30,
+            0x00, 0x00, 0xEB, 0xEE,
+        ];
+        let mut cpu: Cpu = build_cpu_with(&prog, 0x4000);
+        cpu.mem.map(0x3000, 0x1000, Perm::RW).unwrap();
+        assert!(cpu.watch_read(ReadWatch {
+            start: 0x3002,
+            len: 1,
+            check: RuntimeCheck::PebBeingDebugged,
+            field: "PEB.BeingDebugged",
+        }));
+        let exit: ExitReason = cpu.run(&mut NoopHost, 60).unwrap();
+        assert!(matches!(exit, ExitReason::StepCap(60)), "{exit:?}");
+        let events: &[NeutralizedCheck] = cpu.neutralized();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].check, RuntimeCheck::PebBeingDebugged);
+        assert_eq!(events[0].anchor.address, 0x4000);
+        assert!(events[0].anchor.pattern.contains("PEB.BeingDebugged"));
+    }
+
+    #[test]
+    fn read_watches_are_capped() {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        for i in 0..Cpu::MAX_READ_WATCHES as u64 {
+            assert!(cpu.watch_read(ReadWatch {
+                start: 0x3000 + i * 4,
+                len: 4,
+                check: RuntimeCheck::HeapFlags,
+                field: "ProcessHeap.Flags",
+            }));
+        }
+        assert!(!cpu.watch_read(ReadWatch {
+            start: 0x5000,
+            len: 4,
+            check: RuntimeCheck::HeapFlags,
+            field: "ProcessHeap.Flags",
+        }));
+    }
+
+    #[test]
+    fn events_from_more_distinct_sites_than_the_cap_are_counted_not_stored() {
+        let sites: usize = Cpu::MAX_EVENTS + 44;
+        let mut prog: Vec<u8> = Vec::with_capacity(sites * 2 + 2);
+        for _ in 0..sites {
+            prog.extend_from_slice(&[0x0F, 0x31]);
+        }
+        prog.extend_from_slice(&[0xEB, 0xFE]);
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.mem.map(0x4000, 0x1000, Perm::RWX).unwrap();
+        cpu.mem.write_unchecked(0x4000, &prog);
+        cpu.regs.rip = 0x4000;
+        let exit: ExitReason = cpu.run(&mut NoopHost, 10_000).unwrap();
+        assert!(matches!(exit, ExitReason::StepCap(10_000)), "{exit:?}");
+        assert_eq!(cpu.neutralized().len(), Cpu::MAX_EVENTS);
+        assert_eq!(cpu.neutralized_dropped(), 44);
+        assert!(cpu.events_seen.len() <= Cpu::MAX_EVENTS);
+    }
+
+    fn cpu_with_vectored_handler(handler_code: &[u8]) -> Cpu {
+        const TEB: u64 = 0x7EFD_E000;
+        const HANDLER: u64 = 0x0050_0000;
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        cpu.enable_seh_dispatch();
+        cpu.mem.map(0x4000, 0x1000, Perm::RWX).unwrap();
+        cpu.mem.map(0x2_0000, 0x4000, Perm::RW).unwrap();
+        cpu.mem.map(TEB, 0x2000, Perm::RW).unwrap();
+        cpu.mem.map(HANDLER, 0x1000, Perm::RWX).unwrap();
+        cpu.set_fs_base(TEB);
+        cpu.mem.write_u32(TEB, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_unchecked(HANDLER, handler_code);
+        assert!(cpu.add_vectored_handler(true, HANDLER));
+        cpu.regs.set(Reg::Rsp, 0x2_3F00);
+        cpu.regs.rip = 0x4000;
+        cpu
+    }
+
+    #[test]
+    fn int_2d_reaches_the_vectored_handler_which_rewrites_the_context_and_continues() {
+        let handler: [u8; 23] = [
+            0x8B, 0x44, 0x24, 0x04, 0x8B, 0x40, 0x04, 0xC7, 0x80, 0xA4, 0x00, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xC3,
+        ];
+        let mut cpu: Cpu = cpu_with_vectored_handler(&handler);
+        cpu.mem
+            .write_unchecked(0x4000, &[0x31, 0xDB, 0xCD, 0x2D, 0x90, 0xEB, 0xFE]);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 200).unwrap();
+        assert!(matches!(exit, ExitReason::StepCap(_)), "{exit:?}");
+        assert_eq!(
+            cpu.regs.rip, 0x4005,
+            "spins after the nop that follows int 2d"
+        );
+        assert_eq!(
+            cpu.regs.get(Reg::Rbx),
+            1,
+            "the handler wrote CONTEXT.Ebx and the cpu resumed from that context"
+        );
+        let checks: BTreeSet<RuntimeCheck> = cpu.neutralized().iter().map(|e| e.check).collect();
+        assert_eq!(
+            checks,
+            BTreeSet::from([
+                RuntimeCheck::Int2dTrap,
+                RuntimeCheck::VectoredExceptionHandler
+            ])
+        );
+        assert!(cpu.pending_vectored.is_empty());
+    }
+
+    #[test]
+    fn a_vectored_handler_that_continues_the_search_falls_through_to_the_seh_frame() {
+        const SEH_HANDLER: u64 = 0x0060_0000;
+        let handler: [u8; 3] = [0x31, 0xC0, 0xC3];
+        let mut cpu: Cpu = cpu_with_vectored_handler(&handler);
+        cpu.mem.map(SEH_HANDLER, 0x1000, Perm::RWX).unwrap();
+        cpu.mem.write_unchecked(SEH_HANDLER, &[0xEB, 0xFE]);
+        let frame: u64 = 0x2_2000;
+        cpu.mem.write_u32(frame, 0xFFFF_FFFF).unwrap();
+        cpu.mem.write_u32(frame + 4, SEH_HANDLER as u32).unwrap();
+        cpu.mem.write_u32(0x7EFD_E000, frame as u32).unwrap();
+        cpu.mem.write_unchecked(0x4000, &[0xF1, 0x90, 0xEB, 0xFE]);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 200).unwrap();
+        assert!(matches!(exit, ExitReason::StepCap(_)), "{exit:?}");
+        assert_eq!(cpu.regs.rip, SEH_HANDLER);
+        assert!(
+            cpu.neutralized()
+                .iter()
+                .any(|e| e.check == RuntimeCheck::IcebpTrap)
+        );
+    }
+
+    #[test]
+    fn a_vectored_handler_with_no_frame_handler_ends_the_run_as_a_guest_fault() {
+        let handler: [u8; 3] = [0x31, 0xC0, 0xC3];
+        let mut cpu: Cpu = cpu_with_vectored_handler(&handler);
+        cpu.mem
+            .write_unchecked(0x4000, &[0xCD, 0x2D, 0x90, 0xEB, 0xFE]);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 200).unwrap();
+        assert!(
+            matches!(exit, ExitReason::GuestFault(ref why) if why.contains("veh")),
+            "{exit:?}"
+        );
+    }
+
+    #[test]
+    fn vectored_handler_registration_is_capped() {
+        let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+        for i in 0..Cpu::VEH_MAX_HANDLERS {
+            assert!(cpu.add_vectored_handler(false, 0x1000 + i as u64));
+        }
+        assert!(!cpu.add_vectored_handler(false, 0x9000));
+        assert!(!cpu.add_vectored_handler(true, 0));
+        assert_eq!(cpu.vectored_handlers().len(), Cpu::VEH_MAX_HANDLERS);
+    }
+
+    #[test]
+    fn a_vectored_handler_that_faults_itself_is_bounded_by_the_nesting_depth() {
+        let handler: [u8; 2] = [0xCD, 0x2D];
+        let mut cpu: Cpu = cpu_with_vectored_handler(&handler);
+        cpu.mem
+            .write_unchecked(0x4000, &[0xCD, 0x2D, 0x90, 0xEB, 0xFE]);
+        let mut host: NoopHost = NoopHost;
+        let exit: ExitReason = cpu.run(&mut host, 10_000).unwrap();
+        assert!(
+            !matches!(exit, ExitReason::StepCap(_)),
+            "a re-faulting handler must stop at the depth cap, not spin: {exit:?}"
+        );
+        assert!(cpu.pending_vectored.len() <= Cpu::VEH_MAX_DEPTH);
     }
 
     #[test]

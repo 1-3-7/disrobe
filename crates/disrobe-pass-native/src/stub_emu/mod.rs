@@ -37,12 +37,14 @@
 pub mod cpu;
 pub mod mem;
 pub mod regs;
+pub mod win_api;
 pub mod win_env;
 
-pub use cpu::{Cpu, ExitReason, HostCall};
+pub use cpu::{Cpu, ExitReason, HostCall, ReadWatch};
 pub use mem::{Memory, PAGE_BITS, PAGE_SIZE, Perm};
 pub use regs::{CpuMode, Reg, Regs};
+pub use win_api::{ApiOutcome, ApiSandbox, MAX_NEUTRALIZED_EVENTS, MAX_VEH_HANDLERS};
 pub use win_env::{
-    SyntheticWindows, install_synthetic_windows, page_protect_from_perm, perm_from_page_protect,
-    perm_from_section_characteristics,
+    SyntheticWindows, install_synthetic_windows, install_synthetic_windows_for_image,
+    page_protect_from_perm, perm_from_page_protect, perm_from_section_characteristics,
 };

@@ -1,5 +1,7 @@
 mod aarch64_const_division_oracle;
 mod abi_inference_oracle;
+#[cfg(windows)]
+mod anti_runtime_oracle;
 mod api_hash_oracle;
 mod copyprop_oracle;
 mod ebpf_oracle;
