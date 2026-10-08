@@ -63,6 +63,9 @@ mod erofs_real_images;
 #[path = "../firmware_vendor.rs"]
 mod firmware_vendor;
 
+#[path = "../forge.rs"]
+mod forge;
+
 #[path = "../image_roundtrip.rs"]
 mod image_roundtrip;
 
@@ -74,6 +77,9 @@ mod minidump_real_pe;
 
 #[path = "../native_image.rs"]
 mod native_image;
+
+#[path = "../oodle.rs"]
+mod oodle;
 
 #[path = "../negative_corpus.rs"]
 mod negative_corpus;
@@ -137,6 +143,9 @@ mod real_ext4;
 
 #[path = "../real_fat.rs"]
 mod real_fat;
+
+#[path = "../real_forge_local.rs"]
+mod real_forge_local;
 
 #[path = "../real_innosetup.rs"]
 mod real_innosetup;

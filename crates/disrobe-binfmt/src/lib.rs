@@ -3,6 +3,9 @@
 #![allow(clippy::redundant_pub_crate)]
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[cfg(test)]
+extern crate self as disrobe_binfmt;
+
 pub mod asar;
 pub mod carve;
 pub mod chain_detector;

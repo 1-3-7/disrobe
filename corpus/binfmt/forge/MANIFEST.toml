@@ -1,0 +1,72 @@
+schema_version = 1
+crate = "disrobe-binfmt"
+generated = "2026-10-08"
+toolchain = "cargo run -p disrobe-binfmt --example gen_forge_fixture (the test-tree Forge writer tests/common/forge_writer.rs and Oodle encoder tests/common/oodle_encoder/, over authored content from tests/common/forge_specs.rs)"
+purpose = "Authored Scimitar/Anvil Forge archives and depgraphbin sidecars for every header version and codec the reader supports. No game bytes: every payload is generated text, records or zero runs; names, uids and type ids are fixture values. Oodle chunks come from disrobe's own test-tree encoder."
+
+[[fixture]]
+path = "v34_min.forge"
+size_bytes = 20480
+sha256 = "c99b85aad22fc5d519f6f493dd43047d82101a2075fb0249b63332add2df54e1"
+role = "version 34 header with scrambled FAT fields, descriptor and fast-load TOC entries, two file containers (one and two flat-archive records, the second with a flag-2 name the reader withholds), AA37 blocks with pack method 15 and stored chunks only, two free slots"
+
+[[fixture]]
+path = "v34_zstd.forge"
+size_bytes = 20480
+sha256 = "9020289ed32b5d0b35a95d4d088c3e052261798e55837e9a8d7189013b04d154"
+role = "version 34, AA34 blocks with pack method 3: a 10,000-byte payload across 4 KiB chunks and a 20,000-byte zero run that compresses to a few bytes per chunk"
+
+[[fixture]]
+path = "v34_riff.forge"
+size_bytes = 24576
+sha256 = "c0cb676de11b831f468d3d351068bd072c18be68ffc3b2a15cbbce3c22080ae6"
+role = "version 34 with two raw RIFF (Wwise) entries beside a file container"
+
+[[fixture]]
+path = "v34_multitable.forge"
+size_bytes = 32768
+sha256 = "6afbe3f8aa83703e00c6ae2dfcd17c2ed8b2271c221d77eb8802adc3be5af83d"
+role = "version 34 with three chained table descriptors (next_pos_fat chain ending at -1) over six file containers and one free slot"
+
+[[fixture]]
+path = "v33_min.forge"
+size_bytes = 16384
+sha256 = "e456b41de7cc6ca933cda5d3aa920f4c26a918b9b8fe0eb854a89cfff7c897a6"
+role = "version 33 header (one reserved word fewer than 34), clear FAT offsets and sizes, uid field reported as opaque, AA37 stored blocks"
+
+[[fixture]]
+path = "v30_named.forge"
+size_bytes = 20480
+sha256 = "db8240398b30a3ae6da803a39ee05fd259d71b5571108dc94f3361b70cf4d7bd"
+role = "version 30 with a populated 0x140-byte meta table (XOR-encoded names, timestamps, type ids), AA34 blocks with pack method 3, named flat-archive records and a named fast-load TOC"
+
+[[fixture]]
+path = "v34_leviathan.forge"
+size_bytes = 28672
+sha256 = "37deeaccd07265b57c186ec0a9cd8dc7f88794a1027e78504a43ed7befc0ef3d"
+role = "version 34, AA37 blocks with pack method 15 whose chunks are Oodle Leviathan streams              from the test-tree encoder (16 KiB chunks), a stored chunk for the small sub-file              index, descriptor and fast-load TOC entries"
+
+[[fixture]]
+path = "v30_kraken.forge"
+size_bytes = 28672
+sha256 = "24139bbce0f5cda16f2b47c8437a3fd33e7daf64a6f74fae95e3eac0d51b127c"
+role = "version 30 with a named meta table, AA34 blocks with pack method 13 whose chunks are              Oodle Kraken streams from the test-tree encoder (32 KiB chunks)"
+
+[[fixture]]
+path = "min.depgraphbin"
+size_bytes = 992
+sha256 = "53c467b63a50e6a1cc557784f816508de10de7d76291c04494533ea996db8f4c"
+role = "one bare AA37 block, pack method 15, stored chunk, 40 dependency links"
+
+[[fixture]]
+path = "zstd.depgraphbin"
+size_bytes = 515
+sha256 = "d6ea0b84ffee1dc0e05129731165ddf6df3b9b8aa3b4f4639a4ea3287048b07b"
+role = "one bare AA34 block, pack method 3, 256-byte zstd chunks, 40 links"
+
+[[fixture]]
+path = "leviathan.depgraphbin"
+size_bytes = 296
+sha256 = "1dc68d34799681525a61c62619abade737f6f5c6e79552120d45442a32052451"
+role = "one bare AA37 block, pack method 15, 40 links in one Oodle Leviathan chunk"
+

@@ -26,6 +26,11 @@ pub mod ext4;
 pub mod fat;
 pub mod firmware;
 pub mod flatpak;
+pub mod forge;
+pub mod forge_block;
+pub mod forge_depgraph;
+pub mod forge_flat;
+pub mod forge_types;
 pub mod hfsplus;
 pub mod innosetup;
 pub mod installshield;
@@ -46,6 +51,7 @@ pub mod nsis;
 pub mod nsis_bzip2;
 pub mod ntfs;
 pub mod oci;
+pub mod oodle;
 pub mod ostree;
 pub mod par2;
 pub mod partclone;
@@ -191,6 +197,22 @@ pub use firmware::{
 pub use flatpak::{
     FlatpakBundleInfo, FlatpakExtraction, FlatpakSource, detect_flatpak_bundle,
     detect_flatpak_repo, extract_flatpak_bundle, extract_flatpak_repo, flatpak_external_hint,
+};
+pub use forge::{
+    DescriptorField, DescriptorValue, FastLoadToc, ForgeArchive, ForgeEntry, ForgeEntryKind,
+    ForgeHeader, ForgeMeta, ForgeSource, ForgeTable, detect_forge, forge_entry_bytes,
+    parse_descriptor as parse_forge_descriptor, parse_fast_load_toc as parse_forge_fast_load_toc,
+    parse_forge, parse_forge_from, read_entry as read_forge_entry,
+};
+pub use forge_block::{
+    BlockDecoder as ForgeBlockDecoder, BlockMagic, ForgeBlock, ForgeChunk, PackMethod,
+    detect_block as detect_scimitar_block, parse_block as parse_forge_block,
+};
+pub use forge_depgraph::{DepGraph, DepGraphLink, parse_depgraph};
+pub use forge_flat::{
+    ForgeFlatRecord, ForgeSubFile, ForgeSubFileIndex,
+    parse_flat_archive as parse_forge_flat_archive,
+    parse_subfile_index as parse_forge_subfile_index,
 };
 pub use hfsplus::{
     HfsFile, HfsFolder, HfsVolume, detect_hfsplus, file_data as hfsplus_file_data,

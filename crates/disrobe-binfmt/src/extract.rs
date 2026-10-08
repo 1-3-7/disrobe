@@ -232,6 +232,8 @@ pub fn extract_to_with_quota(
         ContainerKind::BunStandalone => extract_bun(bytes, out_dir, quota),
         ContainerKind::DotnetSingleFile => extract_dotnet_single_file(bytes, out_dir, quota),
         ContainerKind::UnityFs => extract_unityfs(bytes, out_dir, quota),
+        ContainerKind::Forge => extract_forge(bytes, out_dir, quota),
+        ContainerKind::ScimitarBlock => extract_scimitar_block(bytes, out_dir, quota),
         ContainerKind::Minidump => extract_minidump(bytes, out_dir, quota),
         ContainerKind::FwDlinkShrs
         | ContainerKind::FwDlinkEncrptedImg
@@ -5957,6 +5959,551 @@ fn extract_unityfs(
     })
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ForgeLayoutBlock {
+    magic: &'static str,
+    pack_method: &'static str,
+    method_code: u16,
+    version: u16,
+    chunks: usize,
+    compressed_chunks: usize,
+    unpacked: u64,
+    packed: u64,
+}
+
+impl ForgeLayoutBlock {
+    fn of(block: &crate::containers::forge_block::ForgeBlock) -> Self {
+        Self {
+            magic: block.magic.label(),
+            pack_method: block.pack_method.label(),
+            method_code: block.pack_method.code(),
+            version: block.version,
+            chunks: block.chunks.len(),
+            compressed_chunks: block.compressed_chunks(),
+            unpacked: block.unpacked_total,
+            packed: block.packed_total,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ForgeLayoutEntry {
+    index: usize,
+    uid: String,
+    uid_opaque: bool,
+    kind: &'static str,
+    data_offset: u64,
+    size: u32,
+    page_aligned: bool,
+    name: Option<String>,
+    type_id: Option<String>,
+    type_name: Option<&'static str>,
+    blocks: Vec<ForgeLayoutBlock>,
+    subfiles: Option<crate::containers::forge_flat::ForgeSubFileIndex>,
+    records: usize,
+    record_names_withheld: usize,
+    files: Vec<String>,
+    extracted: bool,
+    refusal: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ForgeLayout<'a> {
+    header: &'a crate::containers::forge::ForgeHeader,
+    tables: &'a [crate::containers::forge::ForgeTable],
+    free_slots: usize,
+    directories: usize,
+    entries: Vec<ForgeLayoutEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ScimitarBlockLayout {
+    blocks: Vec<ForgeLayoutBlock>,
+    trailing_bytes: usize,
+    depgraph_links: Option<usize>,
+    subfiles: Option<crate::containers::forge_flat::ForgeSubFileIndex>,
+    records: Vec<crate::containers::forge_flat::ForgeFlatRecord>,
+    refusals: Vec<String>,
+}
+
+struct ForgeSink<'a> {
+    out_dir: &'a Path,
+    guard: QuotaGuard,
+    entries: Vec<ExtractedEntry>,
+    encoding: BTreeMap<String, EntryCompression>,
+    violations: Vec<String>,
+    materialized: BTreeSet<String>,
+}
+
+impl<'a> ForgeSink<'a> {
+    fn new(out_dir: &'a Path, quota: ExtractionQuota) -> Self {
+        let forge_quota: ExtractionQuota = ExtractionQuota {
+            max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
+            max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
+            ..quota
+        };
+        Self {
+            out_dir,
+            guard: QuotaGuard::new(forge_quota),
+            entries: Vec::new(),
+            encoding: BTreeMap::new(),
+            violations: Vec::new(),
+            materialized: BTreeSet::new(),
+        }
+    }
+
+    fn finish(
+        mut self,
+        kind: ContainerKind,
+        tool_filename: &str,
+        json: &str,
+    ) -> Result<ExtractionResult> {
+        write_summary_entry(
+            self.out_dir,
+            tool_filename,
+            json,
+            &mut self.entries,
+            &mut self.encoding,
+        )?;
+        Ok(ExtractionResult {
+            kind,
+            entries: self.entries,
+            encoding: self.encoding,
+            integrity_violations: self.violations,
+            quota: QuotaSummary::from(self.guard.report()),
+        })
+    }
+}
+
+fn forge_write_member(
+    sink: &mut ForgeSink<'_>,
+    raw_name: &str,
+    data: &[u8],
+    packed: u64,
+    compression: EntryCompression,
+) -> Result<Option<String>> {
+    let safe_name: String = match sanitize_entry_path(raw_name) {
+        Ok(name) => name,
+        Err(e) => {
+            sink.violations.push(format!("forge-slip: {e}"));
+            return Ok(None);
+        }
+    };
+    let key: String = match validate_materialized_path(&sink.materialized, &safe_name) {
+        Ok(key) => key,
+        Err(reason) => {
+            sink.violations
+                .push(format!("forge-path `{safe_name}`: {reason}"));
+            return Ok(None);
+        }
+    };
+    let size: u64 = data.len() as u64;
+    if let Err(e) = sink.guard.admit_entry(&safe_name, size, packed.max(1)) {
+        sink.violations
+            .push(format!("forge-quota `{safe_name}`: {e}"));
+        return Ok(None);
+    }
+    let disk_path: PathBuf = prepare_entry_path(sink.out_dir, &safe_name)?;
+    std::fs::write(&disk_path, data)?;
+    sink.materialized.insert(key);
+    sink.encoding.insert(safe_name.clone(), compression);
+    sink.entries.push(ExtractedEntry {
+        origin: ExtractedEntryOrigin::ArchiveMember,
+        name: safe_name.clone(),
+        disk_path: Some(disk_path),
+        uncompressed_size: size,
+        compressed_size: packed,
+        compression,
+        is_executable: false,
+    });
+    Ok(Some(safe_name))
+}
+
+const fn forge_compression(method: crate::containers::forge_block::PackMethod) -> EntryCompression {
+    match method {
+        crate::containers::forge_block::PackMethod::Zstd => EntryCompression::Zstd,
+        crate::containers::forge_block::PackMethod::Streaming => EntryCompression::Stored,
+        crate::containers::forge_block::PackMethod::OodleKraken
+        | crate::containers::forge_block::PackMethod::OodleLeviathan
+        | crate::containers::forge_block::PackMethod::Unknown(_) => EntryCompression::Other,
+    }
+}
+
+fn forge_type_fields(type_id: Option<u32>) -> (Option<String>, Option<&'static str>) {
+    type_id.map_or((None, None), |id: u32| {
+        (
+            Some(format!("0x{id:08X}")),
+            crate::containers::forge_types::type_name(id),
+        )
+    })
+}
+
+fn forge_file_entry(
+    sink: &mut ForgeSink<'_>,
+    decoder: &mut crate::containers::forge_block::BlockDecoder,
+    container: &[u8],
+    entry: &crate::containers::forge::ForgeEntry,
+    row: &mut ForgeLayoutEntry,
+) -> Result<()> {
+    use crate::containers::forge_block::{ForgeBlock, parse_block};
+    use crate::containers::forge_flat::{
+        ForgeFlatRecord, ForgeSubFileIndex, parse_flat_archive, parse_subfile_index,
+    };
+
+    let uid_hex: String = row.uid.clone();
+    let cap: u64 = sink.guard.max_per_entry_uncompressed();
+    let outcome: Result<(ForgeBlock, ForgeBlock, Vec<u8>, Vec<u8>)> = (|| {
+        let block_a: ForgeBlock = parse_block(container)?;
+        let rest: &[u8] = container.get(block_a.total_len..).unwrap_or(&[]);
+        let block_b: ForgeBlock = parse_block(rest)?;
+        if block_a.total_len + block_b.total_len != container.len() {
+            return Err(Error::ForgeMalformed(format!(
+                "entry `{uid_hex}` carries {} bytes after its two blocks",
+                container.len() - block_a.total_len - block_b.total_len
+            )));
+        }
+        let meta: Vec<u8> = decoder.decode(container, &block_a, &uid_hex, cap)?;
+        let payload: Vec<u8> = decoder.decode(rest, &block_b, &uid_hex, cap)?;
+        Ok((block_a, block_b, meta, payload))
+    })();
+    let (block_a, block_b, meta, payload): (ForgeBlock, ForgeBlock, Vec<u8>, Vec<u8>) =
+        match outcome {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                sink.violations
+                    .push(format!("forge-codec `{uid_hex}`: {e}"));
+                row.refusal = Some(e.to_string());
+                return Ok(());
+            }
+        };
+    row.blocks = vec![
+        ForgeLayoutBlock::of(&block_a),
+        ForgeLayoutBlock::of(&block_b),
+    ];
+    match parse_subfile_index(&meta) {
+        Ok(index) => row.subfiles = Some(index),
+        Err(e) => {
+            sink.violations
+                .push(format!("forge-subfiles `{uid_hex}`: {e}"));
+            row.refusal = Some(e.to_string());
+        }
+    }
+    let records: Vec<ForgeFlatRecord> = match parse_flat_archive(&payload, &uid_hex) {
+        Ok(records) => records,
+        Err(e) => {
+            sink.violations
+                .push(format!("forge-records `{uid_hex}`: {e}"));
+            row.refusal = Some(e.to_string());
+            Vec::new()
+        }
+    };
+    row.records = records.len();
+    row.record_names_withheld = records
+        .iter()
+        .filter(|record: &&ForgeFlatRecord| record.name_flags != 0 && record.name_length > 0)
+        .count();
+    let type_id: Option<u32> = records
+        .first()
+        .map(|record: &ForgeFlatRecord| record.file_type)
+        .or_else(|| entry.meta.as_ref().map(|meta| meta.file_type));
+    let (type_hex, type_name): (Option<String>, Option<&'static str>) = forge_type_fields(type_id);
+    row.type_id = type_hex;
+    row.type_name = type_name;
+    let type_label: String = type_id.map_or_else(
+        || "untyped".to_owned(),
+        crate::containers::forge_types::type_label,
+    );
+    let named_subfiles: Option<ForgeSubFileIndex> = row.subfiles.clone();
+    if named_subfiles.is_some() {
+        let meta_name: String = format!("{uid_hex}.meta.bin");
+        if let Some(written) = forge_write_member(
+            sink,
+            &meta_name,
+            &meta,
+            block_a.packed_total,
+            forge_compression(block_a.pack_method),
+        )? {
+            row.files.push(written);
+        }
+    }
+    let payload_name: String = entry
+        .meta
+        .as_ref()
+        .and_then(|meta: &crate::containers::forge::ForgeMeta| meta.name.clone())
+        .unwrap_or_else(|| format!("{uid_hex}.{type_label}.bin"));
+    let mut written_payload: Option<String> = forge_write_member(
+        sink,
+        &payload_name,
+        &payload,
+        block_b.packed_total,
+        forge_compression(block_b.pack_method),
+    )?;
+    if written_payload.is_none() && entry.meta.as_ref().is_some_and(|meta| meta.name.is_some()) {
+        written_payload = forge_write_member(
+            sink,
+            &format!("{uid_hex}.{type_label}.bin"),
+            &payload,
+            block_b.packed_total,
+            forge_compression(block_b.pack_method),
+        )?;
+    }
+    row.extracted = written_payload.is_some();
+    if let Some(written) = written_payload {
+        row.files.push(written);
+    }
+    for record in &records {
+        let record_name: String = record.name.clone().unwrap_or_else(|| {
+            format!(
+                "{:016x}.{}",
+                record.uid,
+                crate::containers::forge_types::type_label(record.file_type)
+            )
+        });
+        let Some(slice): Option<&[u8]> =
+            payload.get(record.payload_offset..record.payload_offset + record.payload_len)
+        else {
+            continue;
+        };
+        if let Some(written) = forge_write_member(
+            sink,
+            &format!("{uid_hex}/{record_name}"),
+            slice,
+            slice.len() as u64,
+            EntryCompression::Stored,
+        )? {
+            row.files.push(written);
+        }
+    }
+    Ok(())
+}
+
+fn extract_forge(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
+    use crate::containers::forge::{
+        ForgeArchive, ForgeEntry, ForgeEntryKind, forge_entry_bytes, parse_descriptor,
+        parse_fast_load_toc, parse_forge,
+    };
+
+    let archive: ForgeArchive = parse_forge(bytes)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut sink: ForgeSink<'_> = ForgeSink::new(out_dir, quota);
+    let mut decoder: crate::containers::forge_block::BlockDecoder =
+        crate::containers::forge_block::BlockDecoder::new();
+    let mut rows: Vec<ForgeLayoutEntry> = Vec::with_capacity(archive.entries.len());
+    for entry in &archive.entries {
+        let uid_hex: String = format!("{:016x}", entry.uid);
+        let (type_hex, type_name): (Option<String>, Option<&'static str>) =
+            forge_type_fields(entry.meta.as_ref().map(|meta| meta.file_type));
+        let mut row: ForgeLayoutEntry = ForgeLayoutEntry {
+            index: entry.index,
+            uid: uid_hex.clone(),
+            uid_opaque: entry.uid_opaque,
+            kind: entry.kind.label(),
+            data_offset: entry.data_offset,
+            size: entry.size,
+            page_aligned: entry.page_aligned,
+            name: entry
+                .meta
+                .as_ref()
+                .and_then(|meta: &crate::containers::forge::ForgeMeta| meta.name.clone()),
+            type_id: type_hex,
+            type_name,
+            blocks: Vec::new(),
+            subfiles: None,
+            records: 0,
+            record_names_withheld: 0,
+            files: Vec::new(),
+            extracted: false,
+            refusal: None,
+        };
+        let container: &[u8] = match forge_entry_bytes(bytes, entry) {
+            Ok(container) => container,
+            Err(e) => {
+                sink.violations
+                    .push(format!("forge-entry `{uid_hex}`: {e}"));
+                row.refusal = Some(e.to_string());
+                rows.push(row);
+                continue;
+            }
+        };
+        let written: Option<String> = match entry.kind {
+            ForgeEntryKind::Empty => None,
+            ForgeEntryKind::Descriptor => match parse_descriptor(container) {
+                Ok(fields) => {
+                    let json: String = serde_json::to_string_pretty(&fields)
+                        .unwrap_or_else(|_: serde_json::Error| String::new());
+                    forge_write_member(
+                        &mut sink,
+                        &format!("{uid_hex}.globalmeta.json"),
+                        json.as_bytes(),
+                        container.len() as u64,
+                        EntryCompression::Stored,
+                    )?
+                }
+                Err(e) => {
+                    sink.violations
+                        .push(format!("forge-descriptor `{uid_hex}`: {e}"));
+                    row.refusal = Some(e.to_string());
+                    None
+                }
+            },
+            ForgeEntryKind::FastLoadToc => match parse_fast_load_toc(container) {
+                Ok(toc) => {
+                    let json: String = serde_json::to_string_pretty(&toc)
+                        .unwrap_or_else(|_: serde_json::Error| String::new());
+                    forge_write_member(
+                        &mut sink,
+                        &format!("{uid_hex}.fastload-toc.json"),
+                        json.as_bytes(),
+                        container.len() as u64,
+                        EntryCompression::Stored,
+                    )?
+                }
+                Err(e) => {
+                    sink.violations.push(format!("forge-toc `{uid_hex}`: {e}"));
+                    row.refusal = Some(e.to_string());
+                    None
+                }
+            },
+            ForgeEntryKind::RawRiff => forge_write_member(
+                &mut sink,
+                &format!("{uid_hex}.wem"),
+                container,
+                container.len() as u64,
+                EntryCompression::Stored,
+            )?,
+            ForgeEntryKind::Unknown { .. } => forge_write_member(
+                &mut sink,
+                &format!("{uid_hex}.raw.bin"),
+                container,
+                container.len() as u64,
+                EntryCompression::Stored,
+            )?,
+            ForgeEntryKind::FileContainer { .. } => {
+                let entry_ref: &ForgeEntry = entry;
+                forge_file_entry(&mut sink, &mut decoder, container, entry_ref, &mut row)?;
+                rows.push(row);
+                continue;
+            }
+        };
+        row.extracted = written.is_some();
+        if let Some(name) = written {
+            row.files.push(name);
+        }
+        rows.push(row);
+    }
+    let layout: ForgeLayout<'_> = ForgeLayout {
+        header: &archive.header,
+        tables: &archive.tables,
+        free_slots: archive.free_slots,
+        directories: archive.directories,
+        entries: rows,
+    };
+    let json: String =
+        serde_json::to_string_pretty(&layout).unwrap_or_else(|_: serde_json::Error| String::new());
+    sink.finish(ContainerKind::Forge, ".disrobe-forge-layout.json", &json)
+}
+
+fn extract_scimitar_block(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
+    use crate::containers::forge_block::{BlockDecoder, ForgeBlock, parse_block};
+    use crate::containers::forge_depgraph::{looks_like_depgraph_payload, parse_depgraph_payload};
+    use crate::containers::forge_flat::{parse_flat_archive, parse_subfile_index};
+
+    let first: ForgeBlock = parse_block(bytes)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut sink: ForgeSink<'_> = ForgeSink::new(out_dir, quota);
+    let mut decoder: BlockDecoder = BlockDecoder::new();
+    let cap: u64 = sink.guard.max_per_entry_uncompressed();
+    let mut blocks: Vec<(ForgeBlock, usize)> = vec![(first, 0)];
+    let mut cursor: usize = blocks[0].0.total_len;
+    if cursor < bytes.len() {
+        match parse_block(&bytes[cursor..]) {
+            Ok(second) => {
+                cursor += second.total_len;
+                blocks.push((second, blocks[0].0.total_len));
+            }
+            Err(e) => sink
+                .violations
+                .push(format!("scimitar-block: second block: {e}")),
+        }
+    }
+    let trailing_bytes: usize = bytes.len() - cursor;
+    if trailing_bytes > 0 {
+        sink.violations.push(format!(
+            "scimitar-block: {trailing_bytes} bytes follow the parsed blocks"
+        ));
+    }
+    let mut layout: ScimitarBlockLayout = ScimitarBlockLayout {
+        blocks: blocks
+            .iter()
+            .map(|(block, _): &(ForgeBlock, usize)| ForgeLayoutBlock::of(block))
+            .collect(),
+        trailing_bytes,
+        depgraph_links: None,
+        subfiles: None,
+        records: Vec::new(),
+        refusals: Vec::new(),
+    };
+    let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(blocks.len());
+    for (index, (block, start)) in blocks.iter().enumerate() {
+        let label: String = format!("block{index}");
+        match decoder.decode(&bytes[*start..], block, &label, cap) {
+            Ok(payload) => {
+                forge_write_member(
+                    &mut sink,
+                    &format!("{label}.bin"),
+                    &payload,
+                    block.packed_total,
+                    forge_compression(block.pack_method),
+                )?;
+                payloads.push(payload);
+            }
+            Err(e) => {
+                sink.violations
+                    .push(format!("scimitar-block-codec {label}: {e}"));
+                layout.refusals.push(e.to_string());
+            }
+        }
+    }
+    if payloads.len() == 1 && blocks.len() == 1 && looks_like_depgraph_payload(&payloads[0]) {
+        match parse_depgraph_payload(&payloads[0]) {
+            Ok(links) => {
+                layout.depgraph_links = Some(links.len());
+                let json: String = serde_json::to_string_pretty(&links)
+                    .unwrap_or_else(|_: serde_json::Error| String::new());
+                forge_write_member(
+                    &mut sink,
+                    "depgraph.json",
+                    json.as_bytes(),
+                    blocks[0].0.packed_total,
+                    EntryCompression::Stored,
+                )?;
+            }
+            Err(e) => layout.refusals.push(e.to_string()),
+        }
+    }
+    if payloads.len() == 2 {
+        match parse_subfile_index(&payloads[0]) {
+            Ok(index) => layout.subfiles = Some(index),
+            Err(e) => layout.refusals.push(e.to_string()),
+        }
+        match parse_flat_archive(&payloads[1], "block1") {
+            Ok(records) => layout.records = records,
+            Err(e) => layout.refusals.push(e.to_string()),
+        }
+    }
+    let json: String =
+        serde_json::to_string_pretty(&layout).unwrap_or_else(|_: serde_json::Error| String::new());
+    sink.finish(
+        ContainerKind::ScimitarBlock,
+        ".disrobe-scimitar-block-layout.json",
+        &json,
+    )
+}
+
 fn write_summary_entry(
     out_dir: &Path,
     tool_filename: &str,
@@ -6350,6 +6897,10 @@ mod tests {
     use std::io::Write as _;
 
     use super::*;
+
+    #[rustfmt::skip]
+    #[path = "../../../tests/common/forge_writer.rs"]
+    mod forge_writer;
 
     #[test]
     fn materialized_path_validation_is_non_mutating() {
@@ -7432,6 +7983,7 @@ mod tests {
         row("extract_fat", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_fat_into", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_firmware", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("forge_write_member", NameOrigin::ArchiveSupplied, DRIVEN),
         row(
             "extract_flatpak",
             NameOrigin::ArchiveSupplied,
@@ -7719,6 +8271,14 @@ mod tests {
             minimum_exercised: 40,
             minimum_refused_as_a_slip: 34,
             build: build_hostile_unityfs,
+        },
+        DrivenWritePath {
+            function: "forge_write_member",
+            kind: ContainerKind::Forge,
+            slip_tag: "forge-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_forge,
         },
         DrivenWritePath {
             function: "extract_bun",
@@ -8044,6 +8604,45 @@ mod tests {
         ))
     }
 
+    fn build_hostile_forge(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        use crate::containers::forge_block::{BlockMagic, PackMethod};
+        use crate::containers::forge_flat::ForgeSubFile;
+        use forge_writer::{
+            FlatRecordSpec, ForgeWriteBody, ForgeWriteEntry, ForgeWriteFile, ForgeWriteSpec,
+            write_flat_archive, write_forge,
+        };
+        if name.len() > crate::containers::forge::META_NAME_LEN {
+            return None;
+        }
+        let file_type: u32 = crate::containers::forge_types::type_id("Mesh");
+        let uid: u64 = 0x0600_0000_0000_0001;
+        let payload: Vec<u8> = write_flat_archive(&[FlatRecordSpec {
+            name: None,
+            name_flags: 0,
+            file_type,
+            uid,
+            payload: body,
+        }]);
+        let mut spec: ForgeWriteSpec = ForgeWriteSpec::scimitar(30);
+        spec.block_magic = BlockMagic::V34;
+        spec.pack_method = PackMethod::Streaming;
+        spec.meta_names = true;
+        spec.entries = vec![ForgeWriteEntry {
+            uid,
+            body: ForgeWriteBody::File(ForgeWriteFile {
+                name: Some(name.to_owned()),
+                file_type,
+                timestamp: 1_700_000_000,
+                subfiles: vec![ForgeSubFile {
+                    uid,
+                    length: body.len() as i32,
+                }],
+                payload,
+            }),
+        }];
+        Some(write_forge(&spec))
+    }
+
     fn build_hostile_bun(name: &str, body: &[u8]) -> Option<Vec<u8>> {
         if name.contains('\u{0}') {
             return None;
@@ -8332,6 +8931,11 @@ mod tests {
     #[test]
     fn hostile_names_reach_the_unityfs_write_path_guard() {
         drive_write_path("extract_unityfs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_forge_write_path_guard() {
+        drive_write_path("forge_write_member");
     }
 
     #[test]

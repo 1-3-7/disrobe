@@ -6,6 +6,9 @@ mod adversarial_resilience;
 #[path = "../declared_size_bounds.rs"]
 mod declared_size_bounds;
 
+#[path = "../forge_bounded.rs"]
+mod forge_bounded;
+
 #[path = "../fuzz_archives.rs"]
 mod fuzz_archives;
 

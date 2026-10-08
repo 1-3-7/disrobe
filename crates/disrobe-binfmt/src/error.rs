@@ -33,6 +33,49 @@ pub enum Error {
         "DR-BINFMT-0086: unsupported LUKS header version {version}; this path accepts only LUKS1"
     )]
     LuksUnsupportedVersion { version: u16 },
+    #[error(
+        "DR-BINFMT-0087: unsupported forge archive version {version}; this reader accepts versions {supported}"
+    )]
+    ForgeUnsupportedVersion {
+        version: u32,
+        supported: &'static str,
+    },
+    #[error("DR-BINFMT-0088: forge archive malformed: {0}")]
+    ForgeMalformed(String),
+    #[error("DR-BINFMT-0089: forge block magic {magic:#018x} is not decodable: {reason}")]
+    ForgeBlockUnsupported { magic: u64, reason: &'static str },
+    #[error(
+        "DR-BINFMT-0090: forge block magic {magic:#018x} pack method {method} has no decoder: {codec}"
+    )]
+    ForgePackMethodUnsupported {
+        magic: u64,
+        method: u16,
+        codec: &'static str,
+    },
+    #[error("DR-BINFMT-0091: forge entry `{entry}` chunk {chunk}: {detail}")]
+    ForgeOodle {
+        entry: String,
+        chunk: usize,
+        detail: crate::containers::oodle::OodleError,
+    },
+    #[error(
+        "DR-BINFMT-0092: forge entry `{entry}` chunk {chunk} stored adler-32 {expected:#010x} does not match the computed {actual:#010x}"
+    )]
+    ForgeChunkChecksum {
+        entry: String,
+        chunk: usize,
+        expected: u32,
+        actual: u32,
+    },
+    #[error(
+        "DR-BINFMT-0093: forge entry `{entry}` chunk {chunk} declares {declared} unpacked bytes but the data resolves to {decoded}"
+    )]
+    ForgeChunkSize {
+        entry: String,
+        chunk: usize,
+        declared: u64,
+        decoded: u64,
+    },
     #[error("DR-BINFMT-0001: I/O error: {0}")]
     Io(#[from] std::io::Error),
 

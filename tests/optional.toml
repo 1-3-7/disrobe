@@ -19,6 +19,7 @@
 "disrobe-pass-native::local::corpus/native/packers/upx/git.original.exe" = "the Git for Windows git.exe is an untracked third-party binary the repository does not redistribute, so CI never has it"
 "disrobe-pass-native::osslsigncode" = "no CI job installs osslsigncode"
 "disrobe-pass-native::python-lief" = "no CI job installs the lief Python package"
+"disrobe-binfmt::forge-local" = "the Forge and Oodle oracle reads a locally installed game's Scimitar archives, whose files cannot be committed and which no CI job provisions"
 "disrobe-binfmt::regenerable::appimage" = "the appimage fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
 "disrobe-binfmt::regenerable::cramfs" = "the cramfs fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"
 "disrobe-binfmt::regenerable::docker" = "the docker fixture is a local-only artifact a .gitignore rule keeps out of the tree and no CI job rebuilds it from the corpus/binfmt/MANIFEST.toml recipe"

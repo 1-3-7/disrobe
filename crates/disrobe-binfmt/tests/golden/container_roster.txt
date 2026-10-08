@@ -33,6 +33,7 @@ erofs	payload
 ext4	payload
 fat	payload
 flatpak	payload
+forge	payload
 gpt	payload
 gz	payload
 hp-bdl	payload
@@ -72,6 +73,7 @@ qnx	payload
 rar	payload
 romfs	payload
 rpm	payload
+scimitar-block	payload
 snap	payload
 squashfs	payload
 squirrel	payload

@@ -31,7 +31,7 @@
     { "label": "Shell / PowerShell", "kind": "source", "note": "deobfuscate" },
     { "label": "Native PE/ELF/Mach-O", "kind": "unpack", "note": "stub-emu unpack" },
     { "label": "Nim / Zig / Crystal", "kind": "symbols", "note": "demangle + metadata" },
-    { "label": "Containers", "kind": "carve", "note": "103 formats detected" }
+    { "label": "Containers", "kind": "carve", "note": "105 formats detected" }
   ],
   "footnote": "Recovery quality varies by format and input. Original comments, formatting, and names may be absent; native AOT recovery can expose symbols and metadata without reconstructing source bodies."
 }

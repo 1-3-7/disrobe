@@ -1,0 +1,214 @@
+schema_version = 1
+crate = "disrobe-binfmt"
+generated = "2026-10-08"
+toolchain = "cargo run -p disrobe-binfmt --example gen_forge_fixture (disrobe's test-tree Oodle encoder, tests/common/oodle_encoder/, written from the format description; plans and payload generators in tests/common/oodle_fixtures.rs)"
+purpose = "Authored Oodle LZ streams (Kraken, Mermaid, Leviathan and every entropy array form the encoder emits). Each payload is regenerated from its seed by payload_for; payload_sha256 pins it. No proprietary encoder output and no game bytes."
+
+[[fixture]]
+path = "kraken-sub.oodle"
+size_bytes = 6380
+sha256 = "70bca35fa674314248650be15272096a7598183474e04f27dbff95c346b2994f"
+payload_bytes = 24000
+payload_sha256 = "8c3c9231d49df80a4c95155299bd2789dc2d67ec03c84e384957d2633e2a5500"
+role = "Kraken LZ sub-block, delta literals, classic offsets"
+
+[[fixture]]
+path = "kraken-raw-scaled.oodle"
+size_bytes = 6114
+sha256 = "3943e43177baf85b7db97fdd0a04d8463d5e80d755632d211de2463d4e67fd0c"
+payload_bytes = 30000
+payload_sha256 = "cdcc3e94bf7dedaf9772f0b1c61f6d53770c0c2303c1abc1b06203e3fea77263"
+role = "Kraken LZ sub-block, raw literals, offsets scaled by 3 with low bytes, two-half Huffman literals, TANS offsets, RLE lengths"
+
+[[fixture]]
+path = "kraken-two-sub-blocks.oodle"
+size_bytes = 23457
+sha256 = "4062c3b03571648dd06c66c8ba047cdcaa46ac4d98ac1fe8791aaabc91150354"
+payload_bytes = 200000
+payload_sha256 = "e1251ea751606c2a42d12ff1b49482720e7d2f881300c205d3fa3a585271698c"
+role = "Kraken quantum of two 128 KiB sub-blocks (delta then raw, scale 1), long lengths"
+
+[[fixture]]
+path = "leviathan-sub.oodle"
+size_bytes = 7082
+sha256 = "e034a054f9503492bdee1aae2e7bc3327f385f5916a409582b721cda850b7ab9"
+payload_bytes = 24000
+payload_sha256 = "8c3c9231d49df80a4c95155299bd2789dc2d67ec03c84e384957d2633e2a5500"
+role = "Leviathan literal mode 0 (sub)"
+
+[[fixture]]
+path = "leviathan-raw-multi-command.oodle"
+size_bytes = 5541
+sha256 = "c37ebcb2f38fc06c4814d1d9773a89429a1299389d5099bcf0a86a8d4c7140a4"
+payload_bytes = 30000
+payload_sha256 = "cdcc3e94bf7dedaf9772f0b1c61f6d53770c0c2303c1abc1b06203e3fea77263"
+role = "Leviathan literal mode 1 (raw) with eight command streams in a three-source multi-array"
+
+[[fixture]]
+path = "leviathan-lamsub.oodle"
+size_bytes = 3564
+sha256 = "1a3a8494ec8bc2784a78c22973ce135c9c081f3a7d9fc2de56337139a0ad9e24"
+payload_bytes = 20000
+payload_sha256 = "d50b5dab6544f65c2873f3c46752988aebdf8aa03495de2885e295bcf7569695"
+role = "Leviathan literal mode 2 (lamsub), plain multi-array"
+
+[[fixture]]
+path = "leviathan-sub-and-3.oodle"
+size_bytes = 3585
+sha256 = "01ccd1ff03d2f003bb63764117f2871e7e5adaa8bb142fd76a010c94320fe9b6"
+payload_bytes = 20000
+payload_sha256 = "d50b5dab6544f65c2873f3c46752988aebdf8aa03495de2885e295bcf7569695"
+role = "Leviathan literal mode 3 (sub and 3), packed-interval multi-array"
+
+[[fixture]]
+path = "leviathan-o1.oodle"
+size_bytes = 3495
+sha256 = "a574f6ff1fb2dee9d5d0480f99fafe64a01746c697c58afcea21484c23595dd0"
+payload_bytes = 18000
+payload_sha256 = "b48ab55b956c739ef0a5c4d39e912bf174602126f3cdcdba99e5908d545b7fb1"
+role = "Leviathan literal mode 4 (o1), interval multi-array"
+
+[[fixture]]
+path = "leviathan-sub-and-f-scaled.oodle"
+size_bytes = 4574
+sha256 = "84d7e52534c79c4d4de26ed82eee9aa3903ed8148f513c0661503af9f74e6239"
+payload_bytes = 18000
+payload_sha256 = "b48ab55b956c739ef0a5c4d39e912bf174602126f3cdcdba99e5908d545b7fb1"
+role = "Leviathan literal mode 5 (sub and 15), offsets scaled by 2"
+
+[[fixture]]
+path = "mermaid-sub.oodle"
+size_bytes = 14005
+sha256 = "7c80b38b6c5ad38e428f34c9292039d24c3567d089c9b8146715577f3252580c"
+payload_bytes = 110000
+payload_sha256 = "d1d2db7a740b1624622aecaea461d3ba3278fd1d372092ca241ed66c3357d39f"
+role = "Mermaid delta literals over two 64 KiB halves with near and far offsets"
+
+[[fixture]]
+path = "mermaid-raw-entropy-near.oodle"
+size_bytes = 13108
+sha256 = "f16d3cfe8be01b2d198e1a47f26b47be50fdf226fac6bc1bed1ee30c6c807ad5"
+payload_bytes = 90000
+payload_sha256 = "4d5727fb115b5b2ede0d09819ba8ba14afbedbfea348b63d6c1247940de1bf22"
+role = "Mermaid raw literals with entropy-coded near offsets"
+
+[[fixture]]
+path = "kraken-stored-arrays.oodle"
+size_bytes = 2381
+sha256 = "ed49e0f67c1d20e3774ec9195ec0c7edd0b548ac32544c7c620fc091cdf90d82"
+payload_bytes = 6000
+payload_sha256 = "405b278a6b13ba3571d89e46a0858d7e04f23d9290b836b3c293d6c77e488d34"
+role = "Kraken LZ sub-block whose four streams are stored arrays"
+
+[[fixture]]
+path = "entropy-huffman-old-sparse.oodle"
+size_bytes = 3282
+sha256 = "81bc0b038873a45afe9a8aaecac58ffd5862dfbb0e1ef229060d7ffb850e6edb"
+payload_bytes = 6000
+payload_sha256 = "405b278a6b13ba3571d89e46a0858d7e04f23d9290b836b3c293d6c77e488d34"
+role = "entropy-only sub-block, Huffman old sparse header"
+
+[[fixture]]
+path = "entropy-huffman-old-dense.oodle"
+size_bytes = 2288
+sha256 = "282b52277a6a91861b28dc2da861e2bab75c5cb17b8f0943e1024723bc4f4f05"
+payload_bytes = 6000
+payload_sha256 = "b7b8760856f2aaa1851093f320d0a98f3a4f3df947054960b507412b883745f8"
+role = "entropy-only sub-block, Huffman old dense header"
+
+[[fixture]]
+path = "entropy-huffman-new.oodle"
+size_bytes = 3267
+sha256 = "ef91d80f08631f8b8d4e6e8279b66e0416ca48b4c3ac6a90a9ffa22650c3772e"
+payload_bytes = 6000
+payload_sha256 = "405b278a6b13ba3571d89e46a0858d7e04f23d9290b836b3c293d6c77e488d34"
+role = "entropy-only sub-block, Huffman new header with three Rice extra bits"
+
+[[fixture]]
+path = "entropy-huffman-two-halves.oodle"
+size_bytes = 2273
+sha256 = "01f7047bbc6762d4b233a961d7026512541500dea54b0eae3980111cbf3fc30a"
+payload_bytes = 6000
+payload_sha256 = "b7b8760856f2aaa1851093f320d0a98f3a4f3df947054960b507412b883745f8"
+role = "entropy-only sub-block, two-half Huffman"
+
+[[fixture]]
+path = "entropy-huffman-memset.oodle"
+size_bytes = 13
+sha256 = "4af868337423a12b7307b51511c9ae16673c367293d171f06da47d4398a6c8c6"
+payload_bytes = 5000
+payload_sha256 = "260679791fa8da4dddc6aa3b243c514025e83d3a2f60800b9734b990be5d11a0"
+role = "entropy-only sub-block, single-symbol Huffman"
+
+[[fixture]]
+path = "entropy-tans-explicit.oodle"
+size_bytes = 1338
+sha256 = "7145c24a21fbeb228d49b34ff4312ef025a8ec97dbc53827722f8353812af320"
+payload_bytes = 6000
+payload_sha256 = "1190ed00e79de15885b0032d47089672fa690d72437270dadb6f1ff914e852b3"
+role = "entropy-only sub-block, TANS with explicit weights"
+
+[[fixture]]
+path = "entropy-tans-rice.oodle"
+size_bytes = 3806
+sha256 = "18a7c975f5a24cd26f908b2d69b4485879c96c815bc042224c70d78b7f9f1978"
+payload_bytes = 7000
+payload_sha256 = "b83385a1bf0ccd6a03cd18c73929982f79bfa5547790c6ea21c020f4b060c53e"
+role = "entropy-only sub-block, TANS with Rice-coded weights"
+
+[[fixture]]
+path = "entropy-rle.oodle"
+size_bytes = 1048
+sha256 = "4243c1d29c6238a5603dded8470c93881b6873e3679b4a1f23b207c3eeaa4b92"
+payload_bytes = 8000
+payload_sha256 = "1b87b9bb48786bfdf0302eda40490468b0a6c0c759e90899f53ac3eb81fc4028"
+role = "entropy-only sub-block, RLE with raw commands"
+
+[[fixture]]
+path = "entropy-rle-coded.oodle"
+size_bytes = 845
+sha256 = "9971d131b5926a2909dd518da8abc391cb26a0d93da6350ef2d4418a8d4d0547"
+payload_bytes = 8000
+payload_sha256 = "1b87b9bb48786bfdf0302eda40490468b0a6c0c759e90899f53ac3eb81fc4028"
+role = "entropy-only sub-block, RLE with Huffman-coded commands"
+
+[[fixture]]
+path = "entropy-recursive.oodle"
+size_bytes = 4213
+sha256 = "ee6de4b2ac7dab356487e2fdac0555c3ce69653ea85cf7d9905a1f9f80e6b76a"
+payload_bytes = 6000
+payload_sha256 = "405b278a6b13ba3571d89e46a0858d7e04f23d9290b836b3c293d6c77e488d34"
+role = "entropy-only sub-block, recursive array of three parts"
+
+[[fixture]]
+path = "entropy-recursive-multi-array.oodle"
+size_bytes = 6999
+sha256 = "0249f1aee7d71b4a906182106765c34c5b6d1eef4a02f03a22174b7cf2678497"
+payload_bytes = 9000
+payload_sha256 = "a575ec7e7d0f700c603b8039842021e9a9e17137dcb45e6bc439cd5df2e5c75e"
+role = "entropy-only sub-block, recursive multi-array with four sources"
+
+[[fixture]]
+path = "quantum-stored.oodle"
+size_bytes = 3005
+sha256 = "e81e9410bc519ca0df0512b27b766faafe6ecdb31f4b29738199bd0f6bbe56c6"
+payload_bytes = 3000
+payload_sha256 = "d7e8cabbce7e924d73698d298bf81169bab9c2319f78cb2bc51210a6c9c23fc9"
+role = "stored quantum"
+
+[[fixture]]
+path = "block-uncompressed.oodle"
+size_bytes = 2002
+sha256 = "00e0f8d14377456971ccdc6245fd5a259833c041dc5947a40a36b809f40fe468"
+payload_bytes = 2000
+payload_sha256 = "b0b2023c95899caf7fac8a22b104ce7ac3e2fede938e0ca7f70f8279efcccd97"
+role = "uncompressed block"
+
+[[fixture]]
+path = "hydra.oodle"
+size_bytes = 2337
+sha256 = "044640573bc8fa7c283aa4d941d58af01edd808171d6f5a8c30a890458882f5c"
+payload_bytes = 1050076
+payload_sha256 = "16047a1d50cc3a9af34e22e69def7a6ef2f79a19c31cb2082e83bcea5025427d"
+role = "five blocks switching decoders: Kraken, Leviathan, Mermaid quanta, a memset quantum and an uncompressed tail"
+

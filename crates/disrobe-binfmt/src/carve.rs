@@ -464,6 +464,7 @@ const fn format_priority(kind: ContainerKind) -> u8 {
         | ContainerKind::Iso
         | ContainerKind::Wim
         | ContainerKind::UnityFs
+        | ContainerKind::Forge
         | ContainerKind::Cpio
         | ContainerKind::Ar => 0,
         ContainerKind::Tar => 1,
@@ -489,6 +490,8 @@ fn extent_bounder(kind: ContainerKind) -> Option<ExtentBounder> {
         ContainerKind::Iso => Some(iso_extent),
         ContainerKind::Wim => Some(wim_extent),
         ContainerKind::UnityFs => Some(unityfs_extent),
+        ContainerKind::Forge => Some(forge_extent),
+        ContainerKind::ScimitarBlock => Some(scimitar_block_extent),
         ContainerKind::Cpio => Some(cpio_extent),
         ContainerKind::Ar => Some(ar_extent),
         _ => None,
@@ -983,6 +986,22 @@ fn unityfs_extent(bytes: &[u8]) -> Option<usize> {
     let header: crate::containers::unityfs::UnityFsHeader =
         crate::containers::unityfs::parse_header(bytes).ok()?;
     usize::try_from(header.size).ok()
+}
+
+fn forge_extent(bytes: &[u8]) -> Option<usize> {
+    let archive: crate::containers::forge::ForgeArchive =
+        crate::containers::forge::parse_forge(bytes).ok()?;
+    usize::try_from(crate::containers::forge::archive_extent(&archive)).ok()
+}
+
+fn scimitar_block_extent(bytes: &[u8]) -> Option<usize> {
+    let first: crate::containers::forge_block::ForgeBlock =
+        crate::containers::forge_block::parse_block(bytes).ok()?;
+    let mut end: usize = first.total_len;
+    if let Ok(second) = crate::containers::forge_block::parse_block(bytes.get(end..)?) {
+        end = end.checked_add(second.total_len)?;
+    }
+    Some(end)
 }
 
 const CPIO_MAX_MEMBERS: usize = 1 << 20;

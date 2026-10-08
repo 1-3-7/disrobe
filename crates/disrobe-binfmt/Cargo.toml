@@ -69,6 +69,10 @@ path = "src/bin/mock_tool.rs"
 name = "gen_container_fixture"
 path = "tests/fixtures/gen_container.rs"
 
+[[example]]
+name = "gen_forge_fixture"
+path = "tests/fixtures/gen_forge.rs"
+
 [dev-dependencies]
 cab = { workspace = true }
 tempfile = "3"

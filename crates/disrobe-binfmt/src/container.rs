@@ -83,6 +83,8 @@ pub enum ContainerKind {
     UnixCompress,
     BunStandalone,
     UnityFs,
+    Forge,
+    ScimitarBlock,
     FwDlinkShrs,
     FwDlinkEncrptedImg,
     FwDlinkAlphaV1,
@@ -252,6 +254,8 @@ impl ContainerKind {
             Self::UnixCompress => "Z",
             Self::BunStandalone => "bun-standalone",
             Self::UnityFs => "unityfs",
+            Self::Forge => "forge",
+            Self::ScimitarBlock => "scimitar-block",
             Self::FwDlinkShrs => "dlink-shrs",
             Self::FwDlinkEncrptedImg => "dlink-encrpted-img",
             Self::FwDlinkAlphaV1 => "dlink-alpha-v1",
@@ -299,7 +303,7 @@ impl ContainerKind {
         )
     }
 
-    pub const ALL: [Self; 103] = [
+    pub const ALL: [Self; 105] = [
         Self::Zip,
         Self::Tar,
         Self::TarGz,
@@ -378,6 +382,8 @@ impl ContainerKind {
         Self::UnixCompress,
         Self::BunStandalone,
         Self::UnityFs,
+        Self::Forge,
+        Self::ScimitarBlock,
         Self::FwDlinkShrs,
         Self::FwDlinkEncrptedImg,
         Self::FwDlinkAlphaV1,
@@ -482,6 +488,8 @@ impl ContainerKind {
             | Self::Fat
             | Self::BunStandalone
             | Self::UnityFs
+            | Self::Forge
+            | Self::ScimitarBlock
             | Self::Flatpak
             | Self::InnoSetup
             | Self::EnigmaVirtualBox
@@ -562,6 +570,11 @@ const CPIO_BIN_MAGIC_LE: &[u8; 2] = &[0xc7, 0x71];
 const CPIO_BIN_MAGIC_BE: &[u8; 2] = &[0x71, 0xc7];
 const WIM_MAGIC: &[u8; 8] = b"MSWIM\x00\x00\x00";
 const UNITYFS_MAGIC: &[u8; 8] = b"UnityFS\x00";
+const FORGE_MAGIC: &[u8; 9] = crate::containers::forge::FORGE_MAGIC;
+const SCIMITAR_BLOCK_ANVIL_33: &[u8; 8] =
+    &crate::containers::forge_block::BLOCK_MAGIC_ANVIL_33_BYTES;
+const SCIMITAR_BLOCK_V34: &[u8; 8] = &crate::containers::forge_block::BLOCK_MAGIC_V34_BYTES;
+const SCIMITAR_BLOCK_V37: &[u8; 8] = &crate::containers::forge_block::BLOCK_MAGIC_V37_BYTES;
 const VHDX_MAGIC: &[u8; 8] = b"vhdxfile";
 const VHD_COOKIE: &[u8; 8] = b"conectix";
 const VHD_FOOTER_LEN: usize = 512;
@@ -644,6 +657,10 @@ pub(crate) const MAGIC_SIGNATURES: &[MagicSignature] = &[
     MagicSignature::new(PKG_XAR_MAGIC, 0, ContainerKind::Pkg),
     MagicSignature::new(WIM_MAGIC, 0, ContainerKind::Wim),
     MagicSignature::new(UNITYFS_MAGIC, 0, ContainerKind::UnityFs),
+    MagicSignature::new(FORGE_MAGIC, 0, ContainerKind::Forge),
+    MagicSignature::new(SCIMITAR_BLOCK_ANVIL_33, 0, ContainerKind::ScimitarBlock),
+    MagicSignature::new(SCIMITAR_BLOCK_V34, 0, ContainerKind::ScimitarBlock),
+    MagicSignature::new(SCIMITAR_BLOCK_V37, 0, ContainerKind::ScimitarBlock),
     MagicSignature::new(VHDX_MAGIC, 0, ContainerKind::Vhdx),
     MagicSignature::new(&MINIDUMP_MAGIC, 0, ContainerKind::Minidump),
     MagicSignature::new(&SQUASHFS_MAGIC, 0, ContainerKind::Squashfs),
@@ -890,6 +907,12 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
     }
     if has_signature(bytes, ContainerKind::UnityFs) {
         return Some(ContainerKind::UnityFs);
+    }
+    if has_signature(bytes, ContainerKind::Forge) {
+        return Some(ContainerKind::Forge);
+    }
+    if crate::containers::forge_block::detect_block(bytes).is_some() {
+        return Some(ContainerKind::ScimitarBlock);
     }
     if has_signature(bytes, ContainerKind::Vhdx) {
         return Some(ContainerKind::Vhdx);
@@ -1571,6 +1594,35 @@ mod tests {
     }
 
     #[test]
+    fn detects_forge_and_scimitar_block_magics() {
+        let mut forge: Vec<u8> = FORGE_MAGIC.to_vec();
+        forge.extend_from_slice(&34u32.to_le_bytes());
+        forge.extend(std::iter::repeat_n(0u8, 0x60));
+        assert_eq!(detect_container(&forge), Some(ContainerKind::Forge));
+        for magic in [
+            SCIMITAR_BLOCK_ANVIL_33,
+            SCIMITAR_BLOCK_V34,
+            SCIMITAR_BLOCK_V37,
+        ] {
+            let mut block: Vec<u8> = magic.to_vec();
+            block.extend_from_slice(&[3, 0, 15, 0, 0, 4, 0x80, 1, 0, 0, 0]);
+            assert_eq!(
+                detect_container(&block),
+                Some(ContainerKind::ScimitarBlock),
+                "{magic:02x?}"
+            );
+        }
+        let mut aa35: Vec<u8> = SCIMITAR_BLOCK_V37.to_vec();
+        aa35[0] = 0x35;
+        aa35.extend_from_slice(&[0u8; 16]);
+        assert_eq!(detect_container(&aa35), Some(ContainerKind::ScimitarBlock));
+        assert_eq!(
+            detect_container(b"scimitar\x00\x22\0\0\0\0\0\0\0"),
+            Some(ContainerKind::Forge)
+        );
+    }
+
+    #[test]
     fn detects_unityfs_magic() {
         let mut bytes: Vec<u8> = UNITYFS_MAGIC.to_vec();
         bytes.extend([0u8; 32]);
@@ -1647,9 +1699,9 @@ mod tests {
     }
 
     #[test]
-    fn detected_count_is_one_hundred_and_three() {
-        assert_eq!(ContainerKind::detected_format_count(), 103);
-        assert_eq!(ContainerKind::ALL.len(), 103);
+    fn detected_count_is_one_hundred_and_five() {
+        assert_eq!(ContainerKind::detected_format_count(), 105);
+        assert_eq!(ContainerKind::ALL.len(), 105);
     }
 
     const BREADTH_EVIDENCE: &str = "crates/disrobe-cli/tests/golden/container_breadth.txt";
@@ -1752,7 +1804,7 @@ mod tests {
         assert!(external.is_empty());
         assert_eq!(
             ContainerKind::payload_extractor_count() + metadata_only.len() + external.len(),
-            103,
+            105,
             "this counts what the roster declares, not what any input reached; the delivered figure \
              is measured in {BREADTH_EVIDENCE} and asserted by \
              published_container_counts_match_this_enum"
