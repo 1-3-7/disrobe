@@ -28,7 +28,6 @@ EOF
 
 presets=(
   "rename:<rename logfile=\"@LOG@\" replaceClassNameStrings=\"true\"><property name=\"naming-scheme\" value=\"mix\"/></rename>"
-  "shrink-rename:<shrink logfile=\"@SHRINKLOG@\"/><rename logfile=\"@LOG@\" replaceClassNameStrings=\"true\"><property name=\"naming-scheme\" value=\"small\"/><property name=\"obfuscation-prefix\" value=\"y\"/></rename>"
   "linenumbers:<rename logfile=\"@LOG@\" conservemanifest=\"true\"><property name=\"naming-scheme\" value=\"best\"/><property name=\"language-conformity\" value=\"illegal\"/><map/><adjust replaceContent=\"true\"/></rename>"
 )
 inputs=(

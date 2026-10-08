@@ -40,10 +40,11 @@ jobs:
           set -euo pipefail
           export REPO="$GITHUB_WORKSPACE" OUT="$RUNNER_TEMP/real-tool-out"
           mkdir -p "$OUT"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
           bash ".github/real-tools/$RECIPE.sh"
           python3 .github/real-tools/record.py
-          echo "OUT=$OUT" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && env.OUT != ''
         with:
           name: real-tool-${{ inputs.recipe }}
           path: ${{ env.OUT }}
