@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2310 bounds (count 224, other 1084, output 69, recursion 232, size 514, work 187).
+2332 bounds (count 225, other 1094, output 69, recursion 232, size 525, work 187).
 
-Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassified 18, allocation 33, unused 8.
+Exceeded: error 960, recorded 197, panic 0, delegated 49, silent 1067, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -247,6 +247,7 @@ Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassif
 | `disrobe-cfg` | `MAX_RECONVERGENCE_CLONES` | other | silent: `.min()` clamp in `tight_for_reconvergence` | `usize` | `64` | `crates/disrobe-cfg/src/reconverge.rs` |
 | `disrobe-cli` | `RESOURCE_PREVIEW_LIMIT` | other | silent: `.min()` clamp in `render_resources` | `usize` | `50` | `crates/disrobe-cli/src/cli/apk.rs` |
 | `disrobe-cli` | `MAX_EVIDENCE_SHOWN` | other | silent: `.take()` in `push_anti_analysis_evidence_lines`; `.take()` in `render_text`; no action in `push_anti_analysis_evidence_lines`; 1 more | `usize` | `6` | `crates/disrobe-cli/src/cli/behavior.rs` |
+| `disrobe-cli` | `MAX_CAPTURE_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/capture.rs` |
 | `disrobe-cli` | `MAX_NAMESPACE_ATTEMPTS` | other | error: untyped `miette!` | `usize` | `1024` | `crates/disrobe-cli/src/cli/chain_materialization.rs` |
 | `disrobe-cli` | `MAX_SIDECAR_REDACTION_BYTES` | size | silent: `return` in `sidecar_shape` | `usize` | `64 << 20` | `crates/disrobe-cli/src/cli/chain_v1.rs` |
 | `disrobe-cli` | `MAX_REPORTS_GRADED` | other | silent: `break` in `find_reports` | `usize` | `4096` | `crates/disrobe-cli/src/cli/context.rs` |
@@ -290,6 +291,8 @@ Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassif
 | `disrobe-cli` | `MAX_IOC_ROWS` | other | silent: `.take()` in `render_indicators`; no action in `render_indicators` | `usize` | `200` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-cli` | `DEFAULT_LISTING_LIMIT` | other | error: untyped `miette!` | `usize` | `40` | `crates/disrobe-cli/src/cli/semdiff.rs` |
 | `disrobe-cli` | `MAX_SEMDIFF_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/semdiff.rs` |
+| `disrobe-cli` | `MAX_DATABASE_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/sqlite.rs` |
+| `disrobe-cli` | `MAX_WAL_BYTES` | size | error: untyped `miette!` | `u64` | `1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/sqlite.rs` |
 | `disrobe-cli` | `MAX_DOCUMENT_OUTPUT_BYTES` | output | error: `Error::other()`; `StructuredDocumentError::OutputTooLong` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/structured_document.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CALLS` | other | unclassified: stored in `calls` with no read found | `usize` | `32_768` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CANDIDATE_RECORDS` | count | unclassified: stored in `candidate_records` with no read found | `usize` | `65_536` | `crates/disrobe-cli/src/cli/taint.rs` |
@@ -359,6 +362,24 @@ Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassif
 | `disrobe-core` | `MAX_STRINGS` | other | silent: `break` in `select_strings` | `usize` | `20` | `crates/disrobe-core/src/yara_gen.rs` |
 | `disrobe-core` | `MAX_STRING_LEN` | size | delegated: passed to `.sort_by` | `usize` | `96` | `crates/disrobe-core/src/yara_gen.rs` |
 | `disrobe-core` | `HEX_WORK_BUDGET` | work | silent: `return` in `hex_matches_at` | `u64` | `1 << 20` | `crates/disrobe-core/src/yara_match/atoms.rs` |
+| `disrobe-dataforensics` | `MAX_BODY_BYTES` | size | recorded: flag `bytes`; flag `decoded`; flag `response_body_complete` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_CHUNKS` | other | silent: `for` range in `dechunk` | `usize` | `1 << 20` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_DNS_RECORDS` | count | silent: `return` in `dns` | `usize` | `256` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_HEADERS` | other | silent: `.take()` in `http_messages` | `usize` | `256` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_HEADER_BYTES` | size | silent: slice in `http_messages` | `usize` | `64 * 1024` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_MESSAGES_PER_STREAM` | other | silent: `while` condition in `http_messages` | `usize` | `4096` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_NAME_BYTES` | size | silent: `return` in `dns_name` | `usize` | `255` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_NAME_JUMPS` | other | silent: `return` in `dns_name` | `usize` | `32` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_HAR_BYTES` | size | error: `CaptureError::Malformed` | `usize` | `512 * 1024 * 1024` | `crates/disrobe-dataforensics/src/capture/archive.rs` |
+| `disrobe-dataforensics` | `MAX_SAZ_ENTRY_BYTES` | size | silent: `.take()` in `saz` | `u64` | `64 * 1024 * 1024` | `crates/disrobe-dataforensics/src/capture/archive.rs` |
+| `disrobe-dataforensics` | `MAX_INTERFACES` | other | silent: fallback value in `pcapng` | `usize` | `4096` | `crates/disrobe-dataforensics/src/capture/container.rs` |
+| `disrobe-dataforensics` | `MAX_IPV6_EXTENSIONS` | other | silent: `for` range in `ipv6` | `usize` | `8` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
+| `disrobe-dataforensics` | `MAX_VLAN_TAGS` | other | silent: `while` condition in `decode` | `usize` | `4` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
+| `disrobe-dataforensics` | `MAX_PAGE_SIZE` | size | error: `SqliteError::BadHeader`; `SqliteError::PageOutOfRange`; `SqliteError::Wal`; 2 more | `u32` | `65_536` | `crates/disrobe-dataforensics/src/sqlite/format.rs` |
+| `disrobe-dataforensics` | `MAX_VARINT_BYTES` | size | error: untyped error | `usize` | `9` | `crates/disrobe-dataforensics/src/sqlite/format.rs` |
+| `disrobe-dataforensics` | `MAX_COLUMNS` | other | silent: `return` in `parse_header` | `usize` | `32_767` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
+| `disrobe-dataforensics` | `MAX_INLINE_TEXT` | other | silent: `return` in `decode_text` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
+| `disrobe-dataforensics` | `MAX_SQL_BYTES` | size | silent: `return` in `table_shape` | `usize` | `1024 * 1024` | `crates/disrobe-dataforensics/src/sqlite/schema.rs` |
 | `disrobe-ir` | `MAX_DECODED_ENVELOPE_BYTES` | size | error: `EnvelopeError::EnvelopeTooLarge` | `usize` | `1 << 30` | `crates/disrobe-ir/src/envelope.rs` |
 | `disrobe-ir` | `READ_PREALLOC_CAP` | other | allocation: `with_capacity` in `read_from_path` | `usize` | `1 << 20` | `crates/disrobe-ir/src/io.rs` |
 | `disrobe-ir` | `MAX_RECORDS` | count | error: `WitnessError::RecordLimit` | `usize` | `1 << 16` | `crates/disrobe-ir/src/witness.rs` |
@@ -521,6 +542,7 @@ Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassif
 | `disrobe-mcp` | `MAX_REFS_PER_STRING` | other | silent: `.take()` in `find_strings` | `usize` | `16` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_SEARCH_HITS` | other | error: untyped `format!` | `usize` | `1024` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_SELECTOR_BYTES` | size | error: untyped `format!` | `usize` | `512` | `crates/disrobe-mcp/src/target.rs` |
+| `disrobe-mcp` | `MAX_SQLITE_ROWS` | other | error: untyped `format!` | `usize` | `1000` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_STRING_PAGE` | other | error: untyped `format!` | `usize` | `1000` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_TARGET_BYTES` | size | error: untyped `format!` | `u64` | `512 * 1024 * 1024` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-nir` | `MAX_EFFECT_MODELS` | other | error: `EffectContextError::ModelLimit` | `usize` | `65_536` | `crates/disrobe-nir/src/effects.rs` |
@@ -2334,7 +2356,7 @@ Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassif
 
 ## Silent stops
 
-1053 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1067 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2446,6 +2468,20 @@ Exceeded: error 953, recorded 196, panic 0, delegated 49, silent 1053, unclassif
 | `disrobe-core` | `ZIP_SEARCH_BUDGET` | `while` condition in `find_eocd` | `crates/disrobe-core/src/structural.rs` |
 | `disrobe-core` | `MAX_STRINGS` | `break` in `select_strings` | `crates/disrobe-core/src/yara_gen.rs` |
 | `disrobe-core` | `HEX_WORK_BUDGET` | `return` in `hex_matches_at` | `crates/disrobe-core/src/yara_match/atoms.rs` |
+| `disrobe-dataforensics` | `MAX_CHUNKS` | `for` range in `dechunk` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_DNS_RECORDS` | `return` in `dns` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_HEADERS` | `.take()` in `http_messages` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_HEADER_BYTES` | slice in `http_messages` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_MESSAGES_PER_STREAM` | `while` condition in `http_messages` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_NAME_BYTES` | `return` in `dns_name` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_NAME_JUMPS` | `return` in `dns_name` | `crates/disrobe-dataforensics/src/capture/app.rs` |
+| `disrobe-dataforensics` | `MAX_SAZ_ENTRY_BYTES` | `.take()` in `saz` | `crates/disrobe-dataforensics/src/capture/archive.rs` |
+| `disrobe-dataforensics` | `MAX_INTERFACES` | fallback value in `pcapng` | `crates/disrobe-dataforensics/src/capture/container.rs` |
+| `disrobe-dataforensics` | `MAX_IPV6_EXTENSIONS` | `for` range in `ipv6` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
+| `disrobe-dataforensics` | `MAX_VLAN_TAGS` | `while` condition in `decode` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
+| `disrobe-dataforensics` | `MAX_COLUMNS` | `return` in `parse_header` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
+| `disrobe-dataforensics` | `MAX_INLINE_TEXT` | `return` in `decode_text` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
+| `disrobe-dataforensics` | `MAX_SQL_BYTES` | `return` in `table_shape` | `crates/disrobe-dataforensics/src/sqlite/schema.rs` |
 | `disrobe-irsummary` | `MAX_FIXPOINT_ROUNDS` | `for` range in `optimize_graph` | `crates/disrobe-irsummary/src/optimize.rs` |
 | `disrobe-irsummary` | `MAX_BLOCKS` | `return` in `build_region`; `return` in `collect_leaders` | `crates/disrobe-irsummary/src/symexec.rs` |
 | `disrobe-irsummary` | `MAX_BLOCK_INSNS` | `return` in `build_block`; `return` in `collect_leaders` | `crates/disrobe-irsummary/src/symexec.rs` |

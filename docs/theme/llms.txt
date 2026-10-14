@@ -54,6 +54,8 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 - [Python pickle](https://1-3-7.github.io/disrobe/latest/languages/pickle.html): disrobe analyzes pickles statically so you can audit what a stream would do on load before it ever touches a real interpreter.
 - [Shell / PowerShell](https://1-3-7.github.io/disrobe/latest/languages/shell.html): disrobe deobfuscates supported PowerShell, Bash, Batch, VBScript, and VBA patterns.
 - [Containers and archives](https://1-3-7.github.io/disrobe/latest/languages/containers.html): Before disrobe can decompile anything, it often has to get inside a container.
+- [SQLite databases](https://1-3-7.github.io/disrobe/latest/languages/sqlite.html): disrobe sqlite <database> reads a SQLite 3 database file without opening it through SQLite, so a damaged, locked or deliberately malformed file still yields what can be read, and deleted records come back alongside the live ones.
+- [Network captures](https://1-3-7.github.io/disrobe/latest/languages/captures.html): disrobe capture <file> decodes a saved capture without Wireshark: pcap (either byte order, microsecond or nanosecond timestamps), pcapng (any section byte order, several interfaces, if_tsresol timestamps), HAR 1.2 and Fiddler SAZ archives.
 
 ## Reference
 
