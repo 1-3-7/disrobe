@@ -11635,6 +11635,7 @@ thread_local! {
         const { RefCell::new(BTreeMap::new()) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn with_class_set_functions<T>(
     functions: BTreeMap<FunctionKey, PureFunction>,
     body: impl FnOnce() -> T,
