@@ -6,6 +6,7 @@ use crate::proguard::{ClassMapping, Mapping, MethodMapping, source_params_to_des
 const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_LOG_ENTRIES: usize = 262_144;
 const MAX_NESTED_CLASS_DEPTH: usize = 64;
+const MAX_ENTITY_BYTES: usize = 16;
 
 struct Tag<'a> {
     name: &'a str,
@@ -16,11 +17,46 @@ fn decode_entities(raw: &str) -> String {
     if !raw.contains('&') {
         return raw.to_owned();
     }
-    raw.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    let mut out: String = String::with_capacity(raw.len());
+    let mut rest: &str = raw;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let tail: &str = &rest[start..];
+        let decoded: Option<(char, usize)> = tail
+            .find(';')
+            .filter(|end: &usize| *end <= MAX_ENTITY_BYTES)
+            .and_then(|end: usize| entity_char(&tail[1..end]).map(|c: char| (c, end + 1)));
+        match decoded {
+            Some((c, consumed)) => {
+                out.push(c);
+                rest = &tail[consumed..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn entity_char(name: &str) -> Option<char> {
+    match name {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "amp" => Some('&'),
+        _ => {
+            let digits: &str = name.strip_prefix('#')?;
+            let value: u32 = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => digits.parse::<u32>().ok()?,
+            };
+            char::from_u32(value)
+        }
+    }
 }
 
 fn parse_tag(body: &str) -> Option<Tag<'_>> {
@@ -240,6 +276,18 @@ pub fn parse_renamelog(text: &str) -> Result<Mapping> {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_character_references_decode_to_the_obfuscated_name() {
+        assert_eq!(decode_entities("&#x00d2;00000"), "\u{d2}00000");
+        assert_eq!(decode_entities("&#210;00000"), "\u{d2}00000");
+        assert_eq!(decode_entities("&amp;#x41;"), "&#x41;");
+        assert_eq!(decode_entities("a&lt;b&gt;&quot;&apos;"), "a<b>\"'");
+        assert_eq!(decode_entities("&#x110000;"), "&#x110000;");
+        assert_eq!(decode_entities("&#xD800;x"), "&#xD800;x");
+        assert_eq!(decode_entities("tail &"), "tail &");
+        assert_eq!(decode_entities("&unknown;"), "&unknown;");
+    }
 
     const LOG: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <yguard version="1.5">
