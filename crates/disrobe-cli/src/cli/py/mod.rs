@@ -39,6 +39,12 @@ pub(crate) enum PyCmd {
         list: bool,
         #[arg(
             long,
+            value_name = "STOCK_PYC",
+            help = "for a .pyc from a custom interpreter with a permuted opcode table: a stock-CPython .pyc of a module the input also contains, used to recover the table before decompiling"
+        )]
+        opcode_reference: Option<PathBuf>,
+        #[arg(
+            long,
             value_delimiter = ',',
             help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report (non-applicable kinds are written as stubs)"
         )]
@@ -79,6 +85,12 @@ pub(crate) enum PyCmd {
         input: PathBuf,
         #[arg(short, long, help = "output path for the disassembly text")]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "STOCK_PYC",
+            help = "for a .pyc from a custom interpreter with a permuted opcode table: a stock-CPython .pyc of a module the input also contains, used to recover the table before disassembling"
+        )]
+        opcode_reference: Option<PathBuf>,
         #[arg(
             long,
             value_delimiter = ',',
@@ -151,8 +163,12 @@ pub(crate) fn run(action: PyCmd, llm_flags: &LlmFlags) -> miette::Result<()> {
             cleanup,
             pyver,
             list,
+            opcode_reference,
             emit,
-        } => deob::deob(input, out, cleanup, pyver, list, emit, llm_flags),
+        } => match opcode_reference {
+            Some(reference) => deob::deob_remapped(input, out, &reference),
+            None => deob::deob(input, out, cleanup, pyver, list, emit, llm_flags),
+        },
         PyCmd::Sourcedefender {
             input,
             out,
@@ -160,7 +176,12 @@ pub(crate) fn run(action: PyCmd, llm_flags: &LlmFlags) -> miette::Result<()> {
             password,
             original_name,
         } => extract::sourcedefender(input, out, key, password, original_name.as_deref()),
-        PyCmd::Disasm { input, out, emit } => disasm::disasm(input, out, emit, llm_flags),
+        PyCmd::Disasm {
+            input,
+            out,
+            opcode_reference,
+            emit,
+        } => disasm::disasm(input, out, opcode_reference, emit, llm_flags),
         PyCmd::Decompile {
             input,
             out,

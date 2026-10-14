@@ -31,6 +31,63 @@ pub(crate) fn print_supported_obfuscators() {
     println!("  disrobe py deob <input> --out <output.py>");
 }
 
+pub(super) fn deob_remapped(
+    input: Option<PathBuf>,
+    out: Option<PathBuf>,
+    reference: &Path,
+) -> miette::Result<()> {
+    let Some(input): Option<PathBuf> = input else {
+        return Err(miette::miette!(
+            "DR-CLI-0036: py deob --opcode-reference needs the remapped .pyc as its input"
+        ));
+    };
+    let remapped: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0030: cannot read input: {e}"))?;
+    let stock: Vec<u8> = std::fs::read(reference)
+        .map_err(|e| miette::miette!("DR-CLI-0030: cannot read the opcode reference: {e}"))?;
+    let recovery: disrobe_pass_py_deob::RemappedRecovery =
+        disrobe_pass_py_deob::recover_remapped_pyc(&remapped, &stock)
+            .map_err(|e| miette::miette!("{e}"))?;
+    let g: globals::Globals = globals::current();
+    let out_path: PathBuf = out.unwrap_or_else(|| {
+        let stem: &str = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("py-deob");
+        PathBuf::from(format!("./out/{stem}.deobfuscated.py"))
+    });
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0031: cannot create dir: {e}"))?;
+    }
+    if out_path.exists() && !g.force {
+        return Err(miette::miette!(
+            "DR-CLI-0033B: output already exists at {}; pass --force to overwrite",
+            out_path.display()
+        ));
+    }
+    std::fs::write(&out_path, recovery.source.as_bytes())
+        .map_err(|e| miette::miette!("DR-CLI-0032: cannot write output: {e}"))?;
+    println!(
+        "py deob: {}",
+        if recovery.complete {
+            "RECOVERED"
+        } else {
+            "PARTIAL"
+        }
+    );
+    println!(
+        "  opcode table: recovered from the reference ({} opcodes, {} aligned code objects)",
+        recovery.covered_opcodes, recovery.aligned_code_objects
+    );
+    println!(
+        "  python:       {}.{}",
+        recovery.version_major, recovery.version_minor
+    );
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
 pub(super) fn deob(
     input: Option<PathBuf>,
     out: Option<PathBuf>,
@@ -118,6 +175,8 @@ pub(super) fn deob(
     };
     if result.recovered {
         println!("py deob: RECOVERED");
+    } else if let Some(wall) = result.wall {
+        println!("py deob: REFUSED ({wall:?})");
     } else {
         println!("py deob: NO KNOWN OBFUSCATOR DETECTED");
         eprintln!();
