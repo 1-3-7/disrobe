@@ -119,9 +119,9 @@ fn push_run(
         return;
     }
     let value: String = String::from_utf8_lossy(run).into_owned();
-    let unpadded: &str = value.trim_start_matches(|c: char| matches!(c, '\t' | '\n' | '\r'));
+    let unpadded: &str = value.trim_start_matches(['\t', '\n', '\r']);
     let leading: usize = value.len() - unpadded.len();
-    let trimmed: &str = unpadded.trim_end_matches(|c: char| matches!(c, '\t' | '\n' | '\r'));
+    let trimmed: &str = unpadded.trim_end_matches(['\t', '\n', '\r']);
     if trimmed.chars().count() < min_len {
         return;
     }
