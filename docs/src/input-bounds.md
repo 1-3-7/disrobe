@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2243 bounds (count 217, other 1051, output 67, recursion 228, size 493, work 187).
+2273 bounds (count 221, other 1066, output 68, recursion 229, size 502, work 187).
 
-Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassified 18, allocation 33, unused 8.
+Exceeded: error 930, recorded 192, panic 0, delegated 48, silent 1044, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -78,6 +78,20 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-binfmt` | `MAX_PART_OUTPUT` | output | silent: `.take()` in `decompress_xz` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/flatpak.rs` |
 | `disrobe-binfmt` | `MAX_STATIC_DELTA_PART_BYTES` | size | delegated: `ostree::read_file_bounded()?` | `u64` | `512 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/flatpak.rs` |
 | `disrobe-binfmt` | `MAX_STATIC_DELTA_SUPERBLOCK_BYTES` | size | delegated: `ostree::read_file_bounded()?` | `u64` | `64 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/flatpak.rs` |
+| `disrobe-binfmt` | `MAX_DESCRIPTOR_FIELDS` | other | error: untyped `format!` | `usize` | `1024` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_DESCRIPTOR_TEXT_BYTES` | size | error: untyped `format!` | `usize` | `4096` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_DIR_SLOTS` | other | error: untyped `format!` | `usize` | `1 << 16` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_FAT_SLOTS_PER_TABLE` | other | error: untyped `format!` | `usize` | `1 << 20` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_META_RECORD_BYTES` | size | error: untyped `format!` | `u64` | `4096` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_TABLES` | other | error: untyped `format!` | `usize` | `64` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_TOTAL_ENTRIES` | count | error: untyped `format!` | `usize` | `1 << 21` | `crates/disrobe-binfmt/src/containers/forge.rs` |
+| `disrobe-binfmt` | `MAX_BLOCK_UNPACKED` | other | error: untyped `format!` | `u64` | `1 << 30` | `crates/disrobe-binfmt/src/containers/forge_block.rs` |
+| `disrobe-binfmt` | `MAX_CHUNKS_PER_BLOCK` | other | error: untyped `format!` | `usize` | `4096` | `crates/disrobe-binfmt/src/containers/forge_block.rs` |
+| `disrobe-binfmt` | `MAX_CHUNK_UNPACKED` | other | error: untyped `format!` | `u32` | `1 << 20` | `crates/disrobe-binfmt/src/containers/forge_block.rs` |
+| `disrobe-binfmt` | `MAX_DEPGRAPH_RECORDS` | count | error: untyped `format!` | `usize` | `1 << 24` | `crates/disrobe-binfmt/src/containers/forge_depgraph.rs` |
+| `disrobe-binfmt` | `MAX_FLAT_NAME_BYTES` | size | error: untyped `format!` | `usize` | `1024` | `crates/disrobe-binfmt/src/containers/forge_flat.rs` |
+| `disrobe-binfmt` | `MAX_FLAT_RECORDS` | count | error: untyped `format!` | `usize` | `1 << 22` | `crates/disrobe-binfmt/src/containers/forge_flat.rs` |
+| `disrobe-binfmt` | `MAX_SUBFILES_PER_ENTRY` | count | error: untyped `format!` | `usize` | `1 << 22` | `crates/disrobe-binfmt/src/containers/forge_flat.rs` |
 | `disrobe-binfmt` | `MAX_FILES` | count | silent: `return` in `walk_leaf_records` | `usize` | `2_000_000` | `crates/disrobe-binfmt/src/containers/hfsplus.rs` |
 | `disrobe-binfmt` | `MAX_FORK_EXTENTS` | other | error: `Error::Decompression` (DR-BINFMT-0007) | `usize` | `1 << 16` | `crates/disrobe-binfmt/src/containers/hfsplus.rs` |
 | `disrobe-binfmt` | `MAX_NODES` | count | error: `Error::Decompression` (DR-BINFMT-0007) | `usize` | `5_000_000` | `crates/disrobe-binfmt/src/containers/hfsplus.rs` |
@@ -111,12 +125,12 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-binfmt` | `MAX_MEMORY_REGIONS` | other | error: `Error::Minidump` (DR-BINFMT-0068); untyped `format!` | `u64` | `8_000_000` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
 | `disrobe-binfmt` | `MAX_MODULES` | other | error: `Error::Minidump` (DR-BINFMT-0068); untyped `format!` | `u32` | `262_144` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
 | `disrobe-binfmt` | `MAX_MODULE_NAME_BYTES` | size | silent: `return` in `read_minidump_string` | `u32` | `64 * 1024` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
-| `disrobe-binfmt` | `MAX_PDB_PATH_BYTES` | size | error: `CoffLayoutError::BigObjVersion`; `CoreError::PassFailure` (DR-CORE-0003); `Error::Arc` (DR-BINFMT-0055); 52 more | `usize` | `4096` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
+| `disrobe-binfmt` | `MAX_PDB_PATH_BYTES` | size | error: `CoffLayoutError::BigObjVersion`; `CoreError::PassFailure` (DR-CORE-0003); `Error::Arc` (DR-BINFMT-0055); 55 more | `usize` | `4096` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
 | `disrobe-binfmt` | `MAX_SIZE_OF_IMAGE` | size | error: `Error::Minidump` (DR-BINFMT-0068); untyped `format!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
 | `disrobe-binfmt` | `MAX_STREAMS` | other | error: `Error::Minidump` (DR-BINFMT-0068); untyped `format!` | `u32` | `65_536` | `crates/disrobe-binfmt/src/containers/minidump/mod.rs` |
 | `disrobe-binfmt` | `MAX_DEPTH` | recursion | silent: `break` in `walk_minixfs` | `usize` | `256` | `crates/disrobe-binfmt/src/containers/minixfs.rs` |
 | `disrobe-binfmt` | `MAX_FILES` | count | silent: `break` in `walk_minixfs` | `usize` | `500_000` | `crates/disrobe-binfmt/src/containers/minixfs.rs` |
-| `disrobe-binfmt` | `MAX_CONTAINER_METADATA_BYTES` | size | delegated: `super::admit_metadata_bytes()?` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/mod.rs` |
+| `disrobe-binfmt` | `MAX_CONTAINER_METADATA_BYTES` | size | error: `Error::QuotaExceeded` (DR-BINFMT-0009) | `usize` | `64 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/mod.rs` |
 | `disrobe-binfmt` | `MAX_STREAM_BYTES` | size | silent: `.take()` in `read_msi_extractable` | `u64` | `4 * 1024 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/msi.rs` |
 | `disrobe-binfmt` | `APPX_MANIFEST_READ_CAP` | other | error: `Error::ZipEntry` (DR-BINFMT-0004) | `u64` | `1 << 20` | `crates/disrobe-binfmt/src/containers/msix.rs` |
 | `disrobe-binfmt` | `LZMA_PROPS_LIMIT` | work | error: `nsis_err()` | `u8` | `9 * 5 * 5` | `crates/disrobe-binfmt/src/containers/nsis.rs` |
@@ -126,6 +140,12 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-binfmt` | `MAX_SOLID_BYTES` | size | error: `Error::Nsis` (DR-BINFMT-0033); `Error::other()`; `nsis_err()`; 1 more | `u64` | `8 * 1024 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/nsis.rs` |
 | `disrobe-binfmt` | `MAX_DEPTH` | recursion | silent: `break` in `walk_ntfs` | `usize` | `256` | `crates/disrobe-binfmt/src/containers/ntfs.rs` |
 | `disrobe-binfmt` | `MAX_FILES` | count | silent: `break` in `walk_ntfs` | `usize` | `500_000` | `crates/disrobe-binfmt/src/containers/ntfs.rs` |
+| `disrobe-binfmt` | `MAX_UNARY` | other | error: `OodleError::Malformed` | `u32` | `255` | `crates/disrobe-binfmt/src/containers/oodle/bits.rs` |
+| `disrobe-binfmt` | `MAX_ARRAY_LEN` | size | error: `OodleError::Malformed` | `usize` | `0x4_0000` | `crates/disrobe-binfmt/src/containers/oodle/entropy.rs` |
+| `disrobe-binfmt` | `MAX_CODE_LEN` | size | error: `OodleError::Malformed` | `u32` | `11` | `crates/disrobe-binfmt/src/containers/oodle/huffman.rs` |
+| `disrobe-binfmt` | `MAX_LONG_LENGTHS` | size | error: `OodleError::Malformed` | `u32` | `512` | `crates/disrobe-binfmt/src/containers/oodle/lz.rs` |
+| `disrobe-binfmt` | `MAX_ENTROPY_DEPTH` | recursion | error: `OodleError::Malformed` | `u32` | `8` | `crates/disrobe-binfmt/src/containers/oodle/mod.rs` |
+| `disrobe-binfmt` | `MAX_OUTPUT_BYTES` | output | error: `OodleError::OutputTooLarge` | `usize` | `1 << 30` | `crates/disrobe-binfmt/src/containers/oodle/mod.rs` |
 | `disrobe-binfmt` | `MAX_FILEZ_CONTENT` | other | silent: `.take()` in `inflate_raw_deflate` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-binfmt/src/containers/ostree.rs` |
 | `disrobe-binfmt` | `MAX_OSTREE_DEPTH` | recursion | error: `Error::Flatpak` (DR-BINFMT-0042); untyped `format!` | `u32` | `64` | `crates/disrobe-binfmt/src/containers/ostree.rs` |
 | `disrobe-binfmt` | `MAX_OSTREE_DIR_ENTRIES` | count | silent: `.take()` in `collect_refs_recursive`; `.take()` in `count_objects`; `.take()` in `reconstruct_delta_dirs` | `usize` | `4096` | `crates/disrobe-binfmt/src/containers/ostree.rs` |
@@ -143,7 +163,7 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-binfmt` | `MAX_FILTER_RECORD` | other | allocation: `with_capacity` in `read_filter_record_lz`; `with_capacity` in `read_filter_record_ppm` | `usize` | `0xffff` | `crates/disrobe-binfmt/src/containers/rar_unpack3.rs` |
 | `disrobe-binfmt` | `MAX_LENGTH` | size | silent: `for` range in `make_decode_table`; `while` condition in `decode_number` | `usize` | `15` | `crates/disrobe-binfmt/src/containers/rar_unpack3.rs` |
 | `disrobe-binfmt` | `MAX_FILTERS` | other | error: `Error::Decompression` (DR-BINFMT-0007) | `usize` | `1 << 20` | `crates/disrobe-binfmt/src/containers/rar_unpack5.rs` |
-| `disrobe-binfmt` | `MAX_FILTER_BLOCK_SIZE` | size | error: `.to_owned()`; `Error::Ar` (DR-BINFMT-0053); `Error::Arc` (DR-BINFMT-0055); 53 more | `u64` | `0x40_0000` | `crates/disrobe-binfmt/src/containers/rar_unpack5.rs` |
+| `disrobe-binfmt` | `MAX_FILTER_BLOCK_SIZE` | size | error: `.to_owned()`; `Error::Ar` (DR-BINFMT-0053); `Error::Arc` (DR-BINFMT-0055); 55 more | `u64` | `0x40_0000` | `crates/disrobe-binfmt/src/containers/rar_unpack5.rs` |
 | `disrobe-binfmt` | `MAX_LENGTH` | size | silent: `for` range in `make_decode_table`; `while` condition in `decode_number` | `usize` | `15` | `crates/disrobe-binfmt/src/containers/rar_unpack5.rs` |
 | `disrobe-binfmt` | `MAX_ROMFS_DEPTH` | recursion | silent: `continue` in `walk_romfs` | `usize` | `256` | `crates/disrobe-binfmt/src/containers/romfs.rs` |
 | `disrobe-binfmt` | `MAX_ROMFS_FILES` | count | silent: `return` in `walk_romfs` | `usize` | `500_000` | `crates/disrobe-binfmt/src/containers/romfs.rs` |
@@ -301,6 +321,8 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-core` | `MAX_ENTITY_NAME` | other | silent: fallback value in `html_entity_decode_with_scan` | `usize` | `32` | `crates/disrobe-core/src/codec/web_escape.rs` |
 | `disrobe-core` | `MAX_PUNYCODE_LABEL_OUTPUT` | output | error: `DecodeError::TooLarge` | `usize` | `1024` | `crates/disrobe-core/src/codec/web_escape.rs` |
 | `disrobe-core` | `MAX_WEB_INPUT` | other | error: `DecodeError::TooLarge` | `usize` | `1 << 24` | `crates/disrobe-core/src/codec/web_escape.rs` |
+| `disrobe-core` | `MAX_PATCHES_PER_PLAN` | other | error: `NeutralizeError::PlanTooLarge` (DR-CORE-0044) | `usize` | `4096` | `crates/disrobe-core/src/neutralize.rs` |
+| `disrobe-core` | `MAX_PATCH_LENGTH` | size | error: `NeutralizeError::PatchTooLong` (DR-CORE-0041) | `usize` | `64` | `crates/disrobe-core/src/neutralize.rs` |
 | `disrobe-core` | `MS_CAP` | other | silent: `return` in `pretty_duration` | `u128` | `5 * MS_PER_D` | `crates/disrobe-core/src/provenance.rs` |
 | `disrobe-core` | `MAX_NOTE_LINES` | other | error: `ProvenanceMapError::NoteTooManyLines` (DR-CORE-PMAP-0001) | `usize` | `2` | `crates/disrobe-core/src/provenance_map.rs` |
 | `disrobe-core` | `MAX_HISTORY_BLOBS` | other | silent: `break` in `report_git` | `usize` | `1_000_000` | `crates/disrobe-core/src/recon/git_history.rs` |
@@ -1202,6 +1224,8 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-mobile` | `ZIP_ENTRY_READ_CAP` | other | error: `Error::Zip` (DR-MOB-0002) | `usize` | `512 << 20` | `crates/disrobe-pass-mobile/src/lib.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_XML` | other | silent: `break` in `decode_archive` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
 | `disrobe-pass-mobile` | `MAX_VALUES_ENTRIES` | count | silent: `break` in `reconstruct_values` | `usize` | `16384` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
+| `disrobe-pass-native` | `MAX_CODE_BYTES` | size | recorded: flag `budget` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/anti_runtime.rs` |
+| `disrobe-pass-native` | `MAX_DECODED_INSTRUCTIONS` | other | silent: `while` condition in `decode` | `usize` | `4_000_000` | `crates/disrobe-pass-native/src/anti_runtime.rs` |
 | `disrobe-pass-native` | `MAX_HARVEST_INSNS` | other | silent: `break` in `harvested_hash_constants` | `usize` | `200_000` | `crates/disrobe-pass-native/src/api_hash.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_DEPTH` | recursion | silent: `while` condition in `build_chain` | `usize` | `12` | `crates/disrobe-pass-native/src/authenticode.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | silent: `return` in `build_cfg`; `return` in `collect_leaders` | `usize` | `256` | `crates/disrobe-pass-native/src/basic_blocks.rs` |
@@ -1331,6 +1355,9 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-native` | `MAX_ASPACK_MODULE_NAME_LEN` | size | silent: `continue` in `collect_aspack_import_layouts`; `for` range in `read_guest_cstr`; `return` in `reconstruct_aspack_import_descriptors` | `usize` | `260` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
 | `disrobe-pass-native` | `MAX_ASPACK_THUNK_CANDIDATES` | other | silent: `return` in `find_unique_thunk_tables` | `usize` | `1 << 20` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | error: `Error::GoblinParse` (DR-NATIVE-0005) | `u32` | `65_536` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_DESCRIPTORS` | other | silent: `for` range in `resolve_imports` | `usize` | `64` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_THUNKS` | other | silent: `for` range in `resolve_imports` | `usize` | `1024` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
+| `disrobe-pass-native` | `MAX_TLS_CALLBACKS` | other | silent: `for` range in `scan_tls_directory`; `for` range in `tls_callback_addresses` | `usize` | `16` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
 | `disrobe-pass-native` | `MAX_DECOMPRESSED_BYTES` | size | error: `Error::SignatureDb` (DR-NATIVE-0019) | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/kkrunchy_cca.rs` |
 | `disrobe-pass-native` | `OUTPUT_CAP` | output | error: `Error::SignatureDb` (DR-NATIVE-0019) | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/kkrunchy_k7_cm.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | error: `Error::GoblinParse` (DR-NATIVE-0005) | `u32` | `16_384` | `crates/disrobe-pass-native/src/packers/kkrunchy_phase2.rs` |
@@ -1354,16 +1381,16 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-native` | `MAX_RESOURCE_DEPTH` | recursion | silent: `return` in `walk_resource_dir` | `u32` | `8` | `crates/disrobe-pass-native/src/packers/pe_unbind.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | error: `Error::GoblinParse` (DR-NATIVE-0005) | `u32` | `65_536` | `crates/disrobe-pass-native/src/packers/pecompact_phase2.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | error: `Error::GoblinParse` (DR-NATIVE-0005) | `u32` | `16_384` | `crates/disrobe-pass-native/src/packers/petite_phase2.rs` |
-| `disrobe-pass-native` | `EMULATED_IMAGE_EXPANSION_LIMIT` | other | recorded: flag `int3_gauntlet_cleared` | `u64` | `4096` | `crates/disrobe-pass-native/src/packers/section_recovery.rs` |
+| `disrobe-pass-native` | `EMULATED_IMAGE_EXPANSION_LIMIT` | other | recorded: flag `int3_gauntlet_cleared`; flag `left_image`; flag `returned` | `u64` | `4096` | `crates/disrobe-pass-native/src/packers/section_recovery.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | silent: `return` in `decode_elf_extents_with_budget`; `return` in `walk_block_chain` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_BRUTE_FORCE_OFFSETS` | other | silent: `.min()` clamp in `decode_image_with_budget`; `.min()` clamp in `decode_multiblock_with_budget`; `.min()` clamp in `locate_structural` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 69 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 69 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 79 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 79 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_L_INFO_SCAN` | other | silent: `.min()` clamp in `elf_first_block_offset` | `usize` | `64 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_RESYNC_OFFSETS` | other | silent: `while` condition in `decode_elf_extents_with_budget` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_STRUCTURAL_CHECKSUM_BYTES` | size | silent: `return` in `reserve` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_TAIL_SCAN` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 69 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 79 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_CANDIDATES` | other | silent: `break` in `locate_structural` | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_EXPANSION` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `u64` | `64` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_CARVED_PROTECTED_BYTES` | size | recorded: flag `blob_truncated` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/vmprotect_carve.rs` |
@@ -1442,6 +1469,9 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-native` | `MAX_MAP_BYTES` | size | error: `Error::GoblinParse` (DR-NATIVE-0005); `Error::SignatureDb` (DR-NATIVE-0019); untyped `format!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/stub_emu/mem.rs` |
 | `disrobe-pass-native` | `MAX_MAP_PAGES` | other | error: `Error::GoblinParse` (DR-NATIVE-0005) | `u64` | `MAX_MAP_BYTES / (PAGE_SIZE as u64)` | `crates/disrobe-pass-native/src/stub_emu/mem.rs` |
 | `disrobe-pass-native` | `MAX_WRITE_LOG_ENTRIES` | count | recorded: flag `write_log_truncated` | `usize` | `1 << 19` | `crates/disrobe-pass-native/src/stub_emu/mem.rs` |
+| `disrobe-pass-native` | `MAX_INFO_FILL_BYTES` | size | silent: `.min()` clamp in `dispatch`; `.min()` clamp in `query_information_process` | `u64` | `64` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
+| `disrobe-pass-native` | `MAX_NEUTRALIZED_EVENTS` | other | recorded: flag `events_dropped` | `usize` | `256` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
+| `disrobe-pass-native` | `MAX_VEH_HANDLERS` | other | silent: fallback value in `dispatch` | `usize` | `16` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_PAGES` | other | silent: `?` on a checked operation in `apply_chains` | `usize` | `65_536` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_STEPS` | work | silent: `?` on a checked operation in `apply_chains` | `usize` | `65_536` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
 | `disrobe-pass-native` | `MAX_FIXUP_BYTES` | size | silent: `return` in `apply` | `usize` | `1 << 20` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
@@ -2267,7 +2297,7 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 
 ## Silent stops
 
-1038 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1044 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2757,6 +2787,7 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-mobile` | `MAX_LOOP_EXTENSION_ROUNDS` | `for` range in `extend_loop_body` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_XML` | `break` in `decode_archive` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
 | `disrobe-pass-mobile` | `MAX_VALUES_ENTRIES` | `break` in `reconstruct_values` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
+| `disrobe-pass-native` | `MAX_DECODED_INSTRUCTIONS` | `while` condition in `decode` | `crates/disrobe-pass-native/src/anti_runtime.rs` |
 | `disrobe-pass-native` | `MAX_HARVEST_INSNS` | `break` in `harvested_hash_constants` | `crates/disrobe-pass-native/src/api_hash.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_DEPTH` | `while` condition in `build_chain` | `crates/disrobe-pass-native/src/authenticode.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | `return` in `build_cfg`; `return` in `collect_leaders` | `crates/disrobe-pass-native/src/basic_blocks.rs` |
@@ -2851,6 +2882,9 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-native` | `MAX_ASPACK_IMPORT_DESCRIPTORS` | `break` in `find_aspack_runtime_import_directory`; `return` in `find_aspack_runtime_import_directory`; `return` in `reconstruct_aspack_import_descriptors` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
 | `disrobe-pass-native` | `MAX_ASPACK_MODULE_NAME_LEN` | `continue` in `collect_aspack_import_layouts`; `for` range in `read_guest_cstr`; `return` in `reconstruct_aspack_import_descriptors` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
 | `disrobe-pass-native` | `MAX_ASPACK_THUNK_CANDIDATES` | `return` in `find_unique_thunk_tables` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_DESCRIPTORS` | `for` range in `resolve_imports` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_THUNKS` | `for` range in `resolve_imports` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
+| `disrobe-pass-native` | `MAX_TLS_CALLBACKS` | `for` range in `scan_tls_directory`; `for` range in `tls_callback_addresses` | `crates/disrobe-pass-native/src/packers/emulated_unpack.rs` |
 | `disrobe-pass-native` | `MAX_POS_BITS` | fallback value in `decode_bit` | `crates/disrobe-pass-native/src/packers/mpress_lzma.rs` |
 | `disrobe-pass-native` | `MAX_POS_STATES` | fallback value in `decode_bit` | `crates/disrobe-pass-native/src/packers/mpress_lzma.rs` |
 | `disrobe-pass-native` | `MAX_IMPORTED_MODULES` | `break` in `locate_import_record`; `while` condition in `locate_import_descriptors` | `crates/disrobe-pass-native/src/packers/nspack_unpack.rs` |
@@ -2913,6 +2947,8 @@ Exceeded: error 907, recorded 190, panic 0, delegated 49, silent 1038, unclassif
 | `disrobe-pass-native` | `MAX_GROUP_SPAN` | no action in `reassemble_group` | `crates/disrobe-pass-native/src/stack_string.rs` |
 | `disrobe-pass-native` | `MAX_SCAN_INSNS` | `break` in `harvest_stack_stores` | `crates/disrobe-pass-native/src/stack_string.rs` |
 | `disrobe-pass-native` | `MAX_RIP_REFS` | `break` in `scan_rip_relative_refs` | `crates/disrobe-pass-native/src/stream_disasm.rs` |
+| `disrobe-pass-native` | `MAX_INFO_FILL_BYTES` | `.min()` clamp in `dispatch`; `.min()` clamp in `query_information_process` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
+| `disrobe-pass-native` | `MAX_VEH_HANDLERS` | fallback value in `dispatch` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_PAGES` | `?` on a checked operation in `apply_chains` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_STEPS` | `?` on a checked operation in `apply_chains` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
 | `disrobe-pass-native` | `MAX_FIXUP_BYTES` | `return` in `apply` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |

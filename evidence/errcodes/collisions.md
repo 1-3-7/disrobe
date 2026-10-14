@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 1992 |
-| Emission sites | 2366 |
-| Sites carrying a message | 2283 |
-| Distinct emitted codes | 1811 |
+| Scanned source files | 2009 |
+| Emission sites | 2390 |
+| Sites carrying a message | 2307 |
+| Distinct emitted codes | 1833 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 258 |
-| Emitted codes missing from the registry | 1634 |
+| Emitted codes missing from the registry | 1656 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (258)
@@ -18,7 +18,7 @@
 ### `DR-BINFMT-0009`
 
 - `` "extraction quota exceeded on entry `" ``: `crates/disrobe-pass-pyfreeze/src/cxfreeze/library_zip.rs:68`
-- `` "extraction quota exceeded on entry `{}`: {}" ``: `crates/disrobe-binfmt/src/error.rs:60`
+- `` "extraction quota exceeded on entry `{}`: {}" ``: `crates/disrobe-binfmt/src/error.rs:103`
 
 ### `DR-CLI-0001`
 
@@ -495,12 +495,12 @@
 ### `DR-CLI-0326`
 
 - `"annotation serialize: {}"`: `crates/disrobe-cli/src/cli/annot.rs:68`
-- `` "this binary was built without the `server` feature, so it carries no HTTP daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:2178`
+- `` "this binary was built without the `server` feature, so it carries no HTTP daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:2186`
 
 ### `DR-CLI-0327`
 
 - `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/annot.rs:71`
-- `` "this binary was built without the `prowl` feature, so it carries no archive and threat-intel harvester and no keyring for provider credentials. rebuild with `--features prowl`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:1886`
+- `` "this binary was built without the `prowl` feature, so it carries no archive and threat-intel harvester and no keyring for provider credentials. rebuild with `--features prowl`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:1893`
 
 ### `DR-CLI-0328`
 
@@ -1059,7 +1059,7 @@
 
 ### `DR-CLI-0843`
 
-- `` "`auto --llm` / `--metadata-pack-N` is not supported; the chain engine writes a single chain.json. Run the matching per-language subcommand (e.g. `disrobe py decompile <input> --llm`) to emit the llm metadata bundle." ``: `crates/disrobe-cli/src/main.rs:2083`
+- `` "`auto --llm` / `--metadata-pack-N` is not supported; the chain engine writes a single chain.json. Run the matching per-language subcommand (e.g. `disrobe py decompile <input> --llm`) to emit the llm metadata bundle." ``: `crates/disrobe-cli/src/main.rs:2091`
 - `"{} exceeds the {} JVM hierarchy-edge limit"`: `crates/disrobe-cli/src/cli/query.rs:175`
 
 ### `DR-CLI-0844`
@@ -1263,16 +1263,16 @@
 ### `DR-NATIVE-0001`
 
 - `"I/O error: {}"`: `crates/disrobe-pass-native/src/error.rs:9`
-- `` "ghidra-headless not on PATH (set GHIDRA_HOME or run `disrobe install-deps ghidra`). Native decompile uses Ghidra-headless to lift PE/ELF/Mach-O binaries to a pseudo-C-source." ``: `crates/disrobe-cli/src/cli/native.rs:1335`
+- `` "ghidra-headless not on PATH (set GHIDRA_HOME or run `disrobe install-deps ghidra`). Native decompile uses Ghidra-headless to lift PE/ELF/Mach-O binaries to a pseudo-C-source." ``: `crates/disrobe-cli/src/cli/native.rs:1572`
 
 ### `DR-NATIVE-0002`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1346`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1583`
 - `"input shorter than required ({} bytes, had {})"`: `crates/disrobe-pass-native/src/error.rs:12`
 
 ### `DR-NATIVE-0003`
 
-- `"cannot create ghidra project dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1349`, `crates/disrobe-cli/src/cli/native.rs:1353`
+- `"cannot create ghidra project dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1586`, `crates/disrobe-cli/src/cli/native.rs:1590`
 - `"unrecognized native container (no PE/ELF/Mach-O/COFF/MZ/NE/LE/LX magic)"`: `crates/disrobe-pass-native/src/error.rs:16`
 
 ### `DR-NATIVE-0004`
@@ -1283,169 +1283,169 @@
 ### `DR-NATIVE-0005`
 
 - `"goblin parse failure: {}"`: `crates/disrobe-pass-native/src/error.rs:23`
-- `"manifest serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:1411`
+- `"manifest serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:1648`
 
 ### `DR-NATIVE-0006`
 
-- `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/native.rs:1413`
+- `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/native.rs:1650`
 - `"gimli DWARF read failure: {}"`: `crates/disrobe-pass-native/src/error.rs:26`
 
 ### `DR-NATIVE-0007`
 
 - `"PDB read failure: {}"`: `crates/disrobe-pass-native/src/error.rs:29`
-- `"ghidra-headless exited with status {}; see {}"`: `crates/disrobe-cli/src/cli/native.rs:1417`
+- `"ghidra-headless exited with status {}; see {}"`: `crates/disrobe-cli/src/cli/native.rs:1654`
 
 ### `DR-NATIVE-0008`
 
 - `"STABS table malformed at offset {}"`: `crates/disrobe-pass-native/src/error.rs:32`
-- `"cannot create scripts dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1357`
+- `"cannot create scripts dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1594`
 
 ### `DR-NATIVE-0009`
 
-- `"cannot write decompile script {}: {}"`: `crates/disrobe-cli/src/cli/native.rs:1478`
-- `"ghidra-headless exceeded the {}s decompile budget and was terminated"`: `crates/disrobe-cli/src/cli/native.rs:1381`
+- `"cannot write decompile script {}: {}"`: `crates/disrobe-cli/src/cli/native.rs:1715`
+- `"ghidra-headless exceeded the {}s decompile budget and was terminated"`: `crates/disrobe-cli/src/cli/native.rs:1618`
 - `"unsupported architecture {} for disasm dispatch"`: `crates/disrobe-pass-native/src/error.rs:35`
 
 ### `DR-NATIVE-0010`
 
-- `"cannot read input for sourcemap: {}"`: `crates/disrobe-cli/src/cli/native.rs:1454`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:2636`
+- `"cannot read input for sourcemap: {}"`: `crates/disrobe-cli/src/cli/native.rs:1691`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:2873`
 - `"disassembler error in {}: {}"`: `crates/disrobe-pass-native/src/error.rs:38`
 
 ### `DR-NATIVE-0011`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:2647`
-- `"native --emit sourcemap: no recoverable DWARF in {}: {}"`: `crates/disrobe-cli/src/cli/native.rs:1458`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:2884`
+- `"native --emit sourcemap: no recoverable DWARF in {}: {}"`: `crates/disrobe-cli/src/cli/native.rs:1695`
 
 ### `DR-NATIVE-0030`
 
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:1684`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:1921`
 - `"{} unpacking refused by its output budget: {}"`: `crates/disrobe-pass-native/src/error.rs:95`
 
 ### `DR-NATIVE-0050`
 
-- `"aspack unpack failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:1590`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:2500`, `crates/disrobe-cli/src/cli/native.rs:3311`
+- `"aspack unpack failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:1827`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:2737`, `crates/disrobe-cli/src/cli/native.rs:3548`
 
 ### `DR-NATIVE-0052`
 
-- `"pecompact unpack failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:1599`
-- `"serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2545`, `crates/disrobe-cli/src/cli/native.rs:3395`, `crates/disrobe-cli/src/cli/native.rs:3446`
+- `"pecompact unpack failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:1836`
+- `"serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2782`, `crates/disrobe-cli/src/cli/native.rs:3632`, `crates/disrobe-cli/src/cli/native.rs:3683`
 
 ### `DR-NATIVE-0053`
 
-- `"cannot write entropy dump: {}"`: `crates/disrobe-cli/src/cli/native.rs:3397`, `crates/disrobe-cli/src/cli/native.rs:3448`
-- `"cannot write signatures: {}"`: `crates/disrobe-cli/src/cli/native.rs:2547`
+- `"cannot write entropy dump: {}"`: `crates/disrobe-cli/src/cli/native.rs:3634`, `crates/disrobe-cli/src/cli/native.rs:3685`
+- `"cannot write signatures: {}"`: `crates/disrobe-cli/src/cli/native.rs:2784`
 
 ### `DR-NATIVE-0054`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:3355`
-- `"cannot read .sig: {}"`: `crates/disrobe-cli/src/cli/native.rs:2507`
-- `` "yoda's crypter recovery is diff-based against the original binary (unpack_yodas_crypter needs both the packed and original images); single-file `native unpack` cannot recover it. detection works on the packed file alone; supply the original for a comparison-based carve." ``: `crates/disrobe-cli/src/cli/native.rs:1608`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:3592`
+- `"cannot read .sig: {}"`: `crates/disrobe-cli/src/cli/native.rs:2744`
+- `` "yoda's crypter recovery is diff-based against the original binary (unpack_yodas_crypter needs both the packed and original images); single-file `native unpack` cannot recover it. detection works on the packed file alone; supply the original for a comparison-based carve." ``: `crates/disrobe-cli/src/cli/native.rs:1845`
 
 ### `DR-NATIVE-0055`
 
-- `"FLIRT parse: {}"`: `crates/disrobe-cli/src/cli/native.rs:2509`
-- `"cannot write entropy svg: {}"`: `crates/disrobe-cli/src/cli/native.rs:3358`
+- `"FLIRT parse: {}"`: `crates/disrobe-cli/src/cli/native.rs:2746`
+- `"cannot write entropy svg: {}"`: `crates/disrobe-cli/src/cli/native.rs:3595`
 
 ### `DR-NATIVE-0060`
 
-- `"cannot read input metadata: {}"`: `crates/disrobe-cli/src/cli/native.rs:2045`
-- `"cannot read input: allocation of {} bytes failed"`: `crates/disrobe-cli/src/cli/native.rs:2073`, `crates/disrobe-cli/src/cli/native.rs:2082`, `crates/disrobe-cli/src/cli/native.rs:2120`
-- `"cannot read input: allocation size overflowed"`: `crates/disrobe-cli/src/cli/native.rs:2116`
-- `"cannot read input: configured size limit cannot be represented in memory"`: `crates/disrobe-cli/src/cli/native.rs:2064`
-- `"cannot read input: configured size limit overflowed"`: `crates/disrobe-cli/src/cli/native.rs:2068`
-- `"cannot read input: file exceeds the {}-byte limit"`: `crates/disrobe-cli/src/cli/native.rs:2053`, `crates/disrobe-cli/src/cli/native.rs:2106`
-- `"cannot read input: file size cannot be represented in memory"`: `crates/disrobe-cli/src/cli/native.rs:2059`
-- `"cannot read input: file size overflowed"`: `crates/disrobe-cli/src/cli/native.rs:2092`, `crates/disrobe-cli/src/cli/native.rs:2102`
-- `"cannot read input: path is not a regular file"`: `crates/disrobe-cli/src/cli/native.rs:2048`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:2042`, `crates/disrobe-cli/src/cli/native.rs:2097`, `crates/disrobe-cli/src/cli/native.rs:2595`
-- `"{} is a managed CLR wrapper; route the image through dotnet.classify for metadata, constants, strings, and IL body recovery"`: `crates/disrobe-cli/src/cli/native.rs:1626`
+- `"cannot read input metadata: {}"`: `crates/disrobe-cli/src/cli/native.rs:2282`
+- `"cannot read input: allocation of {} bytes failed"`: `crates/disrobe-cli/src/cli/native.rs:2310`, `crates/disrobe-cli/src/cli/native.rs:2319`, `crates/disrobe-cli/src/cli/native.rs:2357`
+- `"cannot read input: allocation size overflowed"`: `crates/disrobe-cli/src/cli/native.rs:2353`
+- `"cannot read input: configured size limit cannot be represented in memory"`: `crates/disrobe-cli/src/cli/native.rs:2301`
+- `"cannot read input: configured size limit overflowed"`: `crates/disrobe-cli/src/cli/native.rs:2305`
+- `"cannot read input: file exceeds the {}-byte limit"`: `crates/disrobe-cli/src/cli/native.rs:2290`, `crates/disrobe-cli/src/cli/native.rs:2343`
+- `"cannot read input: file size cannot be represented in memory"`: `crates/disrobe-cli/src/cli/native.rs:2296`
+- `"cannot read input: file size overflowed"`: `crates/disrobe-cli/src/cli/native.rs:2329`, `crates/disrobe-cli/src/cli/native.rs:2339`
+- `"cannot read input: path is not a regular file"`: `crates/disrobe-cli/src/cli/native.rs:2285`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:2279`, `crates/disrobe-cli/src/cli/native.rs:2334`, `crates/disrobe-cli/src/cli/native.rs:2832`
+- `"{} is a managed CLR wrapper; route the image through dotnet.classify for metadata, constants, strings, and IL body recovery"`: `crates/disrobe-cli/src/cli/native.rs:1863`
 
 ### `DR-NATIVE-0061`
 
-- `"cannot read .sig: {}"`: `crates/disrobe-cli/src/cli/native.rs:2599`
-- `"parse auditable section: {}"`: `crates/disrobe-cli/src/cli/native.rs:1982`
+- `"cannot read .sig: {}"`: `crates/disrobe-cli/src/cli/native.rs:2836`
+- `"parse auditable section: {}"`: `crates/disrobe-cli/src/cli/native.rs:2219`
 
 ### `DR-NATIVE-0062`
 
-- `"FLIRT parse: {}"`: `crates/disrobe-cli/src/cli/native.rs:2602`
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:2027`
+- `"FLIRT parse: {}"`: `crates/disrobe-cli/src/cli/native.rs:2839`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:2264`
 
 ### `DR-NATIVE-0063`
 
-- `"cannot create fingerprint dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:2617`
-- `"serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2004`, `crates/disrobe-cli/src/cli/native.rs:2019`
+- `"cannot create fingerprint dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:2854`
+- `"serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2241`, `crates/disrobe-cli/src/cli/native.rs:2256`
 
 ### `DR-NATIVE-0064`
 
-- `"cannot write sbom: {}"`: `crates/disrobe-cli/src/cli/native.rs:2030`
-- `"serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2620`
+- `"cannot write sbom: {}"`: `crates/disrobe-cli/src/cli/native.rs:2267`
+- `"serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2857`
 
 ### `DR-NATIVE-0065`
 
-- `"cannot write fingerprints: {}"`: `crates/disrobe-cli/src/cli/native.rs:2622`
-- `"{}"`: `crates/disrobe-cli/src/cli/native.rs:1997`
+- `"cannot write fingerprints: {}"`: `crates/disrobe-cli/src/cli/native.rs:2859`
+- `"{}"`: `crates/disrobe-cli/src/cli/native.rs:2234`
 
 ### `DR-NATIVE-0066`
 
-- `"SPDX 2.3 output requires --timestamp YYYY-MM-DDTHH:MM:SSZ"`: `crates/disrobe-cli/src/cli/native.rs:2009`
-- `` "native unpack needs an input file (or `--list` to show supported packers)" ``: `crates/disrobe-cli/src/cli/native.rs:1680`
+- `"SPDX 2.3 output requires --timestamp YYYY-MM-DDTHH:MM:SSZ"`: `crates/disrobe-cli/src/cli/native.rs:2246`
+- `` "native unpack needs an input file (or `--list` to show supported packers)" ``: `crates/disrobe-cli/src/cli/native.rs:1917`
 
 ### `DR-NATIVE-0067`
 
-- `"SPDX 2.3: {}"`: `crates/disrobe-cli/src/cli/native.rs:2014`
-- `"document timestamp: {}"`: `crates/disrobe-cli/src/cli/native.rs:1994`
+- `"SPDX 2.3: {}"`: `crates/disrobe-cli/src/cli/native.rs:2251`
+- `"document timestamp: {}"`: `crates/disrobe-cli/src/cli/native.rs:2231`
 
 ### `DR-NATIVE-0105`
 
-- `"symbol export: {}"`: `crates/disrobe-cli/src/cli/native.rs:1888`, `crates/disrobe-cli/src/cli/native.rs:1890`
-- `"symbol-map serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:1892`
+- `"symbol export: {}"`: `crates/disrobe-cli/src/cli/native.rs:2125`, `crates/disrobe-cli/src/cli/native.rs:2127`
+- `"symbol-map serialize: {}"`: `crates/disrobe-cli/src/cli/native.rs:2129`
 
 ### `DR-NATIVE-0161`
 
-- `"cannot parse native object: {}"`: `crates/disrobe-cli/src/cli/native.rs:202`
-- `"{}"`: `crates/disrobe-cli/src/cli/native.rs:3888`
+- `"cannot parse native object: {}"`: `crates/disrobe-cli/src/cli/native.rs:439`
+- `"{}"`: `crates/disrobe-cli/src/cli/native.rs:4125`
 
 ### `DR-NATIVE-0162`
 
-- `"empty --nop-range span"`: `crates/disrobe-cli/src/cli/native.rs:3890`
-- `"the in-tree decompiler supports x86-64, aarch64, arm32 and mips32 (got {}); use --backend ghidra for other architectures"`: `crates/disrobe-cli/src/cli/native.rs:206`
+- `"empty --nop-range span"`: `crates/disrobe-cli/src/cli/native.rs:4127`
+- `"the in-tree decompiler supports x86-64, aarch64, arm32 and mips32 (got {}); use --backend ghidra for other architectures"`: `crates/disrobe-cli/src/cli/native.rs:443`
 
 ### `DR-NATIVE-0163`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:229`
-- `"supply --bytes XX,XX and/or --nop-range A:B"`: `crates/disrobe-cli/src/cli/native.rs:3895`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:225`, `crates/disrobe-cli/src/cli/native.rs:466`
+- `"supply --bytes XX,XX and/or --nop-range A:B"`: `crates/disrobe-cli/src/cli/native.rs:4132`
 
 ### `DR-NATIVE-0164`
 
-- `"cannot write decompiled output: {}"`: `crates/disrobe-cli/src/cli/native.rs:418`
-- `"patch failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:3900`
+- `"cannot write decompiled output: {}"`: `crates/disrobe-cli/src/cli/native.rs:655`
+- `"patch failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:4137`
 
 ### `DR-NATIVE-0165`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:3911`
-- `"serialize manifest: {}"`: `crates/disrobe-cli/src/cli/native.rs:449`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:4148`
+- `"serialize manifest: {}"`: `crates/disrobe-cli/src/cli/native.rs:686`
 
 ### `DR-NATIVE-0166`
 
-- `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/native.rs:451`
-- `"cannot write patched image: {}"`: `crates/disrobe-cli/src/cli/native.rs:3914`
+- `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/native.rs:688`
+- `"cannot write patched image: {}"`: `crates/disrobe-cli/src/cli/native.rs:4151`
 
 ### `DR-NATIVE-0167`
 
-- `"serialize recovered types: {}"`: `crates/disrobe-cli/src/cli/native.rs:400`
-- `"{}"`: `crates/disrobe-cli/src/cli/native.rs:3883`
+- `"serialize recovered types: {}"`: `crates/disrobe-cli/src/cli/native.rs:637`
+- `"{}"`: `crates/disrobe-cli/src/cli/native.rs:4120`
 
 ### `DR-NATIVE-0170`
 
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:986`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:3935`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/native.rs:1223`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/native.rs:4172`
 
 ### `DR-NATIVE-0171`
 
-- `"cannot write decompiled output: {}"`: `crates/disrobe-cli/src/cli/native.rs:1184`
-- `"signature generation failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:3937`
+- `"cannot write decompiled output: {}"`: `crates/disrobe-cli/src/cli/native.rs:1421`
+- `"signature generation failed: {}"`: `crates/disrobe-cli/src/cli/native.rs:4174`
 
 ### `DR-NATIVE-0209`
 
@@ -1467,7 +1467,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:159`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1634)
+## Emitted codes missing from the registry (1656)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -1530,70 +1530,70 @@
 - `DR-BEAM-0909`: `crates/disrobe-pass-beam/src/chain_detector.rs:176`
 - `DR-BEH-0050`: `crates/disrobe-cli/src/cli/behavior.rs:230`
 - `DR-BEH-0051`: `crates/disrobe-cli/src/cli/behavior.rs:249`
-- `DR-BINFMT-0001`: `crates/disrobe-binfmt/src/error.rs:36`
-- `DR-BINFMT-0002`: `crates/disrobe-binfmt/src/error.rs:39`
-- `DR-BINFMT-0003`: `crates/disrobe-binfmt/src/error.rs:42`
-- `DR-BINFMT-0004`: `crates/disrobe-binfmt/src/error.rs:45`
-- `DR-BINFMT-0005`: `crates/disrobe-binfmt/src/error.rs:48`
-- `DR-BINFMT-0006`: `crates/disrobe-binfmt/src/error.rs:51`
-- `DR-BINFMT-0007`: `crates/disrobe-binfmt/src/error.rs:54`
-- `DR-BINFMT-0008`: `crates/disrobe-binfmt/src/error.rs:57`
-- `DR-BINFMT-0009`: `crates/disrobe-binfmt/src/error.rs:60`, `crates/disrobe-pass-pyfreeze/src/cxfreeze/library_zip.rs:68`
-- `DR-BINFMT-0010`: `crates/disrobe-binfmt/src/error.rs:63`
-- `DR-BINFMT-0011`: `crates/disrobe-binfmt/src/error.rs:66`
-- `DR-BINFMT-0012`: `crates/disrobe-binfmt/src/error.rs:69`
-- `DR-BINFMT-0013`: `crates/disrobe-binfmt/src/error.rs:72`
-- `DR-BINFMT-0015`: `crates/disrobe-binfmt/src/error.rs:76`
-- `DR-BINFMT-0016`: `crates/disrobe-binfmt/src/error.rs:80`
-- `DR-BINFMT-0017`: `crates/disrobe-binfmt/src/error.rs:83`
-- `DR-BINFMT-0018`: `crates/disrobe-binfmt/src/error.rs:86`
-- `DR-BINFMT-0022`: `crates/disrobe-binfmt/src/error.rs:89`
-- `DR-BINFMT-0023`: `crates/disrobe-binfmt/src/error.rs:92`
-- `DR-BINFMT-0024`: `crates/disrobe-binfmt/src/error.rs:95`
-- `DR-BINFMT-0025`: `crates/disrobe-binfmt/src/error.rs:102`
-- `DR-BINFMT-0026`: `crates/disrobe-binfmt/src/error.rs:105`
-- `DR-BINFMT-0029`: `crates/disrobe-binfmt/src/error.rs:111`
-- `DR-BINFMT-0030`: `crates/disrobe-binfmt/src/error.rs:114`
-- `DR-BINFMT-0031`: `crates/disrobe-binfmt/src/error.rs:117`
-- `DR-BINFMT-0032`: `crates/disrobe-binfmt/src/error.rs:120`
-- `DR-BINFMT-0033`: `crates/disrobe-binfmt/src/error.rs:123`
-- `DR-BINFMT-0034`: `crates/disrobe-binfmt/src/error.rs:126`
-- `DR-BINFMT-0035`: `crates/disrobe-binfmt/src/error.rs:129`
-- `DR-BINFMT-0036`: `crates/disrobe-binfmt/src/error.rs:132`
-- `DR-BINFMT-0037`: `crates/disrobe-binfmt/src/error.rs:135`
-- `DR-BINFMT-0038`: `crates/disrobe-binfmt/src/error.rs:138`
-- `DR-BINFMT-0039`: `crates/disrobe-binfmt/src/error.rs:141`
-- `DR-BINFMT-0040`: `crates/disrobe-binfmt/src/error.rs:144`
-- `DR-BINFMT-0042`: `crates/disrobe-binfmt/src/error.rs:147`
-- `DR-BINFMT-0043`: `crates/disrobe-binfmt/src/error.rs:150`
-- `DR-BINFMT-0044`: `crates/disrobe-binfmt/src/error.rs:153`
-- `DR-BINFMT-0045`: `crates/disrobe-binfmt/src/error.rs:156`
-- `DR-BINFMT-0046`: `crates/disrobe-binfmt/src/error.rs:159`
-- `DR-BINFMT-0047`: `crates/disrobe-binfmt/src/error.rs:162`
-- `DR-BINFMT-0048`: `crates/disrobe-binfmt/src/error.rs:165`
-- `DR-BINFMT-0049`: `crates/disrobe-binfmt/src/error.rs:168`
-- `DR-BINFMT-0050`: `crates/disrobe-binfmt/src/error.rs:171`
-- `DR-BINFMT-0051`: `crates/disrobe-binfmt/src/error.rs:174`
-- `DR-BINFMT-0052`: `crates/disrobe-binfmt/src/error.rs:177`
-- `DR-BINFMT-0053`: `crates/disrobe-binfmt/src/error.rs:180`
-- `DR-BINFMT-0054`: `crates/disrobe-binfmt/src/error.rs:183`
-- `DR-BINFMT-0055`: `crates/disrobe-binfmt/src/error.rs:186`
-- `DR-BINFMT-0056`: `crates/disrobe-binfmt/src/error.rs:189`
-- `DR-BINFMT-0057`: `crates/disrobe-binfmt/src/error.rs:192`
-- `DR-BINFMT-0058`: `crates/disrobe-binfmt/src/error.rs:195`
-- `DR-BINFMT-0059`: `crates/disrobe-binfmt/src/error.rs:198`
-- `DR-BINFMT-0060`: `crates/disrobe-binfmt/src/error.rs:201`
-- `DR-BINFMT-0061`: `crates/disrobe-binfmt/src/error.rs:204`
-- `DR-BINFMT-0062`: `crates/disrobe-binfmt/src/error.rs:207`
-- `DR-BINFMT-0063`: `crates/disrobe-binfmt/src/error.rs:210`
-- `DR-BINFMT-0064`: `crates/disrobe-binfmt/src/error.rs:213`
-- `DR-BINFMT-0069`: `crates/disrobe-binfmt/src/error.rs:228`
-- `DR-BINFMT-0070`: `crates/disrobe-binfmt/src/error.rs:231`
-- `DR-BINFMT-0071`: `crates/disrobe-binfmt/src/error.rs:234`
-- `DR-BINFMT-0072`: `crates/disrobe-binfmt/src/error.rs:237`
-- `DR-BINFMT-0073`: `crates/disrobe-binfmt/src/error.rs:240`
-- `DR-BINFMT-0074`: `crates/disrobe-binfmt/src/error.rs:246`
-- `DR-BINFMT-0075`: `crates/disrobe-binfmt/src/error.rs:250`
+- `DR-BINFMT-0001`: `crates/disrobe-binfmt/src/error.rs:79`
+- `DR-BINFMT-0002`: `crates/disrobe-binfmt/src/error.rs:82`
+- `DR-BINFMT-0003`: `crates/disrobe-binfmt/src/error.rs:85`
+- `DR-BINFMT-0004`: `crates/disrobe-binfmt/src/error.rs:88`
+- `DR-BINFMT-0005`: `crates/disrobe-binfmt/src/error.rs:91`
+- `DR-BINFMT-0006`: `crates/disrobe-binfmt/src/error.rs:94`
+- `DR-BINFMT-0007`: `crates/disrobe-binfmt/src/error.rs:97`
+- `DR-BINFMT-0008`: `crates/disrobe-binfmt/src/error.rs:100`
+- `DR-BINFMT-0009`: `crates/disrobe-binfmt/src/error.rs:103`, `crates/disrobe-pass-pyfreeze/src/cxfreeze/library_zip.rs:68`
+- `DR-BINFMT-0010`: `crates/disrobe-binfmt/src/error.rs:106`
+- `DR-BINFMT-0011`: `crates/disrobe-binfmt/src/error.rs:109`
+- `DR-BINFMT-0012`: `crates/disrobe-binfmt/src/error.rs:112`
+- `DR-BINFMT-0013`: `crates/disrobe-binfmt/src/error.rs:115`
+- `DR-BINFMT-0015`: `crates/disrobe-binfmt/src/error.rs:119`
+- `DR-BINFMT-0016`: `crates/disrobe-binfmt/src/error.rs:123`
+- `DR-BINFMT-0017`: `crates/disrobe-binfmt/src/error.rs:126`
+- `DR-BINFMT-0018`: `crates/disrobe-binfmt/src/error.rs:129`
+- `DR-BINFMT-0022`: `crates/disrobe-binfmt/src/error.rs:132`
+- `DR-BINFMT-0023`: `crates/disrobe-binfmt/src/error.rs:135`
+- `DR-BINFMT-0024`: `crates/disrobe-binfmt/src/error.rs:138`
+- `DR-BINFMT-0025`: `crates/disrobe-binfmt/src/error.rs:145`
+- `DR-BINFMT-0026`: `crates/disrobe-binfmt/src/error.rs:148`
+- `DR-BINFMT-0029`: `crates/disrobe-binfmt/src/error.rs:154`
+- `DR-BINFMT-0030`: `crates/disrobe-binfmt/src/error.rs:157`
+- `DR-BINFMT-0031`: `crates/disrobe-binfmt/src/error.rs:160`
+- `DR-BINFMT-0032`: `crates/disrobe-binfmt/src/error.rs:163`
+- `DR-BINFMT-0033`: `crates/disrobe-binfmt/src/error.rs:166`
+- `DR-BINFMT-0034`: `crates/disrobe-binfmt/src/error.rs:169`
+- `DR-BINFMT-0035`: `crates/disrobe-binfmt/src/error.rs:172`
+- `DR-BINFMT-0036`: `crates/disrobe-binfmt/src/error.rs:175`
+- `DR-BINFMT-0037`: `crates/disrobe-binfmt/src/error.rs:178`
+- `DR-BINFMT-0038`: `crates/disrobe-binfmt/src/error.rs:181`
+- `DR-BINFMT-0039`: `crates/disrobe-binfmt/src/error.rs:184`
+- `DR-BINFMT-0040`: `crates/disrobe-binfmt/src/error.rs:187`
+- `DR-BINFMT-0042`: `crates/disrobe-binfmt/src/error.rs:190`
+- `DR-BINFMT-0043`: `crates/disrobe-binfmt/src/error.rs:193`
+- `DR-BINFMT-0044`: `crates/disrobe-binfmt/src/error.rs:196`
+- `DR-BINFMT-0045`: `crates/disrobe-binfmt/src/error.rs:199`
+- `DR-BINFMT-0046`: `crates/disrobe-binfmt/src/error.rs:202`
+- `DR-BINFMT-0047`: `crates/disrobe-binfmt/src/error.rs:205`
+- `DR-BINFMT-0048`: `crates/disrobe-binfmt/src/error.rs:208`
+- `DR-BINFMT-0049`: `crates/disrobe-binfmt/src/error.rs:211`
+- `DR-BINFMT-0050`: `crates/disrobe-binfmt/src/error.rs:214`
+- `DR-BINFMT-0051`: `crates/disrobe-binfmt/src/error.rs:217`
+- `DR-BINFMT-0052`: `crates/disrobe-binfmt/src/error.rs:220`
+- `DR-BINFMT-0053`: `crates/disrobe-binfmt/src/error.rs:223`
+- `DR-BINFMT-0054`: `crates/disrobe-binfmt/src/error.rs:226`
+- `DR-BINFMT-0055`: `crates/disrobe-binfmt/src/error.rs:229`
+- `DR-BINFMT-0056`: `crates/disrobe-binfmt/src/error.rs:232`
+- `DR-BINFMT-0057`: `crates/disrobe-binfmt/src/error.rs:235`
+- `DR-BINFMT-0058`: `crates/disrobe-binfmt/src/error.rs:238`
+- `DR-BINFMT-0059`: `crates/disrobe-binfmt/src/error.rs:241`
+- `DR-BINFMT-0060`: `crates/disrobe-binfmt/src/error.rs:244`
+- `DR-BINFMT-0061`: `crates/disrobe-binfmt/src/error.rs:247`
+- `DR-BINFMT-0062`: `crates/disrobe-binfmt/src/error.rs:250`
+- `DR-BINFMT-0063`: `crates/disrobe-binfmt/src/error.rs:253`
+- `DR-BINFMT-0064`: `crates/disrobe-binfmt/src/error.rs:256`
+- `DR-BINFMT-0069`: `crates/disrobe-binfmt/src/error.rs:271`
+- `DR-BINFMT-0070`: `crates/disrobe-binfmt/src/error.rs:274`
+- `DR-BINFMT-0071`: `crates/disrobe-binfmt/src/error.rs:277`
+- `DR-BINFMT-0072`: `crates/disrobe-binfmt/src/error.rs:280`
+- `DR-BINFMT-0073`: `crates/disrobe-binfmt/src/error.rs:283`
+- `DR-BINFMT-0074`: `crates/disrobe-binfmt/src/error.rs:289`
+- `DR-BINFMT-0075`: `crates/disrobe-binfmt/src/error.rs:293`
 - `DR-BINFMT-0076`: `crates/disrobe-binfmt/src/error.rs:8`
 - `DR-BINFMT-0077`: `crates/disrobe-binfmt/src/error.rs:10`
 - `DR-BINFMT-0078`: `crates/disrobe-binfmt/src/error.rs:12`
@@ -1605,6 +1605,13 @@
 - `DR-BINFMT-0084`: `crates/disrobe-binfmt/src/error.rs:26`
 - `DR-BINFMT-0085`: `crates/disrobe-binfmt/src/error.rs:29`
 - `DR-BINFMT-0086`: `crates/disrobe-binfmt/src/error.rs:33`
+- `DR-BINFMT-0087`: `crates/disrobe-binfmt/src/error.rs:37`
+- `DR-BINFMT-0088`: `crates/disrobe-binfmt/src/error.rs:43`
+- `DR-BINFMT-0089`: `crates/disrobe-binfmt/src/error.rs:45`
+- `DR-BINFMT-0090`: `crates/disrobe-binfmt/src/error.rs:48`
+- `DR-BINFMT-0091`: `crates/disrobe-binfmt/src/error.rs:55`
+- `DR-BINFMT-0092`: `crates/disrobe-binfmt/src/error.rs:62`
+- `DR-BINFMT-0093`: `crates/disrobe-binfmt/src/error.rs:71`
 - `DR-BINFMT-0901`: `crates/disrobe-binfmt/src/chain_detector.rs:393`, `crates/disrobe-binfmt/src/chain_detector.rs:398`
 - `DR-BINFMT-0903`: `crates/disrobe-binfmt/src/chain_detector.rs:364`
 - `DR-BINFMT-0904`: `crates/disrobe-binfmt/src/chain_detector.rs:88`
@@ -1721,8 +1728,8 @@
 - `DR-CLI-0268`: `crates/disrobe-cli/src/cli/install_deps.rs:106`
 - `DR-CLI-0269`: `crates/disrobe-cli/src/cli/self_update.rs:45`
 - `DR-CLI-0270`: `crates/disrobe-cli/src/cli/install/mod.rs:120`
-- `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2230`
-- `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2194`
+- `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2238`
+- `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2202`
 - `DR-CLI-0291`: `crates/disrobe-cli/src/cli/chain_v1.rs:612`, `crates/disrobe-cli/src/cli/chain_v1.rs:1320`
 - `DR-CLI-0292`: `crates/disrobe-cli/src/cli/chain_v1.rs:616`, `crates/disrobe-cli/src/cli/chain_v1.rs:628`
 - `DR-CLI-0293`: `crates/disrobe-cli/src/cli/chain_v1.rs:651`, `crates/disrobe-cli/src/cli/chain_v1.rs:758`, `crates/disrobe-cli/src/cli/chain_v1.rs:1379`
@@ -1752,8 +1759,8 @@
 - `DR-CLI-0323`: `crates/disrobe-cli/src/cli/annot.rs:39`, `crates/disrobe-cli/src/cli/context.rs:164`
 - `DR-CLI-0324`: `crates/disrobe-cli/src/cli/annot.rs:52`, `crates/disrobe-cli/src/cli/annot.rs:89`, `crates/disrobe-cli/src/cli/annot.rs:120`, `crates/disrobe-cli/src/cli/context.rs:186`
 - `DR-CLI-0325`: `crates/disrobe-cli/src/cli/annot.rs:64`, `crates/disrobe-cli/src/cli/context.rs:145`
-- `DR-CLI-0326`: `crates/disrobe-cli/src/cli/annot.rs:68`, `crates/disrobe-cli/src/main.rs:2178`
-- `DR-CLI-0327`: `crates/disrobe-cli/src/cli/annot.rs:71`, `crates/disrobe-cli/src/main.rs:1886`
+- `DR-CLI-0326`: `crates/disrobe-cli/src/cli/annot.rs:68`, `crates/disrobe-cli/src/main.rs:2186`
+- `DR-CLI-0327`: `crates/disrobe-cli/src/cli/annot.rs:71`, `crates/disrobe-cli/src/main.rs:1893`
 - `DR-CLI-0328`: `crates/disrobe-cli/src/cli/annot.rs:81`, `crates/disrobe-cli/src/cli/install_deps.rs:227`
 - `DR-CLI-0329`: `crates/disrobe-cli/src/cli/annot.rs:107`, `crates/disrobe-cli/src/cli/annot.rs:131`, `crates/disrobe-cli/src/cli/annot.rs:150`, `crates/disrobe-cli/src/cli/install_deps.rs:277`
 - `DR-CLI-0330`: `crates/disrobe-cli/src/cli/config.rs:145`, `crates/disrobe-cli/src/cli/rename.rs:54`
@@ -1763,7 +1770,7 @@
 - `DR-CLI-0334`: `crates/disrobe-cli/src/cli/config.rs:278`, `crates/disrobe-cli/src/cli/rename.rs:88`
 - `DR-CLI-0335`: `crates/disrobe-cli/src/cli/config.rs:287`, `crates/disrobe-cli/src/cli/rename.rs:90`
 - `DR-CLI-0336`: `crates/disrobe-cli/src/cli/config.rs:294`
-- `DR-CLI-0337`: `crates/disrobe-cli/src/main.rs:1727`
+- `DR-CLI-0337`: `crates/disrobe-cli/src/main.rs:1734`
 - `DR-CLI-0340`: `crates/disrobe-cli/src/cli/batch.rs:405`
 - `DR-CLI-0341`: `crates/disrobe-cli/src/cli/batch.rs:418`
 - `DR-CLI-0342`: `crates/disrobe-cli/src/cli/batch.rs:420`
@@ -2102,7 +2109,7 @@
 - `DR-CLI-0840`: `crates/disrobe-cli/src/cli/capabilities.rs:14`, `crates/disrobe-cli/src/cli/query.rs:111`
 - `DR-CLI-0841`: `crates/disrobe-cli/src/cli/capabilities.rs:28`, `crates/disrobe-cli/src/cli/query.rs:117`
 - `DR-CLI-0842`: `crates/disrobe-cli/src/cli/capabilities.rs:41`, `crates/disrobe-cli/src/cli/query.rs:143`
-- `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:175`, `crates/disrobe-cli/src/main.rs:2083`
+- `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:175`, `crates/disrobe-cli/src/main.rs:2091`
 - `DR-CLI-0844`: `crates/disrobe-cli/src/cli/chain_v1.rs:620`, `crates/disrobe-cli/src/cli/extract.rs:40`, `crates/disrobe-cli/src/cli/luks1_input.rs:43`, `crates/disrobe-cli/src/cli/luks1_input.rs:46`, `crates/disrobe-cli/src/cli/luks1_input.rs:55`, `crates/disrobe-cli/src/cli/luks1_input.rs:62`, `crates/disrobe-cli/src/cli/query.rs:182`, `crates/disrobe-cli/src/cli/taint.rs:244`
 - `DR-CLI-0850`: `crates/disrobe-cli/src/cli/taint.rs:101`
 - `DR-CLI-0851`: `crates/disrobe-cli/src/cli/nir_source.rs:41`
@@ -2139,6 +2146,15 @@
 - `DR-CLI-0916`: `crates/disrobe-cli/src/cli/dotnet.rs:263`, `crates/disrobe-cli/src/cli/dotnet.rs:265`
 - `DR-CORE-0003`: `crates/disrobe-core/src/error.rs:8`
 - `DR-CORE-0004`: `crates/disrobe-core/src/error.rs:12`
+- `DR-CORE-0040`: `crates/disrobe-core/src/neutralize.rs:318`
+- `DR-CORE-0041`: `crates/disrobe-core/src/neutralize.rs:321`
+- `DR-CORE-0042`: `crates/disrobe-core/src/neutralize.rs:329`
+- `DR-CORE-0043`: `crates/disrobe-core/src/neutralize.rs:337`
+- `DR-CORE-0044`: `crates/disrobe-core/src/neutralize.rs:340`
+- `DR-CORE-0045`: `crates/disrobe-core/src/neutralize.rs:344`
+- `DR-CORE-0046`: `crates/disrobe-core/src/neutralize.rs:354`
+- `DR-CORE-0047`: `crates/disrobe-core/src/neutralize.rs:363`
+- `DR-CORE-0048`: `crates/disrobe-core/src/neutralize.rs:367`
 - `DR-CORE-0101`: `crates/disrobe-core/src/chain/spec.rs:158`
 - `DR-CORE-0102`: `crates/disrobe-core/src/chain/spec.rs:160`
 - `DR-CORE-0103`: `crates/disrobe-core/src/chain/spec.rs:162`
@@ -2575,25 +2591,25 @@
 - `DR-NAT-0942`: `crates/disrobe-pass-native/src/chain_detector.rs:172`
 - `DR-NAT-0943`: `crates/disrobe-pass-native/src/chain_detector.rs:179`
 - `DR-NAT-0944`: `crates/disrobe-pass-native/src/chain_detector.rs:252`, `crates/disrobe-pass-native/src/chain_detector.rs:652`
-- `DR-NATIVE-0001`: `crates/disrobe-cli/src/cli/native.rs:1335`, `crates/disrobe-pass-native/src/error.rs:9`
-- `DR-NATIVE-0002`: `crates/disrobe-cli/src/cli/native.rs:1346`, `crates/disrobe-pass-native/src/error.rs:12`
-- `DR-NATIVE-0003`: `crates/disrobe-cli/src/cli/native.rs:1349`, `crates/disrobe-cli/src/cli/native.rs:1353`, `crates/disrobe-pass-native/src/error.rs:16`
+- `DR-NATIVE-0001`: `crates/disrobe-cli/src/cli/native.rs:1572`, `crates/disrobe-pass-native/src/error.rs:9`
+- `DR-NATIVE-0002`: `crates/disrobe-cli/src/cli/native.rs:1583`, `crates/disrobe-pass-native/src/error.rs:12`
+- `DR-NATIVE-0003`: `crates/disrobe-cli/src/cli/native.rs:1586`, `crates/disrobe-cli/src/cli/native.rs:1590`, `crates/disrobe-pass-native/src/error.rs:16`
 - `DR-NATIVE-0004`: `crates/disrobe-cli/src/cli/native.rs:40`, `crates/disrobe-pass-native/src/error.rs:20`
-- `DR-NATIVE-0005`: `crates/disrobe-cli/src/cli/native.rs:1411`, `crates/disrobe-pass-native/src/error.rs:23`
-- `DR-NATIVE-0006`: `crates/disrobe-cli/src/cli/native.rs:1413`, `crates/disrobe-pass-native/src/error.rs:26`
-- `DR-NATIVE-0007`: `crates/disrobe-cli/src/cli/native.rs:1417`, `crates/disrobe-pass-native/src/error.rs:29`
-- `DR-NATIVE-0008`: `crates/disrobe-cli/src/cli/native.rs:1357`, `crates/disrobe-pass-native/src/error.rs:32`
-- `DR-NATIVE-0009`: `crates/disrobe-cli/src/cli/native.rs:1381`, `crates/disrobe-cli/src/cli/native.rs:1478`, `crates/disrobe-pass-native/src/error.rs:35`
-- `DR-NATIVE-0010`: `crates/disrobe-cli/src/cli/native.rs:1454`, `crates/disrobe-cli/src/cli/native.rs:2636`, `crates/disrobe-pass-native/src/error.rs:38`
-- `DR-NATIVE-0011`: `crates/disrobe-cli/src/cli/native.rs:1458`, `crates/disrobe-cli/src/cli/native.rs:2647`
-- `DR-NATIVE-0012`: `crates/disrobe-cli/src/cli/native.rs:2650`
-- `DR-NATIVE-0013`: `crates/disrobe-cli/src/cli/native.rs:2652`
+- `DR-NATIVE-0005`: `crates/disrobe-cli/src/cli/native.rs:1648`, `crates/disrobe-pass-native/src/error.rs:23`
+- `DR-NATIVE-0006`: `crates/disrobe-cli/src/cli/native.rs:1650`, `crates/disrobe-pass-native/src/error.rs:26`
+- `DR-NATIVE-0007`: `crates/disrobe-cli/src/cli/native.rs:1654`, `crates/disrobe-pass-native/src/error.rs:29`
+- `DR-NATIVE-0008`: `crates/disrobe-cli/src/cli/native.rs:1594`, `crates/disrobe-pass-native/src/error.rs:32`
+- `DR-NATIVE-0009`: `crates/disrobe-cli/src/cli/native.rs:1618`, `crates/disrobe-cli/src/cli/native.rs:1715`, `crates/disrobe-pass-native/src/error.rs:35`
+- `DR-NATIVE-0010`: `crates/disrobe-cli/src/cli/native.rs:1691`, `crates/disrobe-cli/src/cli/native.rs:2873`, `crates/disrobe-pass-native/src/error.rs:38`
+- `DR-NATIVE-0011`: `crates/disrobe-cli/src/cli/native.rs:1695`, `crates/disrobe-cli/src/cli/native.rs:2884`
+- `DR-NATIVE-0012`: `crates/disrobe-cli/src/cli/native.rs:2887`
+- `DR-NATIVE-0013`: `crates/disrobe-cli/src/cli/native.rs:2889`
 - `DR-NATIVE-0015`: `crates/disrobe-pass-native/src/error.rs:45`
 - `DR-NATIVE-0016`: `crates/disrobe-pass-native/src/error.rs:50`
 - `DR-NATIVE-0017`: `crates/disrobe-pass-native/src/error.rs:54`
 - `DR-NATIVE-0018`: `crates/disrobe-pass-native/src/error.rs:57`
 - `DR-NATIVE-0019`: `crates/disrobe-pass-native/src/error.rs:60`
-- `DR-NATIVE-0020`: `crates/disrobe-cli/src/cli/native.rs:3550`
+- `DR-NATIVE-0020`: `crates/disrobe-cli/src/cli/native.rs:3787`
 - `DR-NATIVE-0022`: `crates/disrobe-pass-native/src/error.rs:63`
 - `DR-NATIVE-0023`: `crates/disrobe-pass-native/src/error.rs:66`
 - `DR-NATIVE-0024`: `crates/disrobe-pass-native/src/error.rs:69`
@@ -2602,106 +2618,106 @@
 - `DR-NATIVE-0027`: `crates/disrobe-pass-native/src/error.rs:79`
 - `DR-NATIVE-0028`: `crates/disrobe-pass-native/src/error.rs:87`
 - `DR-NATIVE-0029`: `crates/disrobe-pass-native/src/error.rs:91`
-- `DR-NATIVE-0030`: `crates/disrobe-cli/src/cli/native.rs:1684`, `crates/disrobe-pass-native/src/error.rs:95`
-- `DR-NATIVE-0031`: `crates/disrobe-cli/src/cli/native.rs:1531`
-- `DR-NATIVE-0035`: `crates/disrobe-cli/src/cli/native.rs:1548`
-- `DR-NATIVE-0036`: `crates/disrobe-cli/src/cli/native.rs:1553`
-- `DR-NATIVE-0037`: `crates/disrobe-cli/src/cli/native.rs:1558`
-- `DR-NATIVE-0038`: `crates/disrobe-cli/src/cli/native.rs:1565`
-- `DR-NATIVE-0039`: `crates/disrobe-cli/src/cli/native.rs:1570`
-- `DR-NATIVE-0040`: `crates/disrobe-cli/src/cli/native.rs:1613`
-- `DR-NATIVE-0041`: `crates/disrobe-cli/src/cli/native.rs:1620`
-- `DR-NATIVE-0042`: `crates/disrobe-cli/src/cli/native.rs:1632`
-- `DR-NATIVE-0043`: `crates/disrobe-cli/src/cli/native.rs:1638`
-- `DR-NATIVE-0044`: `crates/disrobe-cli/src/cli/native.rs:1644`
-- `DR-NATIVE-0045`: `crates/disrobe-cli/src/cli/native.rs:1652`
-- `DR-NATIVE-0046`: `crates/disrobe-cli/src/cli/native.rs:1699`
-- `DR-NATIVE-0047`: `crates/disrobe-cli/src/cli/native.rs:1702`
-- `DR-NATIVE-0048`: `crates/disrobe-cli/src/cli/native.rs:1543`
-- `DR-NATIVE-0049`: `crates/disrobe-cli/src/cli/native.rs:1575`
-- `DR-NATIVE-0050`: `crates/disrobe-cli/src/cli/native.rs:1590`, `crates/disrobe-cli/src/cli/native.rs:2500`, `crates/disrobe-cli/src/cli/native.rs:3311`
-- `DR-NATIVE-0051`: `crates/disrobe-cli/src/cli/native.rs:2542`, `crates/disrobe-cli/src/cli/native.rs:3392`, `crates/disrobe-cli/src/cli/native.rs:3443`
-- `DR-NATIVE-0052`: `crates/disrobe-cli/src/cli/native.rs:1599`, `crates/disrobe-cli/src/cli/native.rs:2545`, `crates/disrobe-cli/src/cli/native.rs:3395`, `crates/disrobe-cli/src/cli/native.rs:3446`
-- `DR-NATIVE-0053`: `crates/disrobe-cli/src/cli/native.rs:2547`, `crates/disrobe-cli/src/cli/native.rs:3397`, `crates/disrobe-cli/src/cli/native.rs:3448`
-- `DR-NATIVE-0054`: `crates/disrobe-cli/src/cli/native.rs:1608`, `crates/disrobe-cli/src/cli/native.rs:2507`, `crates/disrobe-cli/src/cli/native.rs:3355`
-- `DR-NATIVE-0055`: `crates/disrobe-cli/src/cli/native.rs:2509`, `crates/disrobe-cli/src/cli/native.rs:3358`
-- `DR-NATIVE-0059`: `crates/disrobe-cli/src/cli/native.rs:1578`
-- `DR-NATIVE-0060`: `crates/disrobe-cli/src/cli/native.rs:1626`, `crates/disrobe-cli/src/cli/native.rs:2042`, `crates/disrobe-cli/src/cli/native.rs:2045`, `crates/disrobe-cli/src/cli/native.rs:2048`, `crates/disrobe-cli/src/cli/native.rs:2053`, `crates/disrobe-cli/src/cli/native.rs:2059`, `crates/disrobe-cli/src/cli/native.rs:2064`, `crates/disrobe-cli/src/cli/native.rs:2068`, `crates/disrobe-cli/src/cli/native.rs:2073`, `crates/disrobe-cli/src/cli/native.rs:2082`, `crates/disrobe-cli/src/cli/native.rs:2092`, `crates/disrobe-cli/src/cli/native.rs:2097`, `crates/disrobe-cli/src/cli/native.rs:2102`, `crates/disrobe-cli/src/cli/native.rs:2106`, `crates/disrobe-cli/src/cli/native.rs:2116`, `crates/disrobe-cli/src/cli/native.rs:2120`, `crates/disrobe-cli/src/cli/native.rs:2595`
-- `DR-NATIVE-0061`: `crates/disrobe-cli/src/cli/native.rs:1982`, `crates/disrobe-cli/src/cli/native.rs:2599`
-- `DR-NATIVE-0062`: `crates/disrobe-cli/src/cli/native.rs:2027`, `crates/disrobe-cli/src/cli/native.rs:2602`
-- `DR-NATIVE-0063`: `crates/disrobe-cli/src/cli/native.rs:2004`, `crates/disrobe-cli/src/cli/native.rs:2019`, `crates/disrobe-cli/src/cli/native.rs:2617`
-- `DR-NATIVE-0064`: `crates/disrobe-cli/src/cli/native.rs:2030`, `crates/disrobe-cli/src/cli/native.rs:2620`
-- `DR-NATIVE-0065`: `crates/disrobe-cli/src/cli/native.rs:1997`, `crates/disrobe-cli/src/cli/native.rs:2622`
-- `DR-NATIVE-0066`: `crates/disrobe-cli/src/cli/native.rs:1680`, `crates/disrobe-cli/src/cli/native.rs:2009`
-- `DR-NATIVE-0067`: `crates/disrobe-cli/src/cli/native.rs:1994`, `crates/disrobe-cli/src/cli/native.rs:2014`
-- `DR-NATIVE-0070`: `crates/disrobe-cli/src/cli/native.rs:2861`
-- `DR-NATIVE-0071`: `crates/disrobe-cli/src/cli/native.rs:2863`
-- `DR-NATIVE-0072`: `crates/disrobe-cli/src/cli/native.rs:2883`
-- `DR-NATIVE-0073`: `crates/disrobe-cli/src/cli/native.rs:2886`
-- `DR-NATIVE-0090`: `crates/disrobe-cli/src/cli/native.rs:2817`
-- `DR-NATIVE-0091`: `crates/disrobe-cli/src/cli/native.rs:2829`
-- `DR-NATIVE-0092`: `crates/disrobe-cli/src/cli/native.rs:2832`
-- `DR-NATIVE-0093`: `crates/disrobe-cli/src/cli/native.rs:2834`
-- `DR-NATIVE-0100`: `crates/disrobe-cli/src/cli/native.rs:1853`
-- `DR-NATIVE-0101`: `crates/disrobe-cli/src/cli/native.rs:1834`
-- `DR-NATIVE-0102`: `crates/disrobe-cli/src/cli/native.rs:1867`
-- `DR-NATIVE-0103`: `crates/disrobe-cli/src/cli/native.rs:1878`
-- `DR-NATIVE-0104`: `crates/disrobe-cli/src/cli/native.rs:1882`
-- `DR-NATIVE-0105`: `crates/disrobe-cli/src/cli/native.rs:1888`, `crates/disrobe-cli/src/cli/native.rs:1890`, `crates/disrobe-cli/src/cli/native.rs:1892`
-- `DR-NATIVE-0106`: `crates/disrobe-cli/src/cli/native.rs:1895`
-- `DR-NATIVE-0107`: `crates/disrobe-cli/src/cli/native.rs:1900`
-- `DR-NATIVE-0108`: `crates/disrobe-cli/src/cli/native.rs:1902`
-- `DR-NATIVE-0109`: `crates/disrobe-cli/src/cli/native.rs:1942`
-- `DR-NATIVE-0110`: `crates/disrobe-cli/src/cli/native.rs:1944`
-- `DR-NATIVE-0111`: `crates/disrobe-cli/src/cli/native.rs:1823`
-- `DR-NATIVE-0112`: `crates/disrobe-cli/src/cli/native.rs:1827`
-- `DR-NATIVE-0120`: `crates/disrobe-cli/src/cli/native.rs:2743`
-- `DR-NATIVE-0121`: `crates/disrobe-cli/src/cli/native.rs:2745`
-- `DR-NATIVE-0122`: `crates/disrobe-cli/src/cli/native.rs:2757`
-- `DR-NATIVE-0123`: `crates/disrobe-cli/src/cli/native.rs:2772`
-- `DR-NATIVE-0124`: `crates/disrobe-cli/src/cli/native.rs:2776`
-- `DR-NATIVE-0125`: `crates/disrobe-cli/src/cli/native.rs:2779`
-- `DR-NATIVE-0126`: `crates/disrobe-cli/src/cli/native.rs:2795`
-- `DR-NATIVE-0127`: `crates/disrobe-cli/src/cli/native.rs:2797`
-- `DR-NATIVE-0140`: `crates/disrobe-cli/src/cli/native.rs:2968`
-- `DR-NATIVE-0141`: `crates/disrobe-cli/src/cli/native.rs:2983`, `crates/disrobe-cli/src/cli/native.rs:3052`
-- `DR-NATIVE-0142`: `crates/disrobe-cli/src/cli/native.rs:2989`
-- `DR-NATIVE-0143`: `crates/disrobe-cli/src/cli/native.rs:3005`
-- `DR-NATIVE-0144`: `crates/disrobe-cli/src/cli/native.rs:3013`
-- `DR-NATIVE-0145`: `crates/disrobe-cli/src/cli/native.rs:3016`
-- `DR-NATIVE-0146`: `crates/disrobe-cli/src/cli/native.rs:3083`
-- `DR-NATIVE-0147`: `crates/disrobe-cli/src/cli/native.rs:3091`
-- `DR-NATIVE-0148`: `crates/disrobe-cli/src/cli/native.rs:2996`
-- `DR-NATIVE-0149`: `crates/disrobe-cli/src/cli/native.rs:3046`
-- `DR-NATIVE-0150`: `crates/disrobe-cli/src/cli/native.rs:3197`
-- `DR-NATIVE-0151`: `crates/disrobe-cli/src/cli/native.rs:3209`
-- `DR-NATIVE-0152`: `crates/disrobe-cli/src/cli/native.rs:3215`
-- `DR-NATIVE-0153`: `crates/disrobe-cli/src/cli/native.rs:3218`
-- `DR-NATIVE-0160`: `crates/disrobe-cli/src/cli/native.rs:199`, `crates/disrobe-cli/src/cli/native.rs:3878`
-- `DR-NATIVE-0161`: `crates/disrobe-cli/src/cli/native.rs:202`, `crates/disrobe-cli/src/cli/native.rs:3888`
-- `DR-NATIVE-0162`: `crates/disrobe-cli/src/cli/native.rs:206`, `crates/disrobe-cli/src/cli/native.rs:3890`
-- `DR-NATIVE-0163`: `crates/disrobe-cli/src/cli/native.rs:229`, `crates/disrobe-cli/src/cli/native.rs:3895`
-- `DR-NATIVE-0164`: `crates/disrobe-cli/src/cli/native.rs:418`, `crates/disrobe-cli/src/cli/native.rs:3900`
-- `DR-NATIVE-0165`: `crates/disrobe-cli/src/cli/native.rs:449`, `crates/disrobe-cli/src/cli/native.rs:3911`
-- `DR-NATIVE-0166`: `crates/disrobe-cli/src/cli/native.rs:451`, `crates/disrobe-cli/src/cli/native.rs:3914`
-- `DR-NATIVE-0167`: `crates/disrobe-cli/src/cli/native.rs:400`, `crates/disrobe-cli/src/cli/native.rs:3883`
-- `DR-NATIVE-0168`: `crates/disrobe-cli/src/cli/native.rs:402`
-- `DR-NATIVE-0169`: `crates/disrobe-cli/src/cli/native.rs:1274`
-- `DR-NATIVE-0170`: `crates/disrobe-cli/src/cli/native.rs:986`, `crates/disrobe-cli/src/cli/native.rs:3935`
-- `DR-NATIVE-0171`: `crates/disrobe-cli/src/cli/native.rs:1184`, `crates/disrobe-cli/src/cli/native.rs:3937`
-- `DR-NATIVE-0172`: `crates/disrobe-cli/src/cli/native.rs:1240`
-- `DR-NATIVE-0173`: `crates/disrobe-cli/src/cli/native.rs:1242`
-- `DR-NATIVE-0174`: `crates/disrobe-cli/src/cli/native.rs:970`
-- `DR-NATIVE-0175`: `crates/disrobe-cli/src/cli/native.rs:975`
-- `DR-NATIVE-0180`: `crates/disrobe-cli/src/cli/native.rs:4039`
-- `DR-NATIVE-0181`: `crates/disrobe-cli/src/cli/native.rs:4041`
-- `DR-NATIVE-0182`: `crates/disrobe-cli/src/cli/native.rs:4046`
-- `DR-NATIVE-0190`: `crates/disrobe-cli/src/cli/native.rs:2369`
-- `DR-NATIVE-0191`: `crates/disrobe-cli/src/cli/native.rs:2373`
-- `DR-NATIVE-0192`: `crates/disrobe-cli/src/cli/native.rs:2389`
-- `DR-NATIVE-0193`: `crates/disrobe-cli/src/cli/native.rs:2397`
-- `DR-NATIVE-0194`: `crates/disrobe-cli/src/cli/native.rs:2428`
-- `DR-NATIVE-0195`: `crates/disrobe-cli/src/cli/native.rs:2431`
+- `DR-NATIVE-0030`: `crates/disrobe-cli/src/cli/native.rs:1921`, `crates/disrobe-pass-native/src/error.rs:95`
+- `DR-NATIVE-0031`: `crates/disrobe-cli/src/cli/native.rs:1768`
+- `DR-NATIVE-0035`: `crates/disrobe-cli/src/cli/native.rs:1785`
+- `DR-NATIVE-0036`: `crates/disrobe-cli/src/cli/native.rs:1790`
+- `DR-NATIVE-0037`: `crates/disrobe-cli/src/cli/native.rs:1795`
+- `DR-NATIVE-0038`: `crates/disrobe-cli/src/cli/native.rs:1802`
+- `DR-NATIVE-0039`: `crates/disrobe-cli/src/cli/native.rs:1807`
+- `DR-NATIVE-0040`: `crates/disrobe-cli/src/cli/native.rs:1850`
+- `DR-NATIVE-0041`: `crates/disrobe-cli/src/cli/native.rs:1857`
+- `DR-NATIVE-0042`: `crates/disrobe-cli/src/cli/native.rs:1869`
+- `DR-NATIVE-0043`: `crates/disrobe-cli/src/cli/native.rs:1875`
+- `DR-NATIVE-0044`: `crates/disrobe-cli/src/cli/native.rs:1881`
+- `DR-NATIVE-0045`: `crates/disrobe-cli/src/cli/native.rs:1889`
+- `DR-NATIVE-0046`: `crates/disrobe-cli/src/cli/native.rs:1936`
+- `DR-NATIVE-0047`: `crates/disrobe-cli/src/cli/native.rs:1939`
+- `DR-NATIVE-0048`: `crates/disrobe-cli/src/cli/native.rs:1780`
+- `DR-NATIVE-0049`: `crates/disrobe-cli/src/cli/native.rs:1812`
+- `DR-NATIVE-0050`: `crates/disrobe-cli/src/cli/native.rs:1827`, `crates/disrobe-cli/src/cli/native.rs:2737`, `crates/disrobe-cli/src/cli/native.rs:3548`
+- `DR-NATIVE-0051`: `crates/disrobe-cli/src/cli/native.rs:2779`, `crates/disrobe-cli/src/cli/native.rs:3629`, `crates/disrobe-cli/src/cli/native.rs:3680`
+- `DR-NATIVE-0052`: `crates/disrobe-cli/src/cli/native.rs:1836`, `crates/disrobe-cli/src/cli/native.rs:2782`, `crates/disrobe-cli/src/cli/native.rs:3632`, `crates/disrobe-cli/src/cli/native.rs:3683`
+- `DR-NATIVE-0053`: `crates/disrobe-cli/src/cli/native.rs:2784`, `crates/disrobe-cli/src/cli/native.rs:3634`, `crates/disrobe-cli/src/cli/native.rs:3685`
+- `DR-NATIVE-0054`: `crates/disrobe-cli/src/cli/native.rs:1845`, `crates/disrobe-cli/src/cli/native.rs:2744`, `crates/disrobe-cli/src/cli/native.rs:3592`
+- `DR-NATIVE-0055`: `crates/disrobe-cli/src/cli/native.rs:2746`, `crates/disrobe-cli/src/cli/native.rs:3595`
+- `DR-NATIVE-0059`: `crates/disrobe-cli/src/cli/native.rs:1815`
+- `DR-NATIVE-0060`: `crates/disrobe-cli/src/cli/native.rs:1863`, `crates/disrobe-cli/src/cli/native.rs:2279`, `crates/disrobe-cli/src/cli/native.rs:2282`, `crates/disrobe-cli/src/cli/native.rs:2285`, `crates/disrobe-cli/src/cli/native.rs:2290`, `crates/disrobe-cli/src/cli/native.rs:2296`, `crates/disrobe-cli/src/cli/native.rs:2301`, `crates/disrobe-cli/src/cli/native.rs:2305`, `crates/disrobe-cli/src/cli/native.rs:2310`, `crates/disrobe-cli/src/cli/native.rs:2319`, `crates/disrobe-cli/src/cli/native.rs:2329`, `crates/disrobe-cli/src/cli/native.rs:2334`, `crates/disrobe-cli/src/cli/native.rs:2339`, `crates/disrobe-cli/src/cli/native.rs:2343`, `crates/disrobe-cli/src/cli/native.rs:2353`, `crates/disrobe-cli/src/cli/native.rs:2357`, `crates/disrobe-cli/src/cli/native.rs:2832`
+- `DR-NATIVE-0061`: `crates/disrobe-cli/src/cli/native.rs:2219`, `crates/disrobe-cli/src/cli/native.rs:2836`
+- `DR-NATIVE-0062`: `crates/disrobe-cli/src/cli/native.rs:2264`, `crates/disrobe-cli/src/cli/native.rs:2839`
+- `DR-NATIVE-0063`: `crates/disrobe-cli/src/cli/native.rs:2241`, `crates/disrobe-cli/src/cli/native.rs:2256`, `crates/disrobe-cli/src/cli/native.rs:2854`
+- `DR-NATIVE-0064`: `crates/disrobe-cli/src/cli/native.rs:2267`, `crates/disrobe-cli/src/cli/native.rs:2857`
+- `DR-NATIVE-0065`: `crates/disrobe-cli/src/cli/native.rs:2234`, `crates/disrobe-cli/src/cli/native.rs:2859`
+- `DR-NATIVE-0066`: `crates/disrobe-cli/src/cli/native.rs:1917`, `crates/disrobe-cli/src/cli/native.rs:2246`
+- `DR-NATIVE-0067`: `crates/disrobe-cli/src/cli/native.rs:2231`, `crates/disrobe-cli/src/cli/native.rs:2251`
+- `DR-NATIVE-0070`: `crates/disrobe-cli/src/cli/native.rs:3098`
+- `DR-NATIVE-0071`: `crates/disrobe-cli/src/cli/native.rs:3100`
+- `DR-NATIVE-0072`: `crates/disrobe-cli/src/cli/native.rs:3120`
+- `DR-NATIVE-0073`: `crates/disrobe-cli/src/cli/native.rs:3123`
+- `DR-NATIVE-0090`: `crates/disrobe-cli/src/cli/native.rs:3054`
+- `DR-NATIVE-0091`: `crates/disrobe-cli/src/cli/native.rs:3066`
+- `DR-NATIVE-0092`: `crates/disrobe-cli/src/cli/native.rs:3069`
+- `DR-NATIVE-0093`: `crates/disrobe-cli/src/cli/native.rs:3071`
+- `DR-NATIVE-0100`: `crates/disrobe-cli/src/cli/native.rs:2090`
+- `DR-NATIVE-0101`: `crates/disrobe-cli/src/cli/native.rs:2071`
+- `DR-NATIVE-0102`: `crates/disrobe-cli/src/cli/native.rs:2104`
+- `DR-NATIVE-0103`: `crates/disrobe-cli/src/cli/native.rs:2115`
+- `DR-NATIVE-0104`: `crates/disrobe-cli/src/cli/native.rs:2119`
+- `DR-NATIVE-0105`: `crates/disrobe-cli/src/cli/native.rs:2125`, `crates/disrobe-cli/src/cli/native.rs:2127`, `crates/disrobe-cli/src/cli/native.rs:2129`
+- `DR-NATIVE-0106`: `crates/disrobe-cli/src/cli/native.rs:2132`
+- `DR-NATIVE-0107`: `crates/disrobe-cli/src/cli/native.rs:2137`
+- `DR-NATIVE-0108`: `crates/disrobe-cli/src/cli/native.rs:2139`
+- `DR-NATIVE-0109`: `crates/disrobe-cli/src/cli/native.rs:2179`
+- `DR-NATIVE-0110`: `crates/disrobe-cli/src/cli/native.rs:2181`
+- `DR-NATIVE-0111`: `crates/disrobe-cli/src/cli/native.rs:2060`
+- `DR-NATIVE-0112`: `crates/disrobe-cli/src/cli/native.rs:2064`
+- `DR-NATIVE-0120`: `crates/disrobe-cli/src/cli/native.rs:2980`
+- `DR-NATIVE-0121`: `crates/disrobe-cli/src/cli/native.rs:2982`
+- `DR-NATIVE-0122`: `crates/disrobe-cli/src/cli/native.rs:2994`
+- `DR-NATIVE-0123`: `crates/disrobe-cli/src/cli/native.rs:3009`
+- `DR-NATIVE-0124`: `crates/disrobe-cli/src/cli/native.rs:3013`
+- `DR-NATIVE-0125`: `crates/disrobe-cli/src/cli/native.rs:3016`
+- `DR-NATIVE-0126`: `crates/disrobe-cli/src/cli/native.rs:3032`
+- `DR-NATIVE-0127`: `crates/disrobe-cli/src/cli/native.rs:3034`
+- `DR-NATIVE-0140`: `crates/disrobe-cli/src/cli/native.rs:3205`
+- `DR-NATIVE-0141`: `crates/disrobe-cli/src/cli/native.rs:3220`, `crates/disrobe-cli/src/cli/native.rs:3289`
+- `DR-NATIVE-0142`: `crates/disrobe-cli/src/cli/native.rs:3226`
+- `DR-NATIVE-0143`: `crates/disrobe-cli/src/cli/native.rs:3242`
+- `DR-NATIVE-0144`: `crates/disrobe-cli/src/cli/native.rs:3250`
+- `DR-NATIVE-0145`: `crates/disrobe-cli/src/cli/native.rs:3253`
+- `DR-NATIVE-0146`: `crates/disrobe-cli/src/cli/native.rs:3320`
+- `DR-NATIVE-0147`: `crates/disrobe-cli/src/cli/native.rs:3328`
+- `DR-NATIVE-0148`: `crates/disrobe-cli/src/cli/native.rs:3233`
+- `DR-NATIVE-0149`: `crates/disrobe-cli/src/cli/native.rs:3283`
+- `DR-NATIVE-0150`: `crates/disrobe-cli/src/cli/native.rs:3434`
+- `DR-NATIVE-0151`: `crates/disrobe-cli/src/cli/native.rs:3446`
+- `DR-NATIVE-0152`: `crates/disrobe-cli/src/cli/native.rs:3452`
+- `DR-NATIVE-0153`: `crates/disrobe-cli/src/cli/native.rs:3455`
+- `DR-NATIVE-0160`: `crates/disrobe-cli/src/cli/native.rs:324`, `crates/disrobe-cli/src/cli/native.rs:436`, `crates/disrobe-cli/src/cli/native.rs:4115`
+- `DR-NATIVE-0161`: `crates/disrobe-cli/src/cli/native.rs:439`, `crates/disrobe-cli/src/cli/native.rs:4125`
+- `DR-NATIVE-0162`: `crates/disrobe-cli/src/cli/native.rs:443`, `crates/disrobe-cli/src/cli/native.rs:4127`
+- `DR-NATIVE-0163`: `crates/disrobe-cli/src/cli/native.rs:225`, `crates/disrobe-cli/src/cli/native.rs:466`, `crates/disrobe-cli/src/cli/native.rs:4132`
+- `DR-NATIVE-0164`: `crates/disrobe-cli/src/cli/native.rs:655`, `crates/disrobe-cli/src/cli/native.rs:4137`
+- `DR-NATIVE-0165`: `crates/disrobe-cli/src/cli/native.rs:686`, `crates/disrobe-cli/src/cli/native.rs:4148`
+- `DR-NATIVE-0166`: `crates/disrobe-cli/src/cli/native.rs:688`, `crates/disrobe-cli/src/cli/native.rs:4151`
+- `DR-NATIVE-0167`: `crates/disrobe-cli/src/cli/native.rs:637`, `crates/disrobe-cli/src/cli/native.rs:4120`
+- `DR-NATIVE-0168`: `crates/disrobe-cli/src/cli/native.rs:639`
+- `DR-NATIVE-0169`: `crates/disrobe-cli/src/cli/native.rs:1511`
+- `DR-NATIVE-0170`: `crates/disrobe-cli/src/cli/native.rs:1223`, `crates/disrobe-cli/src/cli/native.rs:4172`
+- `DR-NATIVE-0171`: `crates/disrobe-cli/src/cli/native.rs:1421`, `crates/disrobe-cli/src/cli/native.rs:4174`
+- `DR-NATIVE-0172`: `crates/disrobe-cli/src/cli/native.rs:1477`
+- `DR-NATIVE-0173`: `crates/disrobe-cli/src/cli/native.rs:1479`
+- `DR-NATIVE-0174`: `crates/disrobe-cli/src/cli/native.rs:1207`
+- `DR-NATIVE-0175`: `crates/disrobe-cli/src/cli/native.rs:1212`
+- `DR-NATIVE-0180`: `crates/disrobe-cli/src/cli/native.rs:4276`
+- `DR-NATIVE-0181`: `crates/disrobe-cli/src/cli/native.rs:4278`
+- `DR-NATIVE-0182`: `crates/disrobe-cli/src/cli/native.rs:4283`
+- `DR-NATIVE-0190`: `crates/disrobe-cli/src/cli/native.rs:2606`
+- `DR-NATIVE-0191`: `crates/disrobe-cli/src/cli/native.rs:2610`
+- `DR-NATIVE-0192`: `crates/disrobe-cli/src/cli/native.rs:2626`
+- `DR-NATIVE-0193`: `crates/disrobe-cli/src/cli/native.rs:2634`
+- `DR-NATIVE-0194`: `crates/disrobe-cli/src/cli/native.rs:2665`
+- `DR-NATIVE-0195`: `crates/disrobe-cli/src/cli/native.rs:2668`
 - `DR-NATIVE-0200`: `crates/disrobe-cli/src/cli/native_match.rs:65`
 - `DR-NATIVE-0201`: `crates/disrobe-cli/src/cli/native_match.rs:67`
 - `DR-NATIVE-0202`: `crates/disrobe-pass-native/src/native_match.rs:31`
@@ -2712,15 +2728,21 @@
 - `DR-NATIVE-0207`: `crates/disrobe-cli/src/cli/native_match.rs:159`, `crates/disrobe-cli/src/cli/native_match.rs:164`, `crates/disrobe-cli/src/cli/native_match.rs:170`
 - `DR-NATIVE-0208`: `crates/disrobe-pass-native/src/native_match.rs:44`
 - `DR-NATIVE-0209`: `crates/disrobe-pass-native/src/native_match.rs:46`, `crates/disrobe-python/src/native.rs:67`
-- `DR-NATIVE-0210`: `crates/disrobe-cli/src/cli/native.rs:4098`
-- `DR-NATIVE-0211`: `crates/disrobe-cli/src/cli/native.rs:4123`
-- `DR-NATIVE-0212`: `crates/disrobe-cli/src/cli/native.rs:4103`, `crates/disrobe-cli/src/cli/native.rs:4126`
-- `DR-NATIVE-0213`: `crates/disrobe-cli/src/cli/native.rs:4128`
-- `DR-NATIVE-0214`: `crates/disrobe-cli/src/cli/native.rs:2205`
-- `DR-NATIVE-0215`: `crates/disrobe-cli/src/cli/native.rs:2208`
-- `DR-NATIVE-0216`: `crates/disrobe-cli/src/cli/native.rs:2267`
-- `DR-NATIVE-0217`: `crates/disrobe-cli/src/cli/native.rs:2296`
-- `DR-NATIVE-0218`: `crates/disrobe-cli/src/cli/native.rs:2299`
+- `DR-NATIVE-0210`: `crates/disrobe-cli/src/cli/native.rs:4335`
+- `DR-NATIVE-0211`: `crates/disrobe-cli/src/cli/native.rs:4360`
+- `DR-NATIVE-0212`: `crates/disrobe-cli/src/cli/native.rs:4340`, `crates/disrobe-cli/src/cli/native.rs:4363`
+- `DR-NATIVE-0213`: `crates/disrobe-cli/src/cli/native.rs:4365`
+- `DR-NATIVE-0214`: `crates/disrobe-cli/src/cli/native.rs:2442`
+- `DR-NATIVE-0215`: `crates/disrobe-cli/src/cli/native.rs:2445`
+- `DR-NATIVE-0216`: `crates/disrobe-cli/src/cli/native.rs:2504`
+- `DR-NATIVE-0217`: `crates/disrobe-cli/src/cli/native.rs:2533`
+- `DR-NATIVE-0218`: `crates/disrobe-cli/src/cli/native.rs:2536`
+- `DR-NATIVE-0219`: `crates/disrobe-cli/src/cli/native.rs:221`
+- `DR-NATIVE-0220`: `crates/disrobe-cli/src/cli/native.rs:233`
+- `DR-NATIVE-0221`: `crates/disrobe-cli/src/cli/native.rs:240`
+- `DR-NATIVE-0222`: `crates/disrobe-cli/src/cli/native.rs:243`
+- `DR-NATIVE-0223`: `crates/disrobe-cli/src/cli/native.rs:259`
+- `DR-NATIVE-0224`: `crates/disrobe-cli/src/cli/native.rs:263`
 - `DR-NATIVELANG-0001`: `crates/disrobe-pass-nativelang/src/error.rs:8`
 - `DR-NATIVELANG-0002`: `crates/disrobe-pass-nativelang/src/error.rs:11`
 - `DR-NATIVELANG-0003`: `crates/disrobe-pass-nativelang/src/error.rs:14`
