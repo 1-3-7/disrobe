@@ -2146,6 +2146,7 @@ dependencies = [
  "blake3",
  "disrobe-binfmt",
  "disrobe-core",
+ "disrobe-dataforensics",
  "disrobe-ir",
  "disrobe-llm-metadata",
  "disrobe-nir",

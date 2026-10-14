@@ -36,6 +36,8 @@ Most clients accept a JSON server entry. Point `command` at `disrobe` (or `disro
 |---|---|---|
 | `open_target` | `path` | Target id, size, hashes, native identity or the reason the file is not a native image. |
 | `identify_target` | `target_id` | Format plus each compiler, linker, packer, protector, installer, library and signature hit with evidence, confidence and the `disrobe` commands that handle it; Authenticode details for PE images. |
+| `inspect_sqlite` | `path` or `target_id`, optional `wal_path`, `table`, `rows`, `recover` | A SQLite database read without SQLite: header, schema, row counts and rows, the write-ahead log applied up to its last commit, the freelist, and with `recover` the deleted records ([details](../languages/sqlite.md)). |
+| `inspect_capture` | `path` or `target_id` | A pcap, pcapng, HAR or SAZ capture decoded: flows with reassembled TCP streams, DNS, TLS client hellos with SNI, ALPN and JA3, and HTTP exchanges ([details](../languages/captures.md)). |
 | `target_layout` | `target_id` | Sections with virtual address, size, file offset and file size; imports; exports. |
 | `list_functions` | `target_id`, optional `name_contains`, `offset`, `limit` | Discovered functions with name, address, end, instruction count, export flag and the `function_id` the navigation tools accept. |
 | `disassemble_function` | `target_id`, `function`, optional `max_instructions` | Instructions with branch and call targets resolved to names. |

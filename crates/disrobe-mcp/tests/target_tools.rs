@@ -675,3 +675,79 @@ async fn identify_target_reports_the_library_verdict_with_the_commands_that_hand
     }
     session.client.cancel().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn inspect_sqlite_reads_rows_written_by_cpython_sqlite3() {
+    let session: Session = session().await;
+    let db: std::path::PathBuf = session.root.path().join("app.db");
+    let script: String = format!(
+        "import sqlite3\nc = sqlite3.connect(r'{}')\nc.execute('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, n REAL)')\nc.executemany('INSERT INTO notes (body, n) VALUES (?, ?)', [('first', 1.5), ('second', -2.0)])\nc.commit()\nc.close()\n",
+        db.display()
+    );
+    let python: &str = ["python", "python3", "py"]
+        .into_iter()
+        .find(|candidate: &&str| {
+            std::process::Command::new(candidate)
+                .args(["-c", "import sqlite3"])
+                .status()
+                .is_ok_and(|status: std::process::ExitStatus| status.success())
+        })
+        .expect("the SQLite case needs CPython 3 with sqlite3 as its reference writer");
+    let status: std::process::ExitStatus = std::process::Command::new(python)
+        .args(["-c", &script])
+        .status()
+        .expect("run the reference writer");
+    assert!(status.success());
+    let report: Value = call(
+        &session.client,
+        "inspect_sqlite",
+        json!({ "path": "app.db", "rows": 10 }),
+    )
+    .await;
+    let table: &Value = &report["tables"][0];
+    assert_eq!(table["name"], json!("notes"));
+    assert_eq!(table["row_count"], json!(2));
+    assert_eq!(
+        table["rows"],
+        json!([
+            { "rowid": 1, "values": [{ "type": "integer", "value": 1 }, { "type": "text", "value": "first" }, { "type": "real", "value": 1.5 }] },
+            { "rowid": 2, "values": [{ "type": "integer", "value": 2 }, { "type": "text", "value": "second" }, { "type": "real", "value": -2.0 }] }
+        ])
+    );
+    session.client.cancel().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn inspect_capture_decodes_a_reference_capture() {
+    let session: Session = session().await;
+    let script: std::path::PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../disrobe-dataforensics/tests/support/make_captures.py");
+    let python: &str = ["python", "python3", "py"]
+        .into_iter()
+        .find(|candidate: &&str| {
+            std::process::Command::new(candidate)
+                .args(["-c", "import gzip"])
+                .status()
+                .is_ok_and(|status: std::process::ExitStatus| status.success())
+        })
+        .expect("the capture case needs CPython 3 as its reference writer");
+    let status: std::process::ExitStatus = std::process::Command::new(python)
+        .arg(&script)
+        .arg(session.root.path())
+        .status()
+        .expect("run the capture writer");
+    assert!(status.success());
+    let report: Value = call(
+        &session.client,
+        "inspect_capture",
+        json!({ "path": "capture.pcapng" }),
+    )
+    .await;
+    assert_eq!(report["format"], json!("pcapng"));
+    assert_eq!(
+        report["tls"][0]["hello"]["sni"],
+        json!("secure.example.org")
+    );
+    assert_eq!(report["http"].as_array().expect("http").len(), 2);
+    session.client.cancel().await.expect("shutdown");
+}

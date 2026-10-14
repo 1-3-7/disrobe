@@ -8,6 +8,12 @@ use disrobe_binfmt::{
     parse_native, parse_native_image,
 };
 use disrobe_core::{ExtractedString, StringTagging as Tagging, StringsOptions, strings_report};
+use disrobe_dataforensics::capture::{
+    CaptureError, CaptureOptions, CaptureReport, inspect as inspect_capture,
+};
+use disrobe_dataforensics::sqlite::{
+    InspectOptions, Limits as SqliteLimits, SqliteError, SqliteReport, inspect as inspect_sqlite,
+};
 use disrobe_ir::payload::DisasmPayload;
 use disrobe_pass_native::{
     IdentityReport, ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram,
@@ -42,6 +48,8 @@ const DEFAULT_CALL_PATH_DEPTH: u8 = 12;
 const MAX_CALL_PATH_DEPTH: u8 = 32;
 const MAX_LAYOUT_ROWS: usize = 4096;
 const MAX_DECOMPILE_CALLEES: usize = 256;
+const DEFAULT_SQLITE_ROWS: usize = 20;
+const MAX_SQLITE_ROWS: usize = 1000;
 const MAX_DATA_REFS: usize = 2_000_000;
 const MAX_POINTER_SLOTS: usize = 4_000_000;
 const MAX_POINTER_SCAN_BYTES: usize = 128 * 1024 * 1024;
@@ -692,6 +700,34 @@ pub(super) struct StringRowOut {
     pub references: Vec<ReferenceOut>,
 }
 
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(super) struct CaptureParams {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub(super) struct SqliteParams {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub wal_path: Option<String>,
+    #[serde(default)]
+    pub table: Option<String>,
+    #[serde(default)]
+    pub rows: Option<usize>,
+    #[serde(default)]
+    pub recover: Option<bool>,
+}
+
 #[rmcp::tool_router(router = target_tool_router, vis = "pub(super)")]
 impl DisrobeMcp {
     #[rmcp::tool(
@@ -1062,6 +1098,108 @@ impl DisrobeMcp {
     ) -> Result<Json<LocationOut>, ErrorData> {
         let target: Arc<Target> = self.workspace()?.get(&p.target_id)?;
         locate(&target, p.address.as_deref(), p.offset).map(Json)
+    }
+
+    #[rmcp::tool(
+        name = "inspect_capture",
+        description = "Decode a pcap, pcapng, HAR or Fiddler SAZ capture inside a workspace root (`path`) or an opened target (`target_id`): protocol counts, endpoints, flows with reassembled TCP streams, DNS questions and answers, TLS client hellos (SNI, ALPN, supported versions, JA3 and its MD5) and HTTP exchanges (method, host, target, status, content type, body sizes). Nothing is replayed or sent."
+    )]
+    fn inspect_capture(
+        &self,
+        Parameters(p): Parameters<CaptureParams>,
+    ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
+        let workspace: &Workspace = self.workspace()?;
+        let bytes: Vec<u8> = match (p.path.as_deref(), p.target_id.as_deref()) {
+            (Some(path), None) => workspace.read_path(path, MAX_TARGET_BYTES)?.1,
+            (None, Some(target_id)) => workspace.get(target_id)?.bytes.clone(),
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    "DR-MCP-0709: pass exactly one of `path` and `target_id`",
+                    None,
+                ));
+            }
+        };
+        let report: CaptureReport = inspect_capture(&bytes, &CaptureOptions::default()).map_err(
+            |error: CaptureError| ErrorData::invalid_params(format!("DR-MCP-0725: {error}"), None),
+        )?;
+        match serde_json::to_value(&report) {
+            Ok(serde_json::Value::Object(object)) => Ok(Json(object)),
+            Ok(_) => Err(ErrorData::internal_error(
+                "DR-MCP-0725: capture report serialized to a non-object value",
+                None,
+            )),
+            Err(error) => Err(ErrorData::internal_error(
+                format!("DR-MCP-0725: capture report serialize: {error}"),
+                None,
+            )),
+        }
+    }
+
+    #[rmcp::tool(
+        name = "inspect_sqlite",
+        description = "Read a SQLite database inside a workspace root (`path`) or an opened target (`target_id`) without SQLite: header, schema (tables with columns, indexes, views, triggers), row counts and the first `rows` rows per table (default 20, at most 1000; `table` narrows to one table), a write-ahead log (`wal_path`, or `<path>-wal` when it exists) applied up to its last valid commit, the freelist, and with `recover` the deleted records carved from freelist pages, freeblocks and unallocated space."
+    )]
+    fn inspect_sqlite(
+        &self,
+        Parameters(p): Parameters<SqliteParams>,
+    ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
+        let workspace: &Workspace = self.workspace()?;
+        let (database, sibling): (Vec<u8>, Option<String>) =
+            match (p.path.as_deref(), p.target_id.as_deref()) {
+                (Some(path), None) => {
+                    let (_, bytes): (PathBuf, Vec<u8>) =
+                        workspace.read_path(path, MAX_TARGET_BYTES)?;
+                    (bytes, Some(format!("{path}-wal")))
+                }
+                (None, Some(target_id)) => (workspace.get(target_id)?.bytes.clone(), None),
+                _ => {
+                    return Err(ErrorData::invalid_params(
+                        "DR-MCP-0709: pass exactly one of `path` and `target_id`",
+                        None,
+                    ));
+                }
+            };
+        let wal: Option<Vec<u8>> = match (p.wal_path.as_deref(), sibling) {
+            (Some(wal_path), _) => Some(workspace.read_path(wal_path, MAX_TARGET_BYTES)?.1),
+            (None, Some(candidate)) => workspace
+                .read_path(&candidate, MAX_TARGET_BYTES)
+                .ok()
+                .map(|(_, bytes): (PathBuf, Vec<u8>)| bytes),
+            (None, None) => None,
+        };
+        let rows: usize = match p.rows {
+            None => DEFAULT_SQLITE_ROWS,
+            Some(value) if value <= MAX_SQLITE_ROWS => value,
+            Some(_) => {
+                return Err(ErrorData::invalid_params(
+                    format!("DR-MCP-0724: rows must be at most {MAX_SQLITE_ROWS}"),
+                    None,
+                ));
+            }
+        };
+        let options: InspectOptions = InspectOptions {
+            limits: SqliteLimits {
+                rows_per_table: rows,
+                ..SqliteLimits::default()
+            },
+            only_table: p.table,
+            recover_deleted: p.recover.unwrap_or(false),
+        };
+        let report: SqliteReport =
+            inspect_sqlite(&database, wal.as_deref(), &options).map_err(|error: SqliteError| {
+                ErrorData::invalid_params(format!("DR-MCP-0724: {error}"), None)
+            })?;
+        match serde_json::to_value(&report) {
+            Ok(serde_json::Value::Object(object)) => Ok(Json(object)),
+            Ok(_) => Err(ErrorData::internal_error(
+                "DR-MCP-0724: SQLite report serialized to a non-object value",
+                None,
+            )),
+            Err(error) => Err(ErrorData::internal_error(
+                format!("DR-MCP-0724: SQLite report serialize: {error}"),
+                None,
+            )),
+        }
     }
 
     #[rmcp::tool(

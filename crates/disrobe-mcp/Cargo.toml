@@ -57,6 +57,7 @@ disrobe-binfmt = { workspace = true }
 disrobe-pass-native = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true, optional = true }
 disrobe-query = { workspace = true }
+disrobe-dataforensics = { workspace = true }
 disrobe-passes = { workspace = true, optional = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
