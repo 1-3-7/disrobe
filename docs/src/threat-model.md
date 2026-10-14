@@ -65,7 +65,7 @@ The decoder lives in `crates/disrobe-ir/src/envelope.rs` and is fuzzed against e
 
 ## Boundary 3: the network surface (`disrobe serve`)
 
-HTTP, gRPC, LSP, WebSocket, and MCP requests cross a client trust boundary. Analysis methods take inline bytes; MCP workspace methods have a separate, bounded filesystem contract.
+HTTP, gRPC, LSP, WebSocket, and MCP requests cross a client trust boundary. HTTP, gRPC, LSP and WebSocket analysis methods take inline bytes. MCP tools also read files by path, confined to the server's workspace roots after canonicalization; MCP workspace methods have a separate, bounded filesystem contract.
 
 - Analysis requests accept inline sample bytes rather than a sample path. MCP `annot` resolves a target beneath the current workspace before reading it and writing a sidecar; `rename` reads and writes the fixed `.disrobe/notes/renames.json` file. See the [daemon security posture](./cli/serve.md#security-posture).
 - All request bodies reject unknown fields via `#[serde(deny_unknown_fields)]`, closing field-smuggling and forward-compat-confusion attacks.
@@ -120,4 +120,4 @@ The threat model deliberately does **not** defend against:
 
 ## Reporting
 
-If you find a way to make a default path execute a sample, escape a container or MCP workspace boundary, accept a hash-mismatched envelope, or make an inline-byte analysis method read a client-selected path, report it privately through the [Security policy](./security.md).
+If you find a way to make a default path execute a sample, escape a container, an MCP workspace root or an MCP workspace boundary, accept a hash-mismatched envelope, or make an inline-byte analysis method read a client-selected path, report it privately through the [Security policy](./security.md).
