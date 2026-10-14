@@ -101,6 +101,7 @@ pub mod name_disambig;
 pub mod oat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod obfuscators;
+pub(crate) mod opaque_flow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod proguard;
 #[cfg(not(target_arch = "wasm32"))]
@@ -112,16 +113,22 @@ pub mod rasp;
 #[cfg(feature = "semantic-reach")]
 pub mod reach;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod rename;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod scala;
 pub mod sccp;
 pub(crate) mod signature;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod smali;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod source_recovery;
 pub mod stackmap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod string_recovery;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stub_emulator;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod yguard;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use android_backend::{
@@ -296,6 +303,8 @@ pub use proguard_fingerprint::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use protectors::name_keyed::{NameKeyedCipher, NameKeyedRecovery, recover_name_keyed};
 #[cfg(not(target_arch = "wasm32"))]
+pub use protectors::{InlinedStrings, inline_recovered_strings};
+#[cfg(not(target_arch = "wasm32"))]
 pub use protectors::{
     PeelStatus, PeeledClass, ProtectorFamily as ProtectorFamilyKind, ProtectorPeelReport,
     allatori as allatori_protector, dasho as dasho_protector,
@@ -312,10 +321,14 @@ pub use reach::{
     capture_observations,
 };
 #[cfg(not(target_arch = "wasm32"))]
+pub use rename::{RenameReport, rename_classfile};
+#[cfg(not(target_arch = "wasm32"))]
 pub use scala::{Demangled as ScalaDemangled, demangle as demangle_scala};
 pub use sccp::{SccpReport, simplify_flattened_cfg};
 #[cfg(not(target_arch = "wasm32"))]
 pub use smali::{SmaliEmission, emit as emit_smali, emit_method_body, emit_method_body_from_insns};
+#[cfg(not(target_arch = "wasm32"))]
+pub use source_recovery::{RecoveredUnit, SourceRecovery, SourceRecoveryOptions, recover_sources};
 pub use stackmap::{
     StackMapReport, VerificationType, analyze_stack_map, entry_frame_locals, required_frame_offsets,
 };
@@ -328,5 +341,7 @@ pub use string_recovery::{
 pub use stub_emulator::{
     DecryptStub, EmulationError, decrypt_constant, emulate_char_array, find_char_array_decrypt,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use yguard::parse_renamelog as parse_yguard_renamelog;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

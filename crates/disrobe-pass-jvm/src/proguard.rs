@@ -492,7 +492,7 @@ pub fn descriptor_params_slice(descriptor: &str) -> Option<&str> {
     Some(&descriptor[open + 1..close])
 }
 
-fn select_overload<'a>(
+pub(crate) fn select_overload<'a>(
     overloads: &'a [MethodMapping],
     descriptor: Option<&str>,
 ) -> Option<&'a MethodMapping> {
@@ -518,7 +518,7 @@ fn select_overload<'a>(
     overloads.first()
 }
 
-fn select_field<'a>(
+pub(crate) fn select_field<'a>(
     overloads: &'a [FieldMapping],
     descriptor_type: Option<&str>,
 ) -> Option<&'a FieldMapping> {

@@ -643,7 +643,7 @@ static CATALOG: [JvmCatalogEntry; CATALOG_COUNT] = [
         id: "jvm-jbco",
         display_name: "JBCO",
         aliases: &["jbco", "soot"],
-        quality: SupportQuality::Partial,
+        quality: SupportQuality::Full,
     },
 ];
 
@@ -1099,6 +1099,8 @@ mod tests {
         assert_eq!(find("jvm-blackobfuscator"), SupportQuality::Full);
         assert_eq!(find("jvm-proguard"), SupportQuality::Partial);
         assert_eq!(find("jvm-yguard"), SupportQuality::Partial);
+        assert_eq!(find("jvm-jbco"), SupportQuality::Full);
+        assert_eq!(find("jvm-skidsuite2"), SupportQuality::Partial);
     }
 
     #[test]

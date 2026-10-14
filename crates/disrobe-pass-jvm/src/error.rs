@@ -126,6 +126,12 @@ pub enum Error {
     #[error("DR-JVM-0093: method body not recovered: {reason}")]
     UnrecoveredRegion { reason: &'static str },
 
+    #[error("DR-JVM-0100: too many classes for source recovery: {0}")]
+    TooManyClasses(usize),
+
+    #[error("DR-JVM-0101: duplicate class in source recovery input: {0}")]
+    DuplicateClass(String),
+
     #[error("DR-JVM-0092: not an Android App Bundle (missing BundleConfig.pb at zip root)")]
     NotAab,
 

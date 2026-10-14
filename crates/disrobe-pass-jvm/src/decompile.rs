@@ -18,6 +18,7 @@ use crate::decompile_struct::{
 use crate::descriptor::{self, JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
 use crate::frame_infer::{DeferredAllocationPlan, plan_deferred_allocations};
+use crate::opaque_flow::{FunctionKey, OpaqueStatics, PureFunction};
 use crate::stackmap::VerificationType;
 
 pub const ACC_PUBLIC: u16 = 0x0001;
@@ -127,11 +128,25 @@ pub fn decompile_class_named(cf: &ClassFile) -> (String, DecompiledClass) {
     )
 }
 
-fn simple_class_name(binary: &str) -> String {
-    descriptor::java_writable_identifier(binary.rsplit('/').next().unwrap_or(binary))
+pub(crate) fn simple_class_name(binary: &str) -> String {
+    let simple: &str = binary.rsplit('/').next().unwrap_or(binary);
+    let numbered_segment: bool = simple
+        .split('$')
+        .skip(1)
+        .any(|segment: &str| segment.starts_with(|c: char| c.is_ascii_digit()));
+    if !numbered_segment {
+        return descriptor::java_writable_identifier(simple);
+    }
+    simple
+        .split('$')
+        .map(descriptor::java_writable_identifier)
+        .collect::<Vec<String>>()
+        .join("$")
 }
 
 fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
+    let _opaque_statics: ThreadLocalRestore<OpaqueStatics> =
+        replace_thread_local(&OPAQUE_STATICS, class_opaque_statics(cf));
     let mut source: String = String::with_capacity(2048);
     let raw_name: &str = match cf.this_class_name() {
         Ok(name) => name,
@@ -242,6 +257,7 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
     };
     if let Some(sup) = &super_name
         && sup != "java/lang/Object"
+        && !(structure.is_record && sup == "java/lang/Record")
         && !is_interface
         && !is_enum
     {
@@ -333,6 +349,9 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
         }
     }
     for (field_index, field) in cf.fields.iter().enumerate() {
+        if is_record_component_field(cf, field, &structure) {
+            continue;
+        }
         let metadata: &FieldMetadata = match &field_metadata[field_index] {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -370,7 +389,7 @@ fn decompile_class_scoped(cf: &ClassFile) -> DecompiledClass {
         BTreeMap::new()
     };
     for (method_index, method) in cf.methods.iter().enumerate() {
-        if is_bridge_method(method) {
+        if is_bridge_method(method) || is_implicit_record_member(cf, method, &structure) {
             continue;
         }
         if is_enum && is_generated_enum_method(cf, method) {
@@ -477,12 +496,10 @@ fn render_field(
     } else {
         format!("{kw} ")
     };
+    let name: String = descriptor::java_writable_identifier(&metadata.name);
     match constant {
-        Some(value) => Some(format!(
-            "{prefix}{rendered_type} {} = {value};",
-            metadata.name
-        )),
-        None => Some(format!("{prefix}{rendered_type} {};", metadata.name)),
+        Some(value) => Some(format!("{prefix}{rendered_type} {name} = {value};")),
+        None => Some(format!("{prefix}{rendered_type} {name};")),
     }
 }
 
@@ -1518,6 +1535,240 @@ fn raw_code_info<'a>(cf: &'a ClassFile, method: &'a MethodInfo) -> Option<&'a [u
     None
 }
 
+fn is_record_component_field(
+    cf: &ClassFile,
+    field: &FieldInfo,
+    structure: &crate::attributes::ClassStructure,
+) -> bool {
+    structure.is_record
+        && field.access_flags & ACC_STATIC == 0
+        && cf.utf8_at(field.name_index).is_ok_and(|name: &str| {
+            structure
+                .record_components
+                .iter()
+                .any(|component: &crate::attributes::RecordComponent| component.name == name)
+        })
+}
+
+struct ComponentAccess {
+    short_load: u8,
+    load: u8,
+    return_op: u8,
+    words: u16,
+}
+
+fn component_access(field_descriptor: &str) -> Option<ComponentAccess> {
+    let (short_load, load, return_op, words): (u8, u8, u8, u16) =
+        match field_descriptor.as_bytes().first()? {
+            b'I' | b'Z' | b'B' | b'C' | b'S' => (0x1A, 0x15, 0xAC, 1),
+            b'J' => (0x1E, 0x16, 0xAD, 2),
+            b'F' => (0x22, 0x17, 0xAE, 1),
+            b'D' => (0x26, 0x18, 0xAF, 2),
+            b'L' | b'[' => (0x2A, 0x19, 0xB0, 1),
+            _ => return None,
+        };
+    Some(ComponentAccess {
+        short_load,
+        load,
+        return_op,
+        words,
+    })
+}
+
+fn loads_slot(insn: &Instruction, access: &ComponentAccess, slot: u16) -> bool {
+    (slot <= 3 && u16::from(insn.opcode) == u16::from(access.short_load) + slot)
+        || (insn.opcode == access.load && insn.operands == Operands::Local(slot))
+}
+
+fn touches_component(
+    cf: &ClassFile,
+    insn: &Instruction,
+    opcode: u8,
+    component: &crate::attributes::RecordComponent,
+) -> bool {
+    let Operands::ConstPool(index) = insn.operands else {
+        return false;
+    };
+    let Ok(this) = cf.this_class_name() else {
+        return false;
+    };
+    insn.opcode == opcode
+        && bytecode::resolve_ref(cf, index).is_some_and(|reference: String| {
+            reference == format!("{this}.{}:{}", component.name, component.descriptor)
+        })
+}
+
+fn is_default_record_constructor(
+    cf: &ClassFile,
+    insns: &[Instruction],
+    components: &[crate::attributes::RecordComponent],
+) -> bool {
+    let [receiver, init, rest @ ..] = insns else {
+        return false;
+    };
+    let calls_record_init: bool = receiver.opcode == ALOAD_0
+        && init.opcode == 0xB7
+        && matches!(init.operands, Operands::ConstPool(index)
+            if bytecode::resolve_ref(cf, index).as_deref() == Some("java/lang/Record.<init>:()V"));
+    if !calls_record_init || rest.len() != components.len() * 3 + 1 {
+        return false;
+    }
+    let mut slot: u16 = 1;
+    for (component, chunk) in components.iter().zip(rest.chunks(3)) {
+        let Some(access): Option<ComponentAccess> = component_access(&component.descriptor) else {
+            return false;
+        };
+        let [load_this, load_value, store] = chunk else {
+            return false;
+        };
+        if load_this.opcode != ALOAD_0
+            || !loads_slot(load_value, &access, slot)
+            || !touches_component(cf, store, 0xB5, component)
+        {
+            return false;
+        }
+        slot = slot.saturating_add(access.words);
+    }
+    rest.last()
+        .is_some_and(|ret: &Instruction| ret.opcode == 0xB1)
+}
+
+fn is_default_record_accessor(
+    cf: &ClassFile,
+    name: &str,
+    method_descriptor: &str,
+    insns: &[Instruction],
+    components: &[crate::attributes::RecordComponent],
+) -> bool {
+    let Some(component): Option<&crate::attributes::RecordComponent> = components
+        .iter()
+        .find(|component: &&crate::attributes::RecordComponent| component.name == name)
+    else {
+        return false;
+    };
+    let Some(access): Option<ComponentAccess> = component_access(&component.descriptor) else {
+        return false;
+    };
+    method_descriptor == format!("(){}", component.descriptor)
+        && matches!(insns, [receiver, read, ret]
+            if receiver.opcode == ALOAD_0
+                && touches_component(cf, read, 0xB4, component)
+                && ret.opcode == access.return_op)
+}
+
+fn is_implicit_record_member(
+    cf: &ClassFile,
+    method: &MethodInfo,
+    structure: &crate::attributes::ClassStructure,
+) -> bool {
+    if !structure.is_record || method.access_flags & ACC_STATIC != 0 {
+        return false;
+    }
+    let (Ok(name), Ok(method_descriptor)) = (
+        cf.utf8_at(method.name_index),
+        cf.utf8_at(method.descriptor_index),
+    ) else {
+        return false;
+    };
+    let components: &[crate::attributes::RecordComponent] = &structure.record_components;
+    let canonical_descriptor: String = format!(
+        "({})V",
+        components
+            .iter()
+            .map(|component: &crate::attributes::RecordComponent| component.descriptor.as_str())
+            .collect::<String>()
+    );
+    if name == "<init>" || components.iter().any(|component| component.name == name) {
+        let MethodCode::Decoded(code) = find_code(cf, method) else {
+            return false;
+        };
+        let Ok(insns): Result<Vec<Instruction>> = disassemble(&code.code) else {
+            return false;
+        };
+        if !code.exception_table.is_empty() {
+            return false;
+        }
+        return if name == "<init>" {
+            method_descriptor == canonical_descriptor
+                && is_default_record_constructor(cf, &insns, components)
+        } else {
+            is_default_record_accessor(cf, name, method_descriptor, &insns, components)
+        };
+    }
+    let (receiver_loads, returns): (&[u8], u8) = match (name, method_descriptor) {
+        ("toString", "()Ljava/lang/String;") => (&[ALOAD_0], 0xB0),
+        ("hashCode", "()I") => (&[ALOAD_0], 0xAC),
+        ("equals", "(Ljava/lang/Object;)Z") => (&[ALOAD_0, 0x2B], 0xAC),
+        _ => return false,
+    };
+    let MethodCode::Decoded(code) = find_code(cf, method) else {
+        return false;
+    };
+    let Ok(insns): Result<Vec<Instruction>> = disassemble(&code.code) else {
+        return false;
+    };
+    let Some((last, body)): Option<(&Instruction, &[Instruction])> = insns.split_last() else {
+        return false;
+    };
+    let Some((call, loads)): Option<(&Instruction, &[Instruction])> = body.split_last() else {
+        return false;
+    };
+    let Operands::InvokeDynamic(index) = call.operands else {
+        return false;
+    };
+    let loads_receiver: bool = loads
+        .iter()
+        .map(|insn: &Instruction| insn.opcode)
+        .eq(receiver_loads.iter().copied());
+    let Some(crate::classfile::ConstantPoolEntry::InvokeDynamic {
+        bootstrap_method_attr_index,
+        name_and_type_index,
+    }) = cf.constant_pool.get(usize::from(index))
+    else {
+        return false;
+    };
+    let Some(bootstrap): Option<&crate::attributes::BootstrapMethod> = structure
+        .bootstrap_methods
+        .get(usize::from(*bootstrap_method_attr_index))
+    else {
+        return false;
+    };
+    let names_components: bool = bootstrap
+        .arguments
+        .get(1)
+        .and_then(
+            |argument: &u16| match cf.constant_pool.get(usize::from(*argument)) {
+                Some(crate::classfile::ConstantPoolEntry::String { utf8_index }) => {
+                    cf.utf8_at(*utf8_index).ok()
+                }
+                _ => None,
+            },
+        )
+        .is_some_and(|names: &str| {
+            names
+                .split(';')
+                .filter(|component: &&str| !component.is_empty())
+                .eq(structure
+                    .record_components
+                    .iter()
+                    .map(|component: &crate::attributes::RecordComponent| component.name.as_str()))
+        });
+    let calls_object_methods: bool = method_handle_full(cf, bootstrap.method_ref_index)
+        .is_some_and(|handle: MethodHandleRef| {
+            handle.owner == "java/lang/runtime/ObjectMethods" && handle.name == "bootstrap"
+        });
+    let invoked_name: bool = matches!(
+        cf.constant_pool.get(usize::from(*name_and_type_index)),
+        Some(crate::classfile::ConstantPoolEntry::NameAndType { name_index, .. })
+            if cf.utf8_at(*name_index).is_ok_and(|invoked: &str| invoked == name)
+    );
+    loads_receiver
+        && last.opcode == returns
+        && calls_object_methods
+        && names_components
+        && invoked_name
+}
+
 const fn is_bridge_method(method: &MethodInfo) -> bool {
     method.access_flags & ACC_BRIDGE != 0 && method.access_flags & ACC_SYNTHETIC != 0
 }
@@ -2027,8 +2278,9 @@ fn lift_method_body(
     bool_return: bool,
 ) -> Result<MethodBody> {
     let raw_insns: Vec<Instruction> = validate_code_attribute(cf, code)?;
-    let (mut insns, exception_table): (Vec<Instruction>, Vec<crate::bytecode::ExceptionEntry>) =
-        if crate::jsr_inline::contains_jsr(&raw_insns) {
+    let had_subroutines: bool = crate::jsr_inline::contains_jsr(&raw_insns);
+    let (mut insns, mut exception_table): (Vec<Instruction>, Vec<crate::bytecode::ExceptionEntry>) =
+        if had_subroutines {
             let inlined: crate::jsr_inline::JsrInlined =
                 crate::jsr_inline::inline_jsr_subroutines(&raw_insns, &code.exception_table);
             if let Some(reason) = inlined.refusal {
@@ -2038,11 +2290,53 @@ fn lift_method_body(
         } else {
             (raw_insns, code.exception_table.clone())
         };
+    let entry_slots: u16 = u16::try_from(entry_locals.len())
+        .unwrap_or(u16::MAX)
+        .max(u16::from(has_this));
+    if !had_subroutines
+        && let Some(normalized) = OPAQUE_STATICS.with(|statics: &RefCell<OpaqueStatics>| {
+            crate::opaque_flow::normalize(
+                cf,
+                &insns,
+                &exception_table,
+                code.code.len(),
+                entry_slots,
+                &statics.borrow(),
+            )
+        })
+    {
+        crate::debug::dbg_kv("opaque-flow", || {
+            format!(
+                "folded {} branch(es), pruned {} rethrow handler(s), removed {} instruction(s), \
+                 turned {} caught throw(s) into jumps",
+                normalized.folded_branches,
+                normalized.pruned_handlers,
+                normalized.removed_instructions,
+                normalized.control_throws
+            )
+        });
+        insns = normalized.insns;
+        exception_table = normalized.exception_table;
+    }
     let linear_code: CodeAttribute = CodeAttribute {
         exception_table: exception_table.clone(),
         ..code.clone()
     };
     let code: &CodeAttribute = &linear_code;
+    if has_this {
+        let first_local: u16 = params
+            .iter()
+            .map(|(slot, _): &(u16, String)| {
+                slot.saturating_add(u16::from(
+                    parameter_value_categories.get(slot).copied().unwrap_or(1),
+                ))
+            })
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        rebind_reused_this_slot(&mut insns, &exception_table, code.max_locals);
+        fold_this_aliases(&mut insns, &exception_table, first_local);
+    }
     let boolean_param_slots: BTreeSet<u16> = params
         .iter()
         .filter(|(_, name): &&(u16, String)| boolean_params.contains(name))
@@ -2129,6 +2423,13 @@ fn lift_method_body(
     }
     let array_casts: BTreeMap<String, String> =
         object_local_array_casts(cf, &insns, params, &object_locals);
+    let declared_types: BTreeMap<String, String> = source_slot_types
+        .iter()
+        .chain(param_types.iter())
+        .map(|(slot, ty): (&u16, &String)| (local_name(*slot, params), ty.clone()))
+        .collect();
+    let _declared_types: ThreadLocalRestore<BTreeMap<String, String>> =
+        replace_thread_local(&DECLARED_LOCAL_TYPES, declared_types);
     let allocations: DeferredAllocationPlan = deferred_allocation_plan(cf, code, &insns, has_this);
     let lifted: std::result::Result<MethodBody, &'static str> =
         with_object_locals(object_locals, boolean_locals, array_casts, || {
@@ -2380,6 +2681,7 @@ fn lift_structured(
         folded_condition_heads,
         distributed_returns,
         join_values,
+        stack_spills,
     }: EntryStacks = compute_block_entry_stacks(
         cf,
         &cfg,
@@ -2435,6 +2737,7 @@ fn lift_structured(
         applied_folds: BTreeSet::new(),
         distributed_returns,
         join_values,
+        stack_spills,
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
@@ -2449,6 +2752,15 @@ fn lift_structured(
     let mut decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
     for value in ctx.join_values.values() {
         let _ = writeln!(decls, "        {} {};", value.ty, value.name);
+    }
+    let spilled: BTreeMap<&str, &str> = ctx
+        .stack_spills
+        .values()
+        .flatten()
+        .map(|value: &JoinValue| (value.name.as_str(), value.ty.as_str()))
+        .collect();
+    for (name, ty) in spilled {
+        let _ = writeln!(decls, "        {ty} {name};");
     }
     let coverage_gap: Option<&'static str> = coverage_gap(
         ctx.cfg,
@@ -4781,14 +5093,15 @@ impl ReferenceWebType {
     fn from_verification(ty: &VerificationType) -> Option<Self> {
         match ty {
             VerificationType::Null => Some(Self::Null),
-            VerificationType::Object(class) => Some(Self::Class(class.clone())),
+            VerificationType::Object(class) | VerificationType::Uninitialized { class, .. } => {
+                Some(Self::Class(class.clone()))
+            }
             VerificationType::Top
             | VerificationType::Integer
             | VerificationType::Float
             | VerificationType::Long
             | VerificationType::Double
-            | VerificationType::UninitializedThis
-            | VerificationType::Uninitialized { .. } => None,
+            | VerificationType::UninitializedThis => None,
         }
     }
 
@@ -5766,6 +6079,7 @@ struct RenderCtx<'a> {
     applied_folds: BTreeSet<BlockId>,
     distributed_returns: BTreeSet<BlockId>,
     join_values: BTreeMap<BlockId, JoinValue>,
+    stack_spills: BTreeMap<BlockId, Vec<JoinValue>>,
 }
 
 fn indent_string(level: usize) -> String {
@@ -6920,6 +7234,7 @@ fn render_block_statements(
             }
         }
     }
+    spill_held_values(ctx, bid, &mut stack, out, &pad);
     if let Some(join) = single_normal_successor(&ctx.cfg.blocks[bid.0 as usize])
         && let Some(value) = ctx.join_values.get(&join)
     {
@@ -6956,6 +7271,53 @@ fn render_block_statements(
         }
     }
     Some(stack)
+}
+
+fn spill_held_values(
+    ctx: &mut RenderCtx<'_>,
+    bid: BlockId,
+    stack: &mut [Expr],
+    out: &mut String,
+    pad: &str,
+) {
+    let targets: Vec<BlockId> = normal_targets(&ctx.cfg.blocks[bid.0 as usize]).collect();
+    for target in targets {
+        let Some(names): Option<&Vec<JoinValue>> = ctx.stack_spills.get(&target) else {
+            continue;
+        };
+        let Some(held): Option<&mut [Expr]> = stack.get_mut(..names.len()) else {
+            ctx.fully_lifted = false;
+            let _ = writeln!(
+                out,
+                "{pad}// <decompile: incomplete: a value held across a loop has no source here>"
+            );
+            return;
+        };
+        let renders_other_spill: bool = held.iter().enumerate().any(|(position, expr)| {
+            let rendered: String = expr.render();
+            names[..position].iter().zip(held.iter()).any(
+                |(earlier, earlier_expr): (&JoinValue, &Expr)| {
+                    earlier_expr.render() != earlier.name
+                        && line_mentions_token(&rendered, &earlier.name)
+                },
+            )
+        });
+        if renders_other_spill {
+            ctx.fully_lifted = false;
+            let _ = writeln!(
+                out,
+                "{pad}// <decompile: incomplete: values held across a loop overlap each other>"
+            );
+            return;
+        }
+        for (slot, value) in held.iter_mut().zip(names) {
+            let rendered: String = slot.render();
+            if rendered != value.name {
+                let _ = writeln!(out, "{pad}{} = {rendered};", value.name);
+            }
+            *slot = Expr::Local(value.name.clone());
+        }
+    }
 }
 
 fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<Expr> {
@@ -7073,6 +7435,12 @@ struct EntryStacks {
     folded_condition_heads: BTreeMap<BlockId, FoldedCondition>,
     distributed_returns: BTreeSet<BlockId>,
     join_values: BTreeMap<BlockId, JoinValue>,
+    stack_spills: BTreeMap<BlockId, Vec<JoinValue>>,
+}
+
+struct EntryPass {
+    entries: EntryStacks,
+    exit_stacks: BTreeMap<BlockId, Vec<Expr>>,
 }
 
 #[derive(Clone)]
@@ -7090,9 +7458,12 @@ struct JoinValueTyper<'a> {
 }
 
 impl JoinValueTyper<'_> {
-    fn top_type(&self, join: BlockId, tops: &[Expr]) -> Option<String> {
-        let stacks: &BTreeMap<BlockId, Vec<VerificationType>> = self
-            .stacks
+    fn entry_stack(&self, block: BlockId) -> Option<&[VerificationType]> {
+        self.entry_stacks()?.get(&block).map(Vec::as_slice)
+    }
+
+    fn entry_stacks(&self) -> Option<&BTreeMap<BlockId, Vec<VerificationType>>> {
+        self.stacks
             .get_or_init(|| {
                 crate::frame_infer::block_entry_stack_types(
                     self.cfg,
@@ -7104,8 +7475,11 @@ impl JoinValueTyper<'_> {
                     &|idx: u16| ldc_verification_type(self.cf, idx),
                 )
             })
-            .as_ref()?;
-        let stack: &[VerificationType] = stacks.get(&join)?;
+            .as_ref()
+    }
+
+    fn top_type(&self, join: BlockId, tops: &[Expr]) -> Option<String> {
+        let stack: &[VerificationType] = self.entry_stack(join)?;
         let top: &VerificationType = match stack.last()? {
             VerificationType::Top => stack.get(stack.len().checked_sub(2)?)?,
             other => other,
@@ -7128,7 +7502,7 @@ impl JoinValueTyper<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compute_block_entry_stacks(
+fn simulate_entry_stacks(
     cf: &ClassFile,
     cfg: &Cfg,
     insns: &[Instruction],
@@ -7137,7 +7511,9 @@ fn compute_block_entry_stacks(
     has_this: bool,
     bool_return: bool,
     typer: &JoinValueTyper<'_>,
-) -> EntryStacks {
+    dom: &Dominators,
+    stack_spills: &BTreeMap<BlockId, Vec<JoinValue>>,
+) -> EntryPass {
     let mut probe: RenderCtx<'_> = RenderCtx {
         cf,
         cfg,
@@ -7174,8 +7550,8 @@ fn compute_block_entry_stacks(
         applied_folds: BTreeSet::new(),
         distributed_returns: BTreeSet::new(),
         join_values: BTreeMap::new(),
+        stack_spills: BTreeMap::new(),
     };
-    let dom: Dominators = compute_dominators(cfg);
     let mut exit_stacks: BTreeMap<BlockId, Vec<Expr>> = BTreeMap::new();
     let mut exit_clean: BTreeMap<BlockId, bool> = BTreeMap::new();
     let mut folded_condition_heads: BTreeMap<BlockId, FoldedCondition> = BTreeMap::new();
@@ -7194,7 +7570,14 @@ fn compute_block_entry_stacks(
                     .any(|e| e.target == *bid && !matches!(e.kind, EdgeKind::Exception))
             })
             .collect();
+        let spilled: Option<&Vec<JoinValue>> = stack_spills.get(bid);
         let entry: Vec<Expr> = match real_preds.as_slice() {
+            _ if spilled.is_some() => spilled.map_or_else(Vec::new, |names: &Vec<JoinValue>| {
+                names
+                    .iter()
+                    .map(|value: &JoinValue| Expr::Local(value.name.clone()))
+                    .collect()
+            }),
             [single] if *single != *bid => {
                 if exit_clean.get(single).copied().unwrap_or(false) {
                     exit_stacks.get(single).cloned().unwrap_or_default()
@@ -7216,7 +7599,7 @@ fn compute_block_entry_stacks(
                     }
                     match join_value_entry(
                         &probe,
-                        &dom,
+                        dom,
                         *bid,
                         preds,
                         &exit_stacks,
@@ -7232,19 +7615,193 @@ fn compute_block_entry_stacks(
                 }),
             _ => Vec::new(),
         };
-        let (exit, clean): (Vec<Expr>, bool) = simulate_block(&probe, *bid, &entry);
+        let (mut exit, clean): (Vec<Expr>, bool) = simulate_block(&probe, *bid, &entry);
+        if let Some(names) = successor_spill(cfg, stack_spills, *bid)
+            && let Some(held) = exit.get_mut(..names.len())
+        {
+            for (slot, value) in held.iter_mut().zip(names) {
+                *slot = Expr::Local(value.name.clone());
+            }
+        }
         if !entry.is_empty() {
             probe.block_entry_stacks.insert(*bid, entry);
         }
         exit_stacks.insert(*bid, exit);
         exit_clean.insert(*bid, clean);
     }
-    EntryStacks {
-        stacks: probe.block_entry_stacks,
-        folded_condition_heads,
-        distributed_returns,
-        join_values,
+    EntryPass {
+        entries: EntryStacks {
+            stacks: probe.block_entry_stacks,
+            folded_condition_heads,
+            distributed_returns,
+            join_values,
+            stack_spills: stack_spills.clone(),
+        },
+        exit_stacks,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_block_entry_stacks(
+    cf: &ClassFile,
+    cfg: &Cfg,
+    insns: &[Instruction],
+    params: &[(u16, String)],
+    bootstraps: &[crate::attributes::BootstrapMethod],
+    has_this: bool,
+    bool_return: bool,
+    typer: &JoinValueTyper<'_>,
+) -> EntryStacks {
+    let dom: Dominators = compute_dominators(cfg);
+    let unspilled: EntryPass = simulate_entry_stacks(
+        cf,
+        cfg,
+        insns,
+        params,
+        bootstraps,
+        has_this,
+        bool_return,
+        typer,
+        &dom,
+        &BTreeMap::new(),
+    );
+    let stack_spills: BTreeMap<BlockId, Vec<JoinValue>> =
+        plan_stack_spills(cfg, &dom, typer, &unspilled);
+    if stack_spills.is_empty() {
+        return unspilled.entries;
+    }
+    simulate_entry_stacks(
+        cf,
+        cfg,
+        insns,
+        params,
+        bootstraps,
+        has_this,
+        bool_return,
+        typer,
+        &dom,
+        &stack_spills,
+    )
+    .entries
+}
+
+fn successor_spill<'a>(
+    cfg: &Cfg,
+    stack_spills: &'a BTreeMap<BlockId, Vec<JoinValue>>,
+    block: BlockId,
+) -> Option<&'a Vec<JoinValue>> {
+    normal_targets(&cfg.blocks[block.0 as usize])
+        .find_map(|target: BlockId| stack_spills.get(&target))
+}
+
+fn spilled_source_type(ty: &VerificationType, held: &[&Expr]) -> Option<String> {
+    match ty {
+        VerificationType::Integer
+            if !held.is_empty() && held.iter().all(|value: &&Expr| value.is_boolean()) =>
+        {
+            Some("boolean".to_owned())
+        }
+        VerificationType::Integer => Some("int".to_owned()),
+        VerificationType::Float => Some("float".to_owned()),
+        VerificationType::Long => Some("long".to_owned()),
+        VerificationType::Double => Some("double".to_owned()),
+        VerificationType::Null => Some("Object".to_owned()),
+        VerificationType::Object(class) => Some(descriptor::binary_to_source(class)),
+        VerificationType::Top
+        | VerificationType::UninitializedThis
+        | VerificationType::Uninitialized { .. } => None,
+    }
+}
+
+fn verified_values(stack: &[VerificationType]) -> Option<Vec<&VerificationType>> {
+    let mut values: Vec<&VerificationType> = Vec::with_capacity(stack.len());
+    let mut index: usize = 0;
+    while index < stack.len() {
+        let ty: &VerificationType = &stack[index];
+        match ty {
+            VerificationType::Top => return None,
+            VerificationType::Long | VerificationType::Double
+                if matches!(stack.get(index + 1), Some(VerificationType::Top)) =>
+            {
+                index += 1;
+            }
+            _ => {}
+        }
+        values.push(ty);
+        index += 1;
+    }
+    Some(values)
+}
+
+fn is_exception_entry(cfg: &Cfg, block: BlockId) -> bool {
+    cfg.blocks.iter().any(|pred: &BasicBlock| {
+        pred.successors
+            .iter()
+            .any(|edge: &Edge| edge.target == block && matches!(edge.kind, EdgeKind::Exception))
+    })
+}
+
+fn plan_stack_spills(
+    cfg: &Cfg,
+    dom: &Dominators,
+    typer: &JoinValueTyper<'_>,
+    unspilled: &EntryPass,
+) -> BTreeMap<BlockId, Vec<JoinValue>> {
+    let mut spills: BTreeMap<BlockId, Vec<JoinValue>> = BTreeMap::new();
+    let mut names: BTreeMap<(usize, String), String> = BTreeMap::new();
+    for block in &cfg.blocks {
+        let bid: BlockId = block.id;
+        let Some(values): Option<Vec<&VerificationType>> =
+            typer.entry_stack(bid).and_then(verified_values)
+        else {
+            continue;
+        };
+        let lifted: usize = unspilled.entries.stacks.get(&bid).map_or(0, Vec::len);
+        if values.is_empty() || lifted >= values.len() || is_exception_entry(cfg, bid) {
+            continue;
+        }
+        let preds: BTreeSet<BlockId> = real_predecessors(cfg, bid);
+        let is_back_edge = |pred: &BlockId| -> bool { *pred == bid || dominates(dom, bid, *pred) };
+        if !preds.iter().any(is_back_edge) {
+            continue;
+        }
+        let forward_exits: Vec<&Vec<Expr>> = preds
+            .iter()
+            .filter(|pred: &&BlockId| !is_back_edge(pred))
+            .filter_map(|pred: &BlockId| unspilled.exit_stacks.get(pred))
+            .collect();
+        let mut planned: Vec<JoinValue> = Vec::with_capacity(values.len());
+        for (position, ty) in values.iter().enumerate() {
+            let held: Vec<&Expr> = forward_exits
+                .iter()
+                .filter_map(|exit: &&Vec<Expr>| exit.get(position))
+                .collect();
+            let Some(source_type): Option<String> = spilled_source_type(ty, &held) else {
+                planned.clear();
+                break;
+            };
+            let ordinal: usize = names.len();
+            let name: String = names
+                .entry((position, source_type.clone()))
+                .or_insert_with(|| format!("held{position}_{ordinal}"))
+                .clone();
+            planned.push(JoinValue {
+                name,
+                ty: source_type,
+            });
+        }
+        if !planned.is_empty() {
+            crate::debug::dbg_kv("stack-spill", || {
+                format!(
+                    "block at pc {} holds {} value(s) across a back edge; the lifter carried {lifted}",
+                    block.start_pc,
+                    values.len()
+                )
+            });
+            spills.insert(bid, planned);
+        }
+    }
+    spills
 }
 
 fn join_value_entry(
@@ -8423,6 +8980,7 @@ fn unary_or_cmp_cond(
     }
     match v {
         Expr::Cmp { kind, lhs, rhs } => kind.render_relation(&lhs.render(), rel_op, &rhs.render()),
+        other if other.is_boolean() => format!("({} ? 1 : 0) {zero_suffix}", other.render()),
         other => format!("{} {zero_suffix}", other.render()),
     }
 }
@@ -8430,7 +8988,19 @@ fn unary_or_cmp_cond(
 fn binary_cond_kept(stack: &mut Vec<Expr>, op: &str) -> String {
     let rhs: Expr = pop_expr(stack);
     let lhs: Expr = pop_expr(stack);
-    format!("{} {op} {}", lhs.render(), rhs.render())
+    render_int_comparison(&lhs, op, &rhs)
+}
+
+fn render_int_comparison(lhs: &Expr, op: &str, rhs: &Expr) -> String {
+    let equality: bool = op == "==" || op == "!=";
+    let as_int = |side: &Expr, other: &Expr| -> String {
+        if side.is_boolean() && (!equality || !other.is_boolean()) {
+            format!("({} ? 1 : 0)", side.render())
+        } else {
+            side.render()
+        }
+    };
+    format!("{} {op} {}", as_int(lhs, rhs), as_int(rhs, lhs))
 }
 
 fn render_switch_subject(
@@ -9802,6 +10372,7 @@ const fn pattern_render_ctx<'a>(
         applied_folds: BTreeSet::new(),
         distributed_returns: BTreeSet::new(),
         join_values: BTreeMap::new(),
+        stack_spills: BTreeMap::new(),
     }
 }
 
@@ -10784,6 +11355,151 @@ fn format_switch_key(key: &SwitchKey, fallback_idx: usize) -> String {
     }
 }
 
+const NOP: u8 = 0x00;
+const ALOAD_0: u8 = 0x2A;
+const RET: u8 = 0xA9;
+
+fn fold_this_aliases(
+    insns: &mut [Instruction],
+    exception_table: &[crate::bytecode::ExceptionEntry],
+    first_local: u16,
+) {
+    let this_written: bool = insns.iter().any(|insn: &Instruction| {
+        store_target_slot(insn) == Some(0)
+            || matches!(insn.operands, Operands::Iinc { index: 0, .. })
+            || (insn.opcode == RET && insn.operands == Operands::Local(0))
+    });
+    if this_written {
+        return;
+    }
+    let mut entries: BTreeSet<u32> = branch_targets(insns);
+    entries.extend(
+        exception_table
+            .iter()
+            .map(|entry: &crate::bytecode::ExceptionEntry| u32::from(entry.handler_pc)),
+    );
+    let mut aliases: BTreeMap<u16, bool> = BTreeMap::new();
+    for (index, insn) in insns.iter().enumerate() {
+        let Some(slot): Option<u16> = astore_target_slot(insn) else {
+            continue;
+        };
+        let copies_this: bool = index > 0
+            && insns[index - 1].opcode == ALOAD_0
+            && !entries.contains(&insn.pc)
+            && slot >= first_local;
+        *aliases.entry(slot).or_insert(true) &= copies_this;
+    }
+    for insn in insns.iter() {
+        if insn.opcode == RET
+            && let Operands::Local(slot) = insn.operands
+        {
+            aliases.remove(&slot);
+        }
+        let Some(slot): Option<u16> = instruction_local_slot(insn) else {
+            continue;
+        };
+        let reference_access: bool = astore_target_slot(insn).is_some()
+            || (slot_load_type_index(insn.opcode) == Some(4)
+                && !matches!(insn.operands, Operands::Iinc { .. }));
+        if !reference_access {
+            aliases.remove(&slot);
+        }
+        let wide_value: bool = matches!(slot_store_type_index(insn.opcode), Some(1 | 3))
+            || matches!(slot_load_type_index(insn.opcode), Some(1 | 3));
+        if wide_value {
+            aliases.remove(&slot.saturating_add(1));
+        }
+    }
+    aliases.retain(|_, copies_this: &mut bool| *copies_this);
+    if aliases.is_empty() {
+        return;
+    }
+    for index in 0..insns.len() {
+        let Some(slot): Option<u16> = local_slot_operand(&insns[index]) else {
+            continue;
+        };
+        if !aliases.contains_key(&slot) {
+            continue;
+        }
+        if astore_target_slot(&insns[index]).is_some() {
+            for erased in [index - 1, index] {
+                insns[erased].opcode = NOP;
+                insns[erased].mnemonic = "nop";
+                insns[erased].wide = false;
+                insns[erased].operands = Operands::None;
+            }
+        } else {
+            insns[index].opcode = ALOAD_0;
+            insns[index].mnemonic = "aload_0";
+            insns[index].wide = false;
+            insns[index].operands = Operands::None;
+        }
+    }
+}
+
+fn loads_this_slot(insn: &Instruction) -> bool {
+    insn.opcode == ALOAD_0 || (insn.opcode == 0x19 && insn.operands == Operands::Local(0))
+}
+
+fn rebind_reused_this_slot(
+    insns: &mut [Instruction],
+    exception_table: &[crate::bytecode::ExceptionEntry],
+    max_locals: u16,
+) {
+    let stores: Vec<usize> = insns
+        .iter()
+        .enumerate()
+        .filter(|(_, insn): &(usize, &Instruction)| {
+            store_target_slot(insn) == Some(0)
+                || matches!(insn.operands, Operands::Iinc { index: 0, .. })
+        })
+        .map(|(index, _): (usize, &Instruction)| index)
+        .collect();
+    if stores.is_empty()
+        || insns
+            .iter()
+            .any(|insn: &Instruction| insn.opcode == RET && insn.operands == Operands::Local(0))
+    {
+        return;
+    }
+    let mut work: usize = 0;
+    let Some(successors): Option<Vec<Vec<usize>>> = instruction_successor_indices(insns) else {
+        return;
+    };
+    let Some(handlers): Option<Vec<Vec<usize>>> = exception_successor_indices(
+        insns,
+        exception_table,
+        &mut work,
+        REUSED_LOCAL_SPLIT_WORK_LIMIT,
+    ) else {
+        return;
+    };
+    let mut seen: Vec<bool> = vec![false; insns.len()];
+    let mut pending: Vec<usize> = Vec::new();
+    for store in &stores {
+        pending.extend(successors[*store].iter().copied());
+        pending.extend(handlers[*store].iter().copied());
+    }
+    while let Some(index) = pending.pop() {
+        if index >= insns.len() || std::mem::replace(&mut seen[index], true) {
+            continue;
+        }
+        if loads_this_slot(&insns[index]) {
+            return;
+        }
+        pending.extend(successors[index].iter().copied());
+        pending.extend(handlers[index].iter().copied());
+    }
+    let Some(fresh): Option<u16> = first_unused_local(insns, max_locals) else {
+        return;
+    };
+    for insn in insns.iter_mut() {
+        if instruction_local_slot(insn) == Some(0) && !loads_this_slot(insn) {
+            rebind_slot_to_explicit(insn, fresh);
+        }
+    }
+}
+
 fn branch_targets(insns: &[Instruction]) -> BTreeSet<u32> {
     let mut targets: BTreeSet<u32> = BTreeSet::new();
     for insn in insns {
@@ -10898,6 +11614,42 @@ thread_local! {
 
 
     static BOOLEAN_LOCALS: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
+}
+
+thread_local! {
+    static DECLARED_LOCAL_TYPES: RefCell<BTreeMap<String, String>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+fn declared_local_type(name: &str) -> Option<String> {
+    DECLARED_LOCAL_TYPES
+        .with(|slot: &RefCell<BTreeMap<String, String>>| slot.borrow().get(name).cloned())
+}
+
+thread_local! {
+    static OPAQUE_STATICS: RefCell<OpaqueStatics> = const { RefCell::new(OpaqueStatics::empty()) };
+}
+
+thread_local! {
+    static CLASS_SET_FUNCTIONS: RefCell<BTreeMap<FunctionKey, PureFunction>> =
+        const { RefCell::new(BTreeMap::new()) };
+}
+
+pub(crate) fn with_class_set_functions<T>(
+    functions: BTreeMap<FunctionKey, PureFunction>,
+    body: impl FnOnce() -> T,
+) -> T {
+    let _restore: ThreadLocalRestore<BTreeMap<FunctionKey, PureFunction>> =
+        replace_thread_local(&CLASS_SET_FUNCTIONS, functions);
+    body()
+}
+
+fn class_opaque_statics(cf: &ClassFile) -> OpaqueStatics {
+    let mut statics: OpaqueStatics = crate::opaque_flow::opaque_statics(cf);
+    CLASS_SET_FUNCTIONS.with(|functions: &RefCell<BTreeMap<FunctionKey, PureFunction>>| {
+        statics.add_functions(&functions.borrow());
+    });
+    statics
 }
 
 thread_local! {
@@ -11822,7 +12574,7 @@ fn lift_one_inner(
         0x43..=0x46 => store_indexed(stack, u16::from(op - 0x43), params, insn.pc),
         0x47..=0x4A => store_indexed(stack, u16::from(op - 0x47), params, insn.pc),
         0x4B..=0x4E => store_indexed(stack, u16::from(op - 0x4B), params, insn.pc),
-        0x4F..=0x56 => array_store(stack),
+        0x4F..=0x56 => array_store(stack, op),
         0x57 => {
             let Some(discarded): Option<Expr> = stack.pop() else {
                 return LiftResult::Pushed;
@@ -11867,6 +12619,7 @@ fn lift_one_inner(
         }
         0x5A => dup_x1(stack),
         0x5B => dup_x2(stack),
+        0x5F => swap_values(stack),
         0x5C => dup2(stack),
         0x5D => dup2_x1(stack),
         0x5E => dup2_x2(stack),
@@ -12006,6 +12759,23 @@ fn dup2(stack: &mut Vec<Expr>) -> LiftResult {
         }
         None => LiftResult::Unhandled,
     }
+}
+
+fn reorder_is_unobservable(first: &Expr, second: &Expr) -> bool {
+    let independent = |neutral: &Expr, other: &Expr| -> bool {
+        evaluation_order_neutral(neutral)
+            && !matches!(neutral, Expr::Local(name) if line_mentions_token(&other.render(), name))
+    };
+    independent(first, second) || independent(second, first)
+}
+
+fn swap_values(stack: &mut [Expr]) -> LiftResult {
+    let len: usize = stack.len();
+    if len < 2 || !reorder_is_unobservable(&stack[len - 1], &stack[len - 2]) {
+        return LiftResult::Unhandled;
+    }
+    stack.swap(len - 1, len - 2);
+    LiftResult::Pushed
 }
 
 fn dup_x1(stack: &mut Vec<Expr>) -> LiftResult {
@@ -12322,10 +13092,36 @@ fn binary_array_load(stack: &mut Vec<Expr>) -> LiftResult {
     LiftResult::Pushed
 }
 
-fn array_store(stack: &mut Vec<Expr>) -> LiftResult {
-    let value: Expr = pop_expr(stack);
+fn declared_int_local(value: &Expr) -> bool {
+    matches!(value, Expr::Local(name) if declared_local_type(name).as_deref() == Some("int"))
+}
+
+fn narrow_array_element(value: Expr, opcode: u8, array: &Expr) -> Expr {
+    let ty: &str = match opcode {
+        0x55 => "char",
+        0x56 => "short",
+        0x54 if matches!(array, Expr::Local(name)
+            if declared_local_type(name).as_deref() == Some("byte[]")) =>
+        {
+            "byte"
+        }
+        _ => return value,
+    };
+    let computed: bool = matches!(value, Expr::Binary { .. } | Expr::Unary { .. });
+    if computed || declared_int_local(&value) {
+        return Expr::Cast {
+            ty: ty.to_owned(),
+            value: Box::new(value),
+        };
+    }
+    value
+}
+
+fn array_store(stack: &mut Vec<Expr>, opcode: u8) -> LiftResult {
+    let stored: Expr = pop_expr(stack);
     let index: Expr = pop_expr(stack);
     let array: Expr = narrow_array_operand(pop_expr(stack));
+    let value: Expr = narrow_array_element(stored, opcode, &array);
     if let Some(result) = try_fold_array_init(stack, &array, &index, &value) {
         return result;
     }
@@ -12491,29 +13287,108 @@ fn store_indexed(stack: &mut Vec<Expr>, idx: u16, params: &[(u16, String)], pc: 
         return LiftResult::Elided;
     }
     let name: String = local_name(idx, params);
-    if !settle_local_write(stack, &name, &value) {
-        return LiftResult::Unhandled;
+    let held: Option<String> = match settle_local_write(stack, &name, &value) {
+        LocalWrite::Settled => None,
+        LocalWrite::ReadByOlder(older) => match hold_previous_value(stack, older, &name, pc) {
+            Some(statement) => Some(statement),
+            None => return LiftResult::Unhandled,
+        },
+    };
+    let assignment: String = format!("{name} = {}", value.render());
+    match held {
+        Some(statement) => LiftResult::Statements(vec![statement, assignment]),
+        None => LiftResult::Statement(assignment),
     }
-    LiftResult::Statement(format!("{name} = {}", value.render()))
 }
 
-fn settle_local_write(stack: &mut [Expr], name: &str, stored: &Expr) -> bool {
+enum LocalWrite {
+    Settled,
+    ReadByOlder(usize),
+}
+
+fn settle_local_write(stack: &mut [Expr], name: &str, stored: &Expr) -> LocalWrite {
     let copy_of_stored: bool = stack.last().is_some_and(|top: &Expr| top == stored);
     let older: usize = stack.len() - usize::from(copy_of_stored);
     if stack[..older]
         .iter()
         .any(|entry: &Expr| expr_reads_local(entry, name))
     {
-        return false;
+        return LocalWrite::ReadByOlder(older);
     }
     let computed: bool = !matches!(stored, Expr::Const(_) | Expr::Local(_) | Expr::This);
     if let Some(top) = stack.last_mut().filter(|_| copy_of_stored && computed) {
         *top = Expr::Local(name.to_owned());
     }
+    LocalWrite::Settled
+}
+
+fn hold_previous_value(stack: &mut [Expr], older: usize, name: &str, pc: u32) -> Option<String> {
+    let ty: String = declared_local_type(name)?;
+    let held: String = format!("disrobeHeld${pc}");
+    let mut retargeted: Vec<Expr> = stack[..older].to_vec();
+    for entry in &mut retargeted {
+        if !retarget_local_reads(entry, name, &held) {
+            return None;
+        }
+    }
+    stack[..older].clone_from_slice(&retargeted);
+    Some(format!("final {ty} {held} = {name}"))
+}
+
+fn retarget_local_reads(expr: &mut Expr, from: &str, to: &str) -> bool {
+    let mut pending: Vec<&mut Expr> = vec![expr];
+    while let Some(node) = pending.pop() {
+        match node {
+            Expr::Local(local) => {
+                if local == from {
+                    to.clone_into(local);
+                }
+            }
+            Expr::Opaque(text) => {
+                if text_mentions_identifier(text, from) {
+                    return false;
+                }
+            }
+            Expr::Const(_) | Expr::This | Expr::StaticField { .. } | Expr::New(_) => {}
+            Expr::Choice {
+                cond,
+                then_val,
+                else_val,
+            } => {
+                if text_mentions_identifier(cond, from) {
+                    return false;
+                }
+                pending.push(then_val);
+                pending.push(else_val);
+            }
+            Expr::Field { receiver, .. } => pending.push(receiver),
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Cmp { lhs, rhs, .. }
+            | Expr::ArrayLoad {
+                array: lhs,
+                index: rhs,
+            } => {
+                pending.push(lhs);
+                pending.push(rhs);
+            }
+            Expr::Unary { value, .. }
+            | Expr::Cast { value, .. }
+            | Expr::InstanceOf { value, .. }
+            | Expr::ArrayLength(value)
+            | Expr::NewArray { size: value, .. } => pending.push(value),
+            Expr::ArrayInit { elements, .. } => pending.extend(elements.iter_mut()),
+            Expr::Invoke { receiver, args, .. } => {
+                if let Some(receiver) = receiver {
+                    pending.push(receiver);
+                }
+                pending.extend(args.iter_mut());
+            }
+        }
+    }
     true
 }
 
-const fn is_identifier_byte(byte: u8) -> bool {
+pub(crate) const fn is_identifier_byte(byte: u8) -> bool {
     byte == b'_' || byte == b'$' || byte.is_ascii_alphanumeric()
 }
 
@@ -12673,7 +13548,7 @@ fn conditional_branch(insn: &Instruction, stack: &mut Vec<Expr>) -> LiftResult {
 fn binary_cond(stack: &mut Vec<Expr>, op: &str) -> String {
     let rhs: Expr = pop_expr(stack);
     let lhs: Expr = pop_expr(stack);
-    format!("{} {op} {}", lhs.render(), rhs.render())
+    render_int_comparison(&lhs, op, &rhs)
 }
 
 fn split_member(reference: &str) -> Option<(String, String, String)> {
@@ -12751,7 +13626,11 @@ fn field_put(
         } else {
             format!("{}.", descriptor::binary_to_source(&owner))
         };
-        let statement: String = format!("{qualifier}{name} = {}", value.render());
+        let statement: String = format!(
+            "{qualifier}{} = {}",
+            descriptor::java_writable_identifier(&name),
+            value.render()
+        );
         let location: Expr = Expr::StaticField {
             owner: descriptor::binary_to_source(&owner),
             name,
@@ -12872,6 +13751,16 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
                 }
                 if !prelude.is_empty() {
                     return LiftResult::Unhandled;
+                }
+                let buried: Option<usize> = stack
+                    .iter()
+                    .rposition(|held: &Expr| !evaluation_order_neutral(held))
+                    .filter(
+                        |index: &usize| matches!(&stack[*index], Expr::New(under) if *under == ty),
+                    );
+                if let Some(index) = buried {
+                    stack[index] = folded;
+                    return LiftResult::Pushed;
                 }
                 return LiftResult::Statement(folded.render());
             }

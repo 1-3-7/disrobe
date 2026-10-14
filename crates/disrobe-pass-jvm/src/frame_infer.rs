@@ -315,38 +315,10 @@ fn apply_transfer(
             state.push(v1);
             state.push(v2);
         }
-        0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 => {
-            state.pop();
-            state.pop();
-            let ty: VerificationType = arith_result(opcode);
-            push_arith(state, ty);
-        }
-        0x61 | 0x65 | 0x69 | 0x6D | 0x71 | 0x75 => {
-            state.pop();
-            state.pop();
-            state.pop();
-            state.pop();
-            push_arith(state, arith_result(opcode));
-        }
-        0x62 | 0x66 | 0x6A | 0x6E | 0x72 | 0x76 => {
-            state.pop();
-            state.pop();
-            push_arith(state, arith_result(opcode));
-        }
-        0x63 | 0x67 | 0x6B | 0x6F | 0x73 | 0x77 => {
-            state.pop();
-            state.pop();
-            state.pop();
-            state.pop();
-            push_arith(state, arith_result(opcode));
-        }
-        0x78 | 0x7A | 0x7C | 0x7E | 0x80 | 0x82 => {
-            state.pop();
-            push_arith(state, arith_result(opcode));
-        }
-        0x79 | 0x7B | 0x7D | 0x7F | 0x81 | 0x83 => {
-            state.pop();
-            state.pop();
+        0x60..=0x83 => {
+            for _ in 0..arith_operand_words(opcode) {
+                state.pop();
+            }
             push_arith(state, arith_result(opcode));
         }
         0x84 => {}
@@ -622,6 +594,17 @@ const fn array_element_type(opcode: u8) -> VerificationType {
         0x30 | 0x43..=0x46 => VerificationType::Float,
         0x31 | 0x47..=0x4A => VerificationType::Double,
         _ => VerificationType::Integer,
+    }
+}
+
+const fn arith_operand_words(opcode: u8) -> usize {
+    match opcode {
+        0x74 | 0x76 => 1,
+        0x75 | 0x77 => 2,
+        0x79 | 0x7B | 0x7D => 3,
+        0x61 | 0x63 | 0x65 | 0x67 | 0x69 | 0x6B | 0x6D | 0x6F | 0x71 | 0x73 | 0x7F | 0x81
+        | 0x83 => 4,
+        _ => 2,
     }
 }
 
@@ -1193,6 +1176,31 @@ mod tests {
         assert_eq!(report.outcome, FrameInferOutcome::Converged);
         assert!(report.coverage() > 0.99);
         assert_eq!(report.modeled_instructions, report.total_instructions);
+    }
+
+    #[test]
+    fn shifts_logic_and_negation_leave_no_stray_stack_values() {
+        let code: Vec<u8> = vec![
+            0x1A, 0x1B, 0x82, 0x1B, 0x78, 0x74, 0x3B, 0x1A, 0x99, 0x00, 0x0A, 0x1A, 0x1B, 0x7E,
+            0x3B, 0xA7, 0xFF, 0xF8, 0x1B, 0xAC,
+        ];
+        let insns: Vec<Instruction> = disassemble(&code).unwrap();
+        let attr: CodeAttribute = code_attr(code);
+        let cfg: Cfg = build_cfg(&insns, &attr, |_| None).unwrap();
+        let stacks: BTreeMap<BlockId, Vec<VerificationType>> = block_entry_stack_types(
+            &cfg,
+            &insns,
+            vec![VerificationType::Integer, VerificationType::Integer],
+            &|_| None,
+            &|_| None,
+            &|_| None,
+            &|_| None,
+        )
+        .expect("the loop converges");
+        assert!(
+            stacks.values().all(Vec::is_empty),
+            "every block of the loop starts with an empty stack: {stacks:?}"
+        );
     }
 
     #[test]

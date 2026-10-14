@@ -383,6 +383,223 @@ pub fn substitute_recovered_strings(
     out
 }
 
+const CODE_ATTRIBUTE: &str = "Code";
+const CODE_HEADER_BYTES: usize = 8;
+const NOP: u8 = 0x00;
+const LDC: u8 = 0x12;
+const LDC_W: u8 = 0x13;
+const GETSTATIC: u8 = 0xB2;
+const INVOKEVIRTUAL: u8 = 0xB6;
+const INVOKESTATIC: u8 = 0xB8;
+const STRING_TO_STRING: &str = "(Ljava/lang/String;)Ljava/lang/String;";
+const PRINTLN_STRING: &str = "(Ljava/lang/String;)V";
+const DEMO_BANNER_MARKER: &str = "allatori";
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InlineCounts {
+    call_sites_inlined: usize,
+    banners_removed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlinedStrings {
+    pub class: crate::classfile::ClassFile,
+    pub call_sites_inlined: usize,
+    pub banners_removed: usize,
+}
+
+fn string_constant_utf8(cf: &crate::classfile::ClassFile, index: u16) -> Option<u16> {
+    match cf.constant_pool.get(usize::from(index))? {
+        crate::classfile::ConstantPoolEntry::String { utf8_index } => Some(*utf8_index),
+        _ => None,
+    }
+}
+
+fn is_own_string_decryptor(cf: &crate::classfile::ClassFile, methodref: u16) -> bool {
+    let Some((owner, name, descriptor)) = owner_name_descriptor(cf, methodref) else {
+        return false;
+    };
+    descriptor == STRING_TO_STRING
+        && cf.this_class_name().ok() == Some(owner)
+        && cf
+            .methods
+            .iter()
+            .any(|method: &crate::classfile::MethodInfo| {
+                cf.utf8_at(method.name_index).ok() == Some(name)
+                    && cf.utf8_at(method.descriptor_index).ok() == Some(descriptor)
+                    && method.access_flags & crate::decompile::ACC_STATIC != 0
+            })
+}
+
+fn owner_name_descriptor(
+    cf: &crate::classfile::ClassFile,
+    index: u16,
+) -> Option<(&str, &str, &str)> {
+    let (class_index, name_and_type_index): (u16, u16) =
+        match cf.constant_pool.get(usize::from(index))? {
+            crate::classfile::ConstantPoolEntry::Methodref {
+                class_index,
+                name_and_type_index,
+            }
+            | crate::classfile::ConstantPoolEntry::Fieldref {
+                class_index,
+                name_and_type_index,
+            } => (*class_index, *name_and_type_index),
+            _ => return None,
+        };
+    let owner: &str = cf.class_name(class_index).ok()?;
+    let crate::classfile::ConstantPoolEntry::NameAndType {
+        name_index,
+        descriptor_index,
+    } = cf.constant_pool.get(usize::from(name_and_type_index))?
+    else {
+        return None;
+    };
+    Some((
+        owner,
+        cf.utf8_at(*name_index).ok()?,
+        cf.utf8_at(*descriptor_index).ok()?,
+    ))
+}
+
+fn is_system_out(cf: &crate::classfile::ClassFile, fieldref: u16) -> bool {
+    owner_name_descriptor(cf, fieldref).is_some_and(
+        |(owner, name, descriptor): (&str, &str, &str)| {
+            owner == "java/lang/System" && name == "out" && descriptor == "Ljava/io/PrintStream;"
+        },
+    )
+}
+
+fn is_println_string(cf: &crate::classfile::ClassFile, methodref: u16) -> bool {
+    owner_name_descriptor(cf, methodref).is_some_and(
+        |(owner, name, descriptor): (&str, &str, &str)| {
+            owner == "java/io/PrintStream" && name == "println" && descriptor == PRINTLN_STRING
+        },
+    )
+}
+
+const fn pool_operand(insn: &crate::bytecode::Instruction) -> Option<u16> {
+    match insn.operands {
+        crate::bytecode::Operands::ConstPool(index) => Some(index),
+        _ => None,
+    }
+}
+
+fn blank(code: &mut [u8], start: u32, end: u32) {
+    let (Ok(start), Ok(end)): (Result<usize, _>, Result<usize, _>) =
+        (usize::try_from(start), usize::try_from(end))
+    else {
+        return;
+    };
+    if let Some(slice) = code.get_mut(start..end) {
+        slice.fill(NOP);
+    }
+}
+
+fn inline_code(
+    cf: &crate::classfile::ClassFile,
+    recovered: &BTreeMap<u16, String>,
+    code: &mut [u8],
+    counts: &mut InlineCounts,
+) {
+    let Ok(insns): Result<Vec<crate::bytecode::Instruction>, _> =
+        crate::bytecode::disassemble(code)
+    else {
+        return;
+    };
+    let code_end: u32 = u32::try_from(code.len()).unwrap_or(u32::MAX);
+    let end_of = |index: usize| -> u32 {
+        insns
+            .get(index + 1)
+            .map_or(code_end, |next: &crate::bytecode::Instruction| next.pc)
+    };
+    let mut index: usize = 0;
+    while index < insns.len() {
+        let insn: &crate::bytecode::Instruction = &insns[index];
+        let is_recovered_load: bool = matches!(insn.opcode, LDC | LDC_W)
+            && pool_operand(insn)
+                .and_then(|operand: u16| string_constant_utf8(cf, operand))
+                .is_some_and(|utf8: u16| recovered.contains_key(&utf8));
+        if !is_recovered_load {
+            index += 1;
+            continue;
+        }
+        let Some(call) = insns.get(index + 1) else {
+            break;
+        };
+        let decrypts: bool = call.opcode == INVOKESTATIC
+            && pool_operand(call).is_some_and(|operand: u16| is_own_string_decryptor(cf, operand));
+        if !decrypts {
+            index += 1;
+            continue;
+        }
+        let plaintext: &str = pool_operand(insn)
+            .and_then(|operand: u16| string_constant_utf8(cf, operand))
+            .and_then(|utf8: u16| recovered.get(&utf8))
+            .map_or("", String::as_str);
+        let banner: bool = plaintext.to_ascii_lowercase().contains(DEMO_BANNER_MARKER)
+            && index >= 1
+            && insns[index - 1].opcode == GETSTATIC
+            && pool_operand(&insns[index - 1])
+                .is_some_and(|operand: u16| is_system_out(cf, operand))
+            && insns
+                .get(index + 2)
+                .is_some_and(|print: &crate::bytecode::Instruction| {
+                    print.opcode == INVOKEVIRTUAL
+                        && pool_operand(print)
+                            .is_some_and(|operand: u16| is_println_string(cf, operand))
+                });
+        if banner {
+            blank(code, insns[index - 1].pc, end_of(index + 2));
+            counts.banners_removed += 1;
+            index += 3;
+            continue;
+        }
+        blank(code, call.pc, end_of(index + 1));
+        counts.call_sites_inlined += 1;
+        index += 2;
+    }
+}
+
+#[must_use]
+pub fn inline_recovered_strings(
+    cf: &crate::classfile::ClassFile,
+    recovered: &BTreeMap<u16, String>,
+) -> InlinedStrings {
+    let mut class: crate::classfile::ClassFile = substitute_recovered_strings(cf, recovered);
+    let mut counts: InlineCounts = InlineCounts::default();
+    for method in &mut class.methods {
+        for attribute in &mut method.attributes {
+            if cf.utf8_at(attribute.name_index).ok() != Some(CODE_ATTRIBUTE) {
+                continue;
+            }
+            let Some(length_bytes): Option<&[u8]> = attribute.info.get(4..CODE_HEADER_BYTES) else {
+                continue;
+            };
+            let code_length: usize = usize::try_from(u32::from_be_bytes([
+                length_bytes[0],
+                length_bytes[1],
+                length_bytes[2],
+                length_bytes[3],
+            ]))
+            .unwrap_or(usize::MAX);
+            let Some(end): Option<usize> = CODE_HEADER_BYTES.checked_add(code_length) else {
+                continue;
+            };
+            let Some(code): Option<&mut [u8]> = attribute.info.get_mut(CODE_HEADER_BYTES..end)
+            else {
+                continue;
+            };
+            inline_code(cf, recovered, code, &mut counts);
+        }
+    }
+    InlinedStrings {
+        class,
+        call_sites_inlined: counts.call_sites_inlined,
+        banners_removed: counts.banners_removed,
+    }
+}
+
 #[must_use]
 pub fn peel_and_decompile(cf: &crate::classfile::ClassFile) -> Option<PeeledClass> {
     let report: ProtectorPeelReport = peel_classfile(cf)?;
