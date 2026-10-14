@@ -6893,7 +6893,6 @@ fn extract_wim_image_files(
 
 #[cfg(test)]
 #[rustfmt::skip]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #[path = "../tests/common/forge_writer.rs"]
 mod forge_writer;
 
