@@ -119,13 +119,15 @@ fn push_run(
         return;
     }
     let value: String = String::from_utf8_lossy(run).into_owned();
-    let trimmed: &str = value.trim_matches(|c: char| matches!(c, '\t' | '\n' | '\r'));
+    let unpadded: &str = value.trim_start_matches(|c: char| matches!(c, '\t' | '\n' | '\r'));
+    let leading: usize = value.len() - unpadded.len();
+    let trimmed: &str = unpadded.trim_end_matches(|c: char| matches!(c, '\t' | '\n' | '\r'));
     if trimmed.chars().count() < min_len {
         return;
     }
     out.push(ExtractedString {
         value: trimmed.to_owned(),
-        offset: start,
+        offset: start + leading,
         tagging: Tagging::Plain { wide },
     });
 }
@@ -466,6 +468,27 @@ pub fn report(bytes: &[u8], uri: Option<&str>, opts: Options) -> StringsReport {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_padded_with_line_breaks_reports_the_offset_of_its_first_kept_byte() {
+        let bytes: &[u8] = b"\x00\r\n\thello strings world\r\n\x00";
+        let found: Vec<ExtractedString> = extract(
+            bytes,
+            Options {
+                min_len: 4,
+                decode: false,
+            },
+        );
+        let plain: &ExtractedString = found
+            .iter()
+            .find(|s: &&ExtractedString| s.value == "hello strings world")
+            .expect("the run is extracted");
+        assert_eq!(plain.offset, 4);
+        assert_eq!(
+            &bytes[plain.offset..plain.offset + plain.value.len()],
+            plain.value.as_bytes()
+        );
+    }
 
     #[test]
     fn head_clamps_to_char_boundary_and_never_panics() {
