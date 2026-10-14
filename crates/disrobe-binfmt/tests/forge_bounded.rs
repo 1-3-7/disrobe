@@ -185,6 +185,7 @@ fn random_oodle_bytes_behind_valid_headers_never_panic() {
             let _ = try_decode(&mutated, len);
         }
     }
+    assert!(attempts >= 9000, "only {attempts} random streams ran");
     assert!(
         refused * 100 >= attempts * 99,
         "only {refused} of {attempts} random streams were refused"
