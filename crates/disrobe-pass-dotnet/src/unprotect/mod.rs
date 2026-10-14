@@ -26,7 +26,9 @@ pub use neutralize::NeutralizationPlan;
 #[cfg(target_arch = "wasm32")]
 pub type NeutralizationPlan = ();
 
+#[cfg(not(target_arch = "wasm32"))]
 const SYNTHETIC_STRING_BASE: u32 = 0x70F0_0000;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_SYNTHETIC_STRINGS: u32 = 0x000F_FFFF;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,10 +60,12 @@ pub struct UnprotectReport {
 #[derive(Debug, Default)]
 pub struct Literals {
     units: BTreeMap<u32, Vec<u16>>,
+    #[cfg(not(target_arch = "wasm32"))]
     next: u32,
 }
 
 impl Literals {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn intern(&mut self, units: Vec<u16>) -> Option<u32> {
         if self.next >= MAX_SYNTHETIC_STRINGS {
             return None;

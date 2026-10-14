@@ -27,6 +27,7 @@ pub(crate) fn is_display_class_name(short: &str) -> bool {
 }
 
 #[must_use]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn is_closure_helper_name(name: &str) -> bool {
     mangled_kind(name).is_some()
 }

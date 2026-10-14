@@ -1253,6 +1253,7 @@ impl Resolver {
         false
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn type_implements_any_interface(&self, type_token: u32) -> bool {
         token_rid(type_token).is_some_and(|rid: u32| {
             self.tables
@@ -2084,16 +2085,19 @@ impl Resolver {
     }
 
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn type_spec_sig(&self, rid: u32) -> Option<TypeSig> {
         self.type_spec_signature(rid)
     }
 
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn local_type_sigs(&self, local_var_sig_tok: u32) -> Option<Vec<TypeSig>> {
         (local_var_sig_tok != 0).then(|| self.local_signatures(local_var_sig_tok))
     }
 
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn method_spec_args(&self, instantiation_blob: u32) -> Option<Vec<TypeSig>> {
         let blob: &[u8] = self.blob(instantiation_blob)?;
         crate::signature::parse_method_spec_sig(blob).ok()
@@ -2824,6 +2828,7 @@ impl Resolver {
         .then_some(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_compiler_generated_attribute(&self, token: u32) -> bool {
         let (Some(table), Some(rid)): (Option<TableId>, Option<u32>) =
             (token_table(token), token_rid(token))
