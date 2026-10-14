@@ -35,9 +35,10 @@ pub(crate) fn run(
     grpc: bool,
     cors_origins: Vec<String>,
     max_body_size: usize,
+    mcp_roots: &[std::path::PathBuf],
 ) -> miette::Result<()> {
     if mcp {
-        return disrobe_mcp::run_stdio();
+        return disrobe_mcp::run_stdio_with_roots(mcp_roots);
     }
     if stdio {
         return lsp::run_stdio_lsp();

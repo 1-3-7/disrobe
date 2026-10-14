@@ -1035,6 +1035,12 @@ enum Cmd {
         cors_origin: Vec<String>,
         #[arg(long, default_value_t = 50 * 1024 * 1024, help = "maximum request body size in bytes")]
         max_body_size: usize,
+        #[arg(
+            long = "root",
+            value_name = "DIR",
+            help = "with --mcp: another directory whose files the path and target tools may read (repeatable; the working directory and DISROBE_MCP_ROOTS always count)"
+        )]
+        roots: Vec<PathBuf>,
     },
     #[command(
         about = "install heavyweight optional dependencies (Ghidra, etc.) from upstream releases"
@@ -2180,7 +2186,8 @@ fn main() -> miette::Result<()> {
             grpc,
             cors_origin,
             max_body_size,
-        } => serve::run(bind, stdio, mcp, grpc, cors_origin, max_body_size),
+            roots,
+        } => serve::run(bind, stdio, mcp, grpc, cors_origin, max_body_size, &roots),
         #[cfg(not(feature = "server"))]
         Cmd::Serve { .. } => Err(miette::miette!(
             "DR-CLI-0326: this binary was built without the `server` feature, so it carries no HTTP \
