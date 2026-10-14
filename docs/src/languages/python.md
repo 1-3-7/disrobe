@@ -24,6 +24,7 @@ disrobe py decompile module.pyc --out recovered/ --emit source,disasm,ast
 disrobe py disasm module.pyc --out trace.txt
 disrobe py deob obfuscated.py --out clean.py
 disrobe py deob obfuscated.py --out clean.py --cleanup
+disrobe py deob remapped.pyc --opcode-reference stock.pyc --out clean.py
 ```
 
 `decompile` runs the in-tree engine: a frame-tree pre-pass, per-version opcode dispatch, then round-trip verification. `--backend native` is accepted for explicitness; no external Python decompiler backend is exposed by this command.
@@ -31,6 +32,35 @@ disrobe py deob obfuscated.py --out clean.py --cleanup
 `disasm` writes a faithful per-instruction trace across every supported interpreter dialect. This is the Disasm rung: lossless, offset-preserving, no structural reconstruction.
 
 `deob` peels source-level obfuscator wrappers (Kramer/Specter, Berserker, Jawbreaker, BlankOBF, PlusOBF, pyobfuscate.com, PyObfuscator (mauricelambert), python-obfuscator (PyPI), ObfuXtreme, Manglify, Oxyry, pyminifier, online obfuscator family, Xindex, pyobfus, Pypacker, Patchwork) with an AST-evaluator backend. `--cleanup` runs a ruff-AST constant-fold and dead-branch-elimination pass afterward.
+
+### Source obfuscators, graded by re-execution
+
+The [strict re-execution grader](../../../crates/disrobe-pass-py-deob/tests/obfuscator_reexec_strict.rs) peels each committed obfuscator output and runs the recovered source and the authored original under CPython 3.14. A driver prints the program's output, every module-level name with its kind and signature, and the results of calls into the functions the program defines. A case counts as recovered only when both runs print the same lines and exit the same way. Renamed identifiers, leftover junk assignments and a still-wrapped payload therefore all fail. The grader never runs a recovery that still calls `exec`, `eval`, `compile`, `marshal`, `__import__` or `importlib` more often than the original does.
+
+| Family | Result | What is left |
+|---|---|---|
+| Berserker | every graded case | |
+| BlankOBF | every graded case | |
+| Kramer/Specter | every case with a recorded original | one walrus capture has no recorded original |
+| PlusOBF | every graded case | |
+| Pypacker | every graded case | reproductions of the transform, not tool output |
+| pyobfus (reproductions) | every graded case | |
+| online obfuscator family | every graded case | |
+| pyobfuscate.com | hello only | functions, classes and parameters renamed without a mapping |
+| ObfuXtreme | cases without renamed names | random `v_` names; one capture where the tool renamed class attributes but not their reads |
+| python-obfuscator | hello only | identifiers renamed without a mapping; the 3.10 band output has empty class patterns and does not compile |
+| pyminifier | the compression, prepend and no-minify variants and the hello-world case | generated names; pyminifier 2.1 also renames f-string and bytes prefixes and misses f-string fields |
+| Patchwork | the no-rename capture | identifiers renamed without a mapping |
+| Manglify | none | the loader searches a four-digit XOR key at run time over nested layers |
+| PyObfuscator (mauricelambert) | none | the builtin alias table and XOR string decoder remain |
+
+The test pins the cases that fail, with the reason for each, and the list may only shrink.
+
+python-obfuscator recovery folds `bytes.fromhex(...).decode('utf-8')` constants back to literals, removes statements after `return`, `raise`, `break` and `continue`, and drops the junk assignments the tool inserts. It removes only assignments of a 79-letter string, an integer below 1000 or another name, and only when nothing reads the name. It keeps every assignment when the program reads its own namespace through `globals`, `locals`, `vars`, `dir`, `eval` or `exec`. Pypacker and the pyobfus marshal form hand the marshalled module to the decompiler, which infers the CPython version from the bytecode. Jawbreaker is reported as detected and refused: its loader fetches the program from a remote paste at run time, and `deob` never fetches it.
+
+### Custom interpreters with a permuted opcode table
+
+Some applications ship a CPython build whose opcode numbers are shuffled, so stock disassembly shows unknown or wrong instructions. For CPython 3.11 and later, `deob` detects this from invariants every code object keeps: the first instruction after the cell and generator prologue is `RESUME`, and the inline-cache slots after cache-bearing instructions hold `CACHE`. When those fail under the stock table but every plain code object starts on the same opcode with a zero operand, the input is refused as `cpython-opcode-remap` (`DR-PYDEOB-0016`) instead of being decompiled with the wrong table. `py deob --opcode-reference stock.pyc` and `py disasm --opcode-reference stock.pyc` recover the table from a stock-compiled `.pyc` of a module the file also contains: it aligns code objects with the same name, constants, names and length, requires identical operand bytes, and refuses a conflicting or non-injective mapping. Opcodes the reference never uses are refused by value (`DR-PYDIS-0206`). The grader compiles an authored program with CPython 3.12, permutes its opcodes, and checks that the refusal fires, that the recovered table decompiles to source that prints what the original prints, and that a partial reference and a changed operand are both refused.
 
 ### Freezers and packagers
 
