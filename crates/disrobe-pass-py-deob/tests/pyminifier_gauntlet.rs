@@ -34,9 +34,8 @@ fn pyminifier_gauntlet_recovers_structure_from_python_minifier_output() {
 
     assert_eq!(
         peel.quality,
-        Quality::Full,
-        "token-rename variant must reach Quality::Full; quality={:?}, notes={:?}",
-        peel.quality,
+        Quality::Partial,
+        "a token-rename variant keeps generated names, so it is partial; notes={:?}",
         peel.lossy_notes
     );
 
@@ -49,14 +48,14 @@ fn pyminifier_gauntlet_recovers_structure_from_python_minifier_output() {
     );
 
     assert!(
-        recovered.contains("class Cls_0") || recovered.contains("class E"),
-        "class identifier must be canonicalized or preserved; recovered[:300]={:?}",
+        recovered.contains("class E"),
+        "the generated class name stays as pyminifier wrote it; recovered[:300]={:?}",
         &recovered.chars().take(300).collect::<String>()
     );
 
     assert!(
-        recovered.contains("def func_0") || recovered.contains("def F"),
-        "function identifier must be canonicalized or preserved"
+        recovered.contains("def F"),
+        "the generated function name stays as pyminifier wrote it"
     );
 
     assert!(
@@ -85,12 +84,12 @@ fn pyminifier_gauntlet_recovers_structure_from_python_minifier_output() {
         peel.stages_applied
     );
     println!(
-        "diagnostics: aliases={}, tokens={}",
+        "diagnostics: aliases={}, renamed={}",
         peel.diagnostics
             .get("aliases_recovered")
             .map_or("?", String::as_str),
         peel.diagnostics
-            .get("tokens_canonicalized")
+            .get("identifiers_renamed_by_tool")
             .map_or("?", String::as_str)
     );
 }

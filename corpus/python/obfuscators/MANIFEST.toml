@@ -256,3 +256,11 @@ note = "two-stage loader: stage1 .py decrypts an embedded stage2 (base85 + xor-c
 "orig_comp" = { path = "corpus/python/obfuscators/patchwork/orig_comp.py", sha256 = "48d98b9a7ca6808111c545539700a1c4252e09a15f5834337e3fb46d7e8a33aa", bytes = 145, transform = "ground-truth source" }
 "orig_fstr" = { path = "corpus/python/obfuscators/patchwork/orig_fstr.py", sha256 = "6a074ee937d72d70f1c030120add551813da4d144f3704debef45de6288af0b7", bytes = 132, transform = "ground-truth source" }
 "orig_walrus" = { path = "corpus/python/obfuscators/patchwork/orig_walrus.py", sha256 = "2628836d5848304ac16d5e20b36ab7dce2c50e5eb6d27a1a07c0a992a2550ccd", bytes = 274, transform = "ground-truth source" }
+
+[obfuscators.clean.metadata]
+note = "Authored originals for the strict re-execution grader (crates/disrobe-pass-py-deob/tests/obfuscator_reexec_strict.rs). fact_box and greet_env are the plaintexts embedded in online_family/real_sample.py and pyobfus/real_sample.py, decoded with the Python standard library (reverse, base64, zlib) and never with disrobe; remap_subject is authored for the opcode-remap case and compiled by CPython 3.12 at test time."
+
+[obfuscators.clean.fixtures]
+"fact_box" = { path = "corpus/python/obfuscators/clean/fact_box.py", sha256 = "b5731da6e8fcd5f61e7dd077dd2da6d63cc444249c208013034fa685edbd378a", bytes = 269 }
+"greet_env" = { path = "corpus/python/obfuscators/clean/greet_env.py", sha256 = "d0b391593f66bd6b22486fee2c5827c685b3f71aad3a373bb0dc59287468e31a", bytes = 174 }
+"remap_subject" = { path = "corpus/python/obfuscators/clean/remap_subject.py", sha256 = "4243668db74135836e7bee39b7e285fb74136cb8745bfec4f5e96ae3e032e18d", bytes = 1134 }

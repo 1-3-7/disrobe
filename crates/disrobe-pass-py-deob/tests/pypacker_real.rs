@@ -7,7 +7,7 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, Obfuscator, PeelOutcome, Q
 
 const OBF: &str = "pypacker";
 
-fn assert_marshal_handoff(slot: &str, expected_compressor: &str) {
+fn assert_marshal_handoff(slot: &str, expected_compressor: &str, expected_text: &str) {
     let fixture: Vec<u8> = common::require_real_fixture(OBF, slot);
     let text: &str = std::str::from_utf8(&fixture).expect("utf8");
     assert!(
@@ -24,15 +24,16 @@ fn assert_marshal_handoff(slot: &str, expected_compressor: &str) {
         .unwrap_or_else(|e| panic!("peel: {e:?}"));
     assert_eq!(
         peel.quality,
-        Quality::Partial,
-        "marshal code object is a bytecode handoff, not source"
+        Quality::Full,
+        "the marshalled module decompiles to source: {:?}",
+        peel.lossy_notes
     );
     assert_eq!(
         peel.stages_applied,
         vec![
             expected_compressor.to_owned(),
             "marshal".to_owned(),
-            "disassemble".to_owned(),
+            "decompile".to_owned(),
         ]
     );
     assert_eq!(
@@ -46,29 +47,34 @@ fn assert_marshal_handoff(slot: &str, expected_compressor: &str) {
         Some("<module>"),
         "the CPython module-level code object is named <module>"
     );
+    assert_eq!(
+        peel.diagnostics.get("python_version").map(String::as_str),
+        Some("3.14"),
+        "the reproductions were marshalled by CPython 3.14"
+    );
     assert!(
+        peel.recovered_source.contains(expected_text),
+        "the decompiled module must hold {expected_text:?}: {}",
         peel.recovered_source
-            .contains("compiled bytecode, not source"),
-        "handoff must state its ceiling"
     );
 }
 
 #[test]
-fn pypacker_real_hello_zlib_marshal_handoff() {
-    assert_marshal_handoff("hello", "zlib");
+fn pypacker_real_hello_zlib_marshal_decompiles_to_source() {
+    assert_marshal_handoff("hello", "zlib", "print(\"hello world\")");
 }
 
 #[test]
-fn pypacker_real_sample_lzma_marshal_handoff() {
-    assert_marshal_handoff("sample", "lzma");
+fn pypacker_real_sample_lzma_marshal_decompiles_to_source() {
+    assert_marshal_handoff("sample", "lzma", "def greet(name):");
 }
 
 #[test]
-fn pypacker_real_bz2_marshal_handoff() {
-    assert_marshal_handoff("bz2", "bz2");
+fn pypacker_real_bz2_marshal_decompiles_to_source() {
+    assert_marshal_handoff("bz2", "bz2", "def greet(name):");
 }
 
 #[test]
-fn pypacker_real_gzip_marshal_handoff() {
-    assert_marshal_handoff("gzip", "gzip");
+fn pypacker_real_gzip_marshal_decompiles_to_source() {
+    assert_marshal_handoff("gzip", "gzip", "def greet(name):");
 }

@@ -37,7 +37,7 @@ fn python_obfuscator_pypi_real_hello_unwraps_exec_to_inner_source() {
     assert_eq!(
         peel.quality,
         Quality::Partial,
-        "exec-unwrap is a Partial (junk vars remain), got {:?}",
+        "renamed identifiers keep python-obfuscator partial, got {:?}",
         peel.quality
     );
     assert!(
@@ -47,11 +47,9 @@ fn python_obfuscator_pypi_real_hello_unwraps_exec_to_inner_source() {
         "expected exec-unwrap stage, got {:?}",
         peel.stages_applied
     );
-    assert!(
-        peel.recovered_source
-            .contains("print(bytes.fromhex('68656c6c6f20776f726c64').decode('utf-8'))"),
-        "recovered inner source must contain the unwrapped print statement; got first 200: {:?}",
-        &peel.recovered_source.chars().take(200).collect::<String>()
+    assert_eq!(
+        peel.recovered_source, "print('hello world')\n",
+        "the hex constant folds back to its literal and every junk assignment goes"
     );
     assert!(
         !peel.recovered_source.trim_start().starts_with("exec("),

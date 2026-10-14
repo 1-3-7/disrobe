@@ -48,29 +48,49 @@ pub fn load_real_fixture(obf: &str, slot: &str) -> Option<Vec<u8>> {
         }
     }
     let fixture_path: PathBuf = dir.join(format!("{file_stem}.py.fixture"));
-    if let Ok(wrapped) = std::fs::read(&fixture_path) {
-        let magic: &[u8] = b"DISROBE_OBFUSCATOR_FIXTURE_ZLIB_BASE64_V1";
-        if let Some(rest) = wrapped.strip_prefix(magic) {
-            let body: &[u8] = rest
-                .strip_prefix(b"\r\n")
-                .or_else(|| rest.strip_prefix(b"\n"))
-                .unwrap_or(rest);
-            let engine: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
-            if let Ok(b64_decoded) = engine.decode(body.trim_ascii()) {
-                let mut decoder: flate2::read::ZlibDecoder<&[u8]> =
-                    flate2::read::ZlibDecoder::new(b64_decoded.as_slice());
-                let mut out: Vec<u8> = Vec::new();
-                if decoder.read_to_end(&mut out).is_ok() {
-                    return Some(out);
-                }
-            }
-        }
+    if let Some(unwrapped) = std::fs::read(&fixture_path)
+        .ok()
+        .and_then(|wrapped: Vec<u8>| unwrap_fixture_envelope(&wrapped))
+    {
+        return Some(unwrapped);
     }
     let pre_compile_path: PathBuf = dir.join(format!("{file_stem}_pre_compile.py"));
     if let Ok(bytes) = std::fs::read(&pre_compile_path) {
         return Some(bytes);
     }
     None
+}
+
+pub fn unwrap_fixture_envelope(wrapped: &[u8]) -> Option<Vec<u8>> {
+    let rest: &[u8] = wrapped.strip_prefix(b"DISROBE_OBFUSCATOR_FIXTURE_ZLIB_BASE64_V1")?;
+    let body: &[u8] = rest
+        .strip_prefix(b"\r\n")
+        .or_else(|| rest.strip_prefix(b"\n"))
+        .unwrap_or(rest);
+    let engine: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+    let b64_decoded: Vec<u8> = engine.decode(body.trim_ascii()).ok()?;
+    let mut decoder: flate2::read::ZlibDecoder<&[u8]> =
+        flate2::read::ZlibDecoder::new(b64_decoded.as_slice());
+    let mut out: Vec<u8> = Vec::new();
+    decoder.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+pub fn require_corpus_file(relative: &str) -> Vec<u8> {
+    let path: PathBuf = corpus_root().join(relative);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "the tracked fixture {} is unreadable ({e}); restore it with git checkout, because \
+             this test never regenerates fixtures",
+            path.display()
+        )
+    });
+    if relative.ends_with(".fixture") {
+        return unwrap_fixture_envelope(&bytes).unwrap_or_else(|| {
+            panic!("{} lacks the zlib+base64 fixture envelope", path.display())
+        });
+    }
+    bytes
 }
 
 pub fn require_real_fixture(obf: &str, slot: &str) -> Vec<u8> {

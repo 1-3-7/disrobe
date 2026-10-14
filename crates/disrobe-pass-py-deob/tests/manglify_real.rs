@@ -7,11 +7,11 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, PeelOutcome, Quality};
 
 const SLOTS: &[(&str, Quality)] = &[
     ("edge_cases_3_8", Quality::Partial),
-    ("edge_hello_world", Quality::Full),
-    ("edge_async_fn", Quality::Full),
-    ("edge_lambda_in_listcomp", Quality::Full),
-    ("edge_typing_generic", Quality::Full),
-    ("edge_walrus_operator", Quality::Full),
+    ("edge_hello_world", Quality::Partial),
+    ("edge_async_fn", Quality::Partial),
+    ("edge_lambda_in_listcomp", Quality::Partial),
+    ("edge_typing_generic", Quality::Partial),
+    ("edge_walrus_operator", Quality::Partial),
 ];
 
 #[test]

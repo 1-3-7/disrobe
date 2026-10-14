@@ -1,13 +1,15 @@
 #![allow(clippy::expect_used)]
 use std::path::{Path, PathBuf};
 
+use disrobe_pass_py_deob::recover_remapped_pyc;
 use disrobe_pass_py_deob::{
     ast_eval, auto_deobfuscate, cleanup_source, decode_hyperion_v2v3_inner,
     decode_hyperion_v2v3_inner_with_version, detect, detect_hyperion_v2v3, detect_marshal,
     iter_passes, looks_obfuscated, peel, peel_hyperion_v2v3_all_layers, peel_hyperion_v2v3_layer,
     peel_with_pyver, recover_marshal_source, recover_pyc_zipper, unidentified_guidance,
 };
-use disrobe_py_marshal::PyVersion;
+use disrobe_pass_py_disasm::detect_opcode_remap;
+use disrobe_py_marshal::{CodeObject, Object, PyVersion, read_pyc, write_pyc};
 use disrobe_testkit::{CorpusEntry, StressCase, StressConfig, StressError, XorShift64};
 
 const RANDOM_SPAN_BYTES: usize = 4096;
@@ -21,11 +23,31 @@ const SATURATION_PATTERNS: [(u8, u32); 2] = [(u8::MAX, 2), (0, 3)];
 const MAX_SCATTERED_OVERWRITES: usize = 32;
 const HYPERION_LAYER_LIMIT: usize = 8;
 
-const REAL_SAMPLES: [(&str, &[&str]); 4] = [
+const REAL_SAMPLES: [(&str, &[&str]); 9] = [
     ("berserker", &["berserker", "real_sample.py"]),
     ("blankobf", &["blankobf", "real_edge_cases_3_8_r1.py"]),
+    (
+        "blankobf-layers",
+        &["blankobf", "edge-cases", "real_hello_world.py"],
+    ),
     ("kramer", &["kramer", "gauntlet", "real_gauntlet_kramer.py"]),
     ("patchwork", &["patchwork", "real_hello_world.py"]),
+    (
+        "python-obfuscator",
+        &["python_obfuscator_pypi", "real_hello.py"],
+    ),
+    ("pyobfuscate-com", &["pyobfuscate_com", "real_hello.py"]),
+    ("pypacker", &["pypacker", "real_sample.py"]),
+    ("pyobfus-marshal", &["pyobfus", "real_marshal.py"]),
+];
+
+const STOCK_PYC: [&str; 6] = [
+    "corpus",
+    "python",
+    "decompile",
+    "authored",
+    "compiled",
+    "annotations_typing.3.12.pyc",
 ];
 
 fn corpus_root() -> Result<PathBuf, StressError> {
@@ -66,6 +88,46 @@ fn real_sample(parts: &[&str]) -> Result<Vec<u8>, StressError> {
     Ok(bytes)
 }
 
+fn stock_pyc() -> Result<Vec<u8>, StressError> {
+    let root: PathBuf = corpus_root()?;
+    let workspace: &Path = root
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| StressError::Inconsistent {
+            detail: format!("{} has no workspace root", root.display()),
+        })?;
+    let path: PathBuf = STOCK_PYC
+        .iter()
+        .fold(workspace.to_path_buf(), |dir: PathBuf, part: &&str| {
+            dir.join(part)
+        });
+    std::fs::read(&path).map_err(|error: std::io::Error| StressError::Io {
+        context: format!("reading the stock CPython pyc {}", path.display()),
+        source: error,
+    })
+}
+
+fn remapped(stock: &[u8]) -> Vec<u8> {
+    fn permute(code: &mut CodeObject) {
+        for op in code.code.iter_mut().step_by(2) {
+            *op = op.wrapping_mul(167).wrapping_add(89);
+        }
+        for konst in &mut code.consts {
+            if let Object::Code(inner) = konst {
+                permute(inner);
+            }
+        }
+    }
+    let Ok(mut file) = read_pyc(stock) else {
+        return stock.to_vec();
+    };
+    if let Object::Code(code) = &mut file.code {
+        permute(code);
+    }
+    write_pyc(&file).unwrap_or_else(|_| stock.to_vec())
+}
+
 fn pyc_header_seed() -> Vec<u8> {
     let mut bytes: Vec<u8> = vec![0u8; 16];
     bytes
@@ -97,6 +159,9 @@ fn corpus() -> Result<Vec<CorpusEntry>, StressError> {
     for (name, parts) in REAL_SAMPLES {
         entries.push(CorpusEntry::new(name, real_sample(parts)?));
     }
+    let stock: Vec<u8> = stock_pyc()?;
+    entries.push(CorpusEntry::new("opcode-remapped-pyc", remapped(&stock)));
+    entries.push(CorpusEntry::new("stock-pyc", stock));
     entries.push(CorpusEntry::new(
         "random-span",
         vec![0u8; RANDOM_SPAN_BYTES],
@@ -182,6 +247,15 @@ fn exercise_byte_entrypoints(bytes: &[u8]) {
     for pass in iter_passes() {
         consume(pass.detect(bytes));
         consume(pass.peel(bytes));
+    }
+    if let Ok(file) = read_pyc(bytes)
+        && let Object::Code(code) = &file.code
+    {
+        consume(detect_opcode_remap(code, file.header.version));
+    }
+    if let Ok(stock) = stock_pyc() {
+        consume(recover_remapped_pyc(bytes, &stock));
+        consume(recover_remapped_pyc(&stock, bytes));
     }
 }
 

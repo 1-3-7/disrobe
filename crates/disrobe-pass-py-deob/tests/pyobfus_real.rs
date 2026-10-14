@@ -51,7 +51,7 @@ fn pyobfus_real_sample_zlib_base64_recovers_exact_source() {
 }
 
 #[test]
-fn pyobfus_real_marshal_chain_reaches_bytecode_handoff() {
+fn pyobfus_real_marshal_chain_decompiles_to_source() {
     let fixture: Vec<u8> = common::require_real_fixture(OBF, "marshal");
     let detect: DetectReport = PyobfusPass.detect(&fixture);
     assert!(detect.matched);
@@ -67,12 +67,22 @@ fn pyobfus_real_marshal_chain_reaches_bytecode_handoff() {
         .unwrap_or_else(|e| panic!("marshal peel: {e:?}"));
     assert_eq!(
         peel.quality,
-        Quality::Partial,
-        "marshal-terminated chain is a bytecode handoff, not source"
+        Quality::Full,
+        "the marshalled module decompiles to source: {:?}",
+        peel.lossy_notes
     );
     assert_eq!(
         peel.stages_applied,
-        vec!["reverse", "base64", "zlib", "marshal"]
+        vec!["reverse", "base64", "zlib", "marshal", "decompile"]
+    );
+    assert_eq!(
+        peel.diagnostics.get("python_version").map(String::as_str),
+        Some("3.14")
+    );
+    assert!(
+        peel.recovered_source.contains("def greet(name):"),
+        "{}",
+        peel.recovered_source
     );
     assert_eq!(
         peel.diagnostics

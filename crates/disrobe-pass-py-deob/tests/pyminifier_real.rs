@@ -8,14 +8,14 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, PeelOutcome, Quality};
 const CREDIT: &str = "github.com/liftoff/pyminifier";
 
 const SLOTS: &[(&str, &str)] = &[
-    ("edge_cases_3_6_obfuscate", "class Cls_0"),
-    ("edge_cases_3_6_obfuscate_builtins", "class Cls_0"),
-    ("edge_cases_3_6_obfuscate_classes", "class Cls_0"),
-    ("edge_cases_3_6_obfuscate_functions", "def func_0"),
-    ("edge_cases_3_6_obfuscate_variables", "class Cls_0"),
+    ("edge_cases_3_6_obfuscate", "exercise ok"),
+    ("edge_cases_3_6_obfuscate_builtins", "exercise ok"),
+    ("edge_cases_3_6_obfuscate_classes", "exercise ok"),
+    ("edge_cases_3_6_obfuscate_functions", "exercise ok"),
+    ("edge_cases_3_6_obfuscate_variables", "exercise ok"),
     ("edge_hello_world", "print('hello world')"),
     ("edge_recursive", "return n * n(n - 1)"),
-    ("edge_class_decorator", "@func_0"),
+    ("edge_class_decorator", "decorated = True"),
     ("edge_async_fn", "await s(0)"),
     ("edge_generator", "yield i"),
     (
@@ -26,15 +26,15 @@ const SLOTS: &[(&str, &str)] = &[
 ];
 
 const VARIANT_SLOTS: &[(&str, &str)] = &[
-    ("variant_obfuscate", "func_0"),
-    ("variant_obfuscate_builtins", "func_0"),
-    ("variant_obfuscate_classes", "func_0"),
-    ("variant_obfuscate_functions", "func_0"),
-    ("variant_obfuscate_variables", "func_0"),
-    ("variant_obfuscate_import_methods", "func_0"),
-    ("variant_replacement_length_1", "func_0"),
-    ("variant_replacement_length_2", "func_0"),
-    ("variant_replacement_length_3", "func_0"),
+    ("variant_obfuscate", "exercise ok"),
+    ("variant_obfuscate_builtins", "exercise ok"),
+    ("variant_obfuscate_classes", "exercise ok"),
+    ("variant_obfuscate_functions", "exercise ok"),
+    ("variant_obfuscate_variables", "exercise ok"),
+    ("variant_obfuscate_import_methods", "exercise ok"),
+    ("variant_replacement_length_1", "exercise ok"),
+    ("variant_replacement_length_2", "exercise ok"),
+    ("variant_replacement_length_3", "exercise ok"),
     ("variant_gzip", "Python 3.6+ edge cases"),
     ("variant_lzma", "Python 3.6+ edge cases"),
     ("variant_bzip2", "Python 3.6+ edge cases"),
@@ -42,9 +42,35 @@ const VARIANT_SLOTS: &[(&str, &str)] = &[
     ("variant_obfuscate_lzma", "Python 3.6+ edge cases"),
     ("variant_obfuscate_bzip2", "Python 3.6+ edge cases"),
     ("variant_prepend", "Python 3.6+ edge cases"),
-    ("variant_use_tabs", "func_0"),
-    ("variant_nominify", "func_0"),
+    ("variant_use_tabs", "exercise ok"),
+    ("variant_nominify", "exercise ok"),
 ];
+
+const RENAMED_BY_TOOL: &[&str] = &[
+    "edge_cases_3_6_obfuscate",
+    "edge_cases_3_6_obfuscate_builtins",
+    "edge_cases_3_6_obfuscate_functions",
+    "edge_recursive",
+    "edge_class_decorator",
+    "edge_async_fn",
+    "edge_generator",
+    "variant_obfuscate",
+    "variant_obfuscate_functions",
+    "variant_replacement_length_1",
+    "variant_replacement_length_2",
+    "variant_replacement_length_3",
+    "variant_obfuscate_gzip",
+    "variant_obfuscate_lzma",
+    "variant_obfuscate_bzip2",
+];
+
+fn expected_quality(slot: &str) -> Quality {
+    if RENAMED_BY_TOOL.contains(&slot) {
+        Quality::Partial
+    } else {
+        Quality::Full
+    }
+}
 
 fn assert_full_recovery(kind: &str, slot: &str, needle: &str) -> PeelOutcome {
     let fixture: Vec<u8> = common::require_real_fixture("pyminifier", slot);
@@ -58,8 +84,8 @@ fn assert_full_recovery(kind: &str, slot: &str, needle: &str) -> PeelOutcome {
         .unwrap_or_else(|e| panic!("pyminifier {kind} {slot} peel: {e:?}"));
     assert_eq!(
         peel.quality,
-        Quality::Full,
-        "pyminifier {kind} {slot} must reach Quality::Full; variant={:?}",
+        expected_quality(slot),
+        "pyminifier {kind} {slot}: generated identifiers without a mapping cap recovery at Partial; variant={:?}",
         peel.diagnostics.get("variant")
     );
     assert!(
@@ -86,6 +112,26 @@ fn pyminifier_variant_fixtures_detect_and_peel() {
     for (slot, needle) in VARIANT_SLOTS {
         assert_full_recovery("variant", slot, needle);
     }
+}
+
+#[test]
+fn the_generated_name_heuristic_flags_a_pinned_set() {
+    let renamed: Vec<&str> = SLOTS
+        .iter()
+        .chain(VARIANT_SLOTS)
+        .map(|(slot, _): &(&str, &str)| *slot)
+        .filter(|slot: &&str| {
+            let fixture: Vec<u8> = common::require_real_fixture("pyminifier", slot);
+            PyminifierPass
+                .peel(&fixture)
+                .unwrap_or_else(|e| panic!("{slot}: {e:?}"))
+                .diagnostics
+                .get("identifiers_renamed_by_tool")
+                .map(String::as_str)
+                == Some("true")
+        })
+        .collect();
+    assert_eq!(renamed, RENAMED_BY_TOOL);
 }
 
 fn diagnostic<'a>(peel: &'a PeelOutcome, key: &str) -> &'a str {
