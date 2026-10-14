@@ -13,13 +13,14 @@ use disrobe_pass_jvm::{
     FingerprintReport, Instruction, JarEntry, JarExtract, JniPrototype, JniSurfaceReport,
     JvmBackend, LibrarySignatureSet, MethodId, NativeMethod, OatEmbeddedDex, Operands, PeelStatus,
     PeeledClass, ProguardMapping, ProtectorPeelReport, ResolvedNative, RetracedFrame,
-    analyze_jni_native_methods, apply_proguard_mapping, assemble_jar_with_limit, decompile_class,
-    decompile_dex, detect_available, detect_protector_family, disassemble, emit_jni_prototypes,
-    extract_aab, extract_aar, extract_apk, extract_apks, extract_jar, extract_native_methods,
-    extract_oat_dex, fingerprint_library_symbols, invoke_android, invoke_jvm,
-    native_methods_from_class, parse_classfile, parse_code_attribute, parse_dex,
-    parse_proguard_mapping, peel_and_decompile_classfile, recover_dex_reflection_strings,
-    translate_dex_bytes_with_limits, validate_dex2jar_entries,
+    SourceRecovery, SourceRecoveryOptions, analyze_jni_native_methods, apply_proguard_mapping,
+    assemble_jar_with_limit, decompile_class, decompile_dex, detect_available,
+    detect_protector_family, disassemble, emit_jni_prototypes, extract_aab, extract_aar,
+    extract_apk, extract_apks, extract_jar, extract_native_methods, extract_oat_dex,
+    fingerprint_library_symbols, invoke_android, invoke_jvm, native_methods_from_class,
+    parse_classfile, parse_code_attribute, parse_dex, parse_proguard_mapping,
+    parse_yguard_renamelog, peel_and_decompile_classfile, recover_dex_reflection_strings,
+    recover_sources, translate_dex_bytes_with_limits, validate_dex2jar_entries,
 };
 use disrobe_pass_native::backend_export::{
     DalvikSymbolKey, ExportFormat, ExportSymbol, SYMBOL_EXPORT_SCHEMA, SymbolClass, SymbolExport,
@@ -67,6 +68,13 @@ pub(crate) enum JvmCmd {
             help = "apply a ProGuard/R8 mapping.txt to restore original class/method/field names; writes name-restoration.json"
         )]
         mapping: Option<PathBuf>,
+        #[arg(
+            long = "yguard-log",
+            value_name = "XML",
+            conflicts_with = "mapping",
+            help = "apply a yGuard rename log to restore original names; with --mapping or --yguard-log a jar is also recovered as one renamed source set under recovered/, summarised in source-recovery.json"
+        )]
+        yguard_log: Option<PathBuf>,
         #[arg(
             long = "library",
             value_name = "JAR",
@@ -162,6 +170,7 @@ struct DecompileOptions {
     emit: Vec<String>,
     format: Option<BackendExportTarget>,
     mapping: Option<PathBuf>,
+    yguard_log: Option<PathBuf>,
     library: Vec<PathBuf>,
     peel: bool,
 }
@@ -176,6 +185,7 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             emit,
             format,
             mapping,
+            yguard_log,
             library,
             peel,
         } => decompile(DecompileOptions {
@@ -186,6 +196,7 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             emit,
             format,
             mapping,
+            yguard_log,
             library,
             peel,
         }),
@@ -1119,6 +1130,99 @@ fn write_name_restoration(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RenameSource<'a> {
+    Proguard(&'a Path),
+    Yguard(&'a Path),
+}
+
+impl<'a> RenameSource<'a> {
+    fn from_options(mapping: Option<&'a Path>, yguard_log: Option<&'a Path>) -> Option<Self> {
+        mapping
+            .map(Self::Proguard)
+            .or_else(|| yguard_log.map(Self::Yguard))
+    }
+
+    const fn path(self) -> &'a Path {
+        match self {
+            Self::Proguard(path) | Self::Yguard(path) => path,
+        }
+    }
+
+    fn load(self) -> miette::Result<ProguardMapping> {
+        match self {
+            Self::Proguard(path) => load_mapping(path),
+            Self::Yguard(path) => {
+                let text: String = std::fs::read_to_string(path).map_err(|e| {
+                    miette::miette!(
+                        "DR-CLI-0426: cannot read yGuard rename log {}: {e}",
+                        path.display()
+                    )
+                })?;
+                parse_yguard_renamelog(&text)
+                    .map_err(|e| miette::miette!("DR-CLI-0427: yGuard rename log parse: {e}"))
+            }
+        }
+    }
+}
+
+fn recover_renamed_sources(
+    rename_source: RenameSource<'_>,
+    extract: &JarExtract,
+    out_dir: &Path,
+) -> miette::Result<()> {
+    let mapping: ProguardMapping = rename_source.load()?;
+    let class_files: Vec<Vec<u8>> = extract.classes.values().cloned().collect();
+    let recovery: SourceRecovery = recover_sources(
+        &class_files,
+        SourceRecoveryOptions {
+            mapping: Some(&mapping),
+        },
+    )
+    .map_err(|e| miette::miette!("DR-CLI-0428: source-set recovery: {e}"))?;
+    let root: PathBuf = out_dir.join("recovered");
+    let mut files: Vec<String> = Vec::with_capacity(recovery.units.len());
+    let mut fallback_methods: usize = 0;
+    for unit in &recovery.units {
+        let target: PathBuf =
+            crate::cli::entry_path::contained_entry_path(&root, &unit.relative_path);
+        if target == root {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| miette::miette!("DR-CLI-0429: cannot create recovered dir: {e}"))?;
+        }
+        std::fs::write(&target, unit.source.as_bytes())
+            .map_err(|e| miette::miette!("DR-CLI-0429: cannot write recovered source: {e}"))?;
+        fallback_methods += unit.fallback_methods;
+        files.push(unit.relative_path.clone());
+    }
+    let summary: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.jvm.source-recovery/v1",
+        "rename_source": rename_source.path().display().to_string(),
+        "units": recovery.units.len(),
+        "classes_renamed": recovery.classes_renamed,
+        "members_renamed": recovery.members_renamed,
+        "references_renamed": recovery.references_renamed,
+        "strings_inlined": recovery.strings_inlined,
+        "banners_removed": recovery.banners_removed,
+        "fallback_methods": fallback_methods,
+        "files": files,
+    });
+    let bytes: Vec<u8> = serde_json::to_vec_pretty(&summary)
+        .map_err(|e| miette::miette!("DR-CLI-0429: source-recovery serialize: {e}"))?;
+    std::fs::write(out_dir.join("source-recovery.json"), bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0429: cannot write source-recovery.json: {e}"))?;
+    println!(
+        "  recovered:    {} renamed source file(s) under recovered/ ({} classes renamed, {} method(s) fell back)",
+        recovery.units.len(),
+        recovery.classes_renamed,
+        fallback_methods
+    );
+    Ok(())
+}
+
 fn restore_names_with_mapping(
     mapping_path: &std::path::Path,
     cf: &ClassFile,
@@ -1255,6 +1359,7 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
         emit: emit_kinds,
         format: export_target,
         mapping,
+        yguard_log,
         library,
         peel,
     }: DecompileOptions = options;
@@ -1349,6 +1454,11 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
             }
             let outcome: JarDecompileOutcome =
                 decompile_jar_classes(&emit_kinds, &out_dir, &extract, peel, &mut peel_summaries)?;
+            if let Some(rename_source) =
+                RenameSource::from_options(mapping.as_deref(), yguard_log.as_deref())
+            {
+                recover_renamed_sources(rename_source, &extract, &out_dir)?;
+            }
             let emitted: bool = outcome.emitted_source;
             class_report = Some((outcome.decompiled, outcome.total));
             let invocation: Option<BackendInvocation> =
@@ -1581,7 +1691,7 @@ fn extract(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     let extract: JarExtract =
         extract_jar(&bytes).map_err(|e| miette::miette!("DR-CLI-0412: jar/apk extract: {e}"))?;
     for entry in &extract.entries {
-        let safe: PathBuf = sanitize_entry_path(&out_dir, &entry.path);
+        let safe: PathBuf = crate::cli::entry_path::contained_entry_path(&out_dir, &entry.path);
         if let Some(parent) = safe.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| miette::miette!("DR-CLI-0413: cannot create entry dir: {e}"))?;
@@ -2053,18 +2163,6 @@ fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
     combined
 }
 
-fn sanitize_entry_path(out_dir: &std::path::Path, raw: &str) -> PathBuf {
-    let cleaned: String = raw.replace('\\', "/");
-    let mut resolved: PathBuf = out_dir.to_path_buf();
-    for segment in cleaned.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            continue;
-        }
-        resolved.push(segment);
-    }
-    resolved
-}
-
 fn apply_emit_stubs(
     emit_kinds: &[String],
     out_dir: &std::path::Path,
@@ -2289,22 +2387,14 @@ fn jar_source_path(
     entry_path: &str,
 ) -> PathBuf {
     if let Some(name) = internal_name.filter(|n| !n.is_empty()) {
-        let mut resolved: PathBuf = out_dir.to_path_buf();
-        let mut pushed: bool = false;
-        for segment in name.replace('\\', "/").split('/') {
-            if segment.is_empty() || segment == "." || segment == ".." {
-                continue;
-            }
-            resolved.push(segment);
-            pushed = true;
-        }
-        if pushed {
+        let mut resolved: PathBuf = crate::cli::entry_path::contained_entry_path(out_dir, name);
+        if resolved != out_dir {
             resolved.set_extension("java");
             return resolved;
         }
     }
     let stripped: &str = entry_path.strip_suffix(".class").unwrap_or(entry_path);
-    let mut resolved: PathBuf = sanitize_entry_path(out_dir, stripped);
+    let mut resolved: PathBuf = crate::cli::entry_path::contained_entry_path(out_dir, stripped);
     resolved.set_extension("java");
     resolved
 }
