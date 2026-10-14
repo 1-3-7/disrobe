@@ -20,6 +20,18 @@ pub struct NativeImageSection {
     end_address: u64,
 }
 
+impl NativeImageSection {
+    #[must_use]
+    pub const fn file_offset(&self) -> Option<u64> {
+        self.file_offset
+    }
+
+    #[must_use]
+    pub const fn file_size(&self) -> u64 {
+        self.file_size
+    }
+}
+
 #[derive(Debug)]
 pub struct NativeImage<'data> {
     bytes: &'data [u8],
@@ -71,6 +83,20 @@ impl<'data> NativeImage<'data> {
     #[must_use]
     pub fn sections(&self) -> &[NativeImageSection] {
         &self.sections
+    }
+
+    #[must_use]
+    pub fn address_of_file_offset(&self, offset: u64) -> Option<(&NativeImageSection, u64)> {
+        self.sections
+            .iter()
+            .find_map(|section: &NativeImageSection| {
+                let start: u64 = section.file_offset?;
+                let delta: u64 = offset.checked_sub(start)?;
+                (delta < section.file_size.min(section.size))
+                    .then(|| section.address.checked_add(delta))
+                    .flatten()
+                    .map(|address: u64| (section, address))
+            })
     }
 
     #[must_use]
