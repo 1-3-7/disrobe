@@ -7,12 +7,23 @@ mod chain;
     reason = "parent-only visibility keeps navigation protocol types behind the private module while satisfying unreachable_pub"
 )]
 mod navigation;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "parent-only visibility keeps note protocol types behind the private module while satisfying unreachable_pub"
+)]
+mod notes;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "parent-only visibility keeps target protocol types behind the private module while satisfying unreachable_pub"
+)]
+mod target;
 #[cfg(feature = "wasm")]
 #[allow(clippy::redundant_pub_crate)]
 mod wasm;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -56,14 +67,27 @@ const MAX_RENAMES_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_STRINGS_MIN_LEN: usize = 4096;
 const MAX_WORKSPACE_READ_BYTES: u64 = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, Default)]
-pub struct DisrobeMcp;
+#[derive(Debug, Clone)]
+pub struct DisrobeMcp {
+    workspace: Option<Arc<target::Workspace>>,
+}
+
+impl Default for DisrobeMcp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct VerifyParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
@@ -198,7 +222,12 @@ pub struct ProvenanceLookupOut {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct AutoParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u8>,
 }
@@ -234,7 +263,12 @@ pub struct AutoOut {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct DecompileParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<u8>,
 }
@@ -274,7 +308,12 @@ pub enum WasmLiftTarget {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct WasmLiftParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub target: WasmLiftTarget,
 }
 
@@ -303,14 +342,24 @@ pub struct WasmLiftOut {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct IocParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct SecretScanParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     #[serde(default)]
     pub redact: bool,
 }
@@ -378,7 +427,12 @@ impl From<SecretScanReport> for SecretScanOut {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct CoverageParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
 }
 
 const MAX_COVERAGE_REGIONS: usize = 512;
@@ -588,7 +642,12 @@ impl From<StringsReport> for StringsOut {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct BehaviorParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     #[serde(default)]
     pub imports: Vec<String>,
 }
@@ -597,7 +656,12 @@ pub struct BehaviorParams {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct StringsParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_len: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -679,13 +743,14 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "verify",
-        description = "Verify a disrobe .dr envelope (blake3 root hash, rung, hot/cold sizes) from inline base64 bytes; never reads disk."
+        description = "Verify a disrobe .dr envelope (blake3 root hash, rung, hot/cold sizes) from the input bytes. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn verify(
         &self,
         Parameters(p): Parameters<VerifyParams>,
     ) -> Result<Json<VerifyOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         let env: disrobe_ir::Envelope = disrobe_ir::Envelope::decode(&bytes).map_err(
             |e: disrobe_ir::error::EnvelopeError| {
                 ErrorData::invalid_params(format!("DR-MCP-0184: verify failed: {e}"), None)
@@ -814,22 +879,24 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "ioc",
-        description = "Extract indicators of compromise (URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants) from inline base64 bytes, decoding one layer of base64/hex. Never reads disk."
+        description = "Extract indicators of compromise (URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants), decoding one layer of base64/hex. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn ioc(&self, Parameters(p): Parameters<IocParams>) -> Result<Json<IocOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         Ok(Json(IocOut::from(ioc_report(&bytes, None))))
     }
 
     #[rmcp::tool(
         name = "secret_scan",
-        description = "Detect secrets in inline base64 bytes and optionally replace matched values in the response with stable redaction tokens. Never reads disk."
+        description = "Detect secrets and optionally replace matched values in the response with stable redaction tokens. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn secret_scan(
         &self,
         Parameters(p): Parameters<SecretScanParams>,
     ) -> Result<Json<SecretScanOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         let mut report: SecretScanReport = scan_secret_report(&bytes, None);
         if p.redact {
             redact_secret_report(&mut report);
@@ -839,13 +906,14 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "behavior",
-        description = "Static capability / behavior summary across network, filesystem, process-exec, registry-persistence, crypto, anti-analysis, and dynamic-code categories with MITRE ATT&CK ids, from inline base64 bytes plus optional import names. Never reads disk."
+        description = "Static capability / behavior summary across network, filesystem, process-exec, registry-persistence, crypto, anti-analysis, and dynamic-code categories with MITRE ATT&CK ids, from the input bytes plus optional import names. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn behavior(
         &self,
         Parameters(p): Parameters<BehaviorParams>,
     ) -> Result<Json<BehaviorOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         validate_imports(&p.imports)?;
         Ok(Json(BehaviorOut::from(analyze_behavior(
             &bytes, &p.imports,
@@ -854,13 +922,14 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "coverage",
-        description = "Account for every byte of an inline base64 PE / ELF / Mach-O image against the structures its format declares: bytes a structure claims, alignment slack, bytes nothing claims (where an appended overlay shows up), bytes a structure declares past the end of the file, and structures that overlap. Never reads disk."
+        description = "Account for every byte of a PE / ELF / Mach-O image against the structures its format declares: bytes a structure claims, alignment slack, bytes nothing claims (where an appended overlay shows up), bytes a structure declares past the end of the file, and structures that overlap. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn coverage(
         &self,
         Parameters(p): Parameters<CoverageParams>,
     ) -> Result<Json<CoverageOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         let mapped: ByteCoverage = file_byte_coverage(&bytes).map_err(|e| {
             ErrorData::invalid_params(
                 format!("DR-MCP-0660: cannot account for the bytes of this input: {e}"),
@@ -872,13 +941,14 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "strings",
-        description = "Extract printable strings (ASCII + UTF-16) from inline base64 bytes, optionally decoding base64/rot/stack-string obfuscation, tagged with their encoding. Never reads disk."
+        description = "Extract printable strings (ASCII + UTF-16), optionally decoding base64/rot/stack-string obfuscation, tagged with their encoding. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn strings(
         &self,
         Parameters(p): Parameters<StringsParams>,
     ) -> Result<Json<StringsOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         let defaults: StringsOptions = StringsOptions::default();
         let min_len: usize = p.min_len.map_or(defaults.min_len, |value: usize| value);
         if min_len == 0 || min_len > MAX_STRINGS_MIN_LEN {
@@ -896,46 +966,54 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "call_graph",
-        description = "Page through function summaries and explicitly classified call edges from an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk."
+        description = "Page through function summaries and explicitly classified call edges under a hard o200k_base token budget. Input: an inline Disasm- or Mir-rung .dr envelope in `bytes_b64`, a workspace `path` to an envelope or native image, or an opened native `target_id`."
     )]
     fn call_graph(
         &self,
         Parameters(p): Parameters<navigation::CallGraphParams>,
     ) -> Result<navigation::Json<navigation::CallGraphOut>, ErrorData> {
-        navigation::call_graph(p).map(navigation::Json::new)
+        let source: target::ModuleSource =
+            self.module_source(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
+        navigation::call_graph(source.module()?, p).map(navigation::Json::new)
     }
 
     #[rmcp::tool(
         name = "xrefs",
-        description = "Page through cross-references to a content-bound function id from an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk."
+        description = "Page through cross-references to a content-bound function id under a hard o200k_base token budget. Input: an inline Disasm- or Mir-rung .dr envelope in `bytes_b64`, a workspace `path` to an envelope or native image, or an opened native `target_id`."
     )]
     fn xrefs(
         &self,
         Parameters(p): Parameters<navigation::XrefsParams>,
     ) -> Result<navigation::Json<navigation::XrefsOut>, ErrorData> {
-        navigation::xrefs(p).map(navigation::Json::new)
+        let source: target::ModuleSource =
+            self.module_source(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
+        navigation::xrefs(source.module()?, p).map(navigation::Json::new)
     }
 
     #[rmcp::tool(
         name = "function_summary",
-        description = "Return one structural summary for a content-bound function id in an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk."
+        description = "Return one structural summary for a content-bound function id under a hard o200k_base token budget. Input: an inline Disasm- or Mir-rung .dr envelope in `bytes_b64`, a workspace `path` to an envelope or native image, or an opened native `target_id`."
     )]
     fn function_summary(
         &self,
         Parameters(p): Parameters<navigation::FunctionSummaryParams>,
     ) -> Result<navigation::Json<navigation::FunctionSummaryResponse>, ErrorData> {
-        navigation::function_summary(p).map(navigation::Json::new)
+        let source: target::ModuleSource =
+            self.module_source(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
+        navigation::function_summary(source.module()?, p).map(navigation::Json::new)
     }
 
     #[rmcp::tool(
         name = "neighborhood",
-        description = "Page through a cycle-safe caller, callee, or bidirectional function neighborhood from content-bound entry ids under a hard o200k_base token budget. Never reads disk."
+        description = "Page through a cycle-safe caller, callee, or bidirectional function neighborhood from content-bound entry ids under a hard o200k_base token budget. Input: an inline Disasm- or Mir-rung .dr envelope in `bytes_b64`, a workspace `path` to an envelope or native image, or an opened native `target_id`."
     )]
     fn neighborhood(
         &self,
         Parameters(p): Parameters<navigation::NeighborhoodParams>,
     ) -> Result<navigation::Json<navigation::NeighborhoodOut>, ErrorData> {
-        navigation::neighborhood(p).map(navigation::Json::new)
+        let source: target::ModuleSource =
+            self.module_source(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
+        navigation::neighborhood(source.module()?, p).map(navigation::Json::new)
     }
 }
 
@@ -945,10 +1023,11 @@ impl DisrobeMcp {
 impl DisrobeMcp {
     #[rmcp::tool(
         name = "auto",
-        description = "Auto-detect and chain disrobe's Python + native-packer passes over inline base64 bytes; returns the chain verdict, detected formats, and per-pass recovery summary. Never reads disk."
+        description = "Auto-detect and chain disrobe's Python + native-packer passes over the input; returns the chain verdict, detected formats, and per-pass recovery summary. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn auto(&self, Parameters(p): Parameters<AutoParams>) -> Result<Json<AutoOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         let cap: u8 = chain_depth(p.max_depth, "DR-MCP-0611")?;
         let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
             ErrorData::internal_error(format!("DR-MCP-0610: auto chain failed: {e}"), None)
@@ -994,13 +1073,14 @@ impl DisrobeMcp {
 
     #[rmcp::tool(
         name = "decompile",
-        description = "Auto-chain inline base64 bytes and return every terminal recovered-source artifact (language-keyed text), e.g. a .pyc decompiled to Python. Never reads disk."
+        description = "Auto-chain the input and return every terminal recovered-source artifact (language-keyed text), e.g. a .pyc decompiled to Python. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn decompile(
         &self,
         Parameters(p): Parameters<DecompileParams>,
     ) -> Result<Json<DecompileOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         let cap: u8 = chain_depth(p.max_depth, "DR-MCP-0621")?;
         let run: chain::ChainRun = chain::run_auto(bytes, cap).map_err(|e: String| {
             ErrorData::internal_error(format!("DR-MCP-0620: decompile chain failed: {e}"), None)
@@ -1030,13 +1110,14 @@ impl DisrobeMcp {
 impl DisrobeMcp {
     #[rmcp::tool(
         name = "wasm_lift",
-        description = "Lift inline WebAssembly bytes to bounded Rust, TypeScript, C, or WAT source with operation coverage. Shared-memory TypeScript output includes executable wait and notify semantics. Never reads disk or executes the module."
+        description = "Lift WebAssembly to bounded Rust, TypeScript, C, or WAT source with operation coverage. Shared-memory TypeScript output includes executable wait and notify semantics. Never executes the module. Input: inline base64 `bytes_b64`, a workspace `path`, or an opened `target_id`."
     )]
     fn wasm_lift(
         &self,
         Parameters(p): Parameters<WasmLiftParams>,
     ) -> Result<Json<WasmLiftOut>, ErrorData> {
-        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let bytes: Vec<u8> =
+            self.input_bytes(&p.bytes_b64, p.path.as_deref(), p.target_id.as_deref())?;
         wasm::lift(&bytes, p.target, MAX_WASM_LIFT_SOURCE_BYTES)
             .map(Json)
             .map_err(|error: wasm::WasmLiftError| {
@@ -1059,6 +1140,9 @@ impl DisrobeMcp {
         let router: rmcp::handler::server::router::tool::ToolRouter<Self> =
             router + Self::wasm_tool_router();
         router
+            + Self::target_tool_router()
+            + Self::reference_tool_router()
+            + Self::notes_tool_router()
     }
 }
 
@@ -1078,7 +1162,7 @@ impl rmcp::ServerHandler for DisrobeMcp {
         #[cfg(not(feature = "auto"))]
         let analysis_tools: &str = "match functions across two native images (native_match), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         info.instructions = Some(format!(
-            "disrobe MCP companion: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Analysis tools take inline base64 or inline JSON and never read a filesystem path. The workspace tools (rename, annot) read and write only inside the `.disrobe/` workspace under the current directory; annot's target must resolve within that workspace root."
+            "disrobe MCP server. Investigate a file on disk: open_target with a path inside a workspace root returns a target_id; then target_layout, list_functions, disassemble_function, decompile_function, call_path, read_bytes, search_bytes and locate answer questions about it without re-reading the file. Inline tools: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Nothing the server reads is executed. Workspace roots are the server's working directory plus --root and DISROBE_MCP_ROOTS; paths outside them are refused. The workspace tools (rename, annot) write only inside `.disrobe/` under the working directory."
         ));
         info
     }
@@ -1086,15 +1170,25 @@ impl rmcp::ServerHandler for DisrobeMcp {
 
 impl DisrobeMcp {
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self {
+            workspace: target::Workspace::discover(&[]).ok().map(Arc::new),
+        }
+    }
+
+    pub fn with_roots(extra_roots: &[PathBuf]) -> miette::Result<Self> {
+        let workspace: target::Workspace = target::Workspace::discover(extra_roots)
+            .map_err(|message: String| miette::miette!("{message}"))?;
+        Ok(Self {
+            workspace: Some(Arc::new(workspace)),
+        })
     }
 }
 
 fn decode_inline_bytes(bytes_b64: &str) -> Result<Vec<u8>, ErrorData> {
     if bytes_b64.is_empty() {
         return Err(ErrorData::invalid_params(
-            "DR-MCP-0182: `bytes_b64` is required & must be non-empty; this tool decodes inline bytes and does not read from disk".to_owned(),
+            "DR-MCP-0182: pass the input as non-empty `bytes_b64`, a workspace `path`, or an opened `target_id`".to_owned(),
             None,
         ));
     }
@@ -1425,6 +1519,11 @@ fn read_bounded_open_file(
 }
 
 pub fn run_stdio() -> miette::Result<()> {
+    run_stdio_with_roots(&[])
+}
+
+pub fn run_stdio_with_roots(extra_roots: &[PathBuf]) -> miette::Result<()> {
+    let server: DisrobeMcp = DisrobeMcp::with_roots(extra_roots)?;
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1433,7 +1532,7 @@ pub fn run_stdio() -> miette::Result<()> {
         })?;
     runtime.block_on(async {
         let service: rmcp::service::RunningService<rmcp::RoleServer, DisrobeMcp> =
-            rmcp::serve_server(DisrobeMcp::new(), rmcp::transport::io::stdio())
+            rmcp::serve_server(server, rmcp::transport::io::stdio())
                 .await
                 .map_err(|e| miette::miette!("DR-MCP-0002: mcp serve failed: {e}"))?;
         service
@@ -1482,6 +1581,19 @@ mod tests {
             "function_summary",
             "neighborhood",
             "native_match",
+            "open_target",
+            "target_layout",
+            "list_functions",
+            "disassemble_function",
+            "decompile_function",
+            "read_bytes",
+            "search_bytes",
+            "locate",
+            "call_path",
+            "references_to",
+            "find_strings",
+            "add_note",
+            "list_notes",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -1495,7 +1607,7 @@ mod tests {
             "missing WebAssembly lift tool"
         );
         let expected_count: usize =
-            14 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
+            27 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
@@ -1601,7 +1713,11 @@ mod tests {
         let b64: String = BASE64_STANDARD.encode(&encoded);
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let Json(out): Json<VerifyOut> = mcp
-            .verify(Parameters(VerifyParams { bytes_b64: b64 }))
+            .verify(Parameters(VerifyParams {
+                bytes_b64: b64,
+                path: None,
+                target_id: None,
+            }))
             .unwrap();
         assert!(out.verified);
         assert_eq!(out.hot_bytes, 4);
@@ -1615,10 +1731,14 @@ mod tests {
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let empty: ErrorData = expect_err(mcp.verify(Parameters(VerifyParams {
             bytes_b64: String::new(),
+            path: None,
+            target_id: None,
         })));
         assert!(empty.message.contains("DR-MCP-0182"));
         let garbage: ErrorData = expect_err(mcp.verify(Parameters(VerifyParams {
             bytes_b64: "!!!".to_owned(),
+            path: None,
+            target_id: None,
         })));
         assert!(garbage.message.contains("DR-MCP-0181"));
     }
@@ -1788,6 +1908,8 @@ mod tests {
         let Json(out): Json<IocOut> = mcp
             .ioc(Parameters(IocParams {
                 bytes_b64: b64(payload),
+                path: None,
+                target_id: None,
             }))
             .unwrap();
         assert_eq!(out.schema, disrobe_core::ioc::IOC_SCHEMA);
@@ -1806,10 +1928,14 @@ mod tests {
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let empty: ErrorData = expect_err(mcp.ioc(Parameters(IocParams {
             bytes_b64: String::new(),
+            path: None,
+            target_id: None,
         })));
         assert!(empty.message.contains("DR-MCP-0182"));
         let garbage: ErrorData = expect_err(mcp.ioc(Parameters(IocParams {
             bytes_b64: "!!!".to_owned(),
+            path: None,
+            target_id: None,
         })));
         assert!(garbage.message.contains("DR-MCP-0181"));
     }
@@ -1822,12 +1948,16 @@ mod tests {
         let Json(plain): Json<SecretScanOut> = mcp
             .secret_scan(Parameters(SecretScanParams {
                 bytes_b64: b64(&payload),
+                path: None,
+                target_id: None,
                 redact: false,
             }))
             .expect("plain secret scan");
         let Json(redacted): Json<SecretScanOut> = mcp
             .secret_scan(Parameters(SecretScanParams {
                 bytes_b64: b64(&payload),
+                path: None,
+                target_id: None,
                 redact: true,
             }))
             .expect("redacted secret scan");
@@ -1866,6 +1996,8 @@ mod tests {
         let Json(out): Json<CoverageOut> = mcp
             .coverage(Parameters(CoverageParams {
                 bytes_b64: b64(&image),
+                path: None,
+                target_id: None,
             }))
             .unwrap();
         assert_eq!(
@@ -1901,6 +2033,8 @@ mod tests {
         let Json(out): Json<CoverageOut> = mcp
             .coverage(Parameters(CoverageParams {
                 bytes_b64: b64(&image),
+                path: None,
+                target_id: None,
             }))
             .unwrap();
         assert!(
@@ -1925,6 +2059,8 @@ mod tests {
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let err: ErrorData = expect_err(mcp.coverage(Parameters(CoverageParams {
             bytes_b64: b64(&[0x00_u8; 64]),
+            path: None,
+            target_id: None,
         })));
         assert!(
             format!("{err:?}").contains("DR-MCP-0660"),
@@ -1938,6 +2074,8 @@ mod tests {
         let Json(out): Json<BehaviorOut> = mcp
             .behavior(Parameters(BehaviorParams {
                 bytes_b64: b64(b"placeholder"),
+                path: None,
+                target_id: None,
                 imports: vec![
                     "WSAStartup".to_owned(),
                     "connect".to_owned(),
@@ -1961,11 +2099,15 @@ mod tests {
         let too_many: Vec<String> = vec!["connect".to_owned(); MAX_IMPORTS + 1];
         let count_err: ErrorData = expect_err(mcp.behavior(Parameters(BehaviorParams {
             bytes_b64: b64(b"payload"),
+            path: None,
+            target_id: None,
             imports: too_many,
         })));
         assert!(count_err.message.contains("DR-MCP-0641"));
         let name_err: ErrorData = expect_err(mcp.behavior(Parameters(BehaviorParams {
             bytes_b64: b64(b"payload"),
+            path: None,
+            target_id: None,
             imports: vec!["x".repeat(MAX_IMPORT_BYTES + 1)],
         })));
         assert!(name_err.message.contains("DR-MCP-0642"));
@@ -1978,6 +2120,8 @@ mod tests {
         let Json(out): Json<StringsOut> = mcp
             .strings(Parameters(StringsParams {
                 bytes_b64: b64(payload),
+                path: None,
+                target_id: None,
                 min_len: Some(8),
                 decode: Some(false),
             }))
@@ -1998,6 +2142,8 @@ mod tests {
         );
         let bad: ErrorData = expect_err(mcp.strings(Parameters(StringsParams {
             bytes_b64: b64(payload),
+            path: None,
+            target_id: None,
             min_len: Some(0),
             decode: None,
         })));
@@ -2015,6 +2161,8 @@ mod tests {
         let Json(out): Json<AutoOut> = mcp
             .auto(Parameters(AutoParams {
                 bytes_b64: b64(BINARY_OPS_PYC),
+                path: None,
+                target_id: None,
                 max_depth: None,
             }))
             .unwrap();
@@ -2037,6 +2185,8 @@ mod tests {
         let Json(out): Json<DecompileOut> = mcp
             .decompile(Parameters(DecompileParams {
                 bytes_b64: b64(BINARY_OPS_PYC),
+                path: None,
+                target_id: None,
                 max_depth: None,
             }))
             .unwrap();
@@ -2059,11 +2209,15 @@ mod tests {
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let empty: ErrorData = expect_err(mcp.auto(Parameters(AutoParams {
             bytes_b64: String::new(),
+            path: None,
+            target_id: None,
             max_depth: None,
         })));
         assert!(empty.message.contains("DR-MCP-0182"));
         let garbage: ErrorData = expect_err(mcp.auto(Parameters(AutoParams {
             bytes_b64: "@@@@".to_owned(),
+            path: None,
+            target_id: None,
             max_depth: None,
         })));
         assert!(garbage.message.contains("DR-MCP-0181"));
@@ -2075,11 +2229,15 @@ mod tests {
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let zero: ErrorData = expect_err(mcp.auto(Parameters(AutoParams {
             bytes_b64: b64(b"payload"),
+            path: None,
+            target_id: None,
             max_depth: Some(0),
         })));
         assert!(zero.message.contains("DR-MCP-0611"));
         let high: ErrorData = expect_err(mcp.auto(Parameters(AutoParams {
             bytes_b64: b64(b"payload"),
+            path: None,
+            target_id: None,
             max_depth: Some(MAX_CHAIN_DEPTH.saturating_add(1)),
         })));
         assert!(high.message.contains("DR-MCP-0611"));

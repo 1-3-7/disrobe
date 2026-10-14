@@ -64,7 +64,12 @@ impl<T: Serialize> IntoCallToolResult for Json<T> {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(super) struct CallGraphParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,7 +80,12 @@ pub(super) struct CallGraphParams {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(super) struct XrefsParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub function_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
@@ -87,7 +97,12 @@ pub(super) struct XrefsParams {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(super) struct FunctionSummaryParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub function_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,
@@ -99,7 +114,12 @@ pub(super) struct FunctionSummaryParams {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub(super) struct NeighborhoodParams {
+    #[serde(default)]
     pub bytes_b64: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub entry_ids: Vec<String>,
     pub depth: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,8 +280,10 @@ pub(super) struct NeighborhoodOut {
     pub next_cursor: Option<String>,
 }
 
-pub(super) fn call_graph(params: CallGraphParams) -> Result<CallGraphOut, ErrorData> {
-    let module: Module = decode_module(&params.bytes_b64)?;
+pub(super) fn call_graph(
+    module: &Module,
+    params: CallGraphParams,
+) -> Result<CallGraphOut, ErrorData> {
     let budget: usize = token_budget(params.token_budget)?;
     let scope: [u8; 32] = scope_hash(&["call_graph"]);
     let mut index: usize =
@@ -350,8 +372,7 @@ pub(super) fn call_graph(params: CallGraphParams) -> Result<CallGraphOut, ErrorD
     Ok(response)
 }
 
-pub(super) fn xrefs(params: XrefsParams) -> Result<XrefsOut, ErrorData> {
-    let module: Module = decode_module(&params.bytes_b64)?;
+pub(super) fn xrefs(module: &Module, params: XrefsParams) -> Result<XrefsOut, ErrorData> {
     let budget: usize = token_budget(params.token_budget)?;
     let id: FunctionId = parse_function_id(&params.function_id)?;
     let _: NavigationAnalysis = module
@@ -412,9 +433,9 @@ pub(super) fn xrefs(params: XrefsParams) -> Result<XrefsOut, ErrorData> {
 }
 
 pub(super) fn function_summary(
+    module: &Module,
     params: FunctionSummaryParams,
 ) -> Result<FunctionSummaryResponse, ErrorData> {
-    let module: Module = decode_module(&params.bytes_b64)?;
     let budget: usize = token_budget(params.token_budget)?;
     let id: FunctionId = parse_function_id(&params.function_id)?;
     let canonical_id: String = id.to_string();
@@ -452,8 +473,10 @@ pub(super) fn function_summary(
     Ok(response)
 }
 
-pub(super) fn neighborhood(params: NeighborhoodParams) -> Result<NeighborhoodOut, ErrorData> {
-    let module: Module = decode_module(&params.bytes_b64)?;
+pub(super) fn neighborhood(
+    module: &Module,
+    params: NeighborhoodParams,
+) -> Result<NeighborhoodOut, ErrorData> {
     let budget: usize = token_budget(params.token_budget)?;
     if params.entry_ids.is_empty() || params.entry_ids.len() > MAX_ENTRY_IDS {
         return Err(ErrorData::invalid_params(
@@ -590,7 +613,7 @@ pub(super) fn neighborhood(params: NeighborhoodParams) -> Result<NeighborhoodOut
     Ok(response)
 }
 
-fn decode_module(bytes_b64: &str) -> Result<Module, ErrorData> {
+pub(super) fn decode_module(bytes_b64: &str) -> Result<Module, ErrorData> {
     let bytes: Vec<u8> = decode_inline_bytes(bytes_b64)?;
     module_from_bytes(&bytes).map_err(|error: disrobe_query::QueryError| {
         ErrorData::invalid_params(
@@ -948,6 +971,14 @@ fn bounded_one_line(value: &str, max_bytes: usize) -> String {
 mod tests {
     #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+    fn call_graph(params: CallGraphParams) -> Result<CallGraphOut, ErrorData> {
+        super::call_graph(&decode_module(&params.bytes_b64)?, params)
+    }
+
+    fn xrefs(params: XrefsParams) -> Result<XrefsOut, ErrorData> {
+        super::xrefs(&decode_module(&params.bytes_b64)?, params)
+    }
+
     use super::*;
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -1011,6 +1042,8 @@ mod tests {
             .expect("encode envelope");
         CallGraphParams {
             bytes_b64: BASE64_STANDARD.encode(bytes),
+            path: None,
+            target_id: None,
             token_budget: Some(budget),
             cursor,
         }
@@ -1054,6 +1087,8 @@ mod tests {
             .expect("encode xref envelope");
         XrefsParams {
             bytes_b64: BASE64_STANDARD.encode(bytes),
+            path: None,
+            target_id: None,
             function_id,
             token_budget: Some(MIN_TOKEN_BUDGET),
             cursor,
