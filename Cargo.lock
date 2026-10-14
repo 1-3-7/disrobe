@@ -2028,13 +2028,16 @@ dependencies = [
 name = "disrobe-dataforensics"
 version = "0.10.6"
 dependencies = [
+ "brotli",
  "disrobe-core",
  "disrobe-tool-process",
+ "flate2",
+ "md5",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "zip",
 ]
-
 
 [[package]]
 name = "disrobe-emit"
