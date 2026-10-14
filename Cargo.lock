@@ -1898,6 +1898,7 @@ dependencies = [
  "disrobe-binfmt",
  "disrobe-capabilities",
  "disrobe-core",
+ "disrobe-dataforensics",
  "disrobe-ir",
  "disrobe-irsummary",
  "disrobe-llm-metadata",

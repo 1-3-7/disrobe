@@ -726,6 +726,48 @@ enum Cmd {
         #[command(subcommand)]
         action: PickleCmd,
     },
+    #[cfg(feature = "data")]
+    #[command(
+        about = "read a SQLite database without SQLite: header, schema, rows, write-ahead log, freelist, and with --recover the deleted records left in freelist pages, freeblocks and unallocated space"
+    )]
+    Sqlite {
+        #[arg(value_name = "DATABASE")]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_name = "WAL",
+            help = "write-ahead log to apply (default: <DATABASE>-wal when it exists)"
+        )]
+        wal: Option<PathBuf>,
+        #[arg(long, value_name = "NAME", help = "decode rows of this table only")]
+        table: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 50,
+            value_name = "N",
+            help = "rows to decode per table (row counts always cover every row)"
+        )]
+        rows: usize,
+        #[arg(
+            long,
+            help = "carve deleted records from freelist pages, freeblocks and unallocated space"
+        )]
+        recover: bool,
+    },
+    #[cfg(feature = "data")]
+    #[command(
+        about = "decode a pcap, pcapng, HAR or Fiddler SAZ capture: flows with reassembled TCP streams, DNS, TLS client hellos (SNI, ALPN, JA3) and HTTP exchanges"
+    )]
+    Capture {
+        #[arg(value_name = "CAPTURE")]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "write each HTTP response body, decompressed when its Content-Encoding is gzip, deflate or br, to this directory"
+        )]
+        extract: Option<PathBuf>,
+    },
     #[cfg(feature = "plugin")]
     #[command(
         about = "signed WebAssembly component plugin sandbox: run, verify, list (fuel/wall-deadline/memory-capped, deny-all-imports)"
@@ -2032,6 +2074,25 @@ fn main() -> miette::Result<()> {
         Cmd::Beam { action } => beam::run(action),
         #[cfg(feature = "pickle")]
         Cmd::Pickle { action } => pickle::run(action, fmt),
+        #[cfg(feature = "data")]
+        Cmd::Sqlite {
+            path,
+            wal,
+            table,
+            rows,
+            recover,
+        } => cli::sqlite::run(
+            cli::sqlite::SqliteArgs {
+                path,
+                wal,
+                table,
+                rows,
+                recover,
+            },
+            fmt,
+        ),
+        #[cfg(feature = "data")]
+        Cmd::Capture { path, extract } => cli::capture::run(path, extract, fmt),
         #[cfg(feature = "plugin")]
         Cmd::Plugin { action } => plugin::run(action),
         #[cfg(feature = "go")]

@@ -237,6 +237,9 @@ mod container_breadth;
 #[path = "../cyclonedx_emit.rs"]
 mod cyclonedx_emit;
 
+#[path = "../data_cli.rs"]
+mod data_cli;
+
 #[path = "../determinism_cross_platform.rs"]
 mod determinism_cross_platform;
 

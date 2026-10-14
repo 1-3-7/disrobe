@@ -15,6 +15,8 @@ pub(crate) mod behavior;
 pub(crate) mod bug_report;
 #[cfg(feature = "native")]
 pub(crate) mod capabilities;
+#[cfg(feature = "data")]
+pub(crate) mod capture;
 #[cfg(feature = "auto")]
 pub(crate) mod catalog;
 #[cfg(feature = "auto")]
@@ -147,6 +149,8 @@ pub(crate) mod serve;
 pub(crate) mod shell;
 #[cfg(feature = "native")]
 pub(crate) mod spdx;
+#[cfg(feature = "data")]
+pub(crate) mod sqlite;
 pub(crate) mod status;
 pub(crate) mod strings;
 pub(crate) mod structured_document;

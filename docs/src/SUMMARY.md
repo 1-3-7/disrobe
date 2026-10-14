@@ -46,6 +46,8 @@
 - [Python pickle](./languages/pickle.md)
 - [Shell / PowerShell](./languages/shell.md)
 - [Containers and archives](./languages/containers.md)
+- [SQLite databases](./languages/sqlite.md)
+- [Network captures](./languages/captures.md)
 
 # Reference
 
