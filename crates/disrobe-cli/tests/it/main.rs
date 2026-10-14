@@ -323,6 +323,9 @@ mod jvm_mapping_restore;
 #[path = "../jvm_protector_peel.rs"]
 mod jvm_protector_peel;
 
+#[path = "../jvm_yguard_restore.rs"]
+mod jvm_yguard_restore;
+
 #[path = "../llm_agents_md.rs"]
 mod llm_agents_md;
 
