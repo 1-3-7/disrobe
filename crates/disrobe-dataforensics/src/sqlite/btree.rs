@@ -96,8 +96,17 @@ pub(super) fn walk(
 ) -> WalkOutcome {
     let mut outcome: WalkOutcome = WalkOutcome::default();
     let mut visited: BTreeSet<u32> = BTreeSet::new();
-    let mut stack: Vec<(u32, usize)> = vec![(root, 0)];
-    while let Some((number, depth)) = stack.pop() {
+    let mut stack: Vec<Work> = vec![Work::Page(root, 0)];
+    while let Some(work) = stack.pop() {
+        let (number, depth): (u32, usize) = match work {
+            Work::Page(number, depth) => (number, depth),
+            Work::Emit(entry) => {
+                if !visit(entry) {
+                    return outcome;
+                }
+                continue;
+            }
+        };
         if depth > limits.depth {
             outcome.problems.push(format!(
                 "b-tree rooted at page {root} is deeper than {}",
@@ -146,33 +155,34 @@ pub(super) fn walk(
         if !interior {
             outcome.leaf_pages.push(number);
         }
-        let mut children: Vec<u32> = Vec::new();
+        let mut ordered: Vec<Work> = Vec::new();
         for offset in header.cell_offsets(page) {
             match read_cell(pager, page, offset, header.kind, limits) {
                 Ok(cell) => {
                     if let Some(child) = cell.left_child {
-                        children.push(child);
+                        ordered.push(Work::Page(child, depth + 1));
                     }
-                    if let Some(payload) = cell.payload
-                        && !visit(Entry {
+                    if let Some(payload) = cell.payload {
+                        ordered.push(Work::Emit(Entry {
                             rowid: cell.rowid,
                             payload,
-                        })
-                    {
-                        return outcome;
+                        }));
                     }
                 }
                 Err(error) => outcome.problems.push(format!("page {number}: {error}")),
             }
         }
         if interior {
-            children.push(header.right_child);
+            ordered.push(Work::Page(header.right_child, depth + 1));
         }
-        for child in children.into_iter().rev() {
-            stack.push((child, depth + 1));
-        }
+        stack.extend(ordered.into_iter().rev());
     }
     outcome
+}
+
+enum Work {
+    Page(u32, usize),
+    Emit(Entry),
 }
 
 pub(super) struct Cell {

@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(local_payload(100, 4096, true), 100);
         assert_eq!(local_payload(4061, 4096, true), 4061);
         let spilled: usize = local_payload(10_000, 4096, true);
-        assert!(spilled < 4061 && spilled >= 489, "{spilled}");
+        assert!((489..4061).contains(&spilled), "{spilled}");
         assert_eq!(local_payload(1002, 4096, false), 1002);
         assert!(local_payload(5000, 4096, false) <= 1002);
     }

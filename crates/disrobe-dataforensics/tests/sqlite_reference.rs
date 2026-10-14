@@ -42,15 +42,17 @@ fn python() -> String {
     {
         return explicit;
     }
-    ["python", "python3", "py"]
+    let found: Option<&str> = ["python", "python3", "py"]
         .into_iter()
-        .find(|candidate: &&str| probe(candidate))
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
+        .find(|candidate: &&str| probe(candidate));
+    found.map_or_else(
+        || {
             panic!(
                 "the SQLite grader needs CPython 3 with its sqlite3 module as the reference reader; none is usable here, so this run would compare the parser against nothing. Install CPython 3 or point {PYTHON_OVERRIDE} at one."
             )
-        })
+        },
+        str::to_owned,
+    )
 }
 
 fn generated() -> &'static Generated {
@@ -59,7 +61,7 @@ fn generated() -> &'static Generated {
         let dir: ScratchDir = ScratchDir::create("sqlite-reference").expect("scratch");
         let script: PathBuf =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/make_sqlite.py");
-        let execution = CommandSpec::new(python(), Duration::from_secs(600))
+        let execution = CommandSpec::new(python(), Duration::from_mins(10))
             .arg(script.as_os_str())
             .arg(dir.path().as_os_str())
             .run()
@@ -234,7 +236,15 @@ fn deleted_rows_are_recovered_without_inventing_any() {
         invented.is_empty(),
         "recovered rows never written: {invented:?}"
     );
-    let recovered: BTreeSet<String> = notes
+    let tail = |values: &Value| -> String {
+        values
+            .as_array()
+            .map(|cells: &Vec<Value>| {
+                Value::Array(cells.iter().skip(1).cloned().collect()).to_string()
+            })
+            .unwrap_or_default()
+    };
+    let with_id: BTreeSet<String> = notes
         .iter()
         .map(|record| {
             serde_json::to_value(&record.values)
@@ -242,18 +252,26 @@ fn deleted_rows_are_recovered_without_inventing_any() {
                 .to_string()
         })
         .collect();
+    let content: BTreeSet<String> = notes
+        .iter()
+        .map(|record| tail(&serde_json::to_value(&record.values).expect("values")))
+        .collect();
     let exact: usize = deleted
         .iter()
-        .filter(|row: &&Value| recovered.contains(&row.to_string()))
+        .filter(|row: &&Value| with_id.contains(&row.to_string()))
+        .count();
+    let recovered: usize = deleted
+        .iter()
+        .filter(|row: &&Value| with_id.contains(&row.to_string()) || content.contains(&tail(row)))
         .count();
     println!(
-        "deleted rows recovered exactly: {exact} of {}; notes records carved: {}",
+        "deleted rows: {} written, {recovered} recovered ({exact} with their rowid); notes records carved: {}",
         deleted.len(),
         notes.len()
     );
     assert!(
-        exact * 100 >= deleted.len() * 50,
-        "only {exact} of {} deleted rows recovered",
+        recovered * 100 >= deleted.len() * 80,
+        "only {recovered} of {} deleted rows recovered",
         deleted.len()
     );
 }
