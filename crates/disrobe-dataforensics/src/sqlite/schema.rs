@@ -6,6 +6,7 @@ pub(super) struct TableShape {
     pub(super) columns: Vec<String>,
     pub(super) rowid_alias: Option<usize>,
     pub(super) without_rowid: bool,
+    pub(super) real_columns: Vec<bool>,
 }
 
 pub(super) fn table_shape(sql: &str) -> TableShape {
@@ -85,10 +86,25 @@ pub(super) fn table_shape(sql: &str) -> TableShape {
         })
     };
     TableShape {
+        real_columns: column_types
+            .iter()
+            .map(|declared: &String| real_affinity(declared))
+            .collect(),
         columns,
         rowid_alias,
         without_rowid,
     }
+}
+
+fn real_affinity(declared: &str) -> bool {
+    let upper: String = declared.to_ascii_uppercase();
+    !upper.contains("INT")
+        && !["CHAR", "CLOB", "TEXT", "BLOB"]
+            .iter()
+            .any(|word: &&str| upper.contains(word))
+        && ["REAL", "FLOA", "DOUB"]
+            .iter()
+            .any(|word: &&str| upper.contains(word))
 }
 
 fn is_column_constraint(token: &str) -> bool {

@@ -128,6 +128,14 @@ pub(super) fn decode_body(
     Some(values)
 }
 
+pub(super) fn apply_real_affinity(values: &mut [SqlValue], real_columns: &[bool]) {
+    for (value, real) in values.iter_mut().zip(real_columns) {
+        if *real && let SqlValue::Integer(integer) = value {
+            *value = SqlValue::Real(*integer as f64);
+        }
+    }
+}
+
 fn signed_be(field: &[u8]) -> i64 {
     let mut value: i64 = if field.first().is_some_and(|b: &u8| b & 0x80 != 0) {
         -1

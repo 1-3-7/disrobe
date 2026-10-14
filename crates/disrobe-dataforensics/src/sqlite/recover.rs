@@ -5,7 +5,10 @@ use serde::Serialize;
 use super::btree::{PageHeader, read_cell};
 use super::format::{PAGE_LEAF_TABLE, TextEncoding, be16, be32, varint};
 use super::pager::Pager;
-use super::record::{RecordHeader, SqlValue, decode_body, parse_header};
+use super::record::{
+    RecordHeader, SerialType, SqlValue, apply_real_affinity, decode_body, parse_header,
+};
+use super::schema::{TableShape, table_shape};
 use super::{Limits, TableReport};
 
 const MIN_CARVED_COLUMNS: usize = 2;
@@ -50,6 +53,7 @@ pub(super) struct Shape<'a> {
     pub(super) name: &'a str,
     pub(super) columns: usize,
     pub(super) rowid_alias: Option<usize>,
+    pub(super) real_columns: Vec<bool>,
 }
 
 pub(super) fn shapes(tables: &[TableReport]) -> Vec<Shape<'_>> {
@@ -58,10 +62,14 @@ pub(super) fn shapes(tables: &[TableReport]) -> Vec<Shape<'_>> {
         .filter(|table: &&TableReport| {
             !table.without_rowid && table.columns.len() >= MIN_CARVED_COLUMNS
         })
-        .map(|table: &TableReport| Shape {
-            name: &table.name,
-            columns: table.columns.len(),
-            rowid_alias: table.rowid_alias,
+        .map(|table: &TableReport| {
+            let shape: TableShape = table_shape(&table.sql);
+            Shape {
+                name: &table.name,
+                columns: table.columns.len(),
+                rowid_alias: table.rowid_alias,
+                real_columns: shape.real_columns,
+            }
         })
         .collect()
 }
@@ -141,7 +149,16 @@ pub(super) fn recover(
                     }
                 }
             }
-            _ => carve(page, 0, page.len(), shapes, encoding, &mut found, &source),
+            _ => carve(
+                page,
+                0,
+                page.len(),
+                false,
+                shapes,
+                encoding,
+                &mut found,
+                &source,
+            ),
         }
         if found.len() >= limits.recovered {
             return found;
@@ -161,6 +178,7 @@ pub(super) fn recover(
                 page,
                 header.pointer_array_end(),
                 unallocated_end,
+                false,
                 shapes,
                 encoding,
                 &mut found,
@@ -181,6 +199,7 @@ pub(super) fn recover(
                     page,
                     block + 4,
                     end,
+                    true,
                     shapes,
                     encoding,
                     &mut found,
@@ -205,10 +224,12 @@ pub(super) fn recover(
     found
 }
 
+#[allow(clippy::too_many_arguments)]
 fn carve(
     page: &[u8],
     start: usize,
     end: usize,
+    damaged_start: bool,
     shapes: &[Shape<'_>],
     encoding: TextEncoding,
     found: &mut Vec<RecoveredRecord>,
@@ -226,6 +247,14 @@ fn carve(
         }
         if let Some((record, consumed)) =
             bare_record(&region[at..], shapes, encoding, source(start + at))
+        {
+            found.push(record);
+            at += consumed;
+            continue;
+        }
+        if at == 0
+            && damaged_start
+            && let Some((record, consumed)) = headerless(region, shapes, encoding, source(start))
         {
             found.push(record);
             at += consumed;
@@ -311,6 +340,9 @@ fn attribute(
     {
         values[alias] = SqlValue::Integer(id);
     }
+    if let Some(shape) = table {
+        apply_real_affinity(&mut values, &shape.real_columns);
+    }
     Some(RecoveredRecord {
         source,
         confidence,
@@ -326,6 +358,64 @@ fn attribute(
         rowid,
         values,
     })
+}
+
+fn headerless(
+    bytes: &[u8],
+    shapes: &[Shape<'_>],
+    encoding: TextEncoding,
+    source: RecoverySource,
+) -> Option<(RecoveredRecord, usize)> {
+    for shape in shapes {
+        for assume_null_first in [false, true] {
+            if assume_null_first && shape.rowid_alias != Some(0) {
+                continue;
+            }
+            let Some((mut values, consumed)) =
+                headerless_values(bytes, shape.columns, assume_null_first, encoding)
+            else {
+                continue;
+            };
+            if !plausible(&values) {
+                continue;
+            }
+            apply_real_affinity(&mut values, &shape.real_columns);
+            return Some((
+                RecoveredRecord {
+                    source,
+                    confidence: RecoveryConfidence::Partial,
+                    table: Some(shape.name.to_owned()),
+                    candidate_tables: Vec::new(),
+                    rowid: None,
+                    values,
+                },
+                consumed,
+            ));
+        }
+    }
+    None
+}
+
+fn headerless_values(
+    bytes: &[u8],
+    columns: usize,
+    assume_null_first: bool,
+    encoding: TextEncoding,
+) -> Option<(Vec<SqlValue>, usize)> {
+    let mut types: Vec<SerialType> = Vec::with_capacity(columns);
+    if assume_null_first {
+        types.push(SerialType::Null);
+    }
+    let mut at: usize = 0;
+    while types.len() < columns {
+        let (code, used): (u64, usize) = varint(bytes.get(at..)?)?;
+        at += used;
+        types.push(SerialType::from_code(code)?);
+    }
+    let body_len: usize = types.iter().map(|serial: &SerialType| serial.size()).sum();
+    let body: &[u8] = bytes.get(at..at.checked_add(body_len)?)?;
+    let values: Vec<SqlValue> = decode_body(body, &types, encoding)?;
+    Some((values, at + body_len))
 }
 
 fn plausible(values: &[SqlValue]) -> bool {

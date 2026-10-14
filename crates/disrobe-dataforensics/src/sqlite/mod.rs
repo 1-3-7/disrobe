@@ -12,7 +12,7 @@ pub use format::{SqliteHeader, TextEncoding};
 use pager::Pager;
 pub use pager::WalReport;
 pub use record::SqlValue;
-use record::decode_record;
+use record::{apply_real_affinity, decode_record};
 pub use recover::{FreelistReport, RecoveredRecord, RecoveryConfidence, RecoverySource};
 use schema::{TableShape, table_shape};
 
@@ -202,6 +202,7 @@ pub fn inspect(
                                 {
                                     values[alias] = SqlValue::Integer(rowid);
                                 }
+                                apply_real_affinity(&mut values, &shape.real_columns);
                                 report.rows.push(Row {
                                     rowid: entry.rowid,
                                     values,
