@@ -14,7 +14,9 @@ use crate::codec::{
     extract_largest_python_bytes_literal, python_bytes_literal, zlib_compress, zlib_decompress,
 };
 use crate::error::{Error, Result};
-use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
+use crate::obfuscators::{
+    DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality, render_str_literal,
+};
 
 type Aes256CbcDec = Decryptor<Aes256>;
 
@@ -394,27 +396,6 @@ fn decrypt_one(literal: &[u8], key: &[u8], is_bytes: bool) -> Option<String> {
         let text: String = String::from_utf8_lossy(&plain).into_owned();
         Some(render_str_literal(&text))
     }
-}
-
-fn render_str_literal(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str("\\x");
-                push_lower_hex_byte(&mut out, c as u8);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('\'');
-    out
 }
 
 fn render_bytes_literal(data: &[u8]) -> String {

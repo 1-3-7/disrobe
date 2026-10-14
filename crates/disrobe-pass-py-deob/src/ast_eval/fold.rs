@@ -10,6 +10,7 @@ use ruff_python_ast::{
 use ruff_text_size::TextRange;
 
 use super::eval::{EvalResult, Scope, eval_expr, is_forbidden};
+use super::stores::{ScopeNames, scope_names};
 use super::value::Value;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -22,102 +23,134 @@ pub(crate) struct FoldReport {
 pub(crate) fn fold_module(module: &mut ModModule) -> FoldReport {
     let mut scope: Scope = Scope::new();
     let mut report: FoldReport = FoldReport::default();
-    fold_stmts(&mut module.body, &mut scope, &mut report);
+    let names: ScopeNames = scope_names(&module.body);
+    let mut walk: ScopeWalk<'_> = ScopeWalk {
+        scope: &mut scope,
+        report: &mut report,
+        names: &names,
+    };
+    walk.stmts(&mut module.body, true);
     report
 }
 
-fn fold_stmts(stmts: &mut [Stmt], scope: &mut Scope, report: &mut FoldReport) {
-    for stmt in stmts.iter_mut() {
-        fold_stmt(stmt, scope, report);
-    }
+struct ScopeWalk<'a> {
+    scope: &'a mut Scope,
+    report: &'a mut FoldReport,
+    names: &'a ScopeNames,
 }
 
-fn fold_stmt(stmt: &mut Stmt, scope: &mut Scope, report: &mut FoldReport) {
-    match stmt {
-        Stmt::Assign(StmtAssign { targets, value, .. }) => {
-            fold_expr_in_place(value, scope, report);
-            if expr_builds_distinct_type(value) {
-                report.bindings_skipped_dynamic += 1;
-                return;
-            }
-            for target in targets.iter() {
-                if let Expr::Name(name_node) = target {
-                    if is_forbidden(name_node.id.as_str()) {
-                        report.bindings_skipped_dynamic += 1;
+impl ScopeWalk<'_> {
+    fn stmts(&mut self, stmts: &mut [Stmt], top_level: bool) {
+        for stmt in stmts.iter_mut() {
+            self.stmt(stmt, top_level);
+        }
+    }
+
+    fn bindable(&self, name: &str, top_level: bool) -> bool {
+        top_level && !is_forbidden(name) && !self.names.unstable.contains(name)
+    }
+
+    fn shareable(&self, name: &str, value: &Value) -> bool {
+        !matches!(value, Value::List(_) | Value::Dict(_)) || !self.names.escaping.contains(name)
+    }
+
+    fn stmt(&mut self, stmt: &mut Stmt, top_level: bool) {
+        match stmt {
+            Stmt::Assign(StmtAssign { targets, value, .. }) => {
+                fold_expr_in_place(value, self.scope, self.report);
+                if expr_builds_distinct_type(value) {
+                    self.report.bindings_skipped_dynamic += 1;
+                    return;
+                }
+                for target in targets.iter() {
+                    let Expr::Name(name_node) = target else {
+                        continue;
+                    };
+                    if !self.bindable(name_node.id.as_str(), top_level) {
+                        self.report.bindings_skipped_dynamic += 1;
                         continue;
                     }
-                    if let Ok(val) = eval_expr(value, scope) {
-                        let pre: usize = scope.len();
-                        scope.bind(name_node.id.to_string(), val);
-                        if scope.len() > pre {
-                            report.bindings_learned += 1;
+                    if let Ok(val) = eval_expr(value, self.scope)
+                        && self.shareable(name_node.id.as_str(), &val)
+                    {
+                        let pre: usize = self.scope.len();
+                        self.scope.bind(name_node.id.to_string(), val);
+                        if self.scope.len() > pre {
+                            self.report.bindings_learned += 1;
                         }
                     }
                 }
             }
-        }
-        Stmt::AnnAssign(a) => {
-            if let Some(v) = a.value.as_mut() {
-                fold_expr_in_place(v, scope, report);
-                if expr_builds_distinct_type(v) {
-                    report.bindings_skipped_dynamic += 1;
-                    return;
-                }
-                if let Expr::Name(name_node) = &*a.target
-                    && !is_forbidden(name_node.id.as_str())
-                    && let Ok(val) = eval_expr(v, scope)
-                {
-                    scope.bind(name_node.id.to_string(), val);
-                    report.bindings_learned += 1;
+            Stmt::AnnAssign(a) => {
+                if let Some(v) = a.value.as_mut() {
+                    fold_expr_in_place(v, self.scope, self.report);
+                    if expr_builds_distinct_type(v) {
+                        self.report.bindings_skipped_dynamic += 1;
+                        return;
+                    }
+                    if let Expr::Name(name_node) = &*a.target
+                        && self.bindable(name_node.id.as_str(), top_level)
+                        && let Ok(val) = eval_expr(v, self.scope)
+                        && self.shareable(name_node.id.as_str(), &val)
+                    {
+                        self.scope.bind(name_node.id.to_string(), val);
+                        self.report.bindings_learned += 1;
+                    }
                 }
             }
-        }
-        Stmt::AugAssign(a) => {
-            fold_expr_in_place(&mut a.value, scope, report);
-        }
-        Stmt::Expr(StmtExpr { value, .. }) => {
-            fold_expr_in_place(value, scope, report);
-        }
-        Stmt::Return(r) => {
-            if let Some(v) = r.value.as_mut() {
-                fold_expr_in_place(v, scope, report);
+            Stmt::AugAssign(a) => {
+                fold_expr_in_place(&mut a.value, self.scope, self.report);
             }
-        }
-        Stmt::If(StmtIf {
-            test,
-            body,
-            elif_else_clauses,
-            ..
-        }) => {
-            fold_expr_in_place(test, scope, report);
-            fold_stmts(body, scope, report);
-            for clause in elif_else_clauses.iter_mut() {
-                if let Some(t) = clause.test.as_mut() {
-                    fold_expr_in_place(t, scope, report);
+            Stmt::Expr(StmtExpr { value, .. }) => {
+                fold_expr_in_place(value, self.scope, self.report);
+            }
+            Stmt::Return(r) => {
+                if let Some(v) = r.value.as_mut() {
+                    fold_expr_in_place(v, self.scope, self.report);
                 }
-                fold_stmts(&mut clause.body, scope, report);
             }
+            Stmt::If(StmtIf {
+                test,
+                body,
+                elif_else_clauses,
+                ..
+            }) => {
+                fold_expr_in_place(test, self.scope, self.report);
+                self.stmts(body, false);
+                for clause in elif_else_clauses.iter_mut() {
+                    if let Some(t) = clause.test.as_mut() {
+                        fold_expr_in_place(t, self.scope, self.report);
+                    }
+                    self.stmts(&mut clause.body, false);
+                }
+            }
+            Stmt::While(StmtWhile {
+                test, body, orelse, ..
+            }) => {
+                fold_expr_in_place(test, self.scope, self.report);
+                self.stmts(body, false);
+                self.stmts(orelse, false);
+            }
+            Stmt::For(StmtFor {
+                iter, body, orelse, ..
+            }) => {
+                fold_expr_in_place(iter, self.scope, self.report);
+                self.stmts(body, false);
+                self.stmts(orelse, false);
+            }
+            Stmt::FunctionDef(StmtFunctionDef { body, .. })
+            | Stmt::ClassDef(StmtClassDef { body, .. }) => {
+                let mut inner_scope: Scope = Scope::new();
+                let names: ScopeNames = scope_names(body);
+                let mut inner: ScopeWalk<'_> = ScopeWalk {
+                    scope: &mut inner_scope,
+                    report: &mut *self.report,
+                    names: &names,
+                };
+                inner.stmts(body, true);
+            }
+            _ => {}
         }
-        Stmt::While(StmtWhile {
-            test, body, orelse, ..
-        }) => {
-            fold_expr_in_place(test, scope, report);
-            fold_stmts(body, scope, report);
-            fold_stmts(orelse, scope, report);
-        }
-        Stmt::For(StmtFor {
-            iter, body, orelse, ..
-        }) => {
-            fold_expr_in_place(iter, scope, report);
-            fold_stmts(body, scope, report);
-            fold_stmts(orelse, scope, report);
-        }
-        Stmt::FunctionDef(StmtFunctionDef { body, .. })
-        | Stmt::ClassDef(StmtClassDef { body, .. }) => {
-            let mut inner_scope: Scope = Scope::new();
-            fold_stmts(body, &mut inner_scope, report);
-        }
-        _ => {}
     }
 }
 

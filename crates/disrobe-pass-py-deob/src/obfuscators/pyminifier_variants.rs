@@ -116,25 +116,24 @@ fn has_builtin_aliases(body: &str) -> bool {
 }
 
 fn has_obfuscated_tokens(body: &str) -> bool {
-    let mut hit: usize = 0;
-    for line in body.lines().take(400) {
+    let mut short: usize = 0;
+    let mut named: usize = 0;
+    for line in body.lines() {
         let trimmed: &str = line.trim_start();
         for prefix in ["def ", "class ", "async def "] {
             if let Some(rest) = trimmed.strip_prefix(prefix) {
                 let end: usize = rest
                     .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                     .unwrap_or(rest.len());
-                let ident: &str = &rest[..end];
-                if is_short_ident(ident) {
-                    hit += 1;
-                    if hit >= 2 {
-                        return true;
-                    }
+                named += 1;
+                if is_short_ident(&rest[..end]) {
+                    short += 1;
                 }
+                break;
             }
         }
     }
-    false
+    short >= 1 && short * 2 > named
 }
 
 fn is_short_ident(s: &str) -> bool {
@@ -332,61 +331,6 @@ pub fn tabs_to_spaces(source: &str) -> String {
 }
 
 #[must_use]
-pub fn canonicalize_token_renames(source: &str) -> (String, BTreeMap<String, String>) {
-    let mut def_idx: usize = 0;
-    let mut class_idx: usize = 0;
-    let mut var_idx: usize = 0;
-    let mut mapping: BTreeMap<String, String> = BTreeMap::new();
-    for line in source.lines() {
-        let trimmed: &str = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("def ") {
-            if let Some(ident) = take_ident(rest)
-                && is_short_ident(ident)
-                && !mapping.contains_key(ident)
-            {
-                let canonical: String = format!("func_{def_idx}");
-                mapping.insert(ident.to_owned(), canonical);
-                def_idx += 1;
-            }
-        } else if let Some(rest) = trimmed.strip_prefix("async def ") {
-            if let Some(ident) = take_ident(rest)
-                && is_short_ident(ident)
-                && !mapping.contains_key(ident)
-            {
-                let canonical: String = format!("func_{def_idx}");
-                mapping.insert(ident.to_owned(), canonical);
-                def_idx += 1;
-            }
-        } else if let Some(rest) = trimmed.strip_prefix("class ") {
-            if let Some(ident) = take_ident(rest)
-                && is_short_ident(ident)
-                && !mapping.contains_key(ident)
-            {
-                let canonical: String = format!("Cls_{class_idx}");
-                mapping.insert(ident.to_owned(), canonical);
-                class_idx += 1;
-            }
-        } else if let Some((lhs, _rhs)) = trimmed.split_once('=') {
-            let bare: &str = lhs.split(':').next().unwrap_or(lhs).trim();
-            if is_short_ident(bare) && !is_pyminifier_builtin(bare) && !mapping.contains_key(bare) {
-                let canonical: String = format!("var_{var_idx}");
-                mapping.insert(bare.to_owned(), canonical);
-                var_idx += 1;
-            }
-        }
-    }
-    let rewritten: String = apply_mapping(source, &mapping);
-    (rewritten, mapping)
-}
-
-fn take_ident(rest: &str) -> Option<&str> {
-    let end: usize = rest
-        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or(rest.len());
-    if end == 0 { None } else { Some(&rest[..end]) }
-}
-
-#[must_use]
 pub fn apply_mapping_skipping_strings(text: &str, map: &BTreeMap<String, String>) -> String {
     apply_mapping(text, map)
 }
@@ -537,7 +481,7 @@ mod tests {
 
     #[test]
     fn detect_obfuscate_builtins() {
-        let src: &str = "q=print\nx=int\ny=str\ndef foo(): q('ok')\n";
+        let src: &str = "q=print\nx=int\ny=str\ndef greet(): q('ok')\n";
         let r: VariantReport = classify(src);
         assert_eq!(r.kind, VariantKind::ObfuscateBuiltins);
     }
@@ -554,18 +498,6 @@ mod tests {
         let src: &str = "# Copyright header\n# Another comment\nimport zlib, base64\nexec(zlib.decompress(base64.b64decode('eJw=')))\n";
         let (lines, _): (usize, usize) = detect_prepend(src);
         assert_eq!(lines, 2);
-    }
-
-    #[test]
-    fn canonicalize_renames_defs_and_classes() {
-        let src: &str = "def k(a): return a\nclass C: pass\nz = 1\n";
-        let (out, map): (String, BTreeMap<String, String>) = canonicalize_token_renames(src);
-        assert!(map.contains_key("k"));
-        assert!(map.contains_key("C"));
-        assert!(map.contains_key("z"));
-        assert!(out.contains("func_0"));
-        assert!(out.contains("Cls_0"));
-        assert!(out.contains("var_0"));
     }
 
     #[test]

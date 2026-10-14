@@ -53,6 +53,7 @@ pub enum WallReason {
     Unresolved,
     AeadBody,
     RsaBody,
+    RemotePayload,
 }
 
 #[derive(Debug, Clone, Serialize)]

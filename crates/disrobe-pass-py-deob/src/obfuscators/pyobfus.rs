@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
-use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
-use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
+use disrobe_py_marshal::{CodeObject, Object, PyVersion};
 use ruff_python_parser::{Mode, ParseOptions, parse};
 
 use crate::codec::{
@@ -9,6 +8,7 @@ use crate::codec::{
     extract_largest_python_bytes_literal, zlib_decompress,
 };
 use crate::error::{Error, Result};
+use crate::marshal::{decompile_code_object_with_status, load_code_from_marshal};
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
 
 #[derive(Debug, Clone, Copy)]
@@ -36,8 +36,6 @@ impl Step {
     }
 }
 
-const MARSHAL_VERSION: PyVersion = PyVersion::PY311;
-const MAX_NESTED_CODE_DEPTH: usize = 32;
 const GENERATED_HEADER: &str = "# pyobfus:generated format=1 edition=community";
 const MAX_GENERATED_SOURCE_BYTES: usize = 8 << 20;
 
@@ -186,7 +184,7 @@ impl ObfuscatorPass for PyobfusPass {
         diagnostics.insert("payload_bytes".to_owned(), payload.len().to_string());
 
         if terminal_marshal {
-            return Ok(marshal_handoff(self.id(), stages, &payload, diagnostics));
+            return marshal_handoff(self.id(), stages, &payload, diagnostics);
         }
 
         let recovered: String = String::from_utf8(payload)
@@ -251,91 +249,40 @@ fn chain_summary(chain: &Chain) -> String {
 
 fn marshal_handoff(
     id: Obfuscator,
-    stages: Vec<String>,
+    mut stages: Vec<String>,
     marshalled: &[u8],
     mut diagnostics: BTreeMap<String, String>,
-) -> PeelOutcome {
-    match marshal_load(marshalled, MARSHAL_VERSION) {
-        Ok(root) => {
-            let mut top: Option<CodeObject> = None;
-            let mut count: usize = 0;
-            collect_code_objects(&root, &mut top, &mut count, 0);
-            diagnostics.insert("code_objects".to_owned(), count.to_string());
-            let listing: String = top
-                .as_ref()
-                .map(|co: &CodeObject| {
-                    let ins: Vec<Instruction> = disassemble(co, MARSHAL_VERSION);
-                    render_dis(&ins)
-                })
-                .unwrap_or_default();
-            let entry: String = top
-                .as_ref()
-                .map(|co: &CodeObject| object_to_string(&co.name))
-                .unwrap_or_default();
-            diagnostics.insert("entry_code_object".to_owned(), entry.clone());
-            let recovered: String = format!(
-                "# disrobe: pyobfus marshal-terminated chain peeled to the embedded code object.\n# entry code object: {entry} ({count} total code objects).\n# inner is compiled bytecode, not source; bytecode disassembly follows. Run the py-decompile pass for source.\n{listing}\n"
-            );
-            PeelOutcome {
-                obfuscator: id,
-                stages_applied: stages,
-                recovered_source: recovered,
-                confidence: 0.9,
-                quality: Quality::Partial,
-                lossy_notes: vec![
-                    "pyobfus marshal option embeds a code object, not source. The decode chain is fully recovered; source-level Python requires bytecode decompilation (py-decompile pass).".to_owned(),
-                ],
-                diagnostics,
-            }
-        }
-        Err(e) => PeelOutcome {
-            obfuscator: id,
-            stages_applied: stages,
-            recovered_source: String::new(),
-            confidence: 0.6,
-            quality: Quality::Partial,
-            lossy_notes: vec![format!(
-                "pyobfus marshal blob recovered but not parseable at the assumed Python version: {e}"
-            )],
-            diagnostics,
-        },
-    }
-}
-
-fn collect_code_objects(
-    obj: &Object,
-    top: &mut Option<CodeObject>,
-    count: &mut usize,
-    depth: usize,
-) {
-    if depth > MAX_NESTED_CODE_DEPTH {
-        return;
-    }
-    match obj {
-        Object::Code(co) => {
-            if top.is_none() {
-                *top = Some((**co).clone());
-            }
-            *count += 1;
-            for c in &co.consts {
-                collect_code_objects(c, top, count, depth + 1);
-            }
-        }
-        Object::Tuple(items)
-        | Object::List(items)
-        | Object::Set(items)
-        | Object::FrozenSet(items) => {
-            for c in items {
-                collect_code_objects(c, top, count, depth + 1);
-            }
-        }
-        Object::Dict(d) | Object::FrozenDict(d) => {
-            for (_, v) in d {
-                collect_code_objects(v, top, count, depth + 1);
-            }
-        }
-        _ => {}
-    }
+) -> Result<PeelOutcome> {
+    let (top, version): (CodeObject, PyVersion) =
+        load_code_from_marshal(marshalled).ok_or_else(|| {
+            Error::Marshal(
+                "the pyobfus marshal payload is not a code object for any CPython version disrobe reads".to_owned(),
+            )
+        })?;
+    let (recovered, complete): (String, bool) = decompile_code_object_with_status(&top, version)?;
+    stages.push("decompile".to_owned());
+    diagnostics.insert("entry_code_object".to_owned(), object_to_string(&top.name));
+    diagnostics.insert(
+        "python_version".to_owned(),
+        format!("{}.{}", version.major, version.minor),
+    );
+    let (quality, lossy_notes): (Quality, Vec<String>) = if complete {
+        (Quality::Full, Vec::new())
+    } else {
+        (
+            Quality::Partial,
+            vec!["py-decompile could not lift every code object of the marshalled module; the scopes it could not lift are emitted as disassembly.".to_owned()],
+        )
+    };
+    Ok(PeelOutcome {
+        obfuscator: id,
+        stages_applied: stages,
+        recovered_source: recovered,
+        confidence: 0.9,
+        quality,
+        lossy_notes,
+        diagnostics,
+    })
 }
 
 fn object_to_string(obj: &Object) -> String {
@@ -482,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn peels_marshal_zlib_base64_to_disassembly_handoff() {
+    fn peels_marshal_zlib_base64_through_the_decompiler() {
         let mut co: CodeObject = CodeObject::new(CodeEra::Py311Plus);
         co.name = Object::ShortAscii {
             value: "module".to_owned(),
@@ -491,19 +438,17 @@ mod tests {
         co.code = vec![0x97, 0x00, 0x64, 0x00, 0x53, 0x00];
         co.consts = vec![Object::None];
         let marshalled: Vec<u8> =
-            marshal_dump(&Object::Code(Box::new(co)), MARSHAL_VERSION).expect("dump");
+            marshal_dump(&Object::Code(Box::new(co)), PyVersion::PY311).expect("dump");
         let inner: Vec<u8> = b64_encode(&zlib_compress(&marshalled)).into_bytes();
         let stub: String = wrap_marshal_zlib_base64(&reverse(inner));
         let det: DetectReport = PyobfusPass.detect(stub.as_bytes());
         assert!(det.matched);
         assert!(det.markers.iter().any(|m: &String| m == "decode-marshal"));
         let out: PeelOutcome = PyobfusPass.peel(stub.as_bytes()).expect("peel");
-        assert_eq!(out.quality, Quality::Partial);
         assert_eq!(
             out.stages_applied,
-            vec!["reverse", "base64", "zlib", "marshal"]
+            vec!["reverse", "base64", "zlib", "marshal", "decompile"]
         );
-        assert!(out.recovered_source.contains("module"));
         assert_eq!(
             out.diagnostics.get("entry_code_object").map(String::as_str),
             Some("module")

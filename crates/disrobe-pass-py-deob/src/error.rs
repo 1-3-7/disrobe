@@ -53,4 +53,17 @@ pub enum Error {
 
     #[error("DR-PYDEOB-0015: gzip decompression failed: {0}")]
     Gzip(String),
+
+    #[error(
+        "DR-PYDEOB-0016: cpython-opcode-remap: this CPython {major}.{minor} bytecode runs on a permuted opcode table (every plain code object enters on opcode {entry_opcode:#04x}, where stock CPython enters on RESUME {stock_resume_opcode:#04x}); recovering the table needs a stock-compiled pyc of a module in the file"
+    )]
+    OpcodeRemap {
+        major: u8,
+        minor: u8,
+        entry_opcode: u8,
+        stock_resume_opcode: u8,
+    },
+
+    #[error("DR-PYDEOB-0017: opcode-table recovery refused: {0}")]
+    OpcodeTable(#[from] disrobe_pass_py_disasm::RemapError),
 }

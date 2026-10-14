@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::ast_eval::{EvalReport, evaluate_source};
+use super::blankobf_layers::{LayerPeel, peel_layers};
 use crate::codec::{
     b64_decode, b64_encode, decode_python_bytes_literal, extract_largest_python_bytes_literal,
     python_bytes_literal, zlib_compress, zlib_decompress,
@@ -154,15 +154,9 @@ fn count_mangled_identifiers(text: &str) -> usize {
 fn peel_v2_partial(id: Obfuscator, text: &str, signal: &BlankObfV2Signal) -> PeelOutcome {
     let mut stages: Vec<String> = vec!["v2-detect".to_owned()];
     let regex_folded: String = constant_fold_blankobf_v2(text, &mut stages);
-    let (ast_folded, ast_report, ast_ok): (String, EvalReport, bool) =
-        match evaluate_source(&regex_folded) {
-            Ok((s, r)) => {
-                stages.push("ast-eval".to_owned());
-                let ok: bool = r.exprs_folded > 0 || r.bindings_learned > 0;
-                (s, r, ok)
-            }
-            Err(_) => (regex_folded.clone(), EvalReport::default(), false),
-        };
+    let layers: LayerPeel = peel_layers(&regex_folded);
+    stages.push("ast-eval".to_owned());
+    stages.extend(layers.stages.iter().cloned());
     let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
     diagnostics.insert(
         "mangled_idents".to_owned(),
@@ -178,35 +172,45 @@ fn peel_v2_partial(id: Obfuscator, text: &str, signal: &BlankObfV2Signal) -> Pee
     );
     diagnostics.insert(
         "ast_exprs_folded".to_owned(),
-        ast_report.exprs_folded.to_string(),
+        layers.exprs_folded.to_string(),
     );
     diagnostics.insert(
         "ast_bindings_learned".to_owned(),
-        ast_report.bindings_learned.to_string(),
+        layers.bindings_learned.to_string(),
     );
     diagnostics.insert(
-        "ast_bindings_skipped_dynamic".to_owned(),
-        ast_report.bindings_skipped_dynamic.to_string(),
+        "payload_layers_decoded".to_owned(),
+        layers.stages.len().to_string(),
     );
-    let (quality, confidence, notes): (Quality, f32, Vec<String>) = if ast_ok {
+    let innermost: BlankObfV2Signal = detect_v2_signature(&layers.source);
+    let reached_program: bool = layers.banner_removed
+        || (!layers.stages.is_empty()
+            && !layers.layer_limit_reached
+            && !(innermost.mangled_idents >= 1
+                && (innermost.bytes_reversal_idiom || innermost.int_arith_idiom)));
+    let (quality, confidence, notes): (Quality, f32, Vec<String>) = if reached_program {
         (
             Quality::Full,
-            0.9,
-            vec!["BlankOBF v2 AST evaluator successfully folded arithmetic and bytes-reverse-decode patterns".to_owned()],
+            0.95,
+            vec!["BlankOBF v2 peeled through its XOR-list, base64+zlib and dotted-quad layers to the innermost program, which is returned as the tool embedded it, without its banner docstring.".to_owned()],
+        )
+    } else if layers.layer_limit_reached {
+        (
+            Quality::Partial,
+            0.6,
+            vec!["BlankOBF v2 layer limit reached before the innermost program; the output is an intermediate layer.".to_owned()],
         )
     } else {
         (
             Quality::Partial,
             0.6,
-            vec![
-                "BlankOBF v2 AST evaluator did not find foldable expressions; falling back to regex fold only".to_owned(),
-            ],
+            vec!["BlankOBF v2 layers were folded, but no layer decoded to the tool's innermost program, so the output is still an obfuscated layer.".to_owned()],
         )
     };
     PeelOutcome {
         obfuscator: id,
         stages_applied: stages,
-        recovered_source: ast_folded,
+        recovered_source: layers.source,
         confidence,
         quality,
         lossy_notes: notes,
@@ -308,7 +312,11 @@ mod tests {
         let det: DetectReport = BlankObfPass.detect(sample.as_bytes());
         assert!(det.matched, "{det:?}");
         let out: PeelOutcome = BlankObfPass.peel(sample.as_bytes()).expect("peel");
-        assert_eq!(out.quality, Quality::Full);
+        assert_eq!(
+            out.quality,
+            Quality::Partial,
+            "folding constants without reaching the innermost program is not a full recovery"
+        );
         assert!(
             out.recovered_source.contains("'hello'"),
             "expected folded bytes literal in {}",

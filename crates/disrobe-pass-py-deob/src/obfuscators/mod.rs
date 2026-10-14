@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
 use serde::Serialize;
 
 use crate::error::Result;
@@ -33,12 +34,35 @@ pub(crate) fn replace_identifier(text: &str, needle: &str, replacement: &str) ->
     out
 }
 
+pub(crate) fn render_str_literal(s: &str) -> String {
+    let mut out: String = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str("\\x");
+                push_lower_hex_byte(&mut out, c as u8);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
 const fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
 }
 
 pub mod berserker;
 pub mod blankobf;
+pub(crate) mod blankobf_layers;
+pub(crate) mod builtins_view;
 pub(crate) mod de4py_family;
 pub mod jawbreaker;
 pub mod kramer;
@@ -56,8 +80,12 @@ pub mod pyobfus;
 pub mod pyobfuscate_com;
 pub mod pyobfuscate_com_xor;
 pub mod pypacker;
+pub(crate) mod python_obfuscator_junk;
 pub mod python_obfuscator_pypi;
 pub mod xindex;
+
+pub const REFUSAL_KEY: &str = "refusal";
+pub const REMOTE_PAYLOAD_REFUSAL: &str = "remote-payload";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Quality {

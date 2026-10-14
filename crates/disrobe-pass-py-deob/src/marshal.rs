@@ -12,6 +12,7 @@ use crate::codec::{
     lzma_decompress, zlib_decompress,
 };
 use crate::error::{Error, Result};
+use crate::opcode_remap::remap_refusal;
 
 const UNKNOWN_OPNAME: &str = "<unknown>";
 const MAX_CHAIN_DEPTH: usize = 16;
@@ -153,7 +154,9 @@ pub fn recover_marshal(source: &[u8], hint: Option<PyVersion>) -> Result<Marshal
     let (version, inferred): (PyVersion, bool) = match hint {
         Some(v) if loads_code(&blob, v) => (v, false),
         _ => infer_version(&blob).ok_or_else(|| {
-            Error::Marshal("could not infer a Python version for the marshal blob".to_owned())
+            remapped_candidate(&blob).unwrap_or_else(|| {
+                Error::Marshal("could not infer a Python version for the marshal blob".to_owned())
+            })
         })?,
     };
     let root: Object = marshal_load(&blob, version).map_err(|e| Error::Marshal(format!("{e}")))?;
@@ -451,6 +454,17 @@ fn infer_version(blob: &[u8]) -> Option<(PyVersion, bool)> {
         }
     }
     screened.first().map(|fit: &VersionFit| (fit.version, true))
+}
+
+fn remapped_candidate(blob: &[u8]) -> Option<Error> {
+    CANDIDATE_VERSIONS
+        .iter()
+        .filter(|version: &&PyVersion| version.major == 3 && version.minor >= 11)
+        .find_map(|version: &PyVersion| {
+            let root: Object = marshal_load(blob, *version).ok()?;
+            let code: CodeObject = first_code_object(&root)?;
+            remap_refusal(&code, *version)
+        })
 }
 
 fn rank_fit(a: &VersionFit, b: &VersionFit) -> core::cmp::Ordering {

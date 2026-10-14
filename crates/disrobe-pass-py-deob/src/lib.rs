@@ -19,6 +19,7 @@ mod layered_peel;
 pub mod llm;
 pub mod marshal;
 pub mod obfuscators;
+mod opcode_remap;
 mod peel;
 mod pyint;
 mod pyrandom;
@@ -54,6 +55,7 @@ pub use obfuscators::{
     DetectReport as ObfuscatorDetectReport, Obfuscator, ObfuscatorPass,
     PeelOutcome as ObfuscatorPeelOutcome, Quality as ObfuscatorQuality, iter_passes,
 };
+pub use opcode_remap::{RemappedRecovery, recover_remapped_pyc};
 pub use peel::{ObfuscatorPeelSummary, PeelResult, PeelStep, peel, peel_with_pyver};
 pub use source_cleanup::{CleanupStats, cleanup_source};
 pub use unrename::UnrenameStats;

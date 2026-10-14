@@ -307,9 +307,15 @@ impl CatalogEntry for PyObfuscatorEntry {
 
 const fn quality_of(obf: Obfuscator) -> SupportQuality {
     match obf {
-        Obfuscator::PythonObfuscatorPypi | Obfuscator::Pyobfus | Obfuscator::Pypacker => {
-            SupportQuality::Partial
-        }
+        Obfuscator::PythonObfuscatorPypi
+        | Obfuscator::Pyobfus
+        | Obfuscator::Pyminifier
+        | Obfuscator::Patchwork
+        | Obfuscator::ObfuXtreme
+        | Obfuscator::PyobfuscateComXor
+        | Obfuscator::Manglify
+        | Obfuscator::PyObfuscatorMauricelambert => SupportQuality::Partial,
+        Obfuscator::Jawbreaker => SupportQuality::DetectOnly,
         _ => SupportQuality::Full,
     }
 }

@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
 use crate::detect::{Detection, Family, detect};
-use crate::obfuscators::{Obfuscator, ObfuscatorPass, iter_passes};
+use crate::error::Error;
+use crate::obfuscators::{Obfuscator, ObfuscatorPass, Quality, iter_passes};
 use crate::peel::{PeelResult, peel_with_pyver};
 use crate::source_cleanup::{CleanupStats, cleanup_source};
 
@@ -108,16 +109,59 @@ pub fn auto_deobfuscate(bytes: &[u8], pyver_hint: Option<PyVersion>) -> AutoDeob
     });
     dbg_kv("detect_markers", || detection.markers.join(","));
 
-    if let Ok(result) = peel_with_pyver(bytes, pyver_hint)
+    let peeled: crate::error::Result<PeelResult> = peel_with_pyver(bytes, pyver_hint);
+    if let Err(refusal @ Error::OpcodeRemap { .. }) = &peeled {
+        dbg_kv("route", || "opcode-remap-refusal".to_owned());
+        return AutoDeobOutcome {
+            kind: RouteKind::Unidentified,
+            detection,
+            peel: None,
+            source: None,
+            chain: Vec::new(),
+            cleanup: None,
+            guidance: Some(refusal.to_string()),
+        };
+    }
+    if let Ok(refused) = &peeled
+        && !refused.recovered
+        && let (Some(summary), Some(wall)) = (refused.obfuscator.as_ref(), refused.wall)
+    {
+        dbg_kv("route", || "obfuscator-refusal".to_owned());
+        let guidance: String = format!(
+            "{obfuscator:?} detected; recovery refused ({wall:?}): {notes}",
+            obfuscator = summary.obfuscator,
+            notes = summary.lossy_notes.join(" ")
+        );
+        return AutoDeobOutcome {
+            kind: RouteKind::Unidentified,
+            detection,
+            peel: Some(refused.clone()),
+            source: None,
+            chain: Vec::new(),
+            cleanup: None,
+            guidance: Some(guidance),
+        };
+    }
+    if let Ok(result) = peeled
         && result.recovered
         && !result.final_source.trim().is_empty()
     {
         let chain: Vec<String> = deob_chain_labels(&result);
-        let (cleaned_source, cleanup): (String, Option<CleanupStats>) =
+        let verbatim: bool = result
+            .obfuscator
+            .as_ref()
+            .is_some_and(|summary| summary.quality == Quality::Full);
+        let (cleaned_source, cleanup): (String, Option<CleanupStats>) = if verbatim {
+            (
+                result.final_source.clone(),
+                Some(CleanupStats::skipped_for_full_recovery()),
+            )
+        } else {
             match cleanup_source(&result.final_source) {
                 Ok((cleaned, stats)) => (cleaned, Some(stats)),
                 Err(_) => (result.final_source.clone(), None),
-            };
+            }
+        };
         dbg_kv("route", || "deobfuscated".to_owned());
         dbg_kv("recovered_len", || cleaned_source.len().to_string());
         dbg_kv("chain", || chain.join(" | "));

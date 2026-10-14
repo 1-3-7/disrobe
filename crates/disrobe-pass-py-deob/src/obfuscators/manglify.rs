@@ -147,19 +147,12 @@ fn peel_upstream_partial(id: Obfuscator, text: &str) -> PeelOutcome {
         "ast_bindings_skipped_dynamic".to_owned(),
         ast_report.bindings_skipped_dynamic.to_string(),
     );
-    let (quality, confidence, notes): (Quality, f32, Vec<String>) = if ast_ok {
-        (
-            Quality::Full,
-            0.85,
-            vec!["Manglify AST evaluator folded octal-escape string literals and constant exprs after trailer strip".to_owned()],
-        )
+    let notes: Vec<String> = vec![if ast_ok {
+        "Manglify: the Engine trailer was stripped and octal-escape literals and constants were folded, but the payload stays in the loader: the tool brute-forces a four-digit XOR key over nested hex layers at run time, which this peel does not reverse.".to_owned()
     } else {
-        (
-            Quality::Partial,
-            0.5,
-            vec!["Manglify AST evaluator found no foldable expressions; chunked-dict + lambda decoder remains intact for downstream inspection".to_owned()],
-        )
-    };
+        "Manglify: no foldable expressions; the chunked-dict loader remains intact".to_owned()
+    }];
+    let (quality, confidence): (Quality, f32) = (Quality::Partial, if ast_ok { 0.6 } else { 0.5 });
     PeelOutcome {
         obfuscator: id,
         stages_applied: stages,

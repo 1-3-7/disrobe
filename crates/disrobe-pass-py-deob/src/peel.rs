@@ -1,5 +1,5 @@
 use base64::Engine;
-use disrobe_py_marshal::PyVersion;
+use disrobe_py_marshal::{Object, PyVersion, PycFile, pyversion_from_magic, read_pyc};
 use serde::Serialize;
 
 use crate::cipher::KeyFinding;
@@ -13,8 +13,10 @@ use crate::hyperion_v2v3::{
 use crate::layered_peel::{LayerStep, LayeredPeel, PeelBudget, WallReason, peel_layers};
 use crate::marshal::{MarshalRecovery, detect_marshal, recover_marshal};
 use crate::obfuscators::{
-    DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality, iter_passes,
+    DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality, REFUSAL_KEY,
+    REMOTE_PAYLOAD_REFUSAL, iter_passes,
 };
+use crate::opcode_remap::remap_refusal;
 
 const MAX_DEPTH: usize = 32;
 const DETECT_THRESHOLD: f32 = 0.5f32;
@@ -96,6 +98,15 @@ fn try_obfuscator_peel(source: &[u8], initial: Detection) -> Option<PeelResult> 
     let (pass, report): (&'static dyn ObfuscatorPass, DetectReport) =
         best_obfuscator_detection(source)?;
     let outcome: PeelOutcome = pass.peel(source).ok()?;
+    if outcome.diagnostics.get(REFUSAL_KEY).map(String::as_str) == Some(REMOTE_PAYLOAD_REFUSAL) {
+        return Some(refusal(
+            source,
+            initial,
+            report,
+            outcome,
+            WallReason::RemotePayload,
+        ));
+    }
     let recovered_bytes: &[u8] = outcome.recovered_source.as_bytes();
     let real_output: bool =
         !outcome.recovered_source.trim().is_empty() && recovered_bytes != source;
@@ -150,6 +161,38 @@ fn try_obfuscator_peel(source: &[u8], initial: Detection) -> Option<PeelResult> 
         key_findings: Vec::new(),
         wall: None,
     })
+}
+
+fn refusal(
+    source: &[u8],
+    initial: Detection,
+    report: DetectReport,
+    outcome: PeelOutcome,
+    wall: WallReason,
+) -> PeelResult {
+    dbg_kv("obfuscator-refusal", || {
+        format!("{obf:?} {wall:?}", obf = outcome.obfuscator)
+    });
+    PeelResult {
+        initial,
+        steps: Vec::new(),
+        final_source: String::from_utf8_lossy(source).into_owned(),
+        converged: true,
+        recovered: false,
+        obfuscator: Some(ObfuscatorPeelSummary {
+            obfuscator: outcome.obfuscator,
+            detect_confidence: report.confidence,
+            peel_confidence: outcome.confidence,
+            quality: outcome.quality,
+            stages_applied: outcome.stages_applied,
+            lossy_notes: outcome.lossy_notes,
+            markers: report.markers,
+        }),
+        hyperion_inner: None,
+        marshal: None,
+        key_findings: Vec::new(),
+        wall: Some(wall),
+    }
 }
 
 fn try_marshal_peel(
@@ -239,6 +282,9 @@ pub fn peel(source: &[u8]) -> Result<PeelResult> {
 
 pub fn peel_with_pyver(source: &[u8], pyver_hint: Option<PyVersion>) -> Result<PeelResult> {
     dbg_section("peel");
+    if let Some(refusal) = pyc_opcode_remap(source) {
+        return Err(refusal);
+    }
     let initial: Detection = detect(source);
     dbg_kv("peel-family", || format!("{:?}", initial.family));
 
@@ -347,6 +393,16 @@ pub fn peel_with_pyver(source: &[u8], pyver_hint: Option<PyVersion>) -> Result<P
     });
     dbg_recovery(&result);
     Ok(result)
+}
+
+fn pyc_opcode_remap(source: &[u8]) -> Option<Error> {
+    let magic: [u8; 4] = source.get(..4)?.try_into().ok()?;
+    pyversion_from_magic(u32::from_le_bytes(magic))?;
+    let file: PycFile = read_pyc(source).ok()?;
+    let Object::Code(code) = &file.code else {
+        return None;
+    };
+    remap_refusal(code, file.header.version)
 }
 
 fn dbg_recovery(result: &PeelResult) {

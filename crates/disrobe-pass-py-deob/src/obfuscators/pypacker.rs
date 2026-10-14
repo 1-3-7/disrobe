@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
-use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
+use disrobe_py_marshal::{CodeObject, Object, PyVersion};
 
 use crate::codec::{
     bz2_decompress, extract_largest_python_bytes_literal, gzip_decompress, lzma_decompress,
     zlib_decompress,
 };
 use crate::error::{Error, Result};
+use crate::marshal::{decompile_code_object_with_status, load_code_from_marshal};
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
 
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +43,6 @@ impl Compressor {
     }
 }
 
-const MARSHAL_VERSION: PyVersion = PyVersion::PY311;
 const HYPERION_AUTHOR: &str = "billythegoat356";
 const MAX_NESTED_CODE_DEPTH: usize = 32;
 
@@ -97,89 +96,62 @@ impl ObfuscatorPass for PypackerPass {
         let literal: &str =
             extract_largest_python_bytes_literal(text).ok_or(Error::LiteralNotFound)?;
         let raw: Vec<u8> = crate::codec::decode_python_bytes_literal(literal)?;
-
         let mut stages: Vec<String> = Vec::with_capacity(3);
         let inflated: Vec<u8> = compressor.decompress(&raw)?;
         stages.push(compressor.label().to_owned());
-
-        let root: Object =
-            marshal_load(&inflated, MARSHAL_VERSION).map_err(|e| Error::Marshal(format!("{e}")))?;
+        let (top_code, version): (CodeObject, PyVersion) = load_code_from_marshal(&inflated)
+            .ok_or_else(|| {
+                Error::Marshal(
+                    "the decompressed payload is not a marshalled code object for any CPython version disrobe reads".to_owned(),
+                )
+            })?;
         stages.push("marshal".to_owned());
+        let (recovered, complete): (String, bool) =
+            decompile_code_object_with_status(&top_code, version)?;
+        stages.push("decompile".to_owned());
 
-        let mut top: Option<CodeObject> = None;
         let mut count: usize = 0;
-        collect_code_objects(&root, &mut top, &mut count, 0);
-
-        let top_code: CodeObject =
-            top.ok_or_else(|| Error::Marshal("marshal payload held no code object".to_owned()))?;
-        stages.push("disassemble".to_owned());
-        let instructions: Vec<Instruction> = disassemble(&top_code, MARSHAL_VERSION);
-        let listing: String = render_dis(&instructions);
+        count_code_objects(&top_code, &mut count, 0);
         let entry_name: String = object_to_string(&top_code.name);
-
-        let recovered: String = format!(
-            "# disrobe: pypacker marshal+{comp} wrapper peeled to the embedded code object.\n# entry code object: {name} ({code_len} bytes of bytecode, {consts} consts, {nested} total code objects).\n# inner is compiled bytecode, not source; bytecode disassembly follows. Run the py-decompile pass for source.\n{listing}\n",
-            comp = compressor.label(),
-            name = entry_name,
-            code_len = top_code.code.len(),
-            consts = top_code.consts.len(),
-            nested = count,
-        );
-
         let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
         diagnostics.insert("compressor".to_owned(), compressor.label().to_owned());
         diagnostics.insert("payload_bytes".to_owned(), raw.len().to_string());
         diagnostics.insert("marshal_bytes".to_owned(), inflated.len().to_string());
         diagnostics.insert("code_objects".to_owned(), count.to_string());
         diagnostics.insert("entry_code_object".to_owned(), entry_name);
-
+        diagnostics.insert(
+            "python_version".to_owned(),
+            format!("{}.{}", version.major, version.minor),
+        );
+        let (quality, lossy_notes): (Quality, Vec<String>) = if complete {
+            (Quality::Full, Vec::new())
+        } else {
+            (
+                Quality::Partial,
+                vec!["py-decompile could not lift every code object of the marshalled module; the scopes it could not lift are emitted as disassembly.".to_owned()],
+            )
+        };
         Ok(PeelOutcome {
             obfuscator: self.id(),
             stages_applied: stages,
             recovered_source: recovered,
             confidence: 0.9,
-            quality: Quality::Partial,
-            lossy_notes: vec![
-                "pypacker embeds a marshalled code object, not source. Static peel strips the compression and marshal layers down to bytecode; the disassembly is exact, but recovering source-level Python requires bytecode decompilation (py-decompile pass).".to_owned(),
-            ],
+            quality,
+            lossy_notes,
             diagnostics,
         })
     }
 }
 
-fn collect_code_objects(
-    obj: &Object,
-    top: &mut Option<CodeObject>,
-    count: &mut usize,
-    depth: usize,
-) {
-    if depth > MAX_NESTED_CODE_DEPTH {
+fn count_code_objects(code: &CodeObject, count: &mut usize, depth: usize) {
+    *count += 1;
+    if depth >= MAX_NESTED_CODE_DEPTH {
         return;
     }
-    match obj {
-        Object::Code(co) => {
-            if top.is_none() {
-                *top = Some((**co).clone());
-            }
-            *count += 1;
-            for c in &co.consts {
-                collect_code_objects(c, top, count, depth + 1);
-            }
+    for konst in &code.consts {
+        if let Object::Code(inner) = konst {
+            count_code_objects(inner, count, depth + 1);
         }
-        Object::Tuple(items)
-        | Object::List(items)
-        | Object::Set(items)
-        | Object::FrozenSet(items) => {
-            for c in items {
-                collect_code_objects(c, top, count, depth + 1);
-            }
-        }
-        Object::Dict(d) | Object::FrozenDict(d) => {
-            for (_, v) in d {
-                collect_code_objects(v, top, count, depth + 1);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -228,7 +200,7 @@ mod tests {
 
     fn marshalled_entry() -> Vec<u8> {
         let co: CodeObject = build_code_object("entry");
-        marshal_dump(&Object::Code(Box::new(co)), MARSHAL_VERSION).expect("marshal dump")
+        marshal_dump(&Object::Code(Box::new(co)), PyVersion::PY311).expect("marshal dump")
     }
 
     fn zlib_compress(input: &[u8]) -> Vec<u8> {
@@ -264,12 +236,10 @@ mod tests {
     }
 
     #[test]
-    fn peels_zlib_marshal_to_disassembly() {
+    fn peels_zlib_marshal_through_the_decompiler() {
         let stub: String = wrap("zlib", &zlib_compress(&marshalled_entry()));
         let out: PeelOutcome = PypackerPass.peel(stub.as_bytes()).expect("peel");
-        assert_eq!(out.quality, Quality::Partial);
-        assert_eq!(out.stages_applied, vec!["zlib", "marshal", "disassemble"]);
-        assert!(out.recovered_source.contains("entry"));
+        assert_eq!(out.stages_applied, vec!["zlib", "marshal", "decompile"]);
         assert_eq!(
             out.diagnostics.get("code_objects").map(String::as_str),
             Some("1")
@@ -287,7 +257,10 @@ mod tests {
         assert!(det.matched);
         let out: PeelOutcome = PypackerPass.peel(stub.as_bytes()).expect("peel");
         assert_eq!(out.stages_applied.first().map(String::as_str), Some("gzip"));
-        assert!(out.recovered_source.contains("entry"));
+        assert_eq!(
+            out.diagnostics.get("entry_code_object").map(String::as_str),
+            Some("entry")
+        );
     }
 
     #[test]

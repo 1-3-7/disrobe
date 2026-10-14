@@ -47,6 +47,13 @@ pub(crate) fn zlib_compress(input: &[u8]) -> Vec<u8> {
     }
 }
 
+pub(crate) fn zlib_decompress_bounded(input: &[u8], limit: u64) -> Result<Vec<u8>> {
+    let decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(input);
+    bounded_read_to_end_with(decoder, limit.min(DECOMPRESS_CEILING))
+        .map_err(|e: std::io::Error| Error::Zlib(format!("{e}")))?
+        .ok_or(Error::DecompressionTooLarge { limit })
+}
+
 #[inline]
 pub(crate) fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>> {
     let decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(input);

@@ -7,7 +7,10 @@ use crate::codec::{
     python_bytes_literal, xor_apply, zlib_compress, zlib_decompress,
 };
 use crate::error::{Error, Result};
-use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
+use crate::obfuscators::{
+    DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality, REFUSAL_KEY,
+    REMOTE_PAYLOAD_REFUSAL,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct JawbreakerPass;
@@ -139,10 +142,13 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
             }
         }
     }
+    if remote_loader_confirmed {
+        diagnostics.insert(REFUSAL_KEY.to_owned(), REMOTE_PAYLOAD_REFUSAL.to_owned());
+    }
     let lossy_notes: Vec<String> = vec![if remote_loader_confirmed {
-        "Jawbreaker upstream: triple-encoded b16(b32(b64(...))) shell decoded statically to a urllib.request.urlopen loader. The user's source is fetched at runtime from a remote Hastebin paste (URL reassembled from runtime fragments; paste expires ~30 days). No user source is present in the artifact - recovery requires the live network fetch, so this is detect-only.".to_owned()
+        "Jawbreaker detected: the base16, base32 and base64 shell decodes statically to a urllib.request.urlopen loader whose payload is fetched from a remote paste at run time. The file holds none of the program's source, so recovery is refused (remote payload); disrobe never fetches it.".to_owned()
     } else {
-        "Jawbreaker upstream: triple-encoded shell detected; inner loader did not expose a static user-source payload. Classified detect-only.".to_owned()
+        "Jawbreaker detected: the triple-encoded shell decodes, but its loader exposes no static payload, so this is detection only.".to_owned()
     }];
     PeelOutcome {
         obfuscator: id,

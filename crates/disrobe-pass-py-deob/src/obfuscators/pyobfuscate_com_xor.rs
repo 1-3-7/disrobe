@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use ruff_python_parser::{Mode, ParseOptions, Parsed, parse};
 
+use super::builtins_view::fold_builtins_view;
 use crate::ast_eval::{EvalReport, evaluate_source};
 use crate::error::{Error, Result};
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
@@ -83,6 +84,14 @@ impl ObfuscatorPass for PyobfuscateComXorPass {
             None => (folded, 0),
         };
         diagnostics.insert("names_canonicalized".to_owned(), renamed_count.to_string());
+        let renamed: String = match fold_builtins_view(&renamed) {
+            Some((text, count)) => {
+                stages.push("builtins-view-fold".to_owned());
+                diagnostics.insert("builtin_lookups_folded".to_owned(), count.to_string());
+                text
+            }
+            None => renamed,
+        };
 
         let still_obfuscated: bool = count_lambda_decode_idioms(&renamed) > 0;
         let parses: bool = parses_as_python(&renamed);

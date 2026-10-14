@@ -4,8 +4,7 @@ use super::replace_identifier;
 use crate::ast_eval::{EvalReport, evaluate_source};
 use crate::error::Result;
 use crate::obfuscators::pyminifier_variants::{
-    VariantKind, VariantReport, canonicalize_token_renames, classify, decompress, strip_prepend,
-    tabs_to_spaces,
+    VariantKind, VariantReport, classify, decompress, strip_prepend, tabs_to_spaces,
 };
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
 
@@ -116,30 +115,24 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
         apply_aliases(&normalized, &alias_map)
     };
 
-    let (post_rename, rename_map): (String, BTreeMap<String, String>) =
-        if matches!(report.kind, VariantKind::ObfuscateTokens) {
-            stages.push("token-rename-canonicalize".to_owned());
-            canonicalize_token_renames(&dealiased)
-        } else {
-            (dealiased, BTreeMap::new())
-        };
+    let post_rename: String = dealiased;
 
     let effective_kind: VariantKind = if recursion_depth > 0 {
         classify(&post_rename).kind
     } else {
         report.kind
     };
-    let (ast_folded, ast_report, ast_ok): (String, EvalReport, bool) =
+    let tokens_renamed: bool = matches!(effective_kind, VariantKind::ObfuscateTokens);
+    let (ast_folded, ast_report): (String, EvalReport) =
         if should_skip_ast(effective_kind, &post_rename) {
-            (post_rename, EvalReport::default(), false)
+            (post_rename, EvalReport::default())
         } else {
             match evaluate_source(&post_rename) {
                 Ok((s, r)) => {
                     stages.push("ast-eval".to_owned());
-                    let ok: bool = r.exprs_folded > 0 || r.bindings_learned > 0;
-                    (s, r, ok)
+                    (s, r)
                 }
-                Err(_) => (post_rename, EvalReport::default(), false),
+                Err(_) => (post_rename, EvalReport::default()),
             }
         };
 
@@ -151,8 +144,8 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
     diagnostics.insert("recursion_depth".to_owned(), recursion_depth.to_string());
     diagnostics.insert("aliases_recovered".to_owned(), alias_map.len().to_string());
     diagnostics.insert(
-        "tokens_canonicalized".to_owned(),
-        rename_map.len().to_string(),
+        "identifiers_renamed_by_tool".to_owned(),
+        tokens_renamed.to_string(),
     );
     diagnostics.insert(
         "ast_exprs_folded".to_owned(),
@@ -167,32 +160,25 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
         ast_report.bindings_skipped_dynamic.to_string(),
     );
 
-    let upgraded: bool = !alias_map.is_empty()
-        || !rename_map.is_empty()
-        || ast_ok
-        || recursion_depth > 0
-        || matches!(report.kind, VariantKind::NoMinify);
-
-    let (quality, confidence, notes): (Quality, f32, Vec<String>) = if upgraded {
-        (
-            Quality::Full,
-            0.88,
-            vec![format!(
-                "pyminifier {variant}: {compressed_layers} compression layers, {aliases} aliases, {tokens} tokens canonicalized, AST folded {exprs}/{binds}",
-                variant = describe_variant(report.kind),
-                compressed_layers = recursion_depth,
-                aliases = alias_map.len(),
-                tokens = rename_map.len(),
-                exprs = ast_report.exprs_folded,
-                binds = ast_report.bindings_learned,
-            )],
-        )
-    } else {
+    let summary: String = format!(
+        "pyminifier {variant}: {compressed_layers} compression layers, {aliases} builtin aliases restored, AST folded {exprs}/{binds}",
+        variant = describe_variant(report.kind),
+        compressed_layers = recursion_depth,
+        aliases = alias_map.len(),
+        exprs = ast_report.exprs_folded,
+        binds = ast_report.bindings_learned,
+    );
+    let (quality, confidence, notes): (Quality, f32, Vec<String>) = if tokens_renamed {
         (
             Quality::Partial,
-            0.7,
-            vec!["pyminifier upstream: no transforms detected - credit-strip only".to_owned()],
+            0.75,
+            vec![
+                summary,
+                "pyminifier renamed identifiers to short generated names and keeps no mapping in the file, so the generated names are kept; they stay consistent with the obfuscated program.".to_owned(),
+            ],
         )
+    } else {
+        (Quality::Full, 0.88, vec![summary])
     };
 
     PeelOutcome {

@@ -27,6 +27,26 @@ pub struct CleanupStats {
     pub junk_fns_removed: usize,
     pub homoglyph_names_canonicalized: usize,
     pub converged: bool,
+    pub skipped_full_recovery: bool,
+}
+
+impl CleanupStats {
+    #[must_use]
+    pub const fn skipped_for_full_recovery() -> Self {
+        Self {
+            outer_passes: 0,
+            fold_replacements: 0,
+            if_eliminated: 0,
+            while_eliminated: 0,
+            branches_pruned: 0,
+            unrename_replacements: 0,
+            fstrings_recovered: 0,
+            junk_fns_removed: 0,
+            homoglyph_names_canonicalized: 0,
+            converged: true,
+            skipped_full_recovery: true,
+        }
+    }
 }
 
 pub fn cleanup_source(source: &str) -> Result<(String, CleanupStats)> {

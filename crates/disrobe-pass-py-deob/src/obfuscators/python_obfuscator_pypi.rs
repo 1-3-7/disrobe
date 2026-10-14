@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
 
+use ruff_python_ast::{Expr, ModModule, Stmt};
+use ruff_python_parser::{Parsed, parse_module};
+
+use super::python_obfuscator_junk::clean_inner_source;
 use super::replace_identifier;
 use crate::error::Result;
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
@@ -103,100 +107,78 @@ fn has_junk_letter_literal(text: &str) -> bool {
 
 fn peel_real_exec(id: Obfuscator, inner: &str) -> PeelOutcome {
     let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
-    let line_count: usize = inner.lines().count();
-    diagnostics.insert("inner_line_count".to_owned(), line_count.to_string());
     diagnostics.insert(
-        "fromhex_constants".to_owned(),
-        inner.matches("bytes.fromhex(").count().to_string(),
+        "inner_line_count".to_owned(),
+        inner.lines().count().to_string(),
     );
+    let mut stages: Vec<String> = vec![
+        "exec-string-detect".to_owned(),
+        "string-literal-unescape".to_owned(),
+        "exec-unwrap".to_owned(),
+    ];
+    let mut lossy_notes: Vec<String> = vec![
+        "python-obfuscator renames identifiers to random names and keeps no mapping in the file, so renamed names stay as the tool wrote them.".to_owned(),
+    ];
+    let recovered_source: String = match clean_inner_source(inner) {
+        Ok((cleaned, stats)) => {
+            stages.extend([
+                "fromhex-constant-fold".to_owned(),
+                "unreachable-tail-removal".to_owned(),
+                "junk-assignment-removal".to_owned(),
+            ]);
+            diagnostics.insert(
+                "fromhex_constants_folded".to_owned(),
+                stats.hex_constants_folded.to_string(),
+            );
+            diagnostics.insert(
+                "unreachable_statements_removed".to_owned(),
+                stats.unreachable_removed.to_string(),
+            );
+            diagnostics.insert(
+                "junk_assignments_removed".to_owned(),
+                stats.junk_assignments_removed.to_string(),
+            );
+            if stats.introspection_blocked {
+                lossy_notes.push("the program reads its own namespace (globals, locals, vars, dir, eval or exec), so junk assignments were kept rather than risk removing a name it looks up.".to_owned());
+            }
+            cleaned
+        }
+        Err(error) => {
+            lossy_notes.push(format!(
+                "the unwrapped source does not parse, so junk assignments and bytes.fromhex constants were left in place: {error}"
+            ));
+            inner.to_owned()
+        }
+    };
     PeelOutcome {
         obfuscator: id,
-        stages_applied: vec![
-            "exec-string-detect".to_owned(),
-            "string-literal-unescape".to_owned(),
-            "exec-unwrap".to_owned(),
-        ],
-        recovered_source: inner.to_owned(),
+        stages_applied: stages,
+        recovered_source,
         confidence: 0.85,
         quality: Quality::Partial,
-        lossy_notes: vec![
-            "python-obfuscator (PyPI): exec(\"...\") wrapper unwrapped to runnable inner source. Junk variable assignments remain (run dead-store elimination to prune); string constants stay as bytes.fromhex(...).decode() calls (valid runtime Python).".to_owned(),
-        ],
+        lossy_notes,
         diagnostics,
     }
 }
 
 fn unwrap_exec_string(text: &str) -> Option<String> {
-    let after: &str = text.strip_prefix("exec(")?;
-    let quote: u8 = match after.as_bytes().first()? {
-        b'"' => b'"',
-        b'\'' => b'\'',
-        _ => return None,
+    let parsed: Parsed<ModModule> = parse_module(text).ok()?;
+    let [Stmt::Expr(statement)] = parsed.syntax().body.as_slice() else {
+        return None;
     };
-    let body: &[u8] = after.as_bytes().get(1..)?;
-    let end: usize = scan_string_end(body, quote)?;
-    let lit: &str = after.get(1..1 + end)?;
-    Some(decode_python_string_escapes(lit))
-}
-
-fn scan_string_end(bytes: &[u8], quote: u8) -> Option<usize> {
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            c if c == quote => return Some(i),
-            _ => i += 1,
-        }
+    let Expr::Call(call) = statement.value.as_ref() else {
+        return None;
+    };
+    let Expr::Name(callee) = call.func.as_ref() else {
+        return None;
+    };
+    if callee.id.as_str() != "exec" || !call.arguments.keywords.is_empty() {
+        return None;
     }
-    None
-}
-
-fn decode_python_string_escapes(s: &str) -> String {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: String = String::with_capacity(s.len());
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        if bytes[i] != b'\\' || i + 1 >= bytes.len() {
-            let run_end: usize = bytes[i..]
-                .iter()
-                .position(|b: &u8| *b == b'\\')
-                .map_or(bytes.len(), |offset: usize| (i + offset).max(i + 1));
-            out.push_str(s.get(i..run_end).unwrap_or_default());
-            i = run_end;
-            continue;
-        }
-        match bytes[i + 1] {
-            b'n' => {
-                out.push('\n');
-                i += 2;
-            }
-            b't' => {
-                out.push('\t');
-                i += 2;
-            }
-            b'r' => {
-                out.push('\r');
-                i += 2;
-            }
-            b'\\' => {
-                out.push('\\');
-                i += 2;
-            }
-            b'\'' => {
-                out.push('\'');
-                i += 2;
-            }
-            b'"' => {
-                out.push('"');
-                i += 2;
-            }
-            _ => {
-                out.push('\\');
-                i += 1;
-            }
-        }
-    }
-    out
+    let [Expr::StringLiteral(literal)] = call.arguments.args.as_ref() else {
+        return None;
+    };
+    Some(literal.value.to_str().to_owned())
 }
 
 fn extract_rename_map(text: &str) -> BTreeMap<String, String> {
@@ -297,8 +279,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escape_decoding_keeps_non_ascii_characters() {
-        assert_eq!(decode_python_string_escapes("é\\n日本\\t😀"), "é\n日本\t😀");
+    fn exec_unwrap_decodes_every_python_escape() {
+        let inner: Option<String> = unwrap_exec_string(r#"exec("print('A\x42é 日本')\n")"#);
+        assert_eq!(inner.as_deref(), Some("print('ABé 日本')\n"));
     }
 
     #[test]
