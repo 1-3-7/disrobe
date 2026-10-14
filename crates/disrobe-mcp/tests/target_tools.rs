@@ -613,3 +613,36 @@ async fn every_string_reference_decodes_to_an_operand_that_addresses_the_string(
     assert!(checked >= 5, "only {checked} references were checked");
     session.client.cancel().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn native_match_reads_both_sides_from_targets_and_paths() {
+    let session: Session = session().await;
+    let (target_id, _): (String, Value) = open(&session.client, "disc.elf").await;
+    let reported: Value = call(
+        &session.client,
+        "native_match",
+        json!({ "a_target_id": target_id, "b_path": "disc.elf", "limit": 5 }),
+    )
+    .await;
+    let expected = disrobe_pass_native::match_native_images(
+        "a",
+        ELF,
+        "b",
+        ELF,
+        disrobe_pass_native::NativeMatchOptions {
+            limit: Some(5),
+            function: None,
+            stage: None,
+        },
+    )
+    .expect("library match");
+    assert_eq!(reported, serde_json::to_value(expected).expect("serialize"));
+    let mixed: String = refusal(
+        &session.client,
+        "native_match",
+        json!({ "a_target_id": target_id, "a_path": "disc.elf", "b_path": "disc.elf" }),
+    )
+    .await;
+    assert!(mixed.contains("DR-MCP-0709"), "{mixed}");
+    session.client.cancel().await.expect("shutdown");
+}

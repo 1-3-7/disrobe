@@ -57,7 +57,7 @@ Most clients accept a JSON server entry. Point `command` at `disrobe` (or `disro
 | `auto` | `bytes_b64`, optional `max_depth` | Chain verdict, detected formats, and per-pass recovery summary. Auto-detects and chains `disrobe`'s Python + native-packer passes. |
 | `secret_scan` | `bytes_b64`, optional `redact` | Secret findings with byte offsets. `redact: true` replaces detected values throughout the response. Raw values remain the default. |
 | `decompile` | `bytes_b64`, optional `max_depth` | Every terminal recovered-source artifact (language-keyed text), for example a `.pyc` decompiled to Python. |
-| `native_match` | `a_bytes_b64`, `b_bytes_b64`, optional `stage`, `function`, `limit` | Function matches between two native images. |
+| `native_match` | each side as `a_bytes_b64`/`a_path`/`a_target_id` and `b_bytes_b64`/`b_path`/`b_target_id`, optional `stage`, `function`, `limit` | Function matches between two native images, for example two builds of one program. |
 | `wasm_lift` | `bytes_b64`, `target` | WebAssembly source lift with instruction coverage; available in builds with the `wasm` feature. |
 | `ioc` | `bytes_b64` | Indicators of compromise: URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants (one decode layer of base64/hex). |
 | `behavior` | `bytes_b64`, optional `imports` | Static capability summary across network, filesystem, process-exec, registry-persistence, crypto, anti-analysis, and dynamic-code categories, with MITRE ATT&CK ids. |

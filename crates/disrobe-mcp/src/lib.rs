@@ -126,8 +126,18 @@ impl From<NativeMatchStage> for disrobe_pass_native::NativeMatchStage {
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct NativeMatchParams {
+    #[serde(default)]
     pub a_bytes_b64: String,
+    #[serde(default)]
+    pub a_path: Option<String>,
+    #[serde(default)]
+    pub a_target_id: Option<String>,
+    #[serde(default)]
     pub b_bytes_b64: String,
+    #[serde(default)]
+    pub b_path: Option<String>,
+    #[serde(default)]
+    pub b_target_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<NativeMatchStage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -703,14 +713,22 @@ fn renames_schema() -> String {
 impl DisrobeMcp {
     #[rmcp::tool(
         name = "native_match",
-        description = "Match functions across two inline base64 native images. Optional stage, function address, and row limit select a bounded disrobe.native.match/v2 report. The tool never reads disk or executes either image."
+        description = "Match functions across two native images, for example two builds of one program: each side is inline base64 (`a_bytes_b64`, `b_bytes_b64`), a workspace path (`a_path`, `b_path`) or an opened target (`a_target_id`, `b_target_id`). Optional stage, function address, and row limit select a bounded disrobe.native.match/v2 report. Neither image is executed."
     )]
     fn native_match(
         &self,
         Parameters(p): Parameters<NativeMatchParams>,
     ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
-        let a: Vec<u8> = decode_inline_bytes(&p.a_bytes_b64)?;
-        let b: Vec<u8> = decode_inline_bytes(&p.b_bytes_b64)?;
+        let a: Vec<u8> = self.input_bytes(
+            &p.a_bytes_b64,
+            p.a_path.as_deref(),
+            p.a_target_id.as_deref(),
+        )?;
+        let b: Vec<u8> = self.input_bytes(
+            &p.b_bytes_b64,
+            p.b_path.as_deref(),
+            p.b_target_id.as_deref(),
+        )?;
         let report = disrobe_pass_native::match_native_images(
             "a",
             &a,
@@ -1660,7 +1678,11 @@ mod tests {
         let Json(actual): Json<serde_json::Map<String, serde_json::Value>> = mcp
             .native_match(Parameters(NativeMatchParams {
                 a_bytes_b64: encoded.clone(),
+                a_path: None,
+                a_target_id: None,
                 b_bytes_b64: encoded,
+                b_path: None,
+                b_target_id: None,
                 stage: None,
                 function: None,
                 limit: Some(5),
@@ -1693,7 +1715,11 @@ mod tests {
         let mcp: DisrobeMcp = DisrobeMcp::new();
         let error: ErrorData = expect_err(mcp.native_match(Parameters(NativeMatchParams {
             a_bytes_b64: encoded.clone(),
+            a_path: None,
+            a_target_id: None,
             b_bytes_b64: encoded,
+            b_path: None,
+            b_target_id: None,
             stage: None,
             function: Some(u64::MAX),
             limit: None,
