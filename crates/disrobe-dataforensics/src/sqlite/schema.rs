@@ -7,6 +7,37 @@ pub(super) struct TableShape {
     pub(super) rowid_alias: Option<usize>,
     pub(super) without_rowid: bool,
     pub(super) real_columns: Vec<bool>,
+    pub(super) affinities: Vec<Affinity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Affinity {
+    Integer,
+    Text,
+    Blob,
+    Real,
+    Numeric,
+}
+
+pub(super) fn affinity(declared: &str) -> Affinity {
+    let upper: String = declared.to_ascii_uppercase();
+    if upper.contains("INT") {
+        Affinity::Integer
+    } else if ["CHAR", "CLOB", "TEXT"]
+        .iter()
+        .any(|word: &&str| upper.contains(word))
+    {
+        Affinity::Text
+    } else if upper.contains("BLOB") || upper.trim().is_empty() {
+        Affinity::Blob
+    } else if ["REAL", "FLOA", "DOUB"]
+        .iter()
+        .any(|word: &&str| upper.contains(word))
+    {
+        Affinity::Real
+    } else {
+        Affinity::Numeric
+    }
 }
 
 pub(super) fn table_shape(sql: &str) -> TableShape {
@@ -88,23 +119,16 @@ pub(super) fn table_shape(sql: &str) -> TableShape {
     TableShape {
         real_columns: column_types
             .iter()
-            .map(|declared: &String| real_affinity(declared))
+            .map(|declared: &String| affinity(declared) == Affinity::Real)
+            .collect(),
+        affinities: column_types
+            .iter()
+            .map(|declared: &String| affinity(declared))
             .collect(),
         columns,
         rowid_alias,
         without_rowid,
     }
-}
-
-fn real_affinity(declared: &str) -> bool {
-    let upper: String = declared.to_ascii_uppercase();
-    !upper.contains("INT")
-        && !["CHAR", "CLOB", "TEXT", "BLOB"]
-            .iter()
-            .any(|word: &&str| upper.contains(word))
-        && ["REAL", "FLOA", "DOUB"]
-            .iter()
-            .any(|word: &&str| upper.contains(word))
 }
 
 fn is_column_constraint(token: &str) -> bool {

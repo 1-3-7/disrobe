@@ -8,7 +8,7 @@ use super::pager::Pager;
 use super::record::{
     RecordHeader, SerialType, SqlValue, apply_real_affinity, decode_body, parse_header,
 };
-use super::schema::{TableShape, table_shape};
+use super::schema::{Affinity, TableShape, table_shape};
 use super::{Limits, TableReport};
 
 const MIN_CARVED_COLUMNS: usize = 2;
@@ -54,6 +54,7 @@ pub(super) struct Shape<'a> {
     pub(super) columns: usize,
     pub(super) rowid_alias: Option<usize>,
     pub(super) real_columns: Vec<bool>,
+    pub(super) affinities: Vec<Affinity>,
 }
 
 pub(super) fn shapes(tables: &[TableReport]) -> Vec<Shape<'_>> {
@@ -69,6 +70,7 @@ pub(super) fn shapes(tables: &[TableReport]) -> Vec<Shape<'_>> {
                 columns: table.columns.len(),
                 rowid_alias: table.rowid_alias,
                 real_columns: shape.real_columns,
+                affinities: shape.affinities,
             }
         })
         .collect()
@@ -341,16 +343,23 @@ fn attribute(
     source: RecoverySource,
 ) -> Option<RecoveredRecord> {
     let header: RecordHeader = parse_header(payload, 4096)?;
-    let matches: Vec<&Shape<'_>> = shapes
+    let column_matches: Vec<&Shape<'_>> = shapes
         .iter()
         .filter(|shape: &&Shape<'_>| shape.columns == header.types.len())
         .collect();
-    if matches.is_empty() {
+    if column_matches.is_empty() {
         return None;
     }
     let mut values: Vec<SqlValue> =
         decode_body(payload.get(header.header_len..)?, &header.types, encoding)?;
     if !plausible(&values) {
+        return None;
+    }
+    let matches: Vec<&Shape<'_>> = column_matches
+        .into_iter()
+        .filter(|shape: &&Shape<'_>| fits_affinities(&values, &shape.affinities, shape.rowid_alias))
+        .collect();
+    if matches.is_empty() {
         return None;
     }
     let table: Option<&Shape<'_>> = (matches.len() == 1).then(|| matches[0]);
@@ -396,7 +405,9 @@ fn headerless(
             else {
                 continue;
             };
-            if !plausible(&values) {
+            if !plausible(&values)
+                || !fits_affinities(&values, &shape.affinities, shape.rowid_alias)
+            {
                 continue;
             }
             apply_real_affinity(&mut values, &shape.real_columns);
@@ -436,6 +447,27 @@ fn headerless_values(
     let body: &[u8] = bytes.get(at..at.checked_add(body_len)?)?;
     let values: Vec<SqlValue> = decode_body(body, &types, encoding)?;
     Some((values, at + body_len))
+}
+
+fn fits_affinities(values: &[SqlValue], affinities: &[Affinity], alias: Option<usize>) -> bool {
+    values.iter().zip(affinities).enumerate().all(
+        |(index, (value, affinity)): (usize, (&SqlValue, &Affinity))| {
+            if Some(index) == alias {
+                return matches!(value, SqlValue::Null | SqlValue::Integer(_));
+            }
+            match (affinity, value) {
+                (_, SqlValue::Null) | (Affinity::Blob, _) => true,
+                (Affinity::Integer, SqlValue::Integer(_)) | (Affinity::Text, SqlValue::Text(_)) => {
+                    true
+                }
+                (Affinity::Real | Affinity::Numeric, SqlValue::Integer(_) | SqlValue::Real(_)) => {
+                    true
+                }
+                (Affinity::Numeric, SqlValue::Text(_)) => true,
+                _ => false,
+            }
+        },
+    )
 }
 
 fn plausible(values: &[SqlValue]) -> bool {
