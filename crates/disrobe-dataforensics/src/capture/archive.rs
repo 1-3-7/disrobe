@@ -80,7 +80,7 @@ pub(super) fn saz(bytes: &[u8], limits: &CaptureLimits) -> Result<Vec<HttpExchan
         })?;
     let mut sessions: BTreeMap<String, (Option<Vec<u8>>, Option<Vec<u8>>)> = BTreeMap::new();
     for index in 0..archive.len().min(limits.exchanges.saturating_mul(3)) {
-        let mut file: zip::read::ZipFile<'_, std::io::Cursor<&[u8]>> = archive
+        let mut file: zip::read::ZipFile<'_> = archive
             .by_index(index)
             .map_err(|error| CaptureError::Malformed(format!("SAZ entry {index}: {error}")))?;
         let name: String = file.name().replace('\\', "/");
