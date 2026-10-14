@@ -7,6 +7,7 @@ members = [
     "crates/disrobe-cfg",
     "crates/disrobe-cli",
     "crates/disrobe-core",
+    "crates/disrobe-dataforensics",
     "crates/disrobe-emit",
     "crates/disrobe-ir",
     "crates/disrobe-llm-metadata",
@@ -161,6 +162,7 @@ delharc = { version = "0.6.1", features = ["lhx"] }
 des = "0.8.1"
 disrobe-binfmt = { path = "crates/disrobe-binfmt", version = "0.10.6" }
 disrobe-bytes = { path = "crates/disrobe-bytes", version = "0.10.6" }
+disrobe-dataforensics = { path = "crates/disrobe-dataforensics", version = "0.10.6" }
 disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.6", default-features = false }
 disrobe-cfg = { path = "crates/disrobe-cfg", version = "0.10.6" }
 disrobe-core = { path = "crates/disrobe-core", version = "0.10.6" }

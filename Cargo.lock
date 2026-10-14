@@ -2025,6 +2025,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "disrobe-dataforensics"
+version = "0.10.6"
+dependencies = [
+ "disrobe-core",
+ "disrobe-tool-process",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+
+[[package]]
 name = "disrobe-emit"
 version = "0.10.6"
 dependencies = [
