@@ -280,12 +280,16 @@ fn deleted_rows_are_recovered_without_inventing_any() {
 fn a_corrupted_record_header_breaks_agreement_with_the_reference() {
     let mut bytes: Vec<u8> = read("basic.db");
     let needle: &[u8] = b"row 00042 ";
-    let at: usize = bytes
+    let sites: Vec<usize> = bytes
         .windows(needle.len())
-        .position(|window: &[u8]| window == needle)
-        .expect("the row text is stored inline");
-    bytes[at - 1] ^= 0x55;
-    bytes[at + 4] = b'X';
+        .enumerate()
+        .filter(|(_, window): &(usize, &[u8])| *window == needle)
+        .map(|(at, _): (usize, &[u8])| at)
+        .collect();
+    assert!(!sites.is_empty(), "the row text is stored inline");
+    for at in sites {
+        bytes[at + 4] = b'X';
+    }
     let report: SqliteReport = inspect(&bytes, None, &options(false)).expect("still a database");
     let expected: &Value = &generated().reference["databases"]["basic.db"];
     assert!(

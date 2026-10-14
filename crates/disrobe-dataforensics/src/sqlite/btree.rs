@@ -77,7 +77,7 @@ impl PageHeader {
 
 #[derive(Debug, Default)]
 pub(super) struct WalkOutcome {
-    pub(super) leaf_pages: Vec<u32>,
+    pub(super) pages: Vec<u32>,
     pub(super) problems: Vec<String>,
 }
 
@@ -152,9 +152,7 @@ pub(super) fn walk(
             continue;
         }
         let interior: bool = header.kind == expected.1;
-        if !interior {
-            outcome.leaf_pages.push(number);
-        }
+        outcome.pages.push(number);
         let mut ordered: Vec<Work> = Vec::new();
         for offset in header.cell_offsets(page) {
             match read_cell(pager, page, offset, header.kind, limits) {

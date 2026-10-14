@@ -153,7 +153,7 @@ pub fn inspect(
     let mut indexes: Vec<IndexReport> = Vec::new();
     let mut views: Vec<SchemaObject> = Vec::new();
     let mut triggers: Vec<SchemaObject> = Vec::new();
-    let mut live_leaves: Vec<u32> = schema_walk.leaf_pages;
+    let mut live_pages: Vec<u32> = schema_walk.pages;
     for row in &schema_rows {
         match row.kind.as_str() {
             "table" => {
@@ -218,7 +218,7 @@ pub fn inspect(
                 );
                 problems.extend(outcome.problems);
                 if !shape.without_rowid {
-                    live_leaves.extend(outcome.leaf_pages);
+                    live_pages.extend(outcome.pages);
                 }
                 tables.push(report);
             }
@@ -263,12 +263,12 @@ pub fn inspect(
     }
     let freelist: FreelistReport = recover::read_freelist(&pager, header.freelist_trunk, limits);
     let recovered: Vec<RecoveredRecord> = if options.recover_deleted {
-        live_leaves.sort_unstable();
-        live_leaves.dedup();
+        live_pages.sort_unstable();
+        live_pages.dedup();
         recover::recover(
             &pager,
             &freelist,
-            &live_leaves,
+            &live_pages,
             &recover::shapes(&tables),
             header.text_encoding,
             limits,

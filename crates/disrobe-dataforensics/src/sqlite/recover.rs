@@ -119,7 +119,7 @@ pub(super) fn read_freelist(
 pub(super) fn recover(
     pager: &Pager<'_>,
     freelist: &FreelistReport,
-    live_leaves: &[u32],
+    live_pages: &[u32],
     shapes: &[Shape<'_>],
     encoding: TextEncoding,
     limits: &Limits,
@@ -164,7 +164,27 @@ pub(super) fn recover(
             return found;
         }
     }
-    for page_number in live_leaves {
+    for trunk in &freelist.trunk_pages {
+        let Ok(page) = pager.page(*trunk) else {
+            continue;
+        };
+        let listed: usize = (be32(page, 4) as usize).min(page.len() / 4);
+        let page_number: u32 = *trunk;
+        carve(
+            page,
+            (8 + listed * 4).min(page.len()),
+            page.len(),
+            false,
+            shapes,
+            encoding,
+            &mut found,
+            &|_: usize| RecoverySource::FreelistPage { page: page_number },
+        );
+        if found.len() >= limits.recovered {
+            return found;
+        }
+    }
+    for page_number in live_pages {
         let Ok(page) = pager.page(*page_number) else {
             continue;
         };
