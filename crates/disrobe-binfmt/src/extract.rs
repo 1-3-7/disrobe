@@ -6892,15 +6892,17 @@ fn extract_wim_image_files(
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[path = "../tests/common/forge_writer.rs"]
+mod forge_writer;
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use std::io::Write as _;
 
     use super::*;
-
-    #[rustfmt::skip]
-    #[path = "../../../tests/common/forge_writer.rs"]
-    mod forge_writer;
 
     #[test]
     fn materialized_path_validation_is_non_mutating() {
