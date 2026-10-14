@@ -264,15 +264,30 @@ fn deleted_rows_are_recovered_without_inventing_any() {
         .iter()
         .filter(|row: &&Value| with_id.contains(&row.to_string()) || content.contains(&tail(row)))
         .count();
+    let file: Vec<u8> = read("deleted.db");
+    let surviving: usize = deleted
+        .iter()
+        .filter(|row: &&Value| {
+            let title: &str = row[1]["value"].as_str().expect("title text");
+            let needle: &[u8] = title.as_bytes();
+            file.windows(needle.len() + 1).any(|window: &[u8]| {
+                window.starts_with(needle) && !window[needle.len()].is_ascii_digit()
+            })
+        })
+        .count();
     println!(
-        "deleted rows: {} written, {recovered} recovered ({exact} with their rowid); notes records carved: {}",
+        "deleted rows: {} written, {surviving} still present in the file, {recovered} recovered ({exact} with their rowid); notes records carved: {}",
         deleted.len(),
         notes.len()
     );
     assert!(
-        recovered * 100 >= deleted.len() * 80,
-        "only {recovered} of {} deleted rows recovered",
+        surviving * 100 >= deleted.len() * 60,
+        "only {surviving} of {} deleted rows survive in the file, so the fixture no longer exercises recovery",
         deleted.len()
+    );
+    assert!(
+        recovered * 100 >= surviving * 95,
+        "only {recovered} of the {surviving} deleted rows still present in the file were recovered"
     );
 }
 

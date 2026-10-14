@@ -455,17 +455,17 @@ fn fits_affinities(values: &[SqlValue], affinities: &[Affinity], alias: Option<u
             if Some(index) == alias {
                 return matches!(value, SqlValue::Null | SqlValue::Integer(_));
             }
-            match (affinity, value) {
-                (_, SqlValue::Null) | (Affinity::Blob, _) => true,
-                (Affinity::Integer, SqlValue::Integer(_)) | (Affinity::Text, SqlValue::Text(_)) => {
-                    true
-                }
-                (Affinity::Real | Affinity::Numeric, SqlValue::Integer(_) | SqlValue::Real(_)) => {
-                    true
-                }
-                (Affinity::Numeric, SqlValue::Text(_)) => true,
-                _ => false,
-            }
+            matches!(
+                (affinity, value),
+                (_, SqlValue::Null)
+                    | (Affinity::Blob, _)
+                    | (Affinity::Integer, SqlValue::Integer(_))
+                    | (Affinity::Text | Affinity::Numeric, SqlValue::Text(_))
+                    | (
+                        Affinity::Real | Affinity::Numeric,
+                        SqlValue::Integer(_) | SqlValue::Real(_)
+                    )
+            )
         },
     )
 }
