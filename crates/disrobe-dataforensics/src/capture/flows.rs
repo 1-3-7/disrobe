@@ -127,6 +127,6 @@ impl Direction {
     }
 }
 
-pub(super) fn socket(address: IpAddr, port: u16) -> SocketAddr {
+pub(super) const fn socket(address: IpAddr, port: u16) -> SocketAddr {
     SocketAddr::new(address, port)
 }

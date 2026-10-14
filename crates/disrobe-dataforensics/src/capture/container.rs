@@ -183,7 +183,7 @@ fn pcapng<'a>(
         let reader: Reader<'_> = Reader { bytes, big_endian };
         let block_type: u32 = reader.u32(at).unwrap_or(0);
         let total: usize = reader.u32(at + 4).unwrap_or(0) as usize;
-        if total < 12 || total % 4 != 0 || at + total > bytes.len() {
+        if total < 12 || !total.is_multiple_of(4) || at + total > bytes.len() {
             problems.push(format!("block at offset {at} has length {total}; stopped"));
             break;
         }

@@ -139,7 +139,10 @@ fn ipv4(data: &[u8]) -> Option<Packet<'_>> {
     if header_len < 20 {
         return None;
     }
-    let total: usize = usize::from(be16(data, 2)?).clamp(header_len, data.len());
+    let total: usize = usize::from(be16(data, 2)?).min(data.len());
+    if total < header_len {
+        return None;
+    }
     let flags_offset: u16 = be16(data, 6)?;
     let more_fragments: bool = flags_offset & 0x2000 != 0;
     let offset: u16 = flags_offset & 0x1fff;

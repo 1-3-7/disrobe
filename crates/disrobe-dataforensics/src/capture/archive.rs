@@ -7,6 +7,8 @@ use super::{CaptureError, CaptureLimits, HttpExchange};
 const MAX_HAR_BYTES: usize = 512 * 1024 * 1024;
 const MAX_SAZ_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 
+type SessionFiles = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 pub(super) fn looks_like_har(bytes: &[u8]) -> bool {
     let head: &[u8] = &bytes[..bytes.len().min(4096)];
     let text: String = String::from_utf8_lossy(head).into_owned();
@@ -17,7 +19,7 @@ pub(super) fn looks_like_har(bytes: &[u8]) -> bool {
 pub(super) fn looks_like_saz(bytes: &[u8]) -> bool {
     bytes.starts_with(b"PK\x03\x04")
         && bytes
-            .windows(6)
+            .windows(5)
             .take(1 << 20)
             .any(|window: &[u8]| window == b"raw/0" || window == b"raw\\0")
 }
@@ -78,7 +80,7 @@ pub(super) fn saz(bytes: &[u8], limits: &CaptureLimits) -> Result<Vec<HttpExchan
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| {
             CaptureError::Malformed(format!("SAZ is not a readable zip archive: {error}"))
         })?;
-    let mut sessions: BTreeMap<String, (Option<Vec<u8>>, Option<Vec<u8>>)> = BTreeMap::new();
+    let mut sessions: BTreeMap<String, SessionFiles> = BTreeMap::new();
     for index in 0..archive.len().min(limits.exchanges.saturating_mul(3)) {
         let mut file: zip::read::ZipFile<'_> = archive
             .by_index(index)
@@ -98,8 +100,7 @@ pub(super) fn saz(bytes: &[u8], limits: &CaptureLimits) -> Result<Vec<HttpExchan
             .take(MAX_SAZ_ENTRY_BYTES)
             .read_to_end(&mut content)
             .map_err(|error| CaptureError::Malformed(format!("SAZ entry {name}: {error}")))?;
-        let slot: &mut (Option<Vec<u8>>, Option<Vec<u8>>) =
-            sessions.entry(session.to_owned()).or_default();
+        let slot: &mut SessionFiles = sessions.entry(session.to_owned()).or_default();
         if side == 'c' {
             slot.0 = Some(content);
         } else {

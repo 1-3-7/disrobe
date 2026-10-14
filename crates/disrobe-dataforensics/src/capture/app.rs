@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::Read as _;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -122,7 +123,13 @@ pub(super) fn dns(message: &[u8]) -> Option<DnsMessage> {
                 }
                 texts.join("")
             }
-            _ => rdata.iter().map(|b: &u8| format!("{b:02x}")).collect(),
+            _ => rdata.iter().fold(
+                String::with_capacity(rdlen * 2),
+                |mut text: String, b: &u8| {
+                    let _ = write!(text, "{b:02x}");
+                    text
+                },
+            ),
         };
         answers.push(DnsAnswer {
             name,
@@ -177,7 +184,7 @@ pub(super) fn client_hello(stream: &[u8]) -> Option<ClientHello> {
     let body_len: usize = (usize::from(*record.get(1)?) << 16) | usize::from(be16(record, 2)?);
     let body: &[u8] = record
         .get(4..4 + body_len)
-        .unwrap_or(&record[4.min(record.len())..]);
+        .unwrap_or_else(|| &record[4.min(record.len())..]);
     let legacy_version: u16 = be16(body, 0)?;
     let mut at: usize = 34;
     let session_len: usize = usize::from(*body.get(at)?);

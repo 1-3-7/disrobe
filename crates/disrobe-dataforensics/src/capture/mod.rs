@@ -240,8 +240,11 @@ fn packets(bytes: &[u8], kind: ContainerKind, options: &CaptureOptions) -> Captu
             .or_default() += 1;
         let source: SocketAddr = socket(src, src_port);
         let destination: SocketAddr = socket(dst, dst_port);
-        if protocol == 17 && (src_port == 53 || dst_port == 53) {
-            if let Some(message) = dns(payload) {
+        if protocol == 17
+            && (src_port == 53 || dst_port == 53)
+            && let Some(message) = dns(payload)
+        {
+            {
                 let (client, server): (SocketAddr, SocketAddr) = if message.response {
                     (destination, source)
                 } else {
