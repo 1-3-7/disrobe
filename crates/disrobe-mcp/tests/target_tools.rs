@@ -646,3 +646,32 @@ async fn native_match_reads_both_sides_from_targets_and_paths() {
     assert!(mixed.contains("DR-MCP-0709"), "{mixed}");
     session.client.cancel().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn identify_target_reports_the_library_verdict_with_the_commands_that_handle_it() {
+    let session: Session = session().await;
+    std::fs::write(session.root.path().join("sample.exe"), RUST_PE).expect("stage PE fixture");
+    let (target_id, _): (String, Value) = open(&session.client, "sample.exe").await;
+    let reported: Value = call(
+        &session.client,
+        "identify_target",
+        json!({ "target_id": target_id }),
+    )
+    .await;
+    let now: u64 = disrobe_core::time::now_secs().expect("clock");
+    let expected: disrobe_pass_native::IdentityReport =
+        disrobe_pass_native::detect_identity(RUST_PE, now);
+    assert!(
+        !expected.hits.is_empty(),
+        "the Rust PE carries identity hits"
+    );
+    assert_eq!(reported["format"], json!(expected.format));
+    let rows: &Vec<Value> = reported["hits"].as_array().expect("hits");
+    assert_eq!(rows.len(), expected.hits.len());
+    for (row, hit) in rows.iter().zip(&expected.hits) {
+        assert_eq!(row["name"], json!(hit.name));
+        assert_eq!(row["confidence"], json!(hit.confidence));
+        assert_eq!(row["commands"], json!(hit.support.invocations()));
+    }
+    session.client.cancel().await.expect("shutdown");
+}

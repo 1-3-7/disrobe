@@ -10,8 +10,8 @@ use disrobe_binfmt::{
 use disrobe_core::{ExtractedString, StringTagging as Tagging, StringsOptions, strings_report};
 use disrobe_ir::payload::DisasmPayload;
 use disrobe_pass_native::{
-    ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram, build_disasm_payload,
-    recover_program,
+    IdentityReport, ProgramFunction, PseudoAbi, RecoveredFunction, RecoveredProgram,
+    build_disasm_payload, detect_identity, recover_program,
 };
 use disrobe_query::{Function, FunctionId, InsnClass, InsnView, Module, module_from_envelope};
 use rmcp::ErrorData;
@@ -1062,6 +1062,45 @@ impl DisrobeMcp {
     ) -> Result<Json<LocationOut>, ErrorData> {
         let target: Arc<Target> = self.workspace()?.get(&p.target_id)?;
         locate(&target, p.address.as_deref(), p.offset).map(Json)
+    }
+
+    #[rmcp::tool(
+        name = "identify_target",
+        description = "Identify what built, packed, protected, installed or signed an opened target: format, each compiler, linker, packer, protector, installer, library and signature hit with its evidence and confidence, Authenticode details for PE images, and per hit the disrobe commands that handle it (run them with run_command)."
+    )]
+    fn identify_target(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
+        let target: Arc<Target> = self.workspace()?.get(&p.target_id)?;
+        let now: u64 = disrobe_core::time::now_secs().map_err(|error| {
+            ErrorData::internal_error(format!("DR-MCP-0723: cannot read the clock: {error}"), None)
+        })?;
+        let report: IdentityReport = detect_identity(&target.bytes, now);
+        let mut value: serde_json::Value =
+            serde_json::to_value(&report).map_err(|error: serde_json::Error| {
+                ErrorData::internal_error(format!("DR-MCP-0723: identify serialize: {error}"), None)
+            })?;
+        if let Some(hits) = value
+            .get_mut("hits")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (row, hit) in hits.iter_mut().zip(&report.hits) {
+                if let Some(object) = row.as_object_mut() {
+                    object.insert(
+                        "commands".to_owned(),
+                        serde_json::Value::from(hit.support.invocations().to_vec()),
+                    );
+                }
+            }
+        }
+        match value {
+            serde_json::Value::Object(object) => Ok(Json(object)),
+            _ => Err(ErrorData::internal_error(
+                "DR-MCP-0723: identify report serialized to a non-object value",
+                None,
+            )),
+        }
     }
 
     #[rmcp::tool(

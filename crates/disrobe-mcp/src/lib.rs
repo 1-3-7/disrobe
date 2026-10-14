@@ -1610,6 +1610,7 @@ mod tests {
             "call_path",
             "references_to",
             "find_strings",
+            "identify_target",
             "add_note",
             "list_notes",
         ] {
@@ -1625,7 +1626,7 @@ mod tests {
             "missing WebAssembly lift tool"
         );
         let expected_count: usize =
-            27 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
+            28 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
