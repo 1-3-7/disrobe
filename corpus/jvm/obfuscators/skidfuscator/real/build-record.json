@@ -1,0 +1,55 @@
+{
+  "files": {
+    "files/Calculator.clean.jar": "d4f192ba1b4cef334d778ed0f01a20212870c3481b86cd0e8f04645951367980",
+    "files/Calculator.skidfuscator.jar": "931167e7864ebb636251c11208c7793a975d96c0abad68802dc3b668cc02e95f",
+    "files/Sample.clean.jar": "4b03af69a0a86acf52468ebeaa906e896b7469c0540486737d44e361a44249a5",
+    "files/Sample.skidfuscator.jar": "cbe4e1961bc532458c8e8274cf64227b8b9a8c680d342cdf1310a1f6671a3d3f",
+    "files/SwitchDispatch.clean.jar": "d182985d0e270f526ab0337c091b838c14a772d3e2c1cd887461745498e46d92",
+    "files/SwitchDispatch.skidfuscator.jar": "723bd05d682884713a6a07c8d43abf4f97787e96a8c06e7db52eb6e75964d7ba"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "java -jar skidfuscator.jar obfuscate Sample.jar (community defaults)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e",
+      "output": "files/Sample.skidfuscator.jar",
+      "output_bytes": 6284,
+      "output_sha256": "cbe4e1961bc532458c8e8274cf64227b8b9a8c680d342cdf1310a1f6671a3d3f"
+    },
+    {
+      "behaviour": "same",
+      "command": "java -jar skidfuscator.jar obfuscate Calculator.jar (community defaults)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415",
+      "output": "files/Calculator.skidfuscator.jar",
+      "output_bytes": 9161,
+      "output_sha256": "931167e7864ebb636251c11208c7793a975d96c0abad68802dc3b668cc02e95f"
+    },
+    {
+      "behaviour": "same",
+      "command": "java -jar skidfuscator.jar obfuscate SwitchDispatch.jar (community defaults)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f",
+      "output": "files/SwitchDispatch.skidfuscator.jar",
+      "output_bytes": 5489,
+      "output_sha256": "723bd05d682884713a6a07c8d43abf4f97787e96a8c06e7db52eb6e75964d7ba"
+    },
+    {
+      "behaviour": "input-failed",
+      "command": "javac -source 8 -target 8",
+      "input": "corpus/jvm/obfuscators/skidfuscator/Sample-src.java",
+      "input_sha256": "7f5da9016cfe03d8eb746e6fe0116f66653dd8dbd845c1fcc941c52e52e3a14e"
+    }
+  ],
+  "recipe": "skidfuscator",
+  "repository_commit": "8cf1b31192b822d6c71ef2ae7ebc72b4fe4a5074",
+  "runner_image": "ubuntu24 20261004.327.1",
+  "tool": {
+    "name": "Skidfuscator Community",
+    "runtime": "openjdk version \"17.0.20.1\" 2026-08-18",
+    "url": "https://github.com/skidfuscatordev/skidfuscator-java-obfuscator/releases/download/2.0.11/skidfuscator.jar",
+    "version": "skidfuscator.jar 2.0.11 sha256 8d5bc1f6854995495a8451417cf5235a31a56d20fc4ce6079b19963ed84c49d9"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37624998241"
+}

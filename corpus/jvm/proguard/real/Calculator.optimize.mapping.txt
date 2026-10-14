@@ -1,0 +1,8 @@
+com.example.app.Calculator -> com.example.app.Calculator:
+    com.example.app.Calculator$Ledger ledger -> a
+    void <init>() -> <init>
+    void main(java.lang.String[]) -> main
+com.example.app.Calculator$Ledger -> com.example.app.a:
+    int count -> a
+    long checksum -> b
+    void <init>() -> <init>

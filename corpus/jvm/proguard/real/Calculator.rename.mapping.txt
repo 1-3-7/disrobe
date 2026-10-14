@@ -1,0 +1,19 @@
+com.example.app.Calculator -> com.example.app.Calculator:
+    java.lang.String GREETING -> a
+    java.lang.String FAREWELL -> b
+    int SCALE_FACTOR -> c
+    com.example.app.Calculator$Ledger ledger -> d
+    void <init>() -> <init>
+    java.lang.String banner() -> a
+    int accumulate(int) -> a
+    int fibonacci(int) -> b
+    java.lang.String describe(int) -> c
+    java.lang.String shutdown() -> b
+    void main(java.lang.String[]) -> main
+com.example.app.Calculator$Ledger -> com.example.app.a:
+    int count -> a
+    long checksum -> b
+    void <init>() -> <init>
+    void record(int,int) -> a
+    int size() -> a
+    long checksum() -> b

@@ -1,0 +1,10 @@
+com.example.app.Sample -> com.example.app.Sample:
+    int counter -> a
+    long checksum -> b
+    void <init>() -> <init>
+    java.lang.String banner() -> a
+    int accumulate(int) -> a
+    long fold(java.lang.String) -> a
+    java.lang.String classify(int) -> b
+    java.lang.String report() -> b
+    void main(java.lang.String[]) -> main

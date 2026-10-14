@@ -16,12 +16,7 @@ const RECORD: &str = include_str!("../../../../corpus/jvm/obfuscators/jbco/real/
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOOL_CAPTURE_BYTES: usize = 1024 * 1024;
 
-const PARTIALS: &[&str] = &[
-    "Calculator.names.jar",
-    "Sample.flow.jar",
-    "SwitchDispatch.flow.jar",
-    "SwitchDispatch.names.jar",
-];
+const PARTIALS: &[&str] = &[];
 
 #[derive(Deserialize)]
 struct BuildRecord {

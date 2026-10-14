@@ -99,6 +99,7 @@ fixtures = [
     "proguard/EdgeCases-mapping.txt",
     "proguard/EdgeCasesKt-pg.jar",
     "proguard/EdgeCasesKt-mapping.txt",
+    "proguard/Hello.java (authored source of Hello-baseline; javac --release 8 reproduces its method bodies exactly; the re-execution reference for Hello-obf.jar and r8/Hello-r8.jar)",
 ]
 notes = "Hello-obf runs cleanly; EdgeCases-pg has runtime NPE due to aggressive optimization pruning enum constants array (Direction.getEnumConstants()) - fixture intentionally retained as worst-case obfuscator output for the deobfuscator to handle. EdgeCasesKt-pg keeps kotlin.Metadata and functional-interface implementers."
 
@@ -183,10 +184,11 @@ license = "proprietary (Guardsquare)"
 fixtures = [
     "dexguard/DexGuardReflectStrings.dex (in-house benign; encrypted String[] + reflection-invoked decrypt, the DexGuard string-encryption shape)",
     "dexguard/DexGuardReflectStrings.java (in-house source; the recovery oracle)",
-    "dexguard/MANIFEST.toml (build command, dex_builder version, sha256, ground-truth plaintext list)",
+    "dexguard/DexGuardReflectStrings.build.sh (javac --release 11 then d8 9.1.31 --release --min-api 21)",
+    "dexguard/MANIFEST.toml (compiler and dexer versions, sha256, reproducibility note)",
     "dex/EdgeCases.dex (clean baseline; used to verify residual-encrypted-string ratio is low for non-DexGuard input)",
 ]
-notes = "String recovery at `crates/disrobe-pass-jvm/src/dalvik_strdec.rs` runs a constrained dalvik register machine over the dex's OWN decrypt routine: it executes the class `<clinit>` to rebuild the encrypted `String[]` static table, then runs the `decrypt(int)` body per table index (sget-object the table, aget the element, per-char XOR against the embedded key, String.valueOf the result), recovering the plaintext with no invented cipher. The reflective call sites (Class.getDeclaredMethod(\"decrypt\", int.class) + Method.invoke) are matched and resolved to the concrete decrypt target. `protectors/dexguard.rs::peel` wraps this behind explicit authorization and surfaces the recovered strings; the dalvik engine also runs unconditionally on the `disrobe jvm decompile <dex>` path (manifest fields reflection_strings_recovered / reflection_string_recovery). Recovery is graded against the authored plaintext list in `tests/dexguard_reflection_strings.rs`, an external ground truth, not against disrobe's own output. A DexGuard build whose decrypt key is runtime-only (System.getProperty/env/clock/SecureRandom) is reported as RuntimeKeyUnavailable and left opaque. Sourcing note: commercial DexGuard is paid Guardsquare software whose protected output is unsafe to produce on a non-sandboxed box, and the javac+d8 toolchain is not installed (agents do not install or download tooling), so this is a self-authored benign sample that exhibits the same reflection-string-decryption technique; the dex is assembled byte-for-byte by the project's own dex_builder (dex 035, adler32 + sha-1 valid) and parses through the project's own dex reader. CFF un-flattening for DexGuard switch-on-state dispatchers is handled separately at `dalvik_dexguard.rs`."
+notes = "String recovery at `crates/disrobe-pass-jvm/src/dalvik_strdec.rs` runs a constrained dalvik register machine over the dex's OWN decrypt routine: it executes the class `<clinit>` to rebuild the encrypted `String[]` static table, then runs the `decrypt(int)` body per table index (sget-object the table, aget the element, per-char XOR against the embedded key, String.valueOf the result), recovering the plaintext with no invented cipher. The reflective call sites (Class.getDeclaredMethod(\"decrypt\", int.class) + Method.invoke) are matched and resolved to the concrete decrypt target. `protectors/dexguard.rs::peel` wraps this behind explicit authorization and surfaces the recovered strings; the dalvik engine also runs unconditionally on the `disrobe jvm decompile <dex>` path (manifest fields reflection_strings_recovered / reflection_string_recovery). Recovery is graded in `tests/protectors/dexguard_reflection_strings.rs` against the output of the authored source compiled and run by the JDK, an external ground truth, not against disrobe's own output. A DexGuard build whose decrypt key is runtime-only (System.getProperty/env/clock/SecureRandom) is reported as RuntimeKeyUnavailable and left opaque. Sourcing note: commercial DexGuard is paid Guardsquare software whose protected output is unsafe to produce on a non-sandboxed box, so this is a self-authored benign sample that exhibits the same reflection-string-decryption technique; javac compiles it and d8 9.1.31 dexes it through dexguard/DexGuardReflectStrings.build.sh, which reproduces the pinned dex byte for byte. CFF un-flattening for DexGuard switch-on-state dispatchers is handled separately at `dalvik_dexguard.rs`."
 
 [[protector]]
 name = "yguard"
@@ -197,13 +199,38 @@ fixtures = [
     "obfuscators/yguard/gauntlet/Calculator.java (in-house source; the clean original and recovery oracle)",
     "obfuscators/yguard/Calculator-clean.jar (javac Temurin 25 --release 17; the ground-truth jar)",
     "obfuscators/yguard/Calculator-obf.jar (real yGuard 5.0.0 rename output; the gauntlet target)",
-    "obfuscators/yguard/renamelog.xml (yGuard rename log; external grading aid only, never fed to disrobe)",
+    "obfuscators/yguard/renamelog.xml (yGuard rename log; source recovery reverses it into the original identifiers)",
 ]
-notes = "Real yGuard 5.0.0 (com.yworks:yguard from Maven Central, sha256 510f3bfe...) run as its Ant ObfuscatorTask with asm 9.9.1 over the clean Calculator-clean.jar, naming-scheme=small, mainclass exposed. yGuard renames classes/methods/fields (inner Ledger -> _A; fields -> A/B/C/D; methods -> single letters with signature-disambiguated overloads) and keeps the exposed entrypoint; it does NOT encrypt string literals. The gauntlet (tests/yguard_gauntlet.rs, 7 tests) measures recovery against the CLEAN ORIGINAL, never the tool's own output: all 9 clean string literals survive verbatim (set-equal diff against clean), both classes + all members decompile, the renamed identifiers canonicalize through heuristic_recover. Honest residual: yGuard discards the original-name map with no recoverable oracle in the artifact, so identifier names canonicalize (not restore to banner/accumulate/fibonacci/...); only the exposed Calculator/main keep original names. The prior DEFER claim that building needed a ~250MB gradle toolchain was wrong: yGuard is a small Ant task jar (379KB) plus asm (126KB) plus Ant (10MB)."
+notes = "Real yGuard 5.0.0 (com.yworks:yguard from Maven Central, sha256 510f3bfe...) run as its Ant ObfuscatorTask with asm 9.9.1 over the clean Calculator-clean.jar, naming-scheme=small, mainclass exposed. yGuard renames classes/methods/fields (inner Ledger -> _A; fields -> A/B/C/D; methods -> single letters with signature-disambiguated overloads) and keeps the exposed entrypoint; it does NOT encrypt string literals. The gauntlet (tests/yguard_gauntlet.rs, 7 tests) measures recovery against the CLEAN ORIGINAL, never the tool's own output: all 9 clean string literals survive verbatim (set-equal diff against clean), both classes + all members decompile, the renamed identifiers canonicalize through heuristic_recover. The artifact carries no original names, so without the rename log the renamed identifiers stay renamed; with renamelog.xml, source recovery reverses the class, field and method renames, and tests/protectors/obfuscator_reexec_strict.rs pins Calculator-obf.jar as recompiling and running with the clean program's output. The prior DEFER claim that building needed a ~250MB gradle toolchain was wrong: yGuard is a small Ant task jar (379KB) plus asm (126KB) plus Ant (10MB)."
+
+[[protector]]
+name = "yguard-runner"
+status = "REAL-RUNNER-FIXTURE"
+upstream = "https://github.com/yWorks/yGuard"
+version = "yGuard 5.0.0"
+fixtures = [
+    "obfuscators/yguard/real/Sample.rename.jar",
+    "obfuscators/yguard/real/Sample.rename.renamelog.xml",
+    "obfuscators/yguard/real/Sample.linenumbers.jar",
+    "obfuscators/yguard/real/Sample.linenumbers.renamelog.xml",
+    "obfuscators/yguard/real/Sample.clean.jar",
+    "obfuscators/yguard/real/Calculator.rename.jar",
+    "obfuscators/yguard/real/Calculator.rename.renamelog.xml",
+    "obfuscators/yguard/real/Calculator.linenumbers.jar",
+    "obfuscators/yguard/real/Calculator.linenumbers.renamelog.xml",
+    "obfuscators/yguard/real/Calculator.clean.jar",
+    "obfuscators/yguard/real/SwitchDispatch.rename.jar",
+    "obfuscators/yguard/real/SwitchDispatch.rename.renamelog.xml",
+    "obfuscators/yguard/real/SwitchDispatch.linenumbers.jar",
+    "obfuscators/yguard/real/SwitchDispatch.linenumbers.renamelog.xml",
+    "obfuscators/yguard/real/SwitchDispatch.clean.jar",
+    "obfuscators/yguard/real/build-record.json",
+]
+notes = "GitHub Actions runner output from yGuard 5.0.0 run as its Ant task, recorded in obfuscators/yguard/real/build-record.json (run 37786249146). The authored inputs are obfuscators/jbco/gauntlet/Sample.java, obfuscators/yguard/gauntlet/Calculator.java and evalshapes/SwitchDispatch.java; each is obfuscated with the rename preset and with the linenumbers preset, keeping the main class public methods and writing the rename log. The shrink-rename preset failed on the runner for all three inputs and has no fixture. The runner recorded all six outputs as behaving like their clean jars. tests/protectors/obfuscator_reexec_strict.rs reverses each rename log into the emitted Java identifiers, compiles the recovery with javac, runs it, and compares stdout and exit code against the hash-verified clean jar; all six are pinned as fully recovered."
 
 [[protector]]
 name = "jbco"
-status = "REAL-RUNNER-FIXTURE-PARTIAL"
+status = "REAL-RUNNER-FIXTURE"
 upstream = "https://www.sable.mcgill.ca/JBCO/"
 version = "Soot 4.7.1"
 fixtures = [
@@ -214,7 +241,57 @@ fixtures = [
     "obfuscators/jbco/real/SwitchDispatch.flow.jar",
     "obfuscators/jbco/real/build-record.json",
 ]
-notes = "GitHub Actions runner output from Soot 4.7.1 soot.jbco.Main, recorded in obfuscators/jbco/real/build-record.json (run 37045868043). Five of nine runner invocations preserved authored behaviour: Sample names and flow, Calculator names, and SwitchDispatch names and flow. The all-transform variants for Sample and SwitchDispatch, and the flow and all-transform variants for Calculator, are named tool failures in that record and have no fixture. tests/protectors/jbco_runner_outputs.rs validates exact artifact and authored-source hashes, compiles and executes only authored originals and recovered source with the official JDK, and pins Sample.names.jar as recompiling to identical behaviour, with the other four artifacts named partial."
+notes = "GitHub Actions runner output from Soot 4.7.1 soot.jbco.Main, recorded in obfuscators/jbco/real/build-record.json (run 37045868043). Five of nine runner invocations preserved authored behaviour: Sample names and flow, Calculator names, and SwitchDispatch names and flow. The all-transform variants for Sample and SwitchDispatch, and the flow and all-transform variants for Calculator, are named tool failures in that record and have no fixture. tests/protectors/jbco_runner_outputs.rs validates exact artifact and authored-source hashes, compiles and executes only authored originals and recovered source with the official JDK, and pins all five artifacts as recompiling to identical behaviour; tests/protectors/obfuscator_reexec_strict.rs grades the same five against the authored programs. The flow variants recover through opaque-predicate folding over the Boolean fields JBCO plants, removal of handlers that only rethrow their exception, and removal of the dead code both leave behind."
+
+[[protector]]
+name = "proguard-runner"
+status = "REAL-RUNNER-FIXTURE"
+upstream = "https://github.com/Guardsquare/proguard"
+version = "ProGuard 7.10.0"
+fixtures = [
+    "proguard/real/Sample.rename.jar",
+    "proguard/real/Sample.rename.mapping.txt",
+    "proguard/real/Sample.optimize.jar",
+    "proguard/real/Sample.optimize.mapping.txt",
+    "proguard/real/Sample.aggressive.jar",
+    "proguard/real/Sample.aggressive.mapping.txt",
+    "proguard/real/Sample.clean.jar",
+    "proguard/real/Calculator.rename.jar",
+    "proguard/real/Calculator.rename.mapping.txt",
+    "proguard/real/Calculator.optimize.jar",
+    "proguard/real/Calculator.optimize.mapping.txt",
+    "proguard/real/Calculator.aggressive.jar",
+    "proguard/real/Calculator.aggressive.mapping.txt",
+    "proguard/real/Calculator.clean.jar",
+    "proguard/real/SwitchDispatch.rename.jar",
+    "proguard/real/SwitchDispatch.rename.mapping.txt",
+    "proguard/real/SwitchDispatch.optimize.jar",
+    "proguard/real/SwitchDispatch.optimize.mapping.txt",
+    "proguard/real/SwitchDispatch.aggressive.jar",
+    "proguard/real/SwitchDispatch.aggressive.mapping.txt",
+    "proguard/real/SwitchDispatch.clean.jar",
+    "proguard/real/build-record.json",
+]
+notes = "GitHub Actions runner output from ProGuard 7.10.0, recorded in proguard/real/build-record.json (run 37750631682). The authored inputs are obfuscators/jbco/gauntlet/Sample.java, obfuscators/yguard/gauntlet/Calculator.java and evalshapes/SwitchDispatch.java; each is obfuscated three ways: rename (-dontoptimize -dontshrink), optimize (-optimizationpasses 3 -allowaccessmodification) and aggressive (-optimizationpasses 5 -allowaccessmodification -overloadaggressively -repackageclasses '' -mergeinterfacesaggressively), with the mapping kept. The runner recorded all nine outputs as behaving like the clean jar. tests/protectors/obfuscator_reexec_strict.rs recovers each jar with its mapping applied to the emitted Java identifiers, compiles the recovery with javac, runs it, and compares stdout and exit code against the hash-verified clean jar; all nine are pinned as fully recovered."
+
+[[protector]]
+name = "skidfuscator"
+status = "REAL-RUNNER-FIXTURE"
+upstream = "https://github.com/skidfuscatordev/skidfuscator-java-obfuscator"
+version = "Skidfuscator Community 2.0.11"
+fixtures = [
+    "obfuscators/skidfuscator/real/Sample.skidfuscator.jar",
+    "obfuscators/skidfuscator/real/Sample.clean.jar",
+    "obfuscators/skidfuscator/real/Calculator.skidfuscator.jar",
+    "obfuscators/skidfuscator/real/Calculator.clean.jar",
+    "obfuscators/skidfuscator/real/SwitchDispatch.skidfuscator.jar",
+    "obfuscators/skidfuscator/real/SwitchDispatch.clean.jar",
+    "obfuscators/skidfuscator/real/build-record.json",
+    "obfuscators/skidfuscator/Sample-skid.jar (earlier Skidfuscator output over Sample-src.java)",
+    "obfuscators/skidfuscator/Sample-skid.class",
+    "obfuscators/skidfuscator/Sample-src.java (authored source; declares public class Sample)",
+]
+notes = "GitHub Actions runner output from Skidfuscator Community 2.0.11 with its default configuration, recorded in obfuscators/skidfuscator/real/build-record.json (run 37624998241). The authored inputs are obfuscators/jbco/gauntlet/Sample.java, obfuscators/yguard/gauntlet/Calculator.java and evalshapes/SwitchDispatch.java; the runner recorded all three outputs as behaving like their clean jars. Skidfuscator applies number obfuscation (constant XOR chains and Integer.parseInt of decimal strings), per-block seeds advanced through static hash functions, switch and branch dispatch on those hashed seeds, and exceptions thrown only to reach their own handlers. Source recovery evaluates the seeds and the static int hash functions of the input with a bounded interpreter, folds every branch and switch they decide, turns each self-caught throw into a jump, and drops the dead blocks. tests/protectors/obfuscator_reexec_strict.rs grades each jar against its hash-verified clean jar, or for Sample-skid.jar against Sample-src.java, by recompiling and running the recovered Java; all four are pinned as fully recovered."
 
 [[protector]]
 name = "skidsuite2"

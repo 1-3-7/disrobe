@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yguard version="1.5">
+<!--
+  yGuard Bytecode Obfuscator, v5.0.0, a Product of yWorks GmbH - http://www.yworks.com
+
+  Logfile created on Thu Oct 08 13:41:48 UTC 2026
+
+  Jar file to be obfuscated:           Calculator.clean.jar
+  Target Jar file for obfuscated code: Calculator.rename.jar
+
+-->
+<!--
+  Memory in use after class data structure built: 5101856 bytes
+  Total memory available                        : 35651584 bytes
+-->
+<expose>
+  <class name="com.example.app.Calculator"/>
+  <method class="com.example.app.Calculator" name="void main(java.lang.String[])"/>
+  <method class="com.example.app.Calculator" name="java.lang.String describe(int)"/>
+  <method class="com.example.app.Calculator" name="java.lang.String banner()"/>
+  <method class="com.example.app.Calculator" name="java.lang.String shutdown()"/>
+  <method class="com.example.app.Calculator" name="int fibonacci(int)"/>
+  <method class="com.example.app.Calculator" name="int accumulate(int)"/>
+</expose>
+<map>
+  <class name="com.example.app.Calculator$Ledger" map="_o"/>
+  <field class="com.example.app.Calculator$Ledger" name="checksum" map="o00000"/>
+  <field class="com.example.app.Calculator$Ledger" name="count" map="&#x00d2;00000"/>
+  <method class="com.example.app.Calculator$Ledger" name="int size()" map="o00000"/>
+  <method class="com.example.app.Calculator$Ledger" name="void record(int, int)" map="o00000"/>
+  <method class="com.example.app.Calculator$Ledger" name="long checksum()" map="&#x00d2;00000"/>
+  <field class="com.example.app.Calculator" name="GREETING" map="o00000"/>
+  <field class="com.example.app.Calculator" name="FAREWELL" map="new"/>
+  <field class="com.example.app.Calculator" name="ledger" map="&#x00d3;00000"/>
+  <field class="com.example.app.Calculator" name="SCALE_FACTOR" map="&#x00d4;00000"/>
+</map>
+</yguard>

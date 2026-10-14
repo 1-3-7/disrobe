@@ -15,6 +15,7 @@ mod jbco_runner_outputs;
 mod mapping_apply;
 mod name_keyed_shared_decryptor;
 mod number_fold_jvm_oracle;
+mod obfuscator_reexec_strict;
 mod proguard_descriptor_disambig;
 mod proguard_gauntlet;
 mod proguard_library_fingerprint;

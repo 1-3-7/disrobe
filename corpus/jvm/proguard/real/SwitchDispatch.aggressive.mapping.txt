@@ -1,0 +1,4 @@
+com.disrobe.bench.SwitchDispatch -> com.disrobe.bench.SwitchDispatch:
+    void <init>() -> <init>
+    java.lang.String decrypt(java.lang.String) -> a
+    void main(java.lang.String[]) -> main

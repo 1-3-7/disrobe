@@ -1,0 +1,109 @@
+{
+  "files": {
+    "files/Calculator.clean.jar": "91d5f3f90888705d3deb96f5500f080081b1c382c51f7f880ccc120f07536828",
+    "files/Calculator.linenumbers.jar": "a162f0773c33c45d6ae3415ca6da367bb5a67c1cc43e5643f8563c56165f5113",
+    "files/Calculator.linenumbers.renamelog.xml": "e7ba7558b3ad63f64f6add177aaaa12cae0ee89f7e20c9b796863da287d445f9",
+    "files/Calculator.rename.jar": "3d416f3aa0792cc67c58a53d83ed6596b04bf401b79c657156a4dbe965bd0e8a",
+    "files/Calculator.rename.renamelog.xml": "bd16bdea608e7ab97b84307bcad8c6353d6bbba5f5f06f6e90fb60a1ec4753e4",
+    "files/Sample.clean.jar": "0817a4a44949bd14e685f5c7f1c50401ce436855cc28a3fad4e2bd66b6564aff",
+    "files/Sample.linenumbers.jar": "b76bb0dbc7c710d696df7199cacdc8566cc08111be151b97acd12bd21d6e42c4",
+    "files/Sample.linenumbers.renamelog.xml": "ca2faefbd3c325bc39eaf2a00dcd8c4978c3183ec2c9c0319848c22309fe0f1b",
+    "files/Sample.rename.jar": "b7ff94f288f769b1b7509678eb594cefa91bd74eaff2f79876af9acb8c8bbd96",
+    "files/Sample.rename.renamelog.xml": "2f5956ad73095bf08a54e81c063ab92d18f190fda67826010e00767003ef0993",
+    "files/SwitchDispatch.clean.jar": "b24fd3fb93b605204d2aecacdaefaa578c5378f6305d7c1972690212c8fbf4e5",
+    "files/SwitchDispatch.linenumbers.jar": "d802d75d5b91f4ff8ea13f615b018060b1ad36891f6261be44596ac8e55004b5",
+    "files/SwitchDispatch.linenumbers.renamelog.xml": "23a4256df1d5dcbca742cc92cef2fac1920aec0c2621927ada4c6553eb816b9e",
+    "files/SwitchDispatch.rename.jar": "9850e17f777009fed94b024fea60ac370b2ca2fce3e1db740413f3f7153c9103",
+    "files/SwitchDispatch.rename.renamelog.xml": "9365a718178f10c6faf70862eecf4814f707274d9393c5bbc169a1c5e9088bd3"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "ant -f build.xml (yguard rename; keep main class public methods)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e",
+      "output": "files/Sample.rename.jar",
+      "output_bytes": 1873,
+      "output_sha256": "b7ff94f288f769b1b7509678eb594cefa91bd74eaff2f79876af9acb8c8bbd96"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "ant -f build.xml (yguard shrink-rename; keep main class public methods)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e"
+    },
+    {
+      "behaviour": "same",
+      "command": "ant -f build.xml (yguard linenumbers; keep main class public methods)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e",
+      "output": "files/Sample.linenumbers.jar",
+      "output_bytes": 1776,
+      "output_sha256": "b76bb0dbc7c710d696df7199cacdc8566cc08111be151b97acd12bd21d6e42c4"
+    },
+    {
+      "behaviour": "same",
+      "command": "ant -f build.xml (yguard rename; keep main class public methods)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415",
+      "output": "files/Calculator.rename.jar",
+      "output_bytes": 2525,
+      "output_sha256": "3d416f3aa0792cc67c58a53d83ed6596b04bf401b79c657156a4dbe965bd0e8a"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "ant -f build.xml (yguard shrink-rename; keep main class public methods)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415"
+    },
+    {
+      "behaviour": "same",
+      "command": "ant -f build.xml (yguard linenumbers; keep main class public methods)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415",
+      "output": "files/Calculator.linenumbers.jar",
+      "output_bytes": 2420,
+      "output_sha256": "a162f0773c33c45d6ae3415ca6da367bb5a67c1cc43e5643f8563c56165f5113"
+    },
+    {
+      "behaviour": "same",
+      "command": "ant -f build.xml (yguard rename; keep main class public methods)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f",
+      "output": "files/SwitchDispatch.rename.jar",
+      "output_bytes": 1659,
+      "output_sha256": "9850e17f777009fed94b024fea60ac370b2ca2fce3e1db740413f3f7153c9103"
+    },
+    {
+      "behaviour": "tool-failed",
+      "command": "ant -f build.xml (yguard shrink-rename; keep main class public methods)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f"
+    },
+    {
+      "behaviour": "same",
+      "command": "ant -f build.xml (yguard linenumbers; keep main class public methods)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f",
+      "output": "files/SwitchDispatch.linenumbers.jar",
+      "output_bytes": 1552,
+      "output_sha256": "d802d75d5b91f4ff8ea13f615b018060b1ad36891f6261be44596ac8e55004b5"
+    },
+    {
+      "behaviour": "input-failed",
+      "command": "javac -source 8 -target 8",
+      "input": "corpus/jvm/megafile/EdgeCases.java",
+      "input_sha256": "b20c590689d65e567007c987032e02ff0e5e53c78483ba9126599e8bcc788690"
+    }
+  ],
+  "recipe": "yguard",
+  "repository_commit": "4dbfc01977dbb72be3b0f3691f62e01510d507ce",
+  "runner_image": "ubuntu24 20261004.327.1",
+  "tool": {
+    "name": "yGuard",
+    "runtime": "openjdk version \"17.0.20.1\" 2026-08-18; Apache Ant(TM) version 1.10.14 compiled on September 25 2023",
+    "url": "https://github.com/yWorks/yGuard/releases/download/5.0.0/yguard-bundle-5.0.0.zip",
+    "version": "yguard-bundle-5.0.0.zip sha256 e9ee043e9bffab6631d290ce60732929f484a541c42b8a466ef6267f1318712c; yguard-5.0.0.jar sha256 cbf8e2e1df63caa42dc4cb297f59c28788f68ef2586d4f6bfd96ba830da76e5c"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37786249146"
+}

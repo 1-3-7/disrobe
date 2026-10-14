@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yguard version="1.5">
+<!--
+  yGuard Bytecode Obfuscator, v5.0.0, a Product of yWorks GmbH - http://www.yworks.com
+
+  Logfile created on Thu Oct 08 13:41:49 UTC 2026
+
+  Jar file to be obfuscated:           Calculator.clean.jar
+  Target Jar file for obfuscated code: Calculator.linenumbers.jar
+
+-->
+<!--
+  Memory in use after class data structure built: 5167896 bytes
+  Total memory available                        : 35651584 bytes
+-->
+<expose>
+  <class name="com.example.app.Calculator"/>
+  <method class="com.example.app.Calculator" name="void main(java.lang.String[])"/>
+  <method class="com.example.app.Calculator" name="java.lang.String describe(int)"/>
+  <method class="com.example.app.Calculator" name="java.lang.String banner()"/>
+  <method class="com.example.app.Calculator" name="java.lang.String shutdown()"/>
+  <method class="com.example.app.Calculator" name="int fibonacci(int)"/>
+  <method class="com.example.app.Calculator" name="int accumulate(int)"/>
+</expose>
+<map>
+  <class name="com.example.app.Calculator$Ledger" map="oOOOOOOOOO"/>
+  <field class="com.example.app.Calculator$Ledger" name="checksum" map="o000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+  <field class="com.example.app.Calculator$Ledger" name="count" map="new"/>
+  <method class="com.example.app.Calculator$Ledger" name="int size()" map="super"/>
+  <method class="com.example.app.Calculator$Ledger" name="void record(int, int)" map="super"/>
+  <method class="com.example.app.Calculator$Ledger" name="long checksum()" map="&#x00d2;000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+  <field class="com.example.app.Calculator" name="GREETING" map="o000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+  <field class="com.example.app.Calculator" name="FAREWELL" map="new"/>
+  <field class="com.example.app.Calculator" name="ledger" map="&#x00d3;000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+  <field class="com.example.app.Calculator" name="SCALE_FACTOR" map="String"/>
+</map>
+</yguard>

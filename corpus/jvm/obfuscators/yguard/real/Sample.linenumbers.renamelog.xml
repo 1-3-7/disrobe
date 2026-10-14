@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yguard version="1.5">
+<!--
+  yGuard Bytecode Obfuscator, v5.0.0, a Product of yWorks GmbH - http://www.yworks.com
+
+  Logfile created on Thu Oct 08 13:41:47 UTC 2026
+
+  Jar file to be obfuscated:           Sample.clean.jar
+  Target Jar file for obfuscated code: Sample.linenumbers.jar
+
+-->
+<!--
+  Memory in use after class data structure built: 5157288 bytes
+  Total memory available                        : 35651584 bytes
+-->
+<expose>
+  <class name="com.example.app.Sample"/>
+  <method class="com.example.app.Sample" name="void main(java.lang.String[])"/>
+  <method class="com.example.app.Sample" name="java.lang.String banner()"/>
+  <method class="com.example.app.Sample" name="java.lang.String classify(int)"/>
+  <method class="com.example.app.Sample" name="long fold(java.lang.String)"/>
+  <method class="com.example.app.Sample" name="java.lang.String report()"/>
+  <method class="com.example.app.Sample" name="int accumulate(int)"/>
+</expose>
+<map>
+  <field class="com.example.app.Sample" name="counter" map="super"/>
+  <field class="com.example.app.Sample" name="checksum" map="&#x00d2;000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+</map>
+</yguard>

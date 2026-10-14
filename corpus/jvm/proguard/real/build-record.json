@@ -1,0 +1,124 @@
+{
+  "files": {
+    "files/Calculator.aggressive.jar": "74acc08a7f9c215a108ad02410dc515c94cdf765df1ecb1fa43e7a054a3c76ec",
+    "files/Calculator.aggressive.mapping.txt": "6f73f9d53413f2ff7db24859530b68f5f41f81fe6f5af00a34934041ac9d39e1",
+    "files/Calculator.clean.jar": "8dc0fe230d3f23eb77352f8c89009eafd5577e93f97e4ae71f3436db9bb47753",
+    "files/Calculator.optimize.jar": "f742759a6526027ed3a4a9b697f0043b21ee5c2580c5d6ebadae9201ddb8dc68",
+    "files/Calculator.optimize.mapping.txt": "5730b6fc2acc3d5573b543d49bc7f90f9c4aa828120b56a3872c94023bef4826",
+    "files/Calculator.rename.jar": "bd1e0f72b719eb944beb214ff8e6d2b86dfc8b807c5146e3d607709900908b57",
+    "files/Calculator.rename.mapping.txt": "6c7150746e681cd0622b2eda0c3850d97b851d6b55480f7e018537f81184ca3f",
+    "files/Sample.aggressive.jar": "219d73912a6fdb13b6e52a6322547ca41246f0ed9d83541a63f9b9c2f680f036",
+    "files/Sample.aggressive.mapping.txt": "8de5c18246d2ad3d6bf25479efff0b532dab409491ee7879294229ce968a8af6",
+    "files/Sample.clean.jar": "c3e2efb8eeb683b72091fe2a9f4d03344d6b95997512efc87ba07a703d3fc60d",
+    "files/Sample.optimize.jar": "9ba8b2f54e7ab06d3b3a1479e95f4e6fc6dcec79c278aeee143e477796427a33",
+    "files/Sample.optimize.mapping.txt": "2c216290830b7ee7e3bde926a41b3c3eeb411f9cfcf7e738affeeea27cc6cd77",
+    "files/Sample.rename.jar": "7b9a2136360e0edb44560b92a69f47570caf62de4d2c721d58dcd52df945419b",
+    "files/Sample.rename.mapping.txt": "7517875406f121e736d3afcd61c8cbf35b9e35d09ff2133ab88882b7e7ec58c3",
+    "files/SwitchDispatch.aggressive.jar": "c5e35510003a83a4f78c78d89f0add2ed3829e809e0172d002e2a1d28a02cc8a",
+    "files/SwitchDispatch.aggressive.mapping.txt": "c719a62e02ef7d784696c9a5689d0732226aa9ea9ca3546f0549f804cca58b5d",
+    "files/SwitchDispatch.clean.jar": "4f3d1ec2c33c3cfbab97f454dfddc9197740cb2458ce53951154ade9b8718e26",
+    "files/SwitchDispatch.optimize.jar": "0a0a13d184f78cd62f2980fe699072890b1c0d7c6d61b4511806658d07e36880",
+    "files/SwitchDispatch.optimize.mapping.txt": "c719a62e02ef7d784696c9a5689d0732226aa9ea9ca3546f0549f804cca58b5d",
+    "files/SwitchDispatch.rename.jar": "aa80320bf2d2c341644a9d5daae7372bc27b7bcb55cf4d9d5760118920b0b700",
+    "files/SwitchDispatch.rename.mapping.txt": "482a3d72ef1fb62dc2d5e372e4c0966014913d8cd4b6f58d828740c7c42fa80d"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @Sample.pro (-dontoptimize -dontshrink; -keep main; mapping kept)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e",
+      "output": "files/Sample.rename.jar",
+      "output_bytes": 1188,
+      "output_sha256": "7b9a2136360e0edb44560b92a69f47570caf62de4d2c721d58dcd52df945419b"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @Sample.pro (-optimizationpasses 3 -allowaccessmodification; -keep main; mapping kept)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e",
+      "output": "files/Sample.optimize.jar",
+      "output_bytes": 1147,
+      "output_sha256": "9ba8b2f54e7ab06d3b3a1479e95f4e6fc6dcec79c278aeee143e477796427a33"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @Sample.pro (-optimizationpasses 5 -allowaccessmodification -overloadaggressively -repackageclasses '' -mergeinterfacesaggressively; -keep main; mapping kept)",
+      "input": "corpus/jvm/obfuscators/jbco/gauntlet/Sample.java",
+      "input_sha256": "c935139e37f169872d4e1c1ccd2888f1a2db183b866da4a33e3d63472be07d9e",
+      "output": "files/Sample.aggressive.jar",
+      "output_bytes": 1141,
+      "output_sha256": "219d73912a6fdb13b6e52a6322547ca41246f0ed9d83541a63f9b9c2f680f036"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @Calculator.pro (-dontoptimize -dontshrink; -keep main; mapping kept)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415",
+      "output": "files/Calculator.rename.jar",
+      "output_bytes": 1581,
+      "output_sha256": "bd1e0f72b719eb944beb214ff8e6d2b86dfc8b807c5146e3d607709900908b57"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @Calculator.pro (-optimizationpasses 3 -allowaccessmodification; -keep main; mapping kept)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415",
+      "output": "files/Calculator.optimize.jar",
+      "output_bytes": 1293,
+      "output_sha256": "f742759a6526027ed3a4a9b697f0043b21ee5c2580c5d6ebadae9201ddb8dc68"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @Calculator.pro (-optimizationpasses 5 -allowaccessmodification -overloadaggressively -repackageclasses '' -mergeinterfacesaggressively; -keep main; mapping kept)",
+      "input": "corpus/jvm/obfuscators/yguard/gauntlet/Calculator.java",
+      "input_sha256": "6cec2bfc8f765ac1c5a1a5f645eca005f6845f5d8a2b0b36d24a142829eba415",
+      "output": "files/Calculator.aggressive.jar",
+      "output_bytes": 1228,
+      "output_sha256": "74acc08a7f9c215a108ad02410dc515c94cdf765df1ecb1fa43e7a054a3c76ec"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @SwitchDispatch.pro (-dontoptimize -dontshrink; -keep main; mapping kept)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f",
+      "output": "files/SwitchDispatch.rename.jar",
+      "output_bytes": 1028,
+      "output_sha256": "aa80320bf2d2c341644a9d5daae7372bc27b7bcb55cf4d9d5760118920b0b700"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @SwitchDispatch.pro (-optimizationpasses 3 -allowaccessmodification; -keep main; mapping kept)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f",
+      "output": "files/SwitchDispatch.optimize.jar",
+      "output_bytes": 972,
+      "output_sha256": "0a0a13d184f78cd62f2980fe699072890b1c0d7c6d61b4511806658d07e36880"
+    },
+    {
+      "behaviour": "same",
+      "command": "proguard.sh @SwitchDispatch.pro (-optimizationpasses 5 -allowaccessmodification -overloadaggressively -repackageclasses '' -mergeinterfacesaggressively; -keep main; mapping kept)",
+      "input": "corpus/jvm/evalshapes/SwitchDispatch.java",
+      "input_sha256": "1ee3f7753f018ba6c878b8b1ec863fefd5588fc924cc2332fab6ae31a7e05a8f",
+      "output": "files/SwitchDispatch.aggressive.jar",
+      "output_bytes": 972,
+      "output_sha256": "c5e35510003a83a4f78c78d89f0add2ed3829e809e0172d002e2a1d28a02cc8a"
+    },
+    {
+      "behaviour": "input-failed",
+      "command": "javac -source 8 -target 8",
+      "input": "corpus/jvm/megafile/EdgeCases.java",
+      "input_sha256": "b20c590689d65e567007c987032e02ff0e5e53c78483ba9126599e8bcc788690"
+    }
+  ],
+  "recipe": "proguard",
+  "repository_commit": "0391c3ad500a44d5ee104e70215ebbb8017ed201",
+  "runner_image": "ubuntu24 20260927.320.1",
+  "tool": {
+    "name": "ProGuard",
+    "runtime": "openjdk version \"17.0.20.1\" 2026-08-18",
+    "url": "https://github.com/Guardsquare/proguard/releases/download/v7.10.0/proguard-7.10.0.tar.gz",
+    "version": "proguard-7.10.0.tar.gz sha256 fbff4dfe037d0724ff767ad555c06ebd14063ccf99a657cf05a69e6f2610da21"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/37750631682"
+}

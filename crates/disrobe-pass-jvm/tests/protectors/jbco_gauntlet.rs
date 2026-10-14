@@ -69,30 +69,34 @@ fn obf_class_parses_through_jbco_control_flow_obfuscation() {
         dc.method_count
     );
     assert_eq!(
-        dc.fallback_methods, 3,
-        "l1lll, $$S5$ and II1l1 still render unresolved stack operands after the JBCO trap \
-         handlers, got {} fallbacks",
+        dc.fallback_methods, 1,
+        "II1l1 reads local 2, which its one-argument body never assigns, so only it stays \
+         unlifted once the JBCO trap handlers and opaque predicates are removed; got {} fallbacks",
         dc.fallback_methods
     );
-    for method in [
-        "public int l1lll(",
-        "public long $$S5$(",
-        "public String II1l1(",
-    ] {
+    let body_of = |method: &str| -> &str {
         let start: usize = dc
             .source
             .find(method)
             .unwrap_or_else(|| panic!("{method} is missing from the recovered source"));
         let body: &str = &dc.source[start..];
-        let body: &str = &body[..body.find("\n    }").unwrap_or(body.len())];
+        &body[..body.find("\n    }").unwrap_or(body.len())]
+    };
+    let unassigned: &str = body_of("public String II1l1(");
+    assert!(
+        unassigned.contains("__unresolved__") || unassigned.contains("// <decompile:"),
+        "II1l1 is not fully lifted, so its body must name what is unresolved:\n{unassigned}"
+    );
+    for method in ["public int l1lll(", "public long $$S5$("] {
+        let body: &str = body_of(method);
         assert!(
-            body.contains("__unresolved__") || body.contains("// <decompile: incomplete:"),
-            "{method} is not fully lifted, so its body must name what is unresolved:\n{body}"
+            !body.contains("__unresolved__") && !body.contains("// <decompile:"),
+            "{method} lifts once its trap handlers are removed:\n{body}"
         );
     }
     assert_eq!(
         dc.fully_lifted_methods,
-        dc.method_count - 3,
+        dc.method_count - 1,
         "every other method body must lift past the JBCO control-flow obfuscation"
     );
     assert!(

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<yguard version="1.5">
+<!--
+  yGuard Bytecode Obfuscator, v5.0.0, a Product of yWorks GmbH - http://www.yworks.com
+
+  Logfile created on Thu Oct 08 13:41:51 UTC 2026
+
+  Jar file to be obfuscated:           SwitchDispatch.clean.jar
+  Target Jar file for obfuscated code: SwitchDispatch.linenumbers.jar
+
+-->
+<!--
+  Memory in use after class data structure built: 5195424 bytes
+  Total memory available                        : 41943040 bytes
+-->
+<expose>
+  <class name="com.disrobe.bench.SwitchDispatch"/>
+  <method class="com.disrobe.bench.SwitchDispatch" name="void main(java.lang.String[])"/>
+  <method class="com.disrobe.bench.SwitchDispatch" name="java.lang.String bearer()"/>
+  <method class="com.disrobe.bench.SwitchDispatch" name="java.lang.String streamUrl()"/>
+  <method class="com.disrobe.bench.SwitchDispatch" name="java.lang.String masterKeyUri()"/>
+</expose>
+<map>
+  <method class="com.disrobe.bench.SwitchDispatch" name="java.lang.String decrypt(java.lang.String)" map="o000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+</map>
+</yguard>
