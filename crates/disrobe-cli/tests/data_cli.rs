@@ -52,16 +52,12 @@ fn disrobe_sqlite_reports_live_rows_and_recovers_a_deleted_one() {
     let table: &serde_json::Value = &report["tables"][0];
     assert_eq!(table["name"], "notes");
     assert_eq!(table["row_count"], 39);
-    let titles: Vec<&str> = table["rows"]
+    let deleted_is_live: bool = table["rows"]
         .as_array()
         .expect("rows")
         .iter()
-        .map(|row: &serde_json::Value| row["values"][1]["value"].as_str().expect("title"))
-        .collect();
-    assert!(
-        !titles.contains(&"title 006"),
-        "the deleted row is not live"
-    );
+        .any(|row: &serde_json::Value| row["values"][1]["value"] == "title 006");
+    assert!(!deleted_is_live, "the deleted row is not live");
     let recovered: bool = report["recovered"]
         .as_array()
         .expect("recovered")
