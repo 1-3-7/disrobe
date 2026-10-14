@@ -277,7 +277,7 @@ fn a_corrupted_hello_and_a_lost_segment_are_noticed() {
         .windows(marker.len())
         .position(|w: &[u8]| w == marker)
         .expect("request bytes");
-    let mut lossy: Vec<u8> = full.clone();
+    let mut lossy: Vec<u8> = full;
     for byte in &mut lossy[post..post + 12] {
         *byte = b'#';
     }
