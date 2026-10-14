@@ -147,7 +147,8 @@ fn decode(
                 let extracted: Vec<u8> =
                     disrobe_pass_php::extract_phar_entry(&archive, &bytes, &entry.name)
                         .map_err(|e| miette::miette!("DR-CLI-0553: phar entry: {e}"))?;
-                let safe: PathBuf = sanitize_entry_path(&out_dir, &entry.name);
+                let safe: PathBuf =
+                    crate::cli::entry_path::contained_entry_path(&out_dir, &entry.name);
                 if let Some(parent) = safe.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| {
                         miette::miette!("DR-CLI-0554: cannot create entry dir: {e}")
@@ -284,7 +285,7 @@ fn extract(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         let extracted: Vec<u8> =
             disrobe_pass_php::extract_phar_entry(&archive, &bytes, &entry.name)
                 .map_err(|e| miette::miette!("DR-CLI-0573: phar entry: {e}"))?;
-        let safe: PathBuf = sanitize_entry_path(&out_dir, &entry.name);
+        let safe: PathBuf = crate::cli::entry_path::contained_entry_path(&out_dir, &entry.name);
         if let Some(parent) = safe.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| miette::miette!("DR-CLI-0574: cannot create entry dir: {e}"))?;
@@ -426,18 +427,6 @@ fn decode_encoder(
         "container_surface": surface_json,
         "recovery": recovery_json,
     }))
-}
-
-fn sanitize_entry_path(out_dir: &std::path::Path, raw: &str) -> PathBuf {
-    let cleaned: String = raw.replace('\\', "/");
-    let mut resolved: PathBuf = out_dir.to_path_buf();
-    for segment in cleaned.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            continue;
-        }
-        resolved.push(segment);
-    }
-    resolved
 }
 
 fn apply_emit_stubs(

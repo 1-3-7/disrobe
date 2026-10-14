@@ -56,6 +56,8 @@ pub(crate) mod dotnet;
     feature = "wasm"
 ))]
 pub(crate) mod emit;
+#[cfg(any(feature = "jvm", feature = "php"))]
+pub(crate) mod entry_path;
 pub(crate) mod envelope;
 pub(crate) mod explain;
 pub(crate) mod extract;
