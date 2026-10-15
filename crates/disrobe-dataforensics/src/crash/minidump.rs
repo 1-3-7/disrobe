@@ -528,6 +528,7 @@ pub(super) fn inspect(bytes: &[u8], limits: &CrashLimits) -> Result<CrashReport,
             );
             ModuleReport {
                 path: module.name.clone(),
+                loader_name: None,
                 base: module.base_of_image,
                 size,
                 build_id: None,

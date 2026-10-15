@@ -1,16 +1,19 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use object::elf::{ET_CORE, FileHeader32, FileHeader64, PF_X, PT_LOAD, PT_NOTE};
+use object::elf::{
+    DT_DEBUG, DT_NULL, ET_CORE, FileHeader32, FileHeader64, PF_X, PT_DYNAMIC, PT_LOAD, PT_NOTE,
+    PT_PHDR,
+};
 use object::read::elf::{FileHeader, ProgramHeader};
 use object::{Endian, Endianness};
 
 use super::memory::{Fields, Memory, ModuleMap, Protection, Segment};
 use super::names::{
-    AT_BASE_PLATFORM, AT_ENTRY, AT_EXECFN, AT_PLATFORM, EM_386, EM_AARCH64, EM_ARM, EM_MIPS,
-    EM_RISCV, EM_X86_64, NT_AUXV, NT_FILE, NT_GNU_BUILD_ID, NT_PRPSINFO, NT_PRSTATUS, NT_SIGINFO,
-    SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP, aux_name, generic_signal_numbers, note_name,
-    signal_code_name, signal_name,
+    AT_BASE_PLATFORM, AT_ENTRY, AT_EXECFN, AT_PHDR, AT_PHNUM, AT_PLATFORM, EM_386, EM_AARCH64,
+    EM_ARM, EM_MIPS, EM_RISCV, EM_X86_64, NT_AUXV, NT_FILE, NT_GNU_BUILD_ID, NT_PRPSINFO,
+    NT_PRSTATUS, NT_SIGINFO, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP, aux_name,
+    generic_signal_numbers, note_name, signal_code_name, signal_name,
 };
 use super::{
     Architecture, AuxEntry, CrashError, CrashFormat, CrashLimits, CrashReport, Fault, FaultKind,
@@ -19,6 +22,10 @@ use super::{
 
 const MAX_AUX_STRING: usize = 4096;
 const BUILD_ID_WINDOW: usize = 64 * 1024;
+const MAX_PROGRAM_HEADERS: u64 = 512;
+const MAX_DYNAMIC_ENTRIES: u64 = 4096;
+const MAX_LINK_MAP_ENTRIES: usize = 4096;
+const MAX_LINK_NAME: usize = 4096;
 
 struct RegisterLayout {
     names: &'static [&'static str],
@@ -258,8 +265,10 @@ fn read<Elf: FileHeader<Endian = Endianness>>(
     }
 
     let memory: Memory<'_> = Memory::new(bytes, segments, protections);
-    let (modules, module_map): (Vec<ModuleReport>, ModuleMap) =
+    let (mut modules, module_map): (Vec<ModuleReport>, ModuleMap) =
         modules(&notes.mappings, &memory, limits, &mut notes.problems);
+    let loaded: Vec<LoadedObject> = loaded_objects(&memory, &notes.auxv, shape);
+    name_loaded_modules(&mut modules, &notes.mappings, &loaded);
 
     let auxv: Vec<AuxEntry> = notes
         .auxv
@@ -605,6 +614,7 @@ fn modules(
         indices.insert(path, map.add_module(path.to_owned(), base));
         reports.push(ModuleReport {
             path: path.to_owned(),
+            loader_name: None,
             base,
             size: end.saturating_sub(start),
             build_id: header.and_then(|address: u64| build_id(memory, address)),
@@ -620,6 +630,121 @@ fn modules(
     }
     map.finish();
     (reports, map)
+}
+
+struct LoadedObject {
+    name: String,
+    dynamic: u64,
+}
+
+fn memory_word(memory: &Memory<'_>, address: u64, shape: Shape) -> Option<u64> {
+    let bytes: &[u8] = memory.read_up_to(address, usize::from(shape.pointer_bytes))?;
+    Fields::new(bytes, shape.big_endian).word(0, shape.pointer_bytes)
+}
+
+fn memory_u32(memory: &Memory<'_>, address: u64, big_endian: bool) -> Option<u32> {
+    let bytes: &[u8] = memory.read_up_to(address, 4)?;
+    Fields::new(bytes, big_endian).u32(0)
+}
+
+fn dynamic_section(memory: &Memory<'_>, auxv: &[(u64, u64)], shape: Shape) -> Option<u64> {
+    let aux = |wanted: u64| -> Option<u64> {
+        auxv.iter()
+            .find(|(key, _): &&(u64, u64)| *key == wanted)
+            .map(|&(_, value): &(u64, u64)| value)
+    };
+    let table: u64 = aux(AT_PHDR)?;
+    let count: u64 = aux(AT_PHNUM)?.min(MAX_PROGRAM_HEADERS);
+    let wide: bool = shape.pointer_bytes == 8;
+    let entry_size: u64 = if wide { 56 } else { 32 };
+    let vaddr_at: u64 = if wide { 16 } else { 8 };
+    let mut phdr_vaddr: Option<u64> = None;
+    let mut dynamic_vaddr: Option<u64> = None;
+    for index in 0..count {
+        let header: u64 = table.checked_add(index.checked_mul(entry_size)?)?;
+        let kind: u32 = memory_u32(memory, header, shape.big_endian)?;
+        let vaddr: u64 = memory_word(memory, header.checked_add(vaddr_at)?, shape)?;
+        match kind {
+            PT_PHDR => phdr_vaddr = Some(vaddr),
+            PT_DYNAMIC => dynamic_vaddr = Some(vaddr),
+            _ => {}
+        }
+    }
+    let bias: u64 = table.wrapping_sub(phdr_vaddr.unwrap_or(table));
+    Some(bias.wrapping_add(dynamic_vaddr?))
+}
+
+fn loaded_objects(memory: &Memory<'_>, auxv: &[(u64, u64)], shape: Shape) -> Vec<LoadedObject> {
+    let step: u64 = u64::from(shape.pointer_bytes);
+    let Some(dynamic) = dynamic_section(memory, auxv, shape) else {
+        return Vec::new();
+    };
+    let mut debug: Option<u64> = None;
+    for index in 0..MAX_DYNAMIC_ENTRIES {
+        let Some(entry) = dynamic.checked_add(index * step * 2) else {
+            break;
+        };
+        let (Some(tag), Some(value)) = (
+            memory_word(memory, entry, shape),
+            entry
+                .checked_add(step)
+                .and_then(|at: u64| memory_word(memory, at, shape)),
+        ) else {
+            break;
+        };
+        if tag == u64::from(DT_NULL) {
+            break;
+        }
+        if tag == u64::from(DT_DEBUG) {
+            debug = Some(value);
+            break;
+        }
+    }
+    let Some(mut node) = debug
+        .filter(|address: &u64| *address != 0)
+        .and_then(|address: u64| memory_word(memory, address.checked_add(step)?, shape))
+    else {
+        return Vec::new();
+    };
+    let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    let mut objects: Vec<LoadedObject> = Vec::new();
+    while node != 0 && objects.len() < MAX_LINK_MAP_ENTRIES && seen.insert(node) {
+        let field = |slot: u64| -> Option<u64> {
+            memory_word(memory, node.checked_add(slot.checked_mul(step)?)?, shape)
+        };
+        let (Some(name_address), Some(dynamic), Some(next)) = (field(1), field(2), field(3)) else {
+            break;
+        };
+        let name: String = memory
+            .c_string(name_address, MAX_LINK_NAME)
+            .unwrap_or_default();
+        objects.push(LoadedObject { name, dynamic });
+        node = next;
+    }
+    objects
+}
+
+fn name_loaded_modules(
+    modules: &mut [ModuleReport],
+    mappings: &[Mapping],
+    loaded: &[LoadedObject],
+) {
+    for object in loaded {
+        if object.name.is_empty() {
+            continue;
+        }
+        let Some(mapping) = mappings.iter().find(|mapping: &&Mapping| {
+            mapping.start <= object.dynamic && object.dynamic < mapping.end
+        }) else {
+            continue;
+        };
+        if let Some(module) = modules
+            .iter_mut()
+            .find(|module: &&mut ModuleReport| module.path == mapping.path)
+        {
+            module.loader_name = Some(object.name.clone());
+        }
+    }
 }
 
 fn build_id(memory: &Memory<'_>, base: u64) -> Option<String> {

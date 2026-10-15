@@ -203,6 +203,8 @@ pub(super) const fn aux_name(key: u64) -> Option<&'static str> {
     })
 }
 
+pub(super) const AT_PHDR: u64 = 3;
+pub(super) const AT_PHNUM: u64 = 5;
 pub(super) const AT_ENTRY: u64 = 9;
 pub(super) const AT_PLATFORM: u64 = 15;
 pub(super) const AT_BASE_PLATFORM: u64 = 24;

@@ -210,6 +210,8 @@ pub struct Pdb {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModuleReport {
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loader_name: Option<String>,
     pub base: u64,
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
