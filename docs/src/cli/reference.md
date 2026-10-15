@@ -171,6 +171,7 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | `disrobe macho dump\|classdump\|fat <input>` | Mach-O dump including `.ipa`; raw thin/fat Mach-O class-dump and slice inspection. |
 | `disrobe macho keyed-archive <plist>` | Decode an `NSKeyedArchiver` archive into its object graph. |
 | `disrobe macho nib <nib>` | Decode a compiled NIB: objects, outlet and action connections, custom classes and strings. |
+| `disrobe macho car <Assets.car> [--json] [--extract <dir>]` | Decode a compiled asset catalog: facets, renditions with key attributes, colours, data sets; extract data sets and LZFSE or uncompressed images. |
 | `disrobe as3 disasm\|tags <swf>` | AS3 DoABC disasm / SWF tag list. |
 | `disrobe hermes decompile\|disasm\|info <bundle>` | Hermes JS-surface lift / disasm / header. |
 | `disrobe flutter dump\|decompile\|kernel\|disasm\|map\|inventory\|inventory-standalone <input>` | Flutter Dart AOT + kernel inspection. `flutter dump --format ghidra\|ida\|json` emits recovered function names through the shared symbol exporter. `--engine-symbol-map <path>` adds externally supplied engine names only after the map's GNU build ID and bounded addresses match the ELF input. `inventory` and `inventory-standalone` recover the full library/class/method/field declaration graph on a pinned Dart snapshot version. |
