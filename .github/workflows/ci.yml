@@ -903,7 +903,7 @@ jobs:
         if: matrix.shard == 'two'
         run: cargo test -p disrobe-pass-shell --all-features --no-fail-fast -- --nocapture
       - name: build the CLI used by workspace caller tests
-        if: matrix.shard == 'one' || matrix.shard == 'two'
+        if: matrix.shard == 'one' || matrix.shard == 'two' || matrix.shard == 'three'
         shell: pwsh
         run: |
           cargo build -p disrobe-cli --bin disrobe --all-features
