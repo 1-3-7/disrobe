@@ -56,6 +56,8 @@ const AAPCS64_VOLATILE: [Reg; 19] = [
     Reg::A64X18,
 ];
 
+const I386_VOLATILE: [Reg; 3] = [Reg::Rax, Reg::Rcx, Reg::Rdx];
+
 const CALL_RESULT: Reg = Reg::Rax;
 
 const FP_REGISTER_COUNT: u8 = 32;
@@ -69,12 +71,13 @@ pub(super) const fn volatile_gprs(abi: Abi) -> &'static [Reg] {
         Abi::SysV => &SYSV_VOLATILE,
         Abi::MsX64 => &MS_X64_VOLATILE,
         Abi::Aapcs64 => &AAPCS64_VOLATILE,
+        Abi::I386 => &I386_VOLATILE,
     }
 }
 
 const fn fp_register_is_volatile(abi: Abi, index: u8) -> bool {
     match abi {
-        Abi::SysV => true,
+        Abi::SysV | Abi::I386 => true,
         Abi::MsX64 => index <= 5 || index >= 16,
         Abi::Aapcs64 => index <= 7 || index >= 16,
     }
@@ -87,6 +90,10 @@ pub(super) struct CalleeClobbers {
 }
 
 impl CalleeClobbers {
+    pub(super) const fn from_registers(gprs: BTreeSet<Reg>, fp: BTreeSet<u8>) -> Self {
+        Self { gprs, fp }
+    }
+
     fn note(&mut self, abi: Abi, written: Register) {
         let full: Register = written.full_register();
         if let Some(reg) = volatile_gprs(abi)
@@ -302,6 +309,12 @@ fn gpr_name(abi: Abi, reg: Reg) -> String {
         Abi::Aapcs64 if reg == Reg::Rax => "x0".to_owned(),
         Abi::Aapcs64 if reg == Reg::Rbp => "x29".to_owned(),
         Abi::Aapcs64 => variable.trim_start_matches("r_a64_").to_owned(),
+        Abi::I386 => match reg {
+            Reg::Rax => "eax".to_owned(),
+            Reg::Rcx => "ecx".to_owned(),
+            Reg::Rdx => "edx".to_owned(),
+            _ => variable.trim_start_matches("r_").to_owned(),
+        },
         Abi::SysV | Abi::MsX64 => variable.trim_start_matches("r_").to_owned(),
     }
 }
@@ -309,7 +322,7 @@ fn gpr_name(abi: Abi, reg: Reg) -> String {
 fn fp_name(abi: Abi, index: u8) -> String {
     match abi {
         Abi::Aapcs64 => format!("v{index}"),
-        Abi::SysV | Abi::MsX64 => format!("xmm{index}"),
+        Abi::SysV | Abi::MsX64 | Abi::I386 => format!("xmm{index}"),
     }
 }
 
@@ -317,6 +330,7 @@ fn refusal(abi: Abi, register: &str, at: u64, call: u64) -> Error {
     let result: &str = match abi {
         Abi::Aapcs64 => "x0",
         Abi::SysV | Abi::MsX64 => "rax",
+        Abi::I386 => "eax (and edx when the callee returns a 64-bit value)",
     };
     Error::LlvmIr(format!(
         "caller-saved register `{register}` is read at {at:#x} after the call at {call:#x} clobbered it: \
@@ -755,7 +769,7 @@ fn refuse_pointer_calls_beside_fp_arguments(items: &[Item], abi: Abi) -> Result<
     let argument_registers: u8 = match abi {
         Abi::MsX64 => 4,
         Abi::SysV => 8,
-        Abi::Aapcs64 => return Ok(()),
+        Abi::Aapcs64 | Abi::I386 => return Ok(()),
     };
     let Some(open): Option<&Item> = items.iter().find(|item: &&Item| {
         matches!(

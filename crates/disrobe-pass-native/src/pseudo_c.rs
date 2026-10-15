@@ -32,12 +32,15 @@ use crate::sig_engine::{
 };
 use crate::structuring;
 
+pub use i386::{I386Convention, I386Signature};
+
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) mod aarch64;
 mod aarch64_callsite;
 mod call_clobber;
 mod dividend_high;
 mod frame_escape;
+mod i386;
 pub use aarch64::SCALAR_FP_LOWERED_MNEMONICS as AARCH64_SCALAR_FP_LOWERED_MNEMONICS;
 pub mod fp_semantics;
 mod idiom;
@@ -132,6 +135,7 @@ pub enum Reg {
     X86Out6,
     X86Out7,
     X86Scratch,
+    X86Temp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -514,6 +518,7 @@ pub enum Abi {
     MsX64,
     SysV,
     Aapcs64,
+    I386,
 }
 
 impl Abi {
@@ -521,6 +526,7 @@ impl Abi {
         match self {
             Self::MsX64 => &[Reg::Rcx, Reg::Rdx, Reg::R8, Reg::R9],
             Self::SysV => &[Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9],
+            Self::I386 => &[Reg::Rcx, Reg::Rdx],
             Self::Aapcs64 => &[
                 Reg::Rax,
                 Reg::A64X1,
@@ -565,6 +571,18 @@ impl Abi {
                 Reg::Rcx,
                 Reg::R8,
                 Reg::R9,
+                Reg::X86Stack0,
+                Reg::X86Stack1,
+                Reg::X86Stack2,
+                Reg::X86Stack3,
+                Reg::X86Stack4,
+                Reg::X86Stack5,
+                Reg::X86Stack6,
+                Reg::X86Stack7,
+            ],
+            Self::I386 => &[
+                Reg::Rcx,
+                Reg::Rdx,
                 Reg::X86Stack0,
                 Reg::X86Stack1,
                 Reg::X86Stack2,
@@ -1705,9 +1723,8 @@ impl MsX64ParameterOrigin {
     const fn for_signature(abi: Abi, hidden_struct_return: bool) -> Self {
         match (abi, hidden_struct_return) {
             (Abi::MsX64, true) => Self::AfterHiddenStructReturn,
-            (Abi::MsX64 | Abi::SysV | Abi::Aapcs64, false) | (Abi::SysV | Abi::Aapcs64, true) => {
-                Self::PhysicalSlotZero
-            }
+            (Abi::MsX64 | Abi::SysV | Abi::Aapcs64 | Abi::I386, false)
+            | (Abi::SysV | Abi::Aapcs64 | Abi::I386, true) => Self::PhysicalSlotZero,
         }
     }
 
@@ -1732,6 +1749,7 @@ pub struct RecoveredSignature {
     ms_x64_parameter_origin: MsX64ParameterOrigin,
     parameter_bindings: Vec<ParameterBinding>,
     unconsumed_integer_registers: BTreeSet<Reg>,
+    i386: Option<I386Signature>,
 }
 
 impl RecoveredSignature {
@@ -1754,7 +1772,17 @@ impl RecoveredSignature {
             ms_x64_parameter_origin,
             parameter_bindings,
             unconsumed_integer_registers: BTreeSet::new(),
+            i386: None,
         })
+    }
+
+    const fn with_i386(mut self, signature: I386Signature) -> Self {
+        self.i386 = Some(signature);
+        self
+    }
+
+    pub const fn i386(&self) -> Option<I386Signature> {
+        self.i386
     }
 
     fn with_unconsumed_integer_registers(mut self, consumed: &BTreeSet<Reg>) -> Self {
@@ -1785,6 +1813,7 @@ impl RecoveredSignature {
             ms_x64_parameter_origin: MsX64ParameterOrigin::PhysicalSlotZero,
             parameter_bindings,
             unconsumed_integer_registers: BTreeSet::new(),
+            i386: None,
         }
     }
 
@@ -1997,6 +2026,39 @@ fn validate_aapcs64_parameter_bindings(bindings: &[ParameterBinding]) -> Result<
     Ok(())
 }
 
+fn validate_i386_parameter_bindings(bindings: &[ParameterBinding]) -> Result<()> {
+    let order: &[Reg] = Abi::I386.integer_parameter_order();
+    let mut expected: usize = 0;
+    for binding in bindings {
+        let ParameterBinding::Integer {
+            register,
+            width_bits,
+        } = binding
+        else {
+            return Err(Error::LlvmIr(
+                "x86-32 parameters bind integer registers and stack slots only".to_owned(),
+            ));
+        };
+        let Some(position): Option<usize> = order.iter().position(|reg: &Reg| reg == register)
+        else {
+            return Err(Error::LlvmIr(
+                "x86-32 integer parameter is outside ecx, edx and the stack slots".to_owned(),
+            ));
+        };
+        let canonical: bool = match position {
+            0 | 1 => position == expected,
+            _ => position == expected.max(2),
+        };
+        if *width_bits == 0 || !canonical {
+            return Err(Error::LlvmIr(
+                "x86-32 parameter bindings are not in ecx, edx, stack-slot order".to_owned(),
+            ));
+        }
+        expected = position + 1;
+    }
+    Ok(())
+}
+
 fn validate_parameter_bindings(
     abi: Abi,
     ms_x64_parameter_origin: MsX64ParameterOrigin,
@@ -2072,6 +2134,9 @@ fn validate_parameter_bindings(
     }
     if abi == Abi::Aapcs64 {
         return validate_aapcs64_parameter_bindings(bindings);
+    }
+    if abi == Abi::I386 {
+        return validate_i386_parameter_bindings(bindings);
     }
 
     let integer_order: &[Reg] = abi.integer_parameter_order();
@@ -2459,6 +2524,9 @@ fn recover_leaf_function_in_object_with_tail_proofs(
     mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafRecovery> {
     validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
+    if abi == Abi::I386 {
+        return i386::recover(object, machine_code, base, calls, coverage);
+    }
     if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
         if let Some(trace) = coverage.as_deref_mut()
             && let Ok(insns) = disassemble(Arch::X86_64, base, machine_code)
@@ -2844,6 +2912,7 @@ struct ObjectTransferFacts {
 struct ObjectCallFacts<'facts> {
     proven_integer64_tail_targets: &'facts BTreeSet<u64>,
     transfers: &'facts ObjectTransferFacts,
+    i386: Option<&'facts i386::Lowering>,
 }
 
 struct LeafLiftContext<'facts, 'trace> {
@@ -2860,7 +2929,13 @@ impl<'facts> ObjectCallFacts<'facts> {
         Self {
             proven_integer64_tail_targets,
             transfers,
+            i386: None,
         }
+    }
+
+    const fn with_i386(mut self, lowering: &'facts i386::Lowering) -> Self {
+        self.i386 = Some(lowering);
+        self
     }
 }
 
@@ -4324,32 +4399,36 @@ fn recover_program_with_naming_and_sibling_extern_policy(
         .collect();
     let mut recovered: Vec<RecoveredFunction> = Vec::with_capacity(functions.len());
     let mut unrecovered: Vec<UnrecoveredFunction> = Vec::new();
-    let exception_regions: Vec<crate::cxx_recovery::ItaniumEhFunction> =
-        match crate::cxx_recovery::recover_itanium_exception_regions(object) {
-            Ok(regions) => regions,
-            Err(error) => {
-                return NamedRecoveredProgram {
-                    program: RecoveredProgram {
-                        recovered,
-                        unrecovered: functions
-                            .iter()
-                            .map(|function: &ProgramFunction| UnrecoveredFunction {
-                                name: names_by_address
-                                    .get(&function.address)
-                                    .copied()
-                                    .unwrap_or(function.name.as_str())
-                                    .to_owned(),
-                                address: function.address,
-                                reason: error.to_string(),
-                            })
-                            .collect(),
-                        image_base,
-                        format,
-                    },
-                    names,
-                };
-            }
-        };
+    let exception_scan: Result<Vec<crate::cxx_recovery::ItaniumEhFunction>> = if abi == Abi::I386 {
+        i386::refuse_exception_tables(object).map(|()| Vec::new())
+    } else {
+        crate::cxx_recovery::recover_itanium_exception_regions(object)
+    };
+    let exception_regions: Vec<crate::cxx_recovery::ItaniumEhFunction> = match exception_scan {
+        Ok(regions) => regions,
+        Err(error) => {
+            return NamedRecoveredProgram {
+                program: RecoveredProgram {
+                    recovered,
+                    unrecovered: functions
+                        .iter()
+                        .map(|function: &ProgramFunction| UnrecoveredFunction {
+                            name: names_by_address
+                                .get(&function.address)
+                                .copied()
+                                .unwrap_or(function.name.as_str())
+                                .to_owned(),
+                            address: function.address,
+                            reason: error.to_string(),
+                        })
+                        .collect(),
+                    image_base,
+                    format,
+                },
+                names,
+            };
+        }
+    };
     for f in functions {
         if f.code.len() > MAX_PROGRAM_FUNCTION_BYTES {
             unrecovered.push(UnrecoveredFunction {
@@ -4436,7 +4515,7 @@ fn recover_typed_import_thunk(
     let type_abi: TypeRecAbi = match abi {
         Abi::MsX64 => TypeRecAbi::Win64,
         Abi::SysV => TypeRecAbi::SysV,
-        Abi::Aapcs64 => return None,
+        Abi::Aapcs64 | Abi::I386 => return None,
     };
     let database: SigDb = SigDb::builtin();
     let matches: Vec<(&SigKey, &disrobe_typerec::Prototype)> = database
@@ -4562,6 +4641,9 @@ fn proven_program_integer64_tail_targets(
     abi: Abi,
 ) -> BTreeSet<u64> {
     let mut proven: BTreeSet<u64> = BTreeSet::new();
+    if abi == Abi::I386 {
+        return proven;
+    }
     let disassembly: Result<Vec<DisasmInsn>> =
         disassemble(Arch::X86_64, function.address, &function.code);
     let Ok(insns) = disassembly else {
@@ -5075,7 +5157,7 @@ fn disassemble_x86_64_lift_input(base: u64, machine_code: &[u8]) -> Result<Vec<D
         return Err(Error::LlvmIr("no decodable instructions".to_owned()));
     }
     refuse_high_byte_registers(&insns)?;
-    dividend_high::refuse_unset_dividend_high_halves(&insns)?;
+    dividend_high::refuse_unset_dividend_high_halves(&insns, 64)?;
     Ok(insns)
 }
 
@@ -5128,6 +5210,14 @@ fn refuse_high_byte_registers(insns: &[DisasmInsn]) -> Result<()> {
     Ok(())
 }
 
+type LiftInput = (
+    Vec<DisasmInsn>,
+    Option<stack_depth::PushFrame>,
+    Vec<u16>,
+    BTreeMap<u64, Stmt>,
+    BTreeSet<u64>,
+);
+
 fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
@@ -5139,17 +5229,39 @@ fn build_leaf_items(
     mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<LeafItems> {
     require_x86_abi(abi)?;
+    let i386: Option<&i386::Lowering> = object_facts.i386;
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let mut insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
-    if object_facts.transfers.linked_image {
-        absolute_rip_relative_integer_operands(&mut insns);
-    }
-    let push_frame: Option<stack_depth::PushFrame> = stack_depth::plan_push_frame(&insns, abi);
-    let zeroed_vectors: Vec<u16> = vector_zero::zeroed_vectors_before(&insns);
-    let pop_moves: BTreeMap<u64, Stmt> = stack_transfer::plan_stack_transfers(&insns, abi, &[])?;
-    let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(&insns)?;
+    let (insns, push_frame, zeroed_vectors, pop_moves, fed_sign_extensions): LiftInput = match i386
+    {
+        Some(lowering) => {
+            refuse_high_byte_registers(&lowering.insns)?;
+            dividend_high::refuse_unset_dividend_high_halves(&lowering.insns, 32)?;
+            let fed: BTreeSet<u64> =
+                dividend_high::division_fed_sign_extensions(&lowering.insns, 32)?;
+            (
+                lowering.insns.clone(),
+                None,
+                vec![0; lowering.insns.len()],
+                BTreeMap::new(),
+                fed,
+            )
+        }
+        None => {
+            let mut insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
+            if object_facts.transfers.linked_image {
+                absolute_rip_relative_integer_operands(&mut insns);
+            }
+            let push_frame: Option<stack_depth::PushFrame> =
+                stack_depth::plan_push_frame(&insns, abi);
+            let zeroed_vectors: Vec<u16> = vector_zero::zeroed_vectors_before(&insns);
+            let pop_moves: BTreeMap<u64, Stmt> =
+                stack_transfer::plan_stack_transfers(&insns, abi, &[])?;
+            let fed: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(&insns, 64)?;
+            (insns, push_frame, zeroed_vectors, pop_moves, fed)
+        }
+    };
     let entry_flags: CfgEntryFlags = cfg_entry_flags(&insns, consts)?;
     if let Some(trace) = coverage.as_deref_mut() {
         trace.begin_attempt(&insns);
@@ -5183,6 +5295,31 @@ fn build_leaf_items(
                 Some(CfgFlags::Unreached | CfgFlags::Conflicting) | None => None,
             };
             flags_mark = items.len();
+        }
+        if let Some(lowered) =
+            i386.and_then(|lowering: &i386::Lowering| lowering.lowered.get(&insn.address))
+        {
+            match lowered {
+                i386::Lowered::Replace { stmts, keeps_flags } => {
+                    items.extend(stmts.iter().cloned().map(|stmt: Stmt| Item {
+                        address: insn.address,
+                        kind: ItemKind::Stmt(stmt),
+                    }));
+                    if !keeps_flags {
+                        flags = None;
+                        dividend_high = None;
+                    }
+                    mark_instruction_modelled(&mut coverage, instruction_index);
+                    continue;
+                }
+                i386::Lowered::BeforeReturn(stmts) => {
+                    items.extend(stmts.iter().cloned().map(|stmt: Stmt| Item {
+                        address: insn.address,
+                        kind: ItemKind::Stmt(stmt),
+                    }));
+                    flags = None;
+                }
+            }
         }
         if insn.mnemonic == "nop"
             || insn.mnemonic == "endbr64"
@@ -5708,9 +5845,33 @@ fn build_leaf_items(
             let dest: RegRef = parse_reg(lhs.trim()).ok_or_else(|| {
                 Error::LlvmIr(format!("cmov dest not a register at {:#x}", insn.address))
             })?;
-            let src: Source = parse_source(rhs.trim()).ok_or_else(|| {
-                Error::LlvmIr(format!("cmov src unsupported at {:#x}", insn.address))
-            })?;
+            let src: Source = match parse_source(rhs.trim()) {
+                Some(src) => src,
+                None if is_mem_token(rhs.trim()) => {
+                    let mem: MemRef =
+                        parse_mem_access(rhs.trim(), Some(dest.width)).ok_or_else(|| {
+                            Error::LlvmIr(format!("cmov src unsupported at {:#x}", insn.address))
+                        })?;
+                    let loaded: RegRef = RegRef {
+                        reg: Reg::X86Temp,
+                        width: dest.width,
+                    };
+                    items.push(Item {
+                        address: insn.address,
+                        kind: ItemKind::Stmt(Stmt::Assign {
+                            dest: loaded,
+                            src: Source::Mem(mem),
+                        }),
+                    });
+                    Source::Reg(loaded)
+                }
+                None => {
+                    return Err(Error::LlvmIr(format!(
+                        "cmov src unsupported at {:#x}",
+                        insn.address
+                    )));
+                }
+            };
             if (kind.is_signed_order() || kind.is_unsigned_order())
                 && near_miss_ordering_select(&items, &used_flags, &src, dest)
             {
@@ -5872,6 +6033,10 @@ fn build_leaf_items(
                     Some(Flags::Snapshot { var })
                 } else {
                     match flag_effect_bin(*op) {
+                        FlagEffect::Sign if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) => {
+                            flags_mark = items.len() + 1;
+                            Some(Flags::Test { operand: *dest })
+                        }
                         FlagEffect::Sign => {
                             flags_mark = items.len() + 1;
                             Some(Flags::Sign { result: *dest })
@@ -5945,12 +6110,13 @@ fn build_leaf_items(
     }
     fuse_parity_equality_idioms(&mut items, &insns);
     idiom::fuse_constant_division_idioms(&mut items);
-    let frame_shape: FrameShape = match &push_frame {
-        Some(frame) => {
+    let frame_shape: FrameShape = match (&push_frame, i386) {
+        (_, Some(lowering)) => lowering.shape,
+        (Some(frame), None) => {
             stack_depth::rebase_items_to_the_body_frame(&mut items, frame)?;
             frame.shape()
         }
-        None => classify_frame(&insns, abi),
+        (None, None) => classify_frame(&insns, abi),
     };
     frame_escape::refuse_frame_addresses_that_escape(&items, abi, frame_shape)?;
     outgoing_args::carry_ms_x64_outgoing_stack_arguments(&mut items, &insns, abi, frame_shape)?;
@@ -6027,6 +6193,9 @@ fn recover_leaf_function_calls_with_tail_proofs(
         rip_relative_lea_policy,
         coverage,
     } = context;
+    if abi == Abi::I386 {
+        return i386::recover(&[], machine_code, base, calls, coverage);
+    }
     let LeafItems {
         mut items,
         mut return_width,
@@ -6095,6 +6264,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
         ret,
         exact_integer_types: false,
         abi,
+        i386: None,
     };
     let frame_plan: Option<FramePlan> = plan_frame(&structured.body, frame_shape)?;
     let mut aggregate_plan: AggregatePlan =
@@ -6208,6 +6378,7 @@ struct FnSignature {
     ret: FnReturn,
     exact_integer_types: bool,
     abi: Abi,
+    i386: Option<i386::I386Emit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6272,6 +6443,14 @@ impl FnSignature {
         match self.abi {
             Abi::MsX64 => self.ms_x64_ordered_params(ms_x64_parameter_origin),
             Abi::Aapcs64 => self.aapcs64_ordered_params(),
+            Abi::I386 => self
+                .int
+                .iter()
+                .map(|(reg, width): &(Reg, Width)| ScalarParam::Integer {
+                    reg: *reg,
+                    width: *width,
+                })
+                .collect(),
             Abi::SysV => {
                 let mut out: Vec<ScalarParam> = self
                     .fp
@@ -6594,6 +6773,7 @@ fn recover_call_site_identity(
         ret,
         exact_integer_types: true,
         abi: Abi::Aapcs64,
+        i386: None,
     };
     let body: Block = vec![Node::Return];
     let aggregates: AggregatePlan = AggregatePlan::default();
@@ -6648,6 +6828,11 @@ pub fn recover_leaf_function_switch_const_abi(
     consts: &[FpConstant],
 ) -> Result<LeafRecovery> {
     validate_declared_x86_leaf_boundary(machine_code, base, abi)?;
+    if abi == Abi::I386 {
+        return Err(Error::LlvmIr(
+            "jump-table switch recovery is not modelled for x86-32".to_owned(),
+        ));
+    }
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
@@ -6911,6 +7096,7 @@ fn build_switch_recovery(
         ret,
         exact_integer_types: false,
         abi,
+        i386: None,
     };
     let returns_fp: Option<ScalarType> = match ret {
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
@@ -7198,6 +7384,7 @@ fn build_value_switch_recovery(
         ret: FnReturn::Int(return_width),
         exact_integer_types: false,
         abi,
+        i386: None,
     };
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
     let emitted: Block = spilled_body(&body, None, None, &aggregate_plan);
@@ -8664,7 +8851,8 @@ fn lift_stmt_range_with_coverage(
     mut coverage: Option<&mut LifterCoverageTrace>,
 ) -> Result<Vec<Stmt>> {
     let mut out: Vec<Stmt> = Vec::new();
-    let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(insns)?;
+    let fed_sign_extensions: BTreeSet<u64> =
+        dividend_high::division_fed_sign_extensions(insns, 64)?;
     let mut lifter: StraightLifter<'_> =
         StraightLifter::new(consts, pop_moves, &fed_sign_extensions);
     for (instruction_index, insn) in insns.iter().enumerate().take(hi).skip(lo) {
@@ -8917,7 +9105,8 @@ fn lift_switch_body(
         .get(&start_addr)
         .ok_or_else(|| Error::LlvmIr(format!("case target {start_addr:#x} not an instruction")))?;
     let mut stmts: Vec<Stmt> = Vec::new();
-    let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(insns)?;
+    let fed_sign_extensions: BTreeSet<u64> =
+        dividend_high::division_fed_sign_extensions(insns, 64)?;
     let mut lifter: StraightLifter<'_> =
         StraightLifter::new(consts, pop_moves, &fed_sign_extensions);
     let mut fp_return: Option<FpWidth> = None;
@@ -9304,7 +9493,7 @@ fn resolved_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec
         match binding {
             ParameterBinding::Integer { register, .. } => {
                 if is_x86_stack_argument_reg(*register) {
-                    let outgoing: Option<Reg> = if abi == Abi::MsX64 {
+                    let outgoing: Option<Reg> = if matches!(abi, Abi::MsX64 | Abi::I386) {
                         x86_stack_argument_index(*register).and_then(x86_outgoing_argument_reg)
                     } else {
                         None
@@ -9817,6 +10006,7 @@ struct StackFrameExtent {
     owned_start: Option<i64>,
     private_end: i64,
     boundary: StackFrameBoundary,
+    slot_bytes: i64,
 }
 
 impl StackFrameExtent {
@@ -9828,6 +10018,7 @@ impl StackFrameExtent {
                 linkage_bytes: RETURN_ADDRESS_BYTES,
                 home_bytes,
             },
+            slot_bytes: RETURN_ADDRESS_BYTES,
         }
     }
 
@@ -9846,6 +10037,7 @@ impl StackFrameExtent {
                 linkage_bytes: anchor.saved_bytes.checked_add(RETURN_ADDRESS_BYTES)?,
                 home_bytes,
             },
+            slot_bytes: RETURN_ADDRESS_BYTES,
         })
     }
 
@@ -9854,6 +10046,7 @@ impl StackFrameExtent {
             owned_start: Some(base_to_entry.checked_sub(frame_bytes)?),
             private_end: base_to_entry,
             boundary: StackFrameBoundary::EntryStackPointer,
+            slot_bytes: RETURN_ADDRESS_BYTES,
         })
     }
 
@@ -9872,7 +10065,7 @@ impl StackFrameExtent {
     }
 
     fn return_address_start(self) -> i64 {
-        self.home_start().saturating_sub(RETURN_ADDRESS_BYTES)
+        self.home_start().saturating_sub(self.slot_bytes)
     }
 
     fn home_start(self) -> i64 {
@@ -9921,7 +10114,7 @@ impl StackFrameExtent {
         let owned: String = self.describe();
         match self.boundary {
             StackFrameBoundary::ReturnAddress { linkage_bytes, .. }
-                if linkage_bytes > RETURN_ADDRESS_BYTES =>
+                if linkage_bytes > self.slot_bytes =>
             {
                 format!(
                     "{bytes}-byte slot at {disp} is outside the {owned} bytes this frame owns; the saved registers sit at [{}, {}), the return address at {} and the caller owns the frame above it",
@@ -16197,6 +16390,7 @@ const fn fp_arg_order(abi: Abi) -> &'static [Xmm] {
     match abi {
         Abi::MsX64 => &MS_X64_FP_ARG_ORDER,
         Abi::SysV | Abi::Aapcs64 => &FP_ARG_ORDER,
+        Abi::I386 => &[],
     }
 }
 
@@ -18311,6 +18505,7 @@ const fn reg_var(reg: Reg) -> &'static str {
         Reg::X86Out6 => "r_x86_out6",
         Reg::X86Out7 => "r_x86_out7",
         Reg::X86Scratch => "r_x86_scratch",
+        Reg::X86Temp => "r_x86_temp",
         Reg::A64X1 => "r_a64_x1",
         Reg::A64X2 => "r_a64_x2",
         Reg::A64X3 => "r_a64_x3",
@@ -20300,12 +20495,26 @@ fn incoming_stack_reg_for_mem(
         .disp
         .checked_sub(start)
         .ok_or_else(|| Error::LlvmIr("incoming x86-64 stack offset underflow".to_owned()))?;
-    if relative % 8 != 0 {
+    if relative % extent.slot_bytes != 0 {
         return Err(Error::LlvmIr(
-            "incoming x86-64 stack argument is not eight-byte aligned".to_owned(),
+            if extent.slot_bytes == RETURN_ADDRESS_BYTES {
+                "incoming x86-64 stack argument is not eight-byte aligned".to_owned()
+            } else {
+                format!(
+                    "incoming x86-32 stack argument is not {}-byte aligned",
+                    extent.slot_bytes
+                )
+            },
         ));
     }
-    let index: usize = usize::try_from(relative / 8)
+    if i64::from(mem.width.bits() / 8) > extent.slot_bytes {
+        return Err(Error::LlvmIr(format!(
+            "a {}-byte read of an incoming stack argument spans more than one {}-byte slot",
+            mem.width.bits() / 8,
+            extent.slot_bytes
+        )));
+    }
+    let index: usize = usize::try_from(relative / extent.slot_bytes)
         .map_err(|_| Error::LlvmIr("incoming x86-64 stack argument index overflow".to_owned()))?;
     let Some(reg): Option<Reg> = x86_stack_argument_reg(index) else {
         return Err(Error::LlvmIr(
@@ -20333,7 +20542,7 @@ fn proven_incoming_stack_reg_for_mem(
         if !proven.contains(&reg) {
             continue;
         }
-        let byte_offset: i64 = i64::try_from(index.checked_mul(8)?).ok()?;
+        let byte_offset: i64 = i64::try_from(index).ok()?.checked_mul(extent.slot_bytes)?;
         let disp: i64 = start.checked_add(byte_offset)?;
         if mem.disp == disp {
             return Some(RegRef {
@@ -20355,10 +20564,10 @@ fn incoming_stack_write_index(
     }
     let start: i64 = extent.incoming_start()?;
     let relative: i64 = mem.disp.checked_sub(start)?;
-    if relative < 0 || relative % 8 != 0 {
+    if relative < 0 || relative % extent.slot_bytes != 0 {
         return None;
     }
-    let index: usize = usize::try_from(relative / 8).ok()?;
+    let index: usize = usize::try_from(relative / extent.slot_bytes).ok()?;
     (index < X86_STACK_ARGUMENT_SLOTS).then_some(index)
 }
 
@@ -21811,19 +22020,19 @@ struct SretPlan {
     size: usize,
 }
 
-const fn sret_ptr_reg(abi: Abi) -> Reg {
+const fn sret_ptr_reg(abi: Abi) -> Option<Reg> {
     match abi {
-        Abi::SysV => Reg::Rdi,
-        Abi::MsX64 => Reg::Rcx,
-        Abi::Aapcs64 => Reg::A64X8,
+        Abi::SysV => Some(Reg::Rdi),
+        Abi::MsX64 => Some(Reg::Rcx),
+        Abi::Aapcs64 => Some(Reg::A64X8),
+        Abi::I386 => None,
     }
 }
 
 const fn sret_min_memory_class(abi: Abi) -> usize {
     match abi {
-        Abi::SysV => 16,
-        Abi::MsX64 => 8,
-        Abi::Aapcs64 => 16,
+        Abi::SysV | Abi::Aapcs64 => 16,
+        Abi::MsX64 | Abi::I386 => 8,
     }
 }
 
@@ -22165,7 +22374,7 @@ fn detect_sret(body: &Block, abi: Abi) -> Option<SretPlan> {
             _ => None,
         })
         .collect::<Option<Vec<&Stmt>>>()?;
-    let ptr: Reg = sret_ptr_reg(abi);
+    let ptr: Reg = sret_ptr_reg(abi)?;
     let mut alias: std::collections::BTreeSet<Reg> = std::collections::BTreeSet::new();
     alias.insert(ptr);
     let mut raw_fields: Vec<(i64, Width)> = Vec::new();
@@ -22374,6 +22583,15 @@ fn emit_c(
     for (display_name, decl) in &call_decls {
         match decl {
             CallDecl::Generic { arity } => {
+                if let Some(emit) = &signature.i386 {
+                    let prototype: &String = emit.externs.get(display_name).ok_or_else(|| {
+                        Error::LlvmIr(format!(
+                            "x86-32 call to `{display_name}` has no recovered prototype"
+                        ))
+                    })?;
+                    let _ = writeln!(out, "{prototype}");
+                    continue;
+                }
                 let params: String = if *arity == 0 {
                     "void".to_owned()
                 } else {
@@ -22502,7 +22720,18 @@ fn emit_c(
         (None, FnReturn::Void) => "void".to_owned(),
         (None, FnReturn::Vec(arr)) => arr.type_name(),
     };
-    let _ = writeln!(out, "{return_type} recovered({params_sig}) {{");
+    match signature
+        .i386
+        .as_ref()
+        .and_then(|emit: &i386::I386Emit| emit.convention.c_attribute())
+    {
+        Some(attribute) => {
+            let _ = writeln!(out, "{return_type} {attribute} recovered({params_sig}) {{");
+        }
+        None => {
+            let _ = writeln!(out, "{return_type} recovered({params_sig}) {{");
+        }
+    }
     emit_c_aggregate_types(&mut out, aggregates);
     if sret.is_some() {
         let _ = writeln!(out, "    recovered_sret_t __sret;");
@@ -29920,6 +30149,7 @@ mod tests {
             ret: FnReturn::Void,
             exact_integer_types: false,
             abi: Abi::MsX64,
+            i386: None,
         }
     }
 
@@ -33476,6 +33706,7 @@ mod tests {
             ret: FnReturn::Void,
             exact_integer_types: false,
             abi: Abi::Aapcs64,
+            i386: None,
         };
         integer_first.int.push((Reg::A64Stack0, Width::W64));
         let integer_first_bindings: Vec<ParameterBinding> = integer_first.parameter_bindings();
@@ -33501,6 +33732,7 @@ mod tests {
             ret: FnReturn::Void,
             exact_integer_types: false,
             abi: Abi::Aapcs64,
+            i386: None,
         };
         floating_first.int.push((Reg::A64Stack1, Width::W64));
         let floating_first_bindings: Vec<ParameterBinding> = floating_first.parameter_bindings();
@@ -33888,6 +34120,7 @@ mod tests {
             ret: FnReturn::Void,
             exact_integer_types: false,
             abi: Abi::MsX64,
+            i386: None,
         };
         assert_eq!(
             RecoveredSignature::from_bindings(signature.abi, signature.parameter_bindings())
@@ -33907,6 +34140,7 @@ mod tests {
             ret: FnReturn::Void,
             exact_integer_types: false,
             abi: Abi::SysV,
+            i386: None,
         };
         assert_eq!(
             RecoveredSignature::from_bindings(signature.abi, signature.parameter_bindings())
@@ -37127,6 +37361,7 @@ mod tests {
             ret: FnReturn::Int(Width::W64),
             exact_integer_types: false,
             abi: Abi::SysV,
+            i386: None,
         };
         let source: String = emit_c(&body, &signature, None, None, &AggregatePlan::default())
             .expect("emit vector stack-argument C");

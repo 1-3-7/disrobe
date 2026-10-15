@@ -673,7 +673,10 @@ fn decompile_native(
     let module: disrobe_query::Module = load_native_module(&input, &bytes)?;
     let obj: object::File<'_> = object::File::parse(bytes.as_slice())
         .map_err(|e| miette::miette!("DR-NATIVE-0161: cannot parse native object: {e}"))?;
-    if !matches!(obj.architecture(), object::Architecture::X86_64) {
+    if !matches!(
+        obj.architecture(),
+        object::Architecture::X86_64 | object::Architecture::I386
+    ) {
         let Some(arch): Option<DecompileArch> = DecompileArch::of(&obj) else {
             return Err(miette::miette!(
                 "DR-NATIVE-0162: the in-tree decompiler supports x86-64, aarch64, arm32 and mips32 (got {:?}); use --backend ghidra for other architectures",
@@ -682,7 +685,9 @@ fn decompile_native(
         };
         return decompile_native_pcode(arch, &input, &bytes, &obj, &module, out, format, devirt);
     }
-    let abi: PseudoAbi = if matches!(
+    let abi: PseudoAbi = if matches!(obj.architecture(), object::Architecture::I386) {
+        PseudoAbi::I386
+    } else if matches!(
         obj.format(),
         object::BinaryFormat::Pe | object::BinaryFormat::Coff
     ) {
@@ -750,12 +755,12 @@ fn decompile_native(
     let api_sigdb: disrobe_typerec::SigDb = disrobe_typerec::SigDb::builtin();
     let api_abi: disrobe_typerec::Abi = match abi {
         PseudoAbi::MsX64 => disrobe_typerec::Abi::Win64,
-        PseudoAbi::SysV | PseudoAbi::Aapcs64 => disrobe_typerec::Abi::SysV,
+        PseudoAbi::SysV | PseudoAbi::Aapcs64 | PseudoAbi::I386 => disrobe_typerec::Abi::SysV,
     };
     let mut api_banner: BTreeMap<u64, Vec<String>> = BTreeMap::new();
     let mut api_slots_json: BTreeMap<u64, Vec<serde_json::Value>> = BTreeMap::new();
     let mut api_slots_recovered: usize = 0;
-    if !api_text.is_empty() {
+    if !api_text.is_empty() && abi != PseudoAbi::I386 {
         for pf in &program_functions {
             let typing: disrobe_typerec::CallsiteTyping = disrobe_typerec::type_function(
                 &api_text,
@@ -833,7 +838,10 @@ fn decompile_native(
     let regions: disrobe_typerec::RegionModel = disrobe_typerec::RegionModel::from_image(&bytes);
     let mut typed_functions: Vec<serde_json::Value> = Vec::with_capacity(program_functions.len());
     let mut type_slots_recovered: usize = 0;
-    for pf in &program_functions {
+    for pf in program_functions
+        .iter()
+        .filter(|_: &&ProgramFunction| abi != PseudoAbi::I386)
+    {
         let recovered_types: disrobe_typerec::TypedFunction =
             disrobe_typerec::recover_function_with_regions(&pf.code, pf.address, &regions);
         let api_slots: Vec<serde_json::Value> =
@@ -893,7 +901,7 @@ fn decompile_native(
     let total: usize = module.functions().len();
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.native.decompile/v1",
-        "backend": "native-in-tree-x86_64",
+        "backend": if abi == PseudoAbi::I386 { "native-in-tree-x86" } else { "native-in-tree-x86_64" },
         "language": format.label(),
         "input": input.display().to_string(),
         "abi": format!("{abi:?}"),

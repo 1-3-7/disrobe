@@ -41,6 +41,7 @@ impl PushFrame {
                     linkage_bytes: self.pushed_bytes.saturating_add(RETURN_ADDRESS_BYTES),
                     home_bytes: self.home_bytes,
                 },
+                slot_bytes: RETURN_ADDRESS_BYTES,
             }),
             stack_pointer_break: None,
         }

@@ -3222,6 +3222,7 @@ fn finish(
         ret,
         exact_integer_types: false,
         abi: Abi::Aapcs64,
+        i386: None,
     };
     let frame_shape: FrameShape = classify_frame(insns, context.frame_info)?;
     let frame = plan_frame(&structured.body, frame_shape)?;

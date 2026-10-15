@@ -504,7 +504,7 @@ fn arg_order(abi: Abi) -> &'static [Reg] {
     match abi {
         Abi::SysV => &SYSV_ARGS,
         Abi::MsX64 => &MSX64_ARGS,
-        Abi::Aapcs64 => &[],
+        Abi::Aapcs64 | Abi::I386 => &[],
     }
 }
 

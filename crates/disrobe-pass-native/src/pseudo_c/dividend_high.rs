@@ -24,7 +24,7 @@ struct Analysis {
     labels: BTreeSet<u64>,
 }
 
-fn analyze(insns: &[DisasmInsn]) -> Result<Option<Analysis>> {
+fn analyze(insns: &[DisasmInsn], bits: u32) -> Result<Option<Analysis>> {
     if !insns
         .iter()
         .any(|insn: &DisasmInsn| matches!(insn.mnemonic.as_str(), "div" | "idiv" | "cqo" | "cdq"))
@@ -36,7 +36,7 @@ fn analyze(insns: &[DisasmInsn]) -> Result<Option<Analysis>> {
     let mut labels: BTreeSet<u64> = BTreeSet::new();
     for insn in insns {
         let decoded: Instruction =
-            decode_one_x86(64, insn.address, &insn.bytes).ok_or_else(|| {
+            decode_one_x86(bits, insn.address, &insn.bytes).ok_or_else(|| {
                 Error::LlvmIr(format!(
                     "`{}` at {:#x} does not decode for the dividend high-half check",
                     text(insn),
@@ -77,8 +77,8 @@ fn analyze(insns: &[DisasmInsn]) -> Result<Option<Analysis>> {
     Ok(Some(Analysis { steps, labels }))
 }
 
-pub(super) fn refuse_unset_dividend_high_halves(insns: &[DisasmInsn]) -> Result<()> {
-    let Some(analysis): Option<Analysis> = analyze(insns)? else {
+pub(super) fn refuse_unset_dividend_high_halves(insns: &[DisasmInsn], bits: u32) -> Result<()> {
+    let Some(analysis): Option<Analysis> = analyze(insns, bits)? else {
         return Ok(());
     };
     for (index, insn) in insns.iter().enumerate() {
@@ -89,8 +89,11 @@ pub(super) fn refuse_unset_dividend_high_halves(insns: &[DisasmInsn]) -> Result<
     Ok(())
 }
 
-pub(super) fn division_fed_sign_extensions(insns: &[DisasmInsn]) -> Result<BTreeSet<u64>> {
-    let Some(analysis): Option<Analysis> = analyze(insns)? else {
+pub(super) fn division_fed_sign_extensions(
+    insns: &[DisasmInsn],
+    bits: u32,
+) -> Result<BTreeSet<u64>> {
+    let Some(analysis): Option<Analysis> = analyze(insns, bits)? else {
         return Ok(BTreeSet::new());
     };
     Ok(insns

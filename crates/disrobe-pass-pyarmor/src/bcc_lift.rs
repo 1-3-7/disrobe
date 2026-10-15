@@ -329,10 +329,10 @@ fn recover_native_function(
 ) -> std::result::Result<LeafRecovery, String> {
     let recovered: std::result::Result<LeafRecovery, disrobe_pass_native::error::Error> = match abi
     {
-        PseudoAbi::MsX64 | PseudoAbi::SysV if calls.is_empty() => {
+        PseudoAbi::MsX64 | PseudoAbi::SysV | PseudoAbi::I386 if calls.is_empty() => {
             recover_leaf_function_abi(code, base, abi)
         }
-        PseudoAbi::MsX64 | PseudoAbi::SysV => {
+        PseudoAbi::MsX64 | PseudoAbi::SysV | PseudoAbi::I386 => {
             recover_leaf_function_with_calls(code, base, abi, calls)
         }
         PseudoAbi::Aapcs64 if calls.is_empty() => recover_aarch64_function(code, base),
@@ -759,6 +759,7 @@ const fn arch_to_target(arch: BccArch) -> Result<NativeTarget> {
 const fn target_from_abi(abi: PseudoAbi) -> NativeTarget {
     let arch: Arch = match abi {
         PseudoAbi::MsX64 | PseudoAbi::SysV => Arch::X86_64,
+        PseudoAbi::I386 => Arch::X86,
         PseudoAbi::Aapcs64 => Arch::Aarch64,
     };
     NativeTarget { arch, abi }
