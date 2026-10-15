@@ -1,7 +1,7 @@
 [package]
 name = "disrobe-dataforensics"
 version.workspace = true
-description = "bounded readers for application data stores: SQLite databases with write-ahead logs, freelist and deleted-record recovery"
+description = "bounded readers for application data, captures and crash records: SQLite databases with deleted-record recovery, pcap, pcapng, HAR and SAZ captures, ELF cores and minidumps"
 readme.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,8 +17,10 @@ workspace = true
 
 [dependencies]
 brotli = { workspace = true }
+disrobe-binfmt = { workspace = true }
 flate2 = { workspace = true }
 md5 = { workspace = true }
+object = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

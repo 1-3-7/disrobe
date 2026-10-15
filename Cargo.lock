@@ -2030,10 +2030,12 @@ name = "disrobe-dataforensics"
 version = "0.10.6"
 dependencies = [
  "brotli",
+ "disrobe-binfmt",
  "disrobe-core",
  "disrobe-tool-process",
  "flate2",
  "md5",
+ "object 0.37.3",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
