@@ -83,11 +83,12 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-mobile",
-        11,
+        12,
         "Dart, Flutter and Hermes parsing and demangling helpers each proven by their own oracle \
          but not yet called from the crate's own extraction entry points, one more of the same \
          shape added when the pinned Dart declaration graph moved into this crate from the \
-         now-retired disrobe-dart",
+         now-retired disrobe-dart, and the per-release Hermes template-object builtin id, which \
+         the lifter no longer needs because it names every builtin through builtin_name",
     ),
     (
         "disrobe-pass-nativelang",
