@@ -515,19 +515,36 @@ pub fn scan(bytes: &[u8], uri: Option<&str>) -> AntiAnalysisReport {
 const ANTI_ANALYSIS_SCAN_CAP: usize = 96 * 1024 * 1024;
 
 #[must_use]
+pub fn string_scan_window(bytes: &[u8]) -> &[u8] {
+    &bytes[..bytes.len().min(ANTI_ANALYSIS_SCAN_CAP)]
+}
+
+#[must_use]
 pub fn scan_with_chain(
     bytes: &[u8],
     uri: Option<&str>,
     chain: &ChainEvidence,
 ) -> AntiAnalysisReport {
+    let window_strings: Vec<ExtractedString> =
+        strings::extract(string_scan_window(bytes), Options::default());
+    scan_with_strings(bytes, uri, chain, &window_strings)
+}
+
+#[must_use]
+pub fn scan_with_strings(
+    bytes: &[u8],
+    uri: Option<&str>,
+    chain: &ChainEvidence,
+    window_strings: &[ExtractedString],
+) -> AntiAnalysisReport {
     let family: TargetFamily = classify_family(bytes);
     let mut acc: TechniqueAccumulator = TechniqueAccumulator::default();
 
-    let scan: &[u8] = &bytes[..bytes.len().min(ANTI_ANALYSIS_SCAN_CAP)];
+    let scan: &[u8] = string_scan_window(bytes);
     collect_protector_markers(scan, &mut acc);
     collect_code_markers(scan, &mut acc);
     collect_rasp_markers(scan, &mut acc);
-    collect_string_rules(scan, &mut acc);
+    collect_string_rules(window_strings, &mut acc);
     collect_string_encryption(scan, family, &mut acc);
     scan_executable_code(bytes, family, &mut acc);
 
@@ -966,21 +983,14 @@ fn collect_rasp_markers(bytes: &[u8], acc: &mut TechniqueAccumulator) {
     }
 }
 
-fn collect_string_rules(bytes: &[u8], acc: &mut TechniqueAccumulator) {
-    let extracted: Vec<ExtractedString> = strings::extract(
-        bytes,
-        Options {
-            min_len: 4,
-            decode: true,
-        },
-    );
+fn collect_string_rules(extracted: &[ExtractedString], acc: &mut TechniqueAccumulator) {
     let mut timing_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut resource_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut interaction_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut tool_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut attach_hits: Vec<(StringSig, usize)> = Vec::new();
     let mut page_protect_named: bool = false;
-    for s in &extracted {
+    for s in extracted {
         let lower: String = s.value.to_ascii_lowercase();
         page_protect_named |= PAGE_PROTECT_APIS
             .iter()

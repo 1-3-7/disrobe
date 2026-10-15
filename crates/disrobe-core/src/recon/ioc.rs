@@ -1248,11 +1248,19 @@ pub fn report(bytes: &[u8], uri: Option<&str>) -> IocReport {
 
 #[must_use]
 pub fn report_with_extra(bytes: &[u8], uri: Option<&str>, extra_text: &[&str]) -> IocReport {
-    let indicators: Vec<Indicator> = extract_with_extra(bytes, extra_text);
+    report_from_indicators(bytes.len(), uri, extract_with_extra(bytes, extra_text))
+}
+
+#[must_use]
+pub fn report_from_indicators(
+    byte_len: usize,
+    uri: Option<&str>,
+    indicators: Vec<Indicator>,
+) -> IocReport {
     IocReport {
         schema: IOC_SCHEMA,
         uri: uri.map(str::to_owned),
-        byte_len: bytes.len(),
+        byte_len,
         total: indicators.len(),
         indicators,
     }

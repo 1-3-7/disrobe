@@ -272,6 +272,7 @@ const fn verdict_attack_id(technique: Technique) -> Option<&'static str> {
 #[derive(Default)]
 struct Accumulator {
     by_category: BTreeMap<Category, Vec<Evidence>>,
+    seen: BTreeSet<(Category, &'static str, String)>,
 }
 
 impl Accumulator {
@@ -282,18 +283,17 @@ impl Accumulator {
         source: &'static str,
         attack_id: Option<&'static str>,
     ) {
-        let bucket: &mut Vec<Evidence> = self.by_category.entry(category).or_default();
-        if bucket
-            .iter()
-            .any(|e: &Evidence| e.signal == signal && e.source == source)
-        {
+        if !self.seen.insert((category, source, signal.clone())) {
             return;
         }
-        bucket.push(Evidence {
-            signal,
-            source,
-            attack_id,
-        });
+        self.by_category
+            .entry(category)
+            .or_default()
+            .push(Evidence {
+                signal,
+                source,
+                attack_id,
+            });
     }
 }
 
@@ -303,8 +303,8 @@ struct ApiMatch {
     source: &'static str,
 }
 
-fn match_api_tokens(tokens: &[String], source: &'static str, matches: &mut Vec<ApiMatch>) {
-    for token in tokens {
+fn match_api_tokens(tokens: &[&str], source: &'static str, matches: &mut Vec<ApiMatch>) {
+    for &token in tokens {
         let lower: String = token.to_ascii_lowercase();
         let Some(name): Option<&str> = api_name(&lower) else {
             continue;
@@ -313,7 +313,7 @@ fn match_api_tokens(tokens: &[String], source: &'static str, matches: &mut Vec<A
             if api_name_matches(name, rule) {
                 matches.push(ApiMatch {
                     rule,
-                    token: token.clone(),
+                    token: token.to_owned(),
                     source,
                 });
             }
@@ -368,25 +368,30 @@ fn add_api_matches(matches: &[ApiMatch], acc: &mut Accumulator) {
     }
 }
 
-fn match_string_rules(tokens: &[String], acc: &mut Accumulator) {
-    for token in tokens {
+fn match_string_rules(tokens: &[&str], acc: &mut Accumulator) {
+    for &token in tokens {
         let lower: String = token.to_ascii_lowercase();
         for rule in STRING_RULES {
             if is_word_bounded(&lower, rule.needle) {
-                acc.add(rule.category, token.clone(), "string", Some(rule.attack_id));
+                acc.add(
+                    rule.category,
+                    token.to_owned(),
+                    "string",
+                    Some(rule.attack_id),
+                );
             }
         }
     }
 }
 
-fn match_anti_analysis_names(tokens: &[String], source: &'static str, acc: &mut Accumulator) {
-    for token in tokens {
+fn match_anti_analysis_names(tokens: &[&str], source: &'static str, acc: &mut Accumulator) {
+    for &token in tokens {
         let lower: String = token.to_ascii_lowercase();
         let named: bool = STRING_SIGS.iter().any(|sig: &StringSig| {
             sig.corroboration != SignalCorroboration::ContextOnly && shared_sig_matches(&lower, sig)
         });
         if named {
-            acc.add(Category::AntiAnalysis, token.clone(), source, None);
+            acc.add(Category::AntiAnalysis, token.to_owned(), source, None);
         }
     }
 }
@@ -458,32 +463,53 @@ pub fn analyze_with_anti_analysis(
     uri: Option<&str>,
     anti: &AntiAnalysisReport,
 ) -> BehaviorReport {
-    let mut acc: Accumulator = Accumulator::default();
-
-    let extracted: Vec<ExtractedString> = strings::extract(
-        bytes,
-        Options {
-            min_len: 4,
-            decode: true,
+    let strings: Vec<ExtractedString> = strings::extract(bytes, Options::default());
+    let indicators: Vec<Indicator> = ioc::extract(bytes);
+    analyze_inputs(
+        bytes.len(),
+        uri,
+        &BehaviorInputs {
+            imports,
+            strings: &strings,
+            indicators: &indicators,
+            anti,
         },
-    );
-    let string_tokens: Vec<String> = extracted
-        .into_iter()
-        .map(|s: ExtractedString| s.value)
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BehaviorInputs<'a> {
+    pub imports: &'a [String],
+    pub strings: &'a [ExtractedString],
+    pub indicators: &'a [Indicator],
+    pub anti: &'a AntiAnalysisReport,
+}
+
+#[must_use]
+pub fn analyze_inputs(
+    byte_len: usize,
+    uri: Option<&str>,
+    inputs: &BehaviorInputs<'_>,
+) -> BehaviorReport {
+    let mut acc: Accumulator = Accumulator::default();
+    let import_tokens: Vec<&str> = inputs.imports.iter().map(String::as_str).collect();
+    let string_tokens: Vec<&str> = inputs
+        .strings
+        .iter()
+        .map(|s: &ExtractedString| s.value.as_str())
         .collect();
 
     let mut api_matches: Vec<ApiMatch> = Vec::new();
-    match_api_tokens(imports, "import", &mut api_matches);
+    match_api_tokens(&import_tokens, "import", &mut api_matches);
     match_api_tokens(&string_tokens, "string", &mut api_matches);
     add_api_matches(&api_matches, &mut acc);
 
     match_string_rules(&string_tokens, &mut acc);
-    match_anti_analysis_names(imports, "import", &mut acc);
+    match_anti_analysis_names(&import_tokens, "import", &mut acc);
     match_anti_analysis_names(&string_tokens, "string", &mut acc);
-    add_anti_analysis_verdicts(anti, &mut acc);
+    add_anti_analysis_verdicts(inputs.anti, &mut acc);
 
-    let indicators: Vec<Indicator> = ioc::extract(bytes);
-    for ind in &indicators {
+    for ind in inputs.indicators {
         if let Some(category) = ioc_category(ind.kind) {
             acc.add(
                 category,
@@ -494,7 +520,7 @@ pub fn analyze_with_anti_analysis(
         }
     }
 
-    finalize(acc, bytes.len(), uri)
+    finalize(acc, byte_len, uri)
 }
 
 fn finalize(acc: Accumulator, byte_len: usize, uri: Option<&str>) -> BehaviorReport {
