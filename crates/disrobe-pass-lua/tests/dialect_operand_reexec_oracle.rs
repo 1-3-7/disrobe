@@ -223,6 +223,16 @@ fn lua52_builds_of_every_shape_reexecute() {
 }
 
 #[test]
+fn stripped_lua52_and_lua53_closure_captures_reexecute() {
+    for (suffix, lifter) in [
+        ("5_2.stripped", "lua 5.2 register lifter"),
+        ("5_3.stripped", "lua 5.3 register lifter"),
+    ] {
+        reexec_committed_chunk(suffix, lifter, UPVALUE_CAPTURE);
+    }
+}
+
+#[test]
 fn lua53_constructor_past_25550_items_reads_the_extraarg_block() {
     reexec_committed_chunk("5_3", "lua 5.3 register lifter", CONSTRUCTOR_25600);
 }

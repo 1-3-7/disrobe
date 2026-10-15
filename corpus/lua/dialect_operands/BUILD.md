@@ -19,6 +19,7 @@ Toolchain: `luac5.2` 5.2.4 built from `lua-5.2.4.tar.gz` (lua.org, 252,651 bytes
 
 ```sh
 luac5.2 -o upvalue_capture.5_2.luac upvalue_capture.lua
+luac5.2 -s -o upvalue_capture.5_2.stripped.luac upvalue_capture.lua
 luac5.2 -o loadnil_above_r0.5_2.luac loadnil_above_r0.lua
 luac5.2 -o constructor_75.5_2.luac constructor_75.lua
 luac5.2 -o constructor_25600.5_2.luac constructor_25600.lua
@@ -27,6 +28,7 @@ luac5.2 -o constructor_25600.5_2.luac constructor_25600.lua
 | Chunk | Bytes | sha256 |
 | --- | --- | --- |
 | `upvalue_capture.5_2.luac` | 1031 | `d663dfd396970d246a0b2172cf8ef8b4ca5f28d4d6c5bd23019d53aa9dc74bcb` |
+| `upvalue_capture.5_2.stripped.luac` | 526 | `df829f0578744e724a2b31780b2b9a01e005170d4224ef249d14768599085697` |
 | `loadnil_above_r0.5_2.luac` | 578 | `69ab276e3bb04688725ad9317235243a299262f22473591ca4c43bf308261b9d` |
 | `constructor_75.5_2.luac` | 1733 | `b8ac8f3df5c993cde0cf8ac2ed62d2d205b316a77208304db918b0b759ab63e3` |
 | `constructor_25600.5_2.luac` | 17524 | `69e6ef8c7fab64463358ea5616c2a46c2c80b4ba72f7d9a286a1e8d8dab8fe82` |
@@ -37,6 +39,7 @@ Toolchain: `luac5.3` 5.3.6 from the MSYS2 package `mingw-w64-ucrt-x86_64-lua53` 
 
 ```sh
 luac5.3 -o upvalue_capture.5_3.luac upvalue_capture.lua
+luac5.3 -s -o upvalue_capture.5_3.stripped.luac upvalue_capture.lua
 luac5.3 -o loadnil_above_r0.5_3.luac loadnil_above_r0.lua
 luac5.3 -o constructor_75.5_3.luac constructor_75.lua
 luac5.3 -o constructor_25600.5_3.luac constructor_25600.lua
@@ -45,6 +48,7 @@ luac5.3 -o constructor_25600.5_3.luac constructor_25600.lua
 | Chunk | Bytes | sha256 |
 | --- | --- | --- |
 | `upvalue_capture.5_3.luac` | 815 | `31ef6ec7a860ca7cd1913d2e3d1660a801448d8646631fc46ea79d1c2cabe078` |
+| `upvalue_capture.5_3.stripped.luac` | 499 | `f657094409af69b4bf725722cf902813017cd2783325307697d3f87518845d61` |
 | `loadnil_above_r0.5_3.luac` | 506 | `91c59a5a8b7d1997fbc72f484f7f42f1eb540ae923b6c31cc5eb167162d76fa4` |
 | `constructor_75.5_3.luac` | 1677 | `c4f38310751c4d52e3da8e9235da37e769af1f9cc6cc01f32184c2c4759190e0` |
 | `constructor_25600.5_3.luac` | 17453 | `71b6f1f2eb45acbd4b3255a348818bb7f91e5dba7ddc7a4d372f30dee8bed2c5` |
