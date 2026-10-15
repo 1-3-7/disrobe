@@ -33,6 +33,7 @@ disrobe flutter disasm libapp.so --emit-listing
 disrobe flutter map obfuscation_map.json --out map.json
 disrobe flutter inventory libapp.so --out inventory.json
 disrobe flutter inventory-standalone vm_data vm_instructions isolate_data isolate_instructions --out inventory.json
+disrobe flutter identity app.apk
 ```
 
 `mobile detect` classifies the package; `mobile extract` pulls bundles out of the container. It writes a `manifest.json` for React Native, Flutter, Cordova/Capacitor, NativeScript, and Xamarin extraction; Android APK/Dex and Android bundle paths write child files directly without a manifest.
@@ -86,6 +87,35 @@ flutter kernel: OK
   wrote:        ./out/app-dart-kernel.json
   dart source:  ./out/app-dart-kernel.recovered.dart
 ```
+
+## Flutter build identity
+
+`disrobe flutter identity` answers which Dart SDK and Flutter release built an app before any deeper analysis, from an APK, an Android App Bundle, an IPA, a zip, or a single `libapp.so`, `libflutter.so`, `App.framework` or `Flutter.framework` binary (ELF32, ELF64, Mach-O and universal Mach-O; PE for `flutter_windows.dll`).
+
+On an APK assembled from the committed fixtures (a real `gen_snapshot` library and an engine stand-in):
+
+```text
+APK, 1167009 bytes, sha256 c5e6ff78b8aa522c9023c44d3ac67dc0eb63c421a8fd68490bc9cca8d24f2dd8
+snapshot hash     ace654289f5abc240509fc941453ebc5
+Dart SDK          3.12.1, 3.12.2
+engine Dart       3.12.2
+engine revision   83675ed27633283e7fc296c8bca22e841224c096
+Flutter           3.44.5, 3.44.6
+app    lib/arm64-v8a/libapp.so [arm64-v8a] 2884496 bytes sha256 ed36ebd571c8705ef68c881f6303da4aa337ae11d26458e7ff27ccce98d81859
+       build id b718850991b7e341f90d3cfa676a1ece
+       _kDartIsolateSnapshotData ace654289f5abc240509fc941453ebc5 product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers
+       _kDartVmSnapshotData ace654289f5abc240509fc941453ebc5 product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers
+engine lib/arm64-v8a/libflutter.so [arm64-v8a] 2888 bytes sha256 efaf59ac75b6f868ba0462d0bb1addfbb3249c7982a2091117b9381490b3f2a6
+       build id a28176b7afc36374ec72f8d11e5f27794dd7410c
+       Dart 3.12.2 (stable) built Tue Jun 9 01:11:39 2026 -0700 for android_arm64
+```
+
+- The app snapshot hash and feature flags come from the headers behind the exported `_kDartVmSnapshotData` and `_kDartIsolateSnapshotData` symbols (Mach-O's extra leading underscore included); when the symbols are stripped, from a bounded scan for the snapshot magic.
+- The engine's Dart version string, its stamped snapshot hash and its 40-digit revisions are read as NUL-terminated strings, so stripped release engines answer too. A GNU build ID (ELF) or `LC_UUID` (Mach-O) and the SHA-256 identify each library, per ABI.
+- Two bundled tables turn hashes into releases. `dart_snapshot_hashes.tsv` holds the snapshot hash of every stable Dart SDK tag from 2.0.0, computed the way the Dart build computes it (MD5 over the `runtime/vm` files that `tools/make_version.py` lists at the tag). `flutter_engine_revisions.tsv` holds the engine and Dart revisions every Flutter release tag from 1.0.0 pins. `crates/disrobe-pass-mobile/tests/support/derive_flutter_tables.py` regenerates both from the public repositories.
+- Libraries that disagree on the snapshot hash, an app without its engine (or the reverse) for an ABI, and a hash outside the table are reported as findings; nothing is guessed. A hash outside the table usually means a beta, dev or locally patched SDK, or a release newer than the table.
+
+Evidence: `crates/disrobe-pass-mobile/tests/flutter_identity.rs` reads the real `gen_snapshot` outputs in `corpus/mobile/flutter/` and requires the Dart SDK release and revision that `oracle.json` records from the `flutter --version` that built them; a copy with one hash digit changed must claim no release. Authored ELF and Mach-O stand-ins in `corpus/mobile/flutter/identity/` (built by `build.sh`, checked against `llvm-readobj`) cover the other ABIs, IPAs, universal binaries and the disagreement case. Locally, the official Flutter 3.44.6 android-arm64 release engine resolves to its own release.
 
 ## Coverage and fidelity
 

@@ -26,6 +26,7 @@ disrobe macho classdump universal.bin --out dump
 disrobe macho dump App.app/App
 disrobe macho fat universal.bin
 disrobe macho keyed-archive state.plist   # NSKeyedArchiver object graph
+disrobe macho nib MainViewController.nib  # compiled NIB: outlets, actions, custom classes
 disrobe macho dyldcache dyld_shared_cache_arm64e --out ./out/cache-dylibs
 disrobe macho dyldcache dyld_shared_cache_arm64e --image /usr/lib/libobjc.A.dylib
 ```
@@ -57,6 +58,12 @@ swift classdump: OK
 `macho keyed-archive` decodes an `NSKeyedArchiver` archive, binary or XML, into the object graph it stores: `$top` keys resolved through `$objects`, `NSArray`, `NSSet` and `NSOrderedSet` (and their mutable forms) as lists, `NSDictionary` as key-value pairs in archive order, `NSString` from `NS.string` or UTF-8 `NS.bytes`, `NSData`, `NSDate` (seconds since 2001 and Unix time), `NSURL` with its base, `NSUUID`, `NSNull` and `$null` as nil, `NSValue` fields, and every other class as an object with its class chain and fields. An object reached again while it is being decoded is shown as a back-reference instead of recursing; shared objects are decoded at each place they appear. A UID past the object table is reported as missing. Depth (256) and node count (1,000,000) are bounded and named when reached.
 
 The grader in `crates/disrobe-pass-swift-objc/tests/keyed_archive_reference.rs` builds archives with CPython's `plistlib` (binary with `plistlib.UID`, XML with `CF$UID` dictionaries) following the documented `NSKeyedArchiver` layout: every class above, nested collections, a shared object, a two-object cycle and a self reference, and a dangling UID. The decoded graph must equal the graph the writer built; a renamed string and a rewired UID must fail the comparison, a 5,000-level chain must stop at the depth bound, and 600 corrupted archives must decode or give a typed error. These archives are authored to the format, not written by Foundation; Apple-specific classes beyond those listed decode as generic objects.
+
+## Compiled NIBs
+
+`macho nib` decodes a compiled interface file in the `NIBArchive` format that `ibtool` writes for iOS (`.nib` files and the `.nib` files inside a `.storyboardc` bundle): the class table with its extra values, every object with its keyed values (integers of each width, booleans, floats, doubles, data, nil and object references), and packed geometry such as `UIBounds` and `UICenter` read as numbers. On top of the graph it names what ties the interface to code: each outlet, outlet collection and action connection with its label (the property or selector name) and the classes at both ends, the custom classes `UIClassSwapper` instantiates, and the strings the file holds. Bytes after the last table are counted, not parsed. Every count, length and reference is checked against the file before it is used, and a malformed table is refused with `DR-IOS-0022`.
+
+Evidence: `crates/disrobe-pass-swift-objc/tests/nib_archive_reference.rs` compares the full object graph of the SDCAlertView NIBs committed in `corpus/mobile/nib/` with what the independent `nibarchive` parser reads from them (`reference.json`), derives the outlets and swapped classes from that reference graph, and checks that a changed key name is caught and that 400 corrupted copies are read or refused without a panic. Locally it also matches the reference on the 22 app NIBs (2,861 objects with the committed ones) of two open-source IPAs whose licences do not allow committing them.
 
 ## Coverage and fidelity
 
