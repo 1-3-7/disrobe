@@ -1,5 +1,4 @@
-use std::sync::LazyLock;
-
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -86,21 +85,20 @@ pub fn detect(source: &[u8]) -> Detection {
     }
 }
 
-const DROPPER_PATTERN: &str = r#"exec\s*\(\s*__import__\s*\(\s*(?:'|")([a-z0-9_]+)(?:'|")\s*\)\s*\.\s*([a-z0-9_]+)\s*\(\s*__import__\s*\(\s*(?:'|")([a-z0-9_]+)(?:'|")\s*\)\s*\.\s*([a-z0-9_]+)\s*\("#;
-
-static DROPPER_REGEX: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(DROPPER_PATTERN).ok());
+fn dropper_regex() -> &'static Regex {
+    regex!(
+        r#"exec\s*\(\s*__import__\s*\(\s*(?:'|")([a-z0-9_]+)(?:'|")\s*\)\s*\.\s*([a-z0-9_]+)\s*\(\s*__import__\s*\(\s*(?:'|")([a-z0-9_]+)(?:'|")\s*\)\s*\.\s*([a-z0-9_]+)\s*\("#
+    )
+}
 
 #[inline]
 fn dropper_matches(text: &str) -> bool {
-    DROPPER_REGEX.as_ref().is_some_and(|r| r.is_match(text))
+    dropper_regex().is_match(text)
 }
 
 fn extract_dropper_modules(text: &str) -> Vec<String> {
     let mut mods: Vec<String> = Vec::new();
-    let Some(re): Option<&Regex> = DROPPER_REGEX.as_ref() else {
-        return mods;
-    };
-    let Some(caps): Option<regex::Captures<'_>> = re.captures(text) else {
+    let Some(caps): Option<regex::Captures<'_>> = dropper_regex().captures(text) else {
         return mods;
     };
     if let Some(m) = caps.get(1) {

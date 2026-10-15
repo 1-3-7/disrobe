@@ -2562,6 +2562,7 @@ dependencies = [
  "disrobe-py-marshal",
  "disrobe-testkit",
  "flate2",
+ "lazy-regex",
  "liblzma",
  "miette",
  "regex",
