@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -117,12 +118,8 @@ struct CallSite {
 }
 
 fn find_decoders(source: &str) -> Vec<Decoder> {
-    let header_re: Regex =
-        match Regex::new(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{")
-        {
-            Ok(re) => re,
-            Err(_) => return Vec::new(),
-        };
+    let header_re: &Regex =
+        regex!(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{");
     let mut out: Vec<Decoder> = Vec::new();
     for cap in header_re.captures_iter(source) {
         let Some(name): Option<regex::Match<'_>> = cap.get(1) else {
@@ -153,7 +150,7 @@ fn find_decoders(source: &str) -> Vec<Decoder> {
 }
 
 fn extract_table_literal(body: &str) -> Option<String> {
-    let re: Regex = Regex::new(r#"(?ms)\btable\s*=\s*""#).ok()?;
+    let re: &Regex = regex!(r#"(?ms)\btable\s*=\s*""#);
     let mat: regex::Match<'_> = re.find(body)?;
     let quote_pos: usize = mat.end() - 1;
     let (literal, _): (String, usize) = decode_string_literal_at(body.as_bytes(), quote_pos)?;
@@ -169,20 +166,16 @@ fn is_base91_decoder(body: &str) -> bool {
 }
 
 fn table_is_runtime_derived(body: &str) -> bool {
-    let dynamic_re: Regex = match Regex::new(
-        r"(?ms)\btable\s*=\s*[A-Za-z_$][\w$.]*\s*\(|\btable\s*\.\s*split|\btable\s*=\s*table\s*\[",
-    ) {
-        Ok(re) => re,
-        Err(_) => return false,
-    };
+    let dynamic_re: &Regex = regex!(
+        r"(?ms)\btable\s*=\s*[A-Za-z_$][\w$.]*\s*\(|\btable\s*\.\s*split|\btable\s*=\s*table\s*\["
+    );
     dynamic_re.is_match(body)
 }
 
 fn find_accessor(source: &str, decoder_fn: &str) -> Option<Accessor> {
     let escaped: String = regex::escape(decoder_fn);
-    let header_re: Regex =
-        Regex::new(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{")
-            .ok()?;
+    let header_re: &Regex =
+        regex!(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{");
     let array_probe: Regex = Regex::new(&format!(
         r"(?ms){escaped}\s*\(\s*([A-Za-z_$][\w$]*)\s*\[\s*([A-Za-z_$][\w$]*)\s*\]\s*\)"
     ))

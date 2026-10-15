@@ -1,5 +1,6 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
@@ -82,9 +83,9 @@ fn expected_probe_value(source: &str, probe: Range<usize>) -> Option<String> {
     if let Some(caps) = compared_before.captures(before) {
         return Some(caps.get(1)?.as_str().to_owned());
     }
-    let declarator: Regex = Regex::new(r"\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*$").ok()?;
+    let declarator: &Regex = regex!(r"\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*$");
     let name: &str = declarator.captures(before)?.get(1)?.as_str();
-    let terminated: Regex = Regex::new(r"^\s*[;,]").ok()?;
+    let terminated: &Regex = regex!(r"^\s*[;,]");
     if !terminated.is_match(after) {
         return None;
     }

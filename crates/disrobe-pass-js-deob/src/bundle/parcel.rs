@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -90,11 +91,7 @@ pub(super) fn build_graph(source: &str, modules: &[ExtractedModule]) -> ModuleGr
 fn collect_parcel_require_calls(source: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"parcelRequire(?:\.register)?\s*\(\s*["']([^"']+)["']"#)
-    else {
-        return out;
-    };
+    let re: &Regex = regex!(r#"parcelRequire(?:\.register)?\s*\(\s*["']([^"']+)["']"#);
     for cap in re.captures_iter(source) {
         let Some(id): Option<&str> = cap.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -108,11 +105,8 @@ fn collect_parcel_require_calls(source: &str) -> Vec<String> {
 
 fn extract_register_calls(source: &str, modules: &mut ModuleCollector) {
     let bytes: &[u8] = source.as_bytes();
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"parcelRequire(?:\.register)?\s*\(\s*["']([^"']+)["']\s*,\s*function\s*\("#)
-    else {
-        return;
-    };
+    let re: &Regex =
+        regex!(r#"parcelRequire(?:\.register)?\s*\(\s*["']([^"']+)["']\s*,\s*function\s*\("#);
     for caps in re.captures_iter(source) {
         let Some(id): Option<&str> = caps.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;

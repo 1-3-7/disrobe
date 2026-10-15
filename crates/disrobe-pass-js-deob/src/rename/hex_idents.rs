@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use indexmap::IndexMap;
+use lazy_regex::regex;
 use regex::{Captures, Regex};
 
 use super::RenameStats;
@@ -8,9 +9,7 @@ use crate::scan_utils::{literal_and_comment_ranges, replace_in_code, span_is_cod
 
 pub(super) fn rename(source: &str) -> (String, RenameStats) {
     let mut stats: RenameStats = RenameStats::default();
-    let Ok(ident_re): Result<Regex, regex::Error> = Regex::new(r"\b_0x[0-9a-fA-F]+\b") else {
-        return (source.to_owned(), stats);
-    };
+    let ident_re: &Regex = regex!(r"\b_0x[0-9a-fA-F]+\b");
 
     let skips: Vec<Range<usize>> = literal_and_comment_ranges(source);
     let mut order: IndexMap<String, String> = IndexMap::new();
@@ -30,7 +29,7 @@ pub(super) fn rename(source: &str) -> (String, RenameStats) {
     stats.idents_renamed = order.len();
 
     let (rewritten, rewrites): (String, usize) =
-        replace_in_code(source, &ident_re, |caps: &Captures<'_>| {
+        replace_in_code(source, ident_re, |caps: &Captures<'_>| {
             caps.get(0)
                 .and_then(|matched: regex::Match<'_>| order.get(matched.as_str()))
                 .cloned()

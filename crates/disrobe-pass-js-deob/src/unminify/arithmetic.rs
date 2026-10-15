@@ -1,3 +1,4 @@
+use lazy_regex::regex;
 use regex::{Captures, Regex};
 
 use crate::scan_utils::replace_in_code;
@@ -22,12 +23,8 @@ pub(super) fn fold_binary(source: &str) -> (String, usize) {
 }
 
 fn fold_mul_div(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(-?(?:0x[0-9a-fA-F]+|\d+))\s*([*/])\s*(-?(?:0x[0-9a-fA-F]+|\d+))")
-    else {
-        return (source.to_owned(), 0);
-    };
-    replace_in_code(source, &re, |caps: &Captures<'_>| {
+    let re: &Regex = regex!(r"(-?(?:0x[0-9a-fA-F]+|\d+))\s*([*/])\s*(-?(?:0x[0-9a-fA-F]+|\d+))");
+    replace_in_code(source, re, |caps: &Captures<'_>| {
         let whole: regex::Match<'_> = caps.get(0)?;
         if !fold_pair_is_safe(
             source.as_bytes(),
@@ -55,12 +52,8 @@ fn fold_mul_div(source: &str) -> (String, usize) {
 }
 
 fn fold_add_sub(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(-?(?:0x[0-9a-fA-F]+|\d+))\s*([+\-])\s*(-?(?:0x[0-9a-fA-F]+|\d+))")
-    else {
-        return (source.to_owned(), 0);
-    };
-    replace_in_code(source, &re, |caps: &Captures<'_>| {
+    let re: &Regex = regex!(r"(-?(?:0x[0-9a-fA-F]+|\d+))\s*([+\-])\s*(-?(?:0x[0-9a-fA-F]+|\d+))");
+    replace_in_code(source, re, |caps: &Captures<'_>| {
         let whole: regex::Match<'_> = caps.get(0)?;
         if !fold_pair_is_safe(
             source.as_bytes(),

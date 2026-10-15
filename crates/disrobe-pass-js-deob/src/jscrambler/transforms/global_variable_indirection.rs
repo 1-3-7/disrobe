@@ -1,21 +1,18 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(table_pattern()) else {
-        return 0;
-    };
+    let re: &Regex = table_pattern();
     re.find_iter(source).count()
 }
 
 pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> TransformOutput {
-    let Ok(decl_re): core::result::Result<Regex, regex::Error> = Regex::new(table_pattern()) else {
-        return TransformOutput::noop(source);
-    };
+    let decl_re: &Regex = table_pattern();
     let mut stats: TransformStats = TransformStats::default();
     let Some(cap): Option<regex::Captures<'_>> = decl_re.captures(source) else {
         return TransformOutput::noop(source);
@@ -68,8 +65,8 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
     TransformOutput { source: out, stats }
 }
 
-const fn table_pattern() -> &'static str {
-    r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:globalThis|window|global|self)\s*;"
+fn table_pattern() -> &'static Regex {
+    regex!(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:globalThis|window|global|self)\s*;")
 }
 
 #[cfg(test)]

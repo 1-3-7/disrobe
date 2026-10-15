@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BindingPatternKind, Program, Statement, VariableDeclaration, VariableDeclarationKind,
@@ -38,10 +39,7 @@ pub fn reverse_moved_declarations(source: &str) -> MovedDeclReversalResult {
     }
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     let bytes: &[u8] = source.as_bytes();
-    let list_re: Regex = match Regex::new(r"(?m)\bvar\s+([A-Za-z_$][\w$, \t]*)\s*;") {
-        Ok(re) => re,
-        Err(_) => return passthrough(source),
-    };
+    let list_re: &Regex = regex!(r"(?m)\bvar\s+([A-Za-z_$][\w$, \t]*)\s*;");
     for mat in list_re.find_iter(source) {
         let captured: &str = mat.as_str();
         let names_in_decl: Vec<String> = captured

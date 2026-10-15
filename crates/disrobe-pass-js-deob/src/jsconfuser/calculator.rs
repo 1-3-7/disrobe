@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -100,10 +101,9 @@ fn find_calculator_fn(source: &str) -> Option<CalculatorFn> {
 }
 
 fn find_function_decl_calculator(source: &str) -> Option<CalculatorFn> {
-    let re: Regex = Regex::new(
-        r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*[A-Za-z_$][\w$]*\s*,\s*[A-Za-z_$][\w$]*\s*\)\s*\{",
-    )
-    .ok()?;
+    let re: &Regex = regex!(
+        r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*[A-Za-z_$][\w$]*\s*,\s*[A-Za-z_$][\w$]*\s*\)\s*\{"
+    );
     for cap in re.captures_iter(source) {
         let Some(name): Option<regex::Match<'_>> = cap.get(1) else {
             continue;
@@ -133,10 +133,9 @@ fn find_function_decl_calculator(source: &str) -> Option<CalculatorFn> {
 }
 
 fn find_var_assigned_calculator(source: &str) -> Option<CalculatorFn> {
-    let re: Regex = Regex::new(
-        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*function\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*[A-Za-z_$][\w$]*\s*,\s*[A-Za-z_$][\w$]*\s*\)\s*\{",
-    )
-    .ok()?;
+    let re: &Regex = regex!(
+        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*function\s*\(\s*([A-Za-z_$][\w$]*)\s*,\s*[A-Za-z_$][\w$]*\s*,\s*[A-Za-z_$][\w$]*\s*\)\s*\{"
+    );
     for cap in re.captures_iter(source) {
         let Some(name): Option<regex::Match<'_>> = cap.get(1) else {
             continue;
@@ -175,19 +174,14 @@ fn body_looks_like_calculator(body: &str, op_param: &str) -> bool {
     if !switch_re.is_match(body) {
         return false;
     }
-    let Ok(case_re): Result<Regex, regex::Error> =
-        Regex::new(r"(?ms)case\s+(?:0x[0-9a-fA-F]+|-?\d+)\s*:")
-    else {
-        return false;
-    };
+    let case_re: &Regex = regex!(r"(?ms)case\s+(?:0x[0-9a-fA-F]+|-?\d+)\s*:");
     case_re.find_iter(body).count() >= 2
 }
 
 fn parse_op_table(body: &str) -> Option<BTreeMap<i64, String>> {
-    let arms_re: Regex = Regex::new(
-        r"(?ms)case\s+(0x[0-9a-fA-F]+|-?\d+)\s*:\s*return\s+([A-Za-z_$][\w$]*)\s*(===|!==|==|!=|<=|>=|<<|>>>|>>|&&|\|\||\?\?|\*\*|\+|-|\*|/|%|\^|&|\||<|>)\s*([A-Za-z_$][\w$]*)\s*;?",
-    )
-    .ok()?;
+    let arms_re: &Regex = regex!(
+        r"(?ms)case\s+(0x[0-9a-fA-F]+|-?\d+)\s*:\s*return\s+([A-Za-z_$][\w$]*)\s*(===|!==|==|!=|<=|>=|<<|>>>|>>|&&|\|\||\?\?|\*\*|\+|-|\*|/|%|\^|&|\||<|>)\s*([A-Za-z_$][\w$]*)\s*;?"
+    );
     let mut out: BTreeMap<i64, String> = BTreeMap::new();
     for cap in arms_re.captures_iter(body) {
         let Some(code_raw): Option<regex::Match<'_>> = cap.get(1) else {

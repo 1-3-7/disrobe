@@ -1,21 +1,18 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(arith_pattern()) else {
-        return 0;
-    };
+    let re: &Regex = arith_pattern();
     re.find_iter(source).count()
 }
 
 pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> TransformOutput {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(arith_pattern()) else {
-        return TransformOutput::noop(source);
-    };
+    let re: &Regex = arith_pattern();
     let mut stats: TransformStats = TransformStats::default();
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     for cap in re.captures_iter(source) {
@@ -62,8 +59,8 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
     TransformOutput { source: out, stats }
 }
 
-const fn arith_pattern() -> &'static str {
-    r"\b(\d+)\s*([+\-*/])\s*(\d+)\b"
+fn arith_pattern() -> &'static Regex {
+    regex!(r"\b(\d+)\s*([+\-*/])\s*(\d+)\b")
 }
 
 #[cfg(test)]

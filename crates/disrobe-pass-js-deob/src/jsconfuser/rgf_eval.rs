@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -158,10 +159,9 @@ struct Wrapper {
 }
 
 fn find_rgf_eval_array(source: &str) -> Option<ArrayDecl> {
-    let header_re: Regex = Regex::new(
-        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*_rgf)\s*=\s*\[\s*([A-Za-z_$][\w$]*)\s*\(",
-    )
-    .ok()?;
+    let header_re: &Regex = regex!(
+        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*_rgf)\s*=\s*\[\s*([A-Za-z_$][\w$]*)\s*\("
+    );
     let cap: regex::Captures<'_> = header_re.captures(source)?;
     let array_id: String = cap.get(1)?.as_str().to_owned();
     let eval_fn: String = cap.get(2)?.as_str().to_owned();
@@ -232,10 +232,7 @@ fn find_integrity_ranges(
     let Some(body): Option<&str> = source.get(mat.end()..body_close) else {
         return (None, None);
     };
-    let guard_re: Option<Regex> = Regex::new(r"if\s*\(\s*([A-Za-z_$][\w$]*)\s*\)").ok();
-    let Some(guard_re): Option<Regex> = guard_re else {
-        return (None, None);
-    };
+    let guard_re: &Regex = regex!(r"if\s*\(\s*([A-Za-z_$][\w$]*)\s*\)");
     let Some(guard): Option<regex::Captures<'_>> = guard_re.captures(body) else {
         return (None, None);
     };
@@ -302,8 +299,7 @@ fn parse_eval_entries(source: &str, decl: &ArrayDecl) -> Vec<EvalEntry> {
 }
 
 fn extract_replacement(code: &str) -> Option<ReplFn> {
-    let inner_re: Regex =
-        Regex::new(r"(?ms)function\s+[A-Za-z_$][\w$]*\s*\(\s*([^)]*)\)\s*\{").ok()?;
+    let inner_re: &Regex = regex!(r"(?ms)function\s+[A-Za-z_$][\w$]*\s*\(\s*([^)]*)\)\s*\{");
     let mut best: Option<ReplFn> = None;
     for cap in inner_re.captures_iter(code) {
         let Some(params_match): Option<regex::Match<'_>> = cap.get(1) else {

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -201,11 +202,7 @@ fn passthrough(source: &str) -> ControlFlowObjectResult {
 }
 
 fn collect_objects(source: &str) -> Vec<CfObject> {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?:(?:var|let|const)\s+|,\s*)([A-Za-z_$][\w$]*)\s*=\s*\{")
-    else {
-        return Vec::new();
-    };
+    let re: &Regex = regex!(r"(?:(?:var|let|const)\s+|,\s*)([A-Za-z_$][\w$]*)\s*=\s*\{");
     let bytes: &[u8] = source.as_bytes();
     let mut out: Vec<CfObject> = Vec::new();
     let mut consumed_until: usize = 0;
@@ -552,8 +549,7 @@ fn string_literal_value(value: &str) -> Option<String> {
 }
 
 fn parse_function_value(value: &str) -> Option<PropValue> {
-    let re: Regex =
-        Regex::new(r"^function\s*\(([^)]*)\)\s*\{\s*return\s+([\s\S]+?);?\s*\}$").ok()?;
+    let re: &Regex = regex!(r"^function\s*\(([^)]*)\)\s*\{\s*return\s+([\s\S]+?);?\s*\}$");
     let caps: regex::Captures<'_> = re.captures(value.trim())?;
     let params_raw: &str = caps.get(1)?.as_str();
     let ret: &str = caps.get(2)?.as_str().trim();

@@ -1,3 +1,4 @@
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -82,52 +83,36 @@ pub fn detect_jsobfu(source: &str) -> JsObfuDetection {
 }
 
 fn count_bracket_string_access(text: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"\[(?:'[A-Za-z_$][A-Za-z0-9_$]*'|"[A-Za-z_$][A-Za-z0-9_$]*")\]"#)
-    else {
-        return 0;
-    };
+    let re: &Regex = regex!(r#"\[(?:'[A-Za-z_$][A-Za-z0-9_$]*'|"[A-Za-z_$][A-Za-z0-9_$]*")\]"#);
     re.find_iter(text).count()
 }
 
 fn count_array_join_pattern(text: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"\[\s*(?:'[^'\\]'|"[^"\\]")(?:\s*,\s*(?:'[^'\\]'|"[^"\\]")){2,}\s*\]\s*\[\s*(?:'join'|"join")\s*\]\s*\(\s*(?:''|"")\s*\)"#,
-    ) else {
-        return 0;
-    };
+    let re: &Regex = regex!(
+        r#"\[\s*(?:'[^'\\]'|"[^"\\]")(?:\s*,\s*(?:'[^'\\]'|"[^"\\]")){2,}\s*\]\s*\[\s*(?:'join'|"join")\s*\]\s*\(\s*(?:''|"")\s*\)"#
+    );
     re.find_iter(text).count()
 }
 
 fn count_eval_calls(text: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"\beval\s*\(") else {
-        return 0;
-    };
+    let re: &Regex = regex!(r"\beval\s*\(");
     re.find_iter(text).count()
 }
 
 fn count_bracket_computed_access(text: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"\[\s*(?:String\.fromCharCode|\(\s*function|\(\s*\(\s*\)\s*=>)")
-    else {
-        return 0;
-    };
+    let re: &Regex = regex!(r"\[\s*(?:String\.fromCharCode|\(\s*function|\(\s*\(\s*\)\s*=>)");
     re.find_iter(text).count()
 }
 
 fn count_string_from_charcode(text: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"String\.fromCharCode\s*\(") else {
-        return 0;
-    };
+    let re: &Regex = regex!(r"String\.fromCharCode\s*\(");
     re.find_iter(text).count()
 }
 
 fn count_iife_return_string(text: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"function\s*\(\s*\)\s*\{\s*var\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*["'][^"']*["'][^}]{0,200}return\s+"#,
-    ) else {
-        return 0;
-    };
+    let re: &Regex = regex!(
+        r#"function\s*\(\s*\)\s*\{\s*var\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*["'][^"']*["'][^}]{0,200}return\s+"#
+    );
     re.find_iter(text).count()
 }
 

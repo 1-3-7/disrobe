@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -14,11 +15,9 @@ pub(super) struct ControlFlowSwitchResult {
 
 #[must_use]
 pub(super) fn unflatten_control_flow_switch(source: &str) -> ControlFlowSwitchResult {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(['"])([0-9]+(?:\|[0-9]+)*)['"]\s*\[\s*['"]split['"]\s*\]\s*\(\s*(['"])\|['"]\s*\)\s*[;,]"#,
-    ) else {
-        return passthrough(source);
-    };
+    let re: &Regex = regex!(
+        r#"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*(['"])([0-9]+(?:\|[0-9]+)*)['"]\s*\[\s*['"]split['"]\s*\]\s*\(\s*(['"])\|['"]\s*\)\s*[;,]"#
+    );
     let bytes: &[u8] = source.as_bytes();
     let skips: Vec<Range<usize>> = literal_and_comment_ranges(source);
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
@@ -232,7 +231,7 @@ fn identifier_escapes(
 
 fn locate_switch(source: &str, seq_name: &str, after_seq: usize) -> Option<(String, usize, usize)> {
     let bytes: &[u8] = source.as_bytes();
-    let iter_re: Regex = Regex::new(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;]+;").ok()?;
+    let iter_re: &Regex = regex!(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;]+;");
     let head: &str = source.get(after_seq..)?;
     let iter_cap: regex::Captures<'_> = iter_re.captures(head)?;
     let iter_name: String = iter_cap.get(1)?.as_str().to_owned();
@@ -255,9 +254,7 @@ fn locate_switch(source: &str, seq_name: &str, after_seq: usize) -> Option<(Stri
 
 fn parse_switch_cases(body: &str, base: usize, skips: &[Range<usize>]) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r#"case\s*['"]([0-9]+)['"]\s*:"#) else {
-        return out;
-    };
+    let re: &Regex = regex!(r#"case\s*['"]([0-9]+)['"]\s*:"#);
     let matches: Vec<regex::Match<'_>> = re
         .find_iter(body)
         .filter(|found: &regex::Match<'_>| {

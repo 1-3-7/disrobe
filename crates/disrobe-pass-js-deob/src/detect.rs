@@ -1,28 +1,5 @@
-use std::sync::LazyLock;
-
-use regex::Regex;
+use lazy_regex::regex;
 use serde::Serialize;
-
-static STATE_SUM_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r"(?ms)(?:while|switch)\s*\(\s*[A-Za-z_$][\w$]*(?:\s*\+\s*[A-Za-z_$][\w$]*){1,}\s*(?:!==|===|\))",
-    )
-    .ok()
-});
-
-static DEAD_GUARD_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?m)if\s*\(\s*["'][^"'\n]{2,}["']\s*in\s+[A-Za-z_$][\w$]*\s*\)\s*\{\s*[A-Za-z_$][\w$]*\s*\(\s*\)\s*\}"#,
-    )
-    .ok()
-});
-
-static INTEGRITY_TRAP_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r"else\s*\{\s*(?:while\s*\(\s*(?:true|!0|!!\[\])\s*\)|for\s*\(\s*;\s*;\s*\))\s*\{\s*\}\s*\}",
-    )
-    .ok()
-});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum JsObfuscator {
@@ -222,9 +199,7 @@ fn detect_jsconfuser(text: &str) -> Option<Detection> {
         markers.push("rgf-eval-payload".to_owned());
         score += 2;
     }
-    let has_state_sum: bool = STATE_SUM_RE
-        .as_ref()
-        .is_some_and(|re: &Regex| re.is_match(scan));
+    let has_state_sum: bool = regex!(r"(?ms)(?:while|switch)\s*\(\s*[A-Za-z_$][\w$]*(?:\s*\+\s*[A-Za-z_$][\w$]*){1,}\s*(?:!==|===|\))").is_match(scan);
     if has_state_sum {
         markers.push("state-sum-control-flow".to_owned());
         score += 2;
@@ -252,9 +227,7 @@ fn detect_jsconfuser(text: &str) -> Option<Detection> {
         markers.push("jsconfuser-global-shim".to_owned());
         score += 1;
     }
-    let dead_guard_count: usize = DEAD_GUARD_RE
-        .as_ref()
-        .map_or(0, |re: &Regex| re.find_iter(scan).count());
+    let dead_guard_count: usize = regex!(r#"(?m)if\s*\(\s*["'][^"'\n]{2,}["']\s*in\s+[A-Za-z_$][\w$]*\s*\)\s*\{\s*[A-Za-z_$][\w$]*\s*\(\s*\)\s*\}"#).find_iter(scan).count();
     if dead_guard_count >= 2 {
         markers.push(format!("deadcode-dummy-guards:{dead_guard_count}"));
         score += 2;
@@ -262,9 +235,10 @@ fn detect_jsconfuser(text: &str) -> Option<Detection> {
         markers.push("deadcode-dummy-guard".to_owned());
         score += 1;
     }
-    let has_integrity_trap: bool = INTEGRITY_TRAP_RE
-        .as_ref()
-        .is_some_and(|re: &Regex| re.is_match(scan));
+    let has_integrity_trap: bool = regex!(
+        r"else\s*\{\s*(?:while\s*\(\s*(?:true|!0|!!\[\])\s*\)|for\s*\(\s*;\s*;\s*\))\s*\{\s*\}\s*\}"
+    )
+    .is_match(scan);
     if has_integrity_trap {
         markers.push("integrity-tamper-trap".to_owned());
         score += 2;

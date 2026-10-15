@@ -1,5 +1,6 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
@@ -7,9 +8,7 @@ use crate::error::{Error, Result};
 use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(pattern()) else {
-        return 0;
-    };
+    let re: &Regex = pattern();
     re.find_iter(source).count()
 }
 
@@ -26,9 +25,7 @@ pub(in crate::jscrambler) fn reverse(source: &str, opts: &TransformOpts) -> Tran
             },
         };
     }
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(pattern()) else {
-        return TransformOutput::noop(source);
-    };
+    let re: &Regex = pattern();
     let mut stats: TransformStats = TransformStats::default();
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     for m in re.find_iter(source) {
@@ -58,8 +55,10 @@ pub(in crate::jscrambler) fn reverse_strict(
     Ok(reverse(source, opts))
 }
 
-const fn pattern() -> &'static str {
-    r"\(\s*function\s*\(\s*\)\s*\{\s*var\s+\w+\s*=\s*function\s*\(\s*\)\s*\{[^}]*toString[^}]*search[^}]*\}[^}]*\}\s*\(\s*\)\s*\)\s*;?"
+fn pattern() -> &'static Regex {
+    regex!(
+        r"\(\s*function\s*\(\s*\)\s*\{\s*var\s+\w+\s*=\s*function\s*\(\s*\)\s*\{[^}]*toString[^}]*search[^}]*\}[^}]*\}\s*\(\s*\)\s*\)\s*;?"
+    )
 }
 
 #[cfg(test)]

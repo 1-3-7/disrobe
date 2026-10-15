@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 #[cfg(test)]
@@ -89,11 +90,9 @@ pub(super) fn extract(source: &str) -> Vec<ExtractedModule> {
 }
 
 fn extract_commonjs_modules(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*__commonJS\s*\(\s*\{\s*["']([^"']+)["']\s*:\s*\(\s*\w+\s*,\s*\w+\s*\)\s*=>\s*\{"#,
-    ) else {
-        return;
-    };
+    let re: &Regex = regex!(
+        r#"var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*__commonJS\s*\(\s*\{\s*["']([^"']+)["']\s*:\s*\(\s*\w+\s*,\s*\w+\s*\)\s*=>\s*\{"#
+    );
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(var_name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {
@@ -116,11 +115,7 @@ fn extract_commonjs_modules(source: &str, modules: &mut ModuleCollector) {
 }
 
 fn extract_es_exports(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(");
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {

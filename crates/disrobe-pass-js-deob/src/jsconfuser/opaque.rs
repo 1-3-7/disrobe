@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -55,8 +56,7 @@ pub fn recognize_predicate(text: &str) -> Option<PredicateValue> {
 
 fn match_string_eq(s: &str) -> Option<PredicateValue> {
     let cap: regex::Captures<'_> =
-        Regex::new(r#"^(?:'([^'\\]*)'|"([^"\\]*)")(===|!==|==|!=)(?:'([^'\\]*)'|"([^"\\]*)")$"#)
-            .ok()?
+        regex!(r#"^(?:'([^'\\]*)'|"([^"\\]*)")(===|!==|==|!=)(?:'([^'\\]*)'|"([^"\\]*)")$"#)
             .captures(s)?;
     let lhs: &str = cap.get(1).or_else(|| cap.get(2))?.as_str();
     let op: &str = cap.get(3)?.as_str();
@@ -71,10 +71,9 @@ fn match_string_eq(s: &str) -> Option<PredicateValue> {
 }
 
 fn match_typeof(s: &str) -> Option<PredicateValue> {
-    let cap: regex::Captures<'_> = Regex::new(
-        r#"^typeof(?:'[^']*'|"[^"]*"|(-?\d+(?:\.\d+)?))===(?:'(string|number)'|"(string|number)")$"#,
+    let cap: regex::Captures<'_> = regex!(
+        r#"^typeof(?:'[^']*'|"[^"]*"|(-?\d+(?:\.\d+)?))===(?:'(string|number)'|"(string|number)")$"#
     )
-    .ok()?
     .captures(s)?;
     let actual: &str = if cap.get(1).is_some() {
         "number"
@@ -86,15 +85,11 @@ fn match_typeof(s: &str) -> Option<PredicateValue> {
 }
 
 fn match_numeric(s: &str) -> Option<PredicateValue> {
-    if let Some(cap) = Regex::new(r"^Array\((\d+)\)\.length===(\d+)$")
-        .ok()?
-        .captures(s)
-    {
+    if let Some(cap) = regex!(r"^Array\((\d+)\)\.length===(\d+)$").captures(s) {
         return Some(pick(cap.get(1)?.as_str() == cap.get(2)?.as_str()));
     }
-    let cap: regex::Captures<'_> = Regex::new(r"^\(?(-?\d+)([+\-*^])(-?\d+)\)?===(-?\d+)$")
-        .ok()?
-        .captures(s)?;
+    let cap: regex::Captures<'_> =
+        regex!(r"^\(?(-?\d+)([+\-*^])(-?\d+)\)?===(-?\d+)$").captures(s)?;
     let (a, b, r): (i64, i64, i64) = (
         cap.get(1)?.as_str().parse().ok()?,
         cap.get(3)?.as_str().parse().ok()?,
@@ -172,9 +167,7 @@ fn strip_outer_parens(s: &str) -> String {
 }
 
 fn collect_if_edits(source: &str, edits: &mut Vec<(Range<usize>, Option<String>)>) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"\bif\s*\(") else {
-        return;
-    };
+    let re: &Regex = regex!(r"\bif\s*\(");
     let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let open: usize = mat.end() - 1;

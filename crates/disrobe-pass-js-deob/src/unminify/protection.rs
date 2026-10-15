@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
@@ -47,12 +48,8 @@ pub(super) fn strip_protection(source: &str) -> (String, ProtectionStripStats) {
 }
 
 fn remove_if_true_blocks(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?ms)\bif\s*\(\s*true\s*\)\s*\{([^{}]*)\}(\s*else\s*\{[^{}]*\})?")
-    else {
-        return (source.to_owned(), 0);
-    };
-    replace_in_code(source, &re, |caps: &Captures<'_>| {
+    let re: &Regex = regex!(r"(?ms)\bif\s*\(\s*true\s*\)\s*\{([^{}]*)\}(\s*else\s*\{[^{}]*\})?");
+    replace_in_code(source, re, |caps: &Captures<'_>| {
         let whole: regex::Match<'_> = caps.get(0)?;
         if followed_by_else(source, whole.end()) {
             return None;
@@ -63,13 +60,10 @@ fn remove_if_true_blocks(source: &str) -> (String, usize) {
 
 fn remove_if_false_blocks(source: &str) -> (String, usize) {
     let mut count: usize = 0;
-    let Ok(with_else): Result<Regex, regex::Error> =
-        Regex::new(r"(?ms)\bif\s*\(\s*false\s*\)\s*\{[^{}]*\}\s*else\s*\{([^{}]*)\}")
-    else {
-        return (source.to_owned(), 0);
-    };
+    let with_else: &Regex =
+        regex!(r"(?ms)\bif\s*\(\s*false\s*\)\s*\{[^{}]*\}\s*else\s*\{([^{}]*)\}");
     let (intermediate, with_else_count): (String, usize) =
-        replace_in_code(source, &with_else, |caps: &Captures<'_>| {
+        replace_in_code(source, with_else, |caps: &Captures<'_>| {
             let whole: regex::Match<'_> = caps.get(0)?;
             if followed_by_else(source, whole.end()) {
                 return None;
@@ -78,14 +72,10 @@ fn remove_if_false_blocks(source: &str) -> (String, usize) {
         });
     count += with_else_count;
 
-    let Ok(without_else): Result<Regex, regex::Error> =
-        Regex::new(r"(?ms)\bif\s*\(\s*false\s*\)\s*\{[^{}]*\}")
-    else {
-        return (intermediate, count);
-    };
+    let without_else: &Regex = regex!(r"(?ms)\bif\s*\(\s*false\s*\)\s*\{[^{}]*\}");
     let skips: Vec<Range<usize>> = literal_and_comment_ranges(&intermediate);
     let (stage2, without_else_count): (String, usize) =
-        replace_in_code(&intermediate, &without_else, |caps: &Captures<'_>| {
+        replace_in_code(&intermediate, without_else, |caps: &Captures<'_>| {
             let whole: regex::Match<'_> = caps.get(0)?;
             if followed_by_else(&intermediate, whole.end()) {
                 return None;
@@ -144,39 +134,30 @@ fn remove_statements_matching(source: &str, re: &Regex) -> (String, usize) {
 }
 
 fn remove_debugger_setinterval(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"(?ms)setInterval\s*\(\s*function\s*\(\s*\)\s*\{\s*debugger\s*;?\s*\}\s*,\s*[^)]+\)\s*;?",
-    ) else {
-        return (source.to_owned(), 0);
-    };
-    remove_statements_matching(source, &re)
+    let re: &Regex = regex!(
+        r"(?ms)setInterval\s*\(\s*function\s*\(\s*\)\s*\{\s*debugger\s*;?\s*\}\s*,\s*[^)]+\)\s*;?"
+    );
+    remove_statements_matching(source, re)
 }
 
 fn remove_function_debugger_call(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?ms)Function\s*\(\s*['"]debu['"]\s*\+\s*['"]gger['"]\s*\)\s*\.\s*call\s*\([^)]*\)\s*;?"#,
-    ) else {
-        return (source.to_owned(), 0);
-    };
-    remove_statements_matching(source, &re)
+    let re: &Regex = regex!(
+        r#"(?ms)Function\s*\(\s*['"]debu['"]\s*\+\s*['"]gger['"]\s*\)\s*\.\s*call\s*\([^)]*\)\s*;?"#
+    );
+    remove_statements_matching(source, re)
 }
 
 fn remove_lone_debugger_iife(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?ms)\(\s*function\s*\(\s*\)\s*\{\s*debugger\s*;?\s*\}\s*\)\s*\(\s*\)\s*;?")
-    else {
-        return (source.to_owned(), 0);
-    };
-    remove_statements_matching(source, &re)
+    let re: &Regex =
+        regex!(r"(?ms)\(\s*function\s*\(\s*\)\s*\{\s*debugger\s*;?\s*\}\s*\)\s*\(\s*\)\s*;?");
+    remove_statements_matching(source, re)
 }
 
 fn remove_self_defending_iife(source: &str) -> (String, usize) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?ms)\(\s*function\s*\([^)]*\)\s*\{[^{}]*RegExp[^{}]*\.\s*test\s*\([^{}]*['"](?:init|updateProtect)['"][^{}]*\}\s*\)\s*\([^;]*\)\s*;?"#,
-    ) else {
-        return (source.to_owned(), 0);
-    };
-    remove_statements_matching(source, &re)
+    let re: &Regex = regex!(
+        r#"(?ms)\(\s*function\s*\([^)]*\)\s*\{[^{}]*RegExp[^{}]*\.\s*test\s*\([^{}]*['"](?:init|updateProtect)['"][^{}]*\}\s*\)\s*\([^;]*\)\s*;?"#
+    );
+    remove_statements_matching(source, re)
 }
 
 #[cfg(test)]

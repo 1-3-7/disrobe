@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -16,11 +17,9 @@ pub struct FlattenReversalResult {
 #[must_use]
 pub fn reverse_flatten(source: &str) -> FlattenReversalResult {
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"(?ms)while\s*\(\s*(!\!\[\]|true|1)\s*\)\s*\{\s*switch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{",
-    ) else {
-        return passthrough(source);
-    };
+    let re: &Regex = regex!(
+        r"(?ms)while\s*\(\s*(!\!\[\]|true|1)\s*\)\s*\{\s*switch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{"
+    );
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
@@ -96,9 +95,7 @@ fn passthrough(source: &str) -> FlattenReversalResult {
 
 fn parse_switch_cases(body: &str) -> BTreeMap<i64, String> {
     let mut out: BTreeMap<i64, String> = BTreeMap::new();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"(?ms)case\s+(-?\d+)\s*:") else {
-        return out;
-    };
+    let re: &Regex = regex!(r"(?ms)case\s+(-?\d+)\s*:");
     let matches: Vec<regex::Match<'_>> = re.find_iter(body).collect();
     if matches.is_empty() {
         return out;

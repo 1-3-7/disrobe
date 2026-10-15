@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -48,12 +49,9 @@ pub(super) fn inline_decoder_calls(source: &str, array_id: &str) -> InlineResult
         v
     };
 
-    let array_decl_re: Option<Regex> =
-        Regex::new(r"(?ms)(var|let|const)\s+[\w$]+\s*=\s*\[[^\]]*\]\s*;").ok();
-    let array_decl: String = array_decl_re
-        .as_ref()
-        .and_then(|re| re.find(source))
-        .map_or_else(String::new, |m| m.as_str().to_owned());
+    let array_decl: String = regex!(r"(?ms)(var|let|const)\s+[\w$]+\s*=\s*\[[^\]]*\]\s*;")
+        .find(source)
+        .map_or_else(String::new, |m: regex::Match<'_>| m.as_str().to_owned());
 
     let (probe, probe_refusal): (Option<DecoderProbe>, Option<ProbeRefusal>) =
         if !array_decl.is_empty() && !unique_indices.is_empty() {

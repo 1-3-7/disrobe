@@ -1,21 +1,18 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(b64_pattern()) else {
-        return 0;
-    };
+    let re: &Regex = b64_pattern();
     re.find_iter(source).count()
 }
 
 pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> TransformOutput {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(b64_pattern()) else {
-        return TransformOutput::noop(source);
-    };
+    let re: &Regex = b64_pattern();
     let mut stats: TransformStats = TransformStats::default();
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     for cap in re.captures_iter(source) {
@@ -48,8 +45,8 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
     TransformOutput { source: out, stats }
 }
 
-const fn b64_pattern() -> &'static str {
-    r"atob\(\s*['\x22]([A-Za-z0-9+/=]+)['\x22]\s*\)"
+fn b64_pattern() -> &'static Regex {
+    regex!(r"atob\(\s*['\x22]([A-Za-z0-9+/=]+)['\x22]\s*\)")
 }
 
 fn base64_decode_padded(s: &str) -> core::result::Result<Vec<u8>, base64::DecodeError> {

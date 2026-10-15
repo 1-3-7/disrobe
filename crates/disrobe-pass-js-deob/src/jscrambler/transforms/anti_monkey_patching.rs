@@ -1,5 +1,6 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
@@ -80,9 +81,7 @@ fn call_statement(source: &str, head: Range<usize>) -> Option<Range<usize>> {
     let before: &str = source.get(..head.start)?.trim_end();
     let statement_start: bool = before.is_empty()
         || before.ends_with([';', '{', '}'])
-        || Regex::new(r"(?:\bcase\s[^;:?]*|\bdefault\s*):$")
-            .ok()?
-            .is_match(before);
+        || regex!(r"(?:\bcase\s[^;:?]*|\bdefault\s*):$").is_match(before);
     statement_start.then_some(head.start..semicolon + 1)
 }
 

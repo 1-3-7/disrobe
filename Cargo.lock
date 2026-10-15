@@ -2303,6 +2303,7 @@ dependencies = [
  "disrobe-testkit",
  "divan",
  "indexmap 2.14.0",
+ "lazy-regex",
  "miette",
  "oxc",
  "oxc_allocator",

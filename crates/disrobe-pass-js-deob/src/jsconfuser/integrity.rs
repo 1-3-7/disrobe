@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -30,11 +31,7 @@ pub fn strip_integrity(source: &str) -> IntegrityReversalResult {
 }
 
 fn collect_setinterval_integrity(source: &str, edits: &mut Vec<(Range<usize>, Option<String>)>) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?:setInterval|setTimeout)\s*\(\s*function\s*\(\s*\)\s*\{")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"(?:setInterval|setTimeout)\s*\(\s*function\s*\(\s*\)\s*\{");
     let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let body_open: usize = mat.end() - 1;
@@ -61,11 +58,9 @@ fn collect_setinterval_integrity(source: &str, edits: &mut Vec<(Range<usize>, Op
 }
 
 fn collect_self_check_function(source: &str, edits: &mut Vec<(Range<usize>, Option<String>)>) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"(?ms)function\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{[^{}]{0,1024}\.toString\s*\(\s*\)\s*\.\s*replace[^{}]*?\}",
-    ) else {
-        return;
-    };
+    let re: &Regex = regex!(
+        r"(?ms)function\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{[^{}]{0,1024}\.toString\s*\(\s*\)\s*\.\s*replace[^{}]*?\}"
+    );
     for mat in re.find_iter(source) {
         let snippet: &str = mat.as_str();
         if !snippet.contains("RegExp")

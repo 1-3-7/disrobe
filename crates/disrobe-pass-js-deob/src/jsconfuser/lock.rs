@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -19,9 +20,7 @@ fn lock_residual_reason() -> String {
 #[must_use]
 pub fn strip_locks(source: &str) -> LockReversalResult {
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"\bif\s*\(") else {
-        return passthrough(source);
-    };
+    let re: &Regex = regex!(r"\bif\s*\(");
     let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let open: usize = mat.end() - 1;

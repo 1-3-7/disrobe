@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -13,9 +14,8 @@ pub fn detect(source: &str) -> BundlerDetection {
     let mut score: f32 = 0.0;
 
     let has_system_register: bool = head.contains("System.register(");
-    let has_amd_define: bool = Regex::new(r"\bdefine\s*\(\s*\[")
-        .is_ok_and(|re: Regex| re.is_match(head))
-        || Regex::new(r#"\bdefine\s*\(\s*["']"#).is_ok_and(|re: Regex| re.is_match(head));
+    let has_amd_define: bool = regex!(r"\bdefine\s*\(\s*\[").is_match(head)
+        || regex!(r#"\bdefine\s*\(\s*["']"#).is_match(head);
     let has_requirejs_require: bool =
         head.contains("requirejs(") || head.contains("require.config");
     let has_systemjs_loader: bool = head.contains("System.import") || head.contains("SystemJS");
@@ -97,9 +97,7 @@ pub(super) fn build_graph(source: &str, modules: &[ExtractedModule]) -> ModuleGr
 
 fn extract_system_register(source: &str, modules: &mut ModuleCollector) {
     let bytes: &[u8] = source.as_bytes();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"System\.register\s*\(") else {
-        return;
-    };
+    let re: &Regex = regex!(r"System\.register\s*\(");
     let mut idx: usize = 0;
     for mat in re.find_iter(source) {
         let paren_open: usize = mat.end() - 1;
@@ -139,9 +137,7 @@ fn extract_system_register(source: &str, modules: &mut ModuleCollector) {
 
 fn extract_amd_define(source: &str, modules: &mut ModuleCollector) {
     let bytes: &[u8] = source.as_bytes();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"\bdefine\s*\(") else {
-        return;
-    };
+    let re: &Regex = regex!(r"\bdefine\s*\(");
     let mut idx: usize = 0;
     for mat in re.find_iter(source) {
         if mat.start() > 0 {

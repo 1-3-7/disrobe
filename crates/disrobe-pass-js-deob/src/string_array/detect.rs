@@ -1,3 +1,4 @@
+use lazy_regex::regex;
 use regex::Regex;
 
 #[derive(Debug, Clone)]
@@ -15,10 +16,8 @@ pub(super) struct RotatorFound {
 }
 
 pub(super) fn find_string_array(source: &str) -> Option<StringArrayFound> {
-    let decl_re: Regex = Regex::new(
-        r"(?ms)^(?:var|let|const)\s+(_?0x[0-9a-fA-F]+|[a-zA-Z_]\w*)\s*=\s*\[([^\]]*)\]\s*;",
-    )
-    .ok()?;
+    let decl_re: &Regex =
+        regex!(r"(?ms)^(?:var|let|const)\s+(_?0x[0-9a-fA-F]+|[a-zA-Z_]\w*)\s*=\s*\[([^\]]*)\]\s*;");
     let cap: regex::Captures<'_> = decl_re.captures(source)?;
     let array_id: String = cap.get(1)?.as_str().to_owned();
     let body: &str = cap.get(2)?.as_str();
@@ -60,7 +59,7 @@ fn looks_like_rotator(body: &str) -> bool {
 }
 
 fn find_pivot_index(body: &str) -> Option<usize> {
-    let pivot_re: Regex = Regex::new(r"parseInt\([^)]*\(\s*(0x[0-9a-fA-F]+|\d+)\s*\)").ok()?;
+    let pivot_re: &Regex = regex!(r"parseInt\([^)]*\(\s*(0x[0-9a-fA-F]+|\d+)\s*\)");
     let cap: regex::Captures<'_> = pivot_re.captures(body)?;
     let raw: &str = cap.get(1)?.as_str();
     parse_int_literal(raw).map(|v| usize::try_from(v).unwrap_or(0))

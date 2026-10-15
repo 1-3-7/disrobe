@@ -1,4 +1,5 @@
 use indexmap::IndexSet;
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_parser::Parser;
@@ -36,11 +37,7 @@ pub(super) fn rename(source: &str) -> Result<(String, ScopeAwareStats)> {
     }
     let semantic: Semantic<'_> = semantic_ret.semantic;
 
-    let Ok(hex_pattern): core::result::Result<Regex, regex::Error> =
-        Regex::new(r"^_0x[0-9a-fA-F]+$")
-    else {
-        return Ok((source.to_owned(), ScopeAwareStats::default()));
-    };
+    let hex_pattern: &Regex = regex!(r"^_0x[0-9a-fA-F]+$");
 
     let symbols: &SymbolTable = semantic.symbols();
     let scopes: &ScopeTree = semantic.scopes();

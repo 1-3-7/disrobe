@@ -1,6 +1,7 @@
 use core::ops::Range;
 use std::collections::{BTreeMap, BTreeSet};
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
@@ -10,9 +11,7 @@ use crate::jscrambler::scanner::{
 };
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(detect_pattern()) else {
-        return 0;
-    };
+    let re: &Regex = detect_pattern();
     re.find_iter(source).count()
 }
 
@@ -49,8 +48,10 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
     }
 }
 
-const fn detect_pattern() -> &'static str {
-    r"var\s+[A-Za-z_$][\w$]*\s*=\s*\d+\s*;\s*(?:for\s*\(\s*;\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*;\s*\)|while\s*\(\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*\))\s*\{\s*switch\s*\("
+fn detect_pattern() -> &'static Regex {
+    regex!(
+        r"var\s+[A-Za-z_$][\w$]*\s*=\s*\d+\s*;\s*(?:for\s*\(\s*;\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*;\s*\)|while\s*\(\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*\))\s*\{\s*switch\s*\("
+    )
 }
 
 #[derive(Debug, Clone)]

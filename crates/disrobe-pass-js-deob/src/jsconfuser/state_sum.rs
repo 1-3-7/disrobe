@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -72,11 +73,9 @@ enum LabelExpr {
 }
 
 fn find_state_sum_machines(source: &str) -> Vec<StateSumMachine> {
-    let Ok(while_re): Result<Regex, regex::Error> = Regex::new(
-        r"(?ms)while\s*\(\s*([A-Za-z_$][\w$]*(?:\s*\+\s*[A-Za-z_$][\w$]*)+)\s*(!==|!=|===|==)\s*(-?\d+)\s*\)\s*\{",
-    ) else {
-        return Vec::new();
-    };
+    let while_re: &Regex = regex!(
+        r"(?ms)while\s*\(\s*([A-Za-z_$][\w$]*(?:\s*\+\s*[A-Za-z_$][\w$]*)+)\s*(!==|!=|===|==)\s*(-?\d+)\s*\)\s*\{"
+    );
     let bytes: &[u8] = source.as_bytes();
     let mut out: Vec<StateSumMachine> = Vec::new();
     for caps in while_re.captures_iter(source) {
@@ -183,10 +182,7 @@ fn collect_initial_state(
 }
 
 fn parse_case_arms(body: &str, state_vars: &[String]) -> Vec<CaseArm> {
-    let case_re: Regex = match Regex::new(r"(?ms)case\s+([^:]+?)\s*:") {
-        Ok(re) => re,
-        Err(_) => return Vec::new(),
-    };
+    let case_re: &Regex = regex!(r"(?ms)case\s+([^:]+?)\s*:");
     let markers: Vec<(usize, usize, String)> = case_re
         .captures_iter(body)
         .filter_map(|cap: regex::Captures<'_>| {
@@ -221,7 +217,7 @@ fn parse_label(text: &str, state_vars: &[String]) -> Option<LabelExpr> {
     if let Ok(value) = trimmed.parse::<i64>() {
         return Some(LabelExpr::Literal(value));
     }
-    let offset_re: Regex = Regex::new(r"^([A-Za-z_$][\w$]*)\s*([+\-])\s*(-?\d+)$").ok()?;
+    let offset_re: &Regex = regex!(r"^([A-Za-z_$][\w$]*)\s*([+\-])\s*(-?\d+)$");
     let cap: regex::Captures<'_> = offset_re.captures(trimmed)?;
     let var: String = cap.get(1)?.as_str().to_owned();
     if !state_vars.iter().any(|v: &String| v == &var) {
@@ -263,7 +259,7 @@ fn split_case_segment(segment: &str, state_vars: &[String]) -> (String, Vec<(Str
 }
 
 fn parse_compound_add(stmt: &str, state_vars: &[String]) -> Option<(String, i64)> {
-    let re: Regex = Regex::new(r"^([A-Za-z_$][\w$]*)\s*\+=\s*(.+)$").ok()?;
+    let re: &Regex = regex!(r"^([A-Za-z_$][\w$]*)\s*\+=\s*(.+)$");
     let cap: regex::Captures<'_> = re.captures(stmt.trim())?;
     let var: String = cap.get(1)?.as_str().to_owned();
     if !state_vars.iter().any(|v: &String| v == &var) {
@@ -279,7 +275,7 @@ fn eval_const_int(expr: &str) -> Option<i64> {
     if let Ok(value) = trimmed.parse::<i64>() {
         return Some(value);
     }
-    let binop_re: Regex = Regex::new(r"^(-?\d+)\s*([+\-])\s*(-?\d+)$").ok()?;
+    let binop_re: &Regex = regex!(r"^(-?\d+)\s*([+\-])\s*(-?\d+)$");
     let cap: regex::Captures<'_> = binop_re.captures(trimmed)?;
     let lhs: i64 = cap.get(1)?.as_str().parse::<i64>().ok()?;
     let rhs: i64 = cap.get(3)?.as_str().parse::<i64>().ok()?;

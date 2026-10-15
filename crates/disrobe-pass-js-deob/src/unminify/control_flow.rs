@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use lazy_regex::regex;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
@@ -11,17 +12,13 @@ pub(super) struct UnflattenStats {
 
 pub(super) fn unflatten(source: &str) -> (String, UnflattenStats) {
     let mut stats: UnflattenStats = UnflattenStats::default();
-    let Ok(prelude_re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?ms)(?:var|let|const)\s+(\w+)\s*=\s*['"]([\d|]+)['"]\s*\.\s*split\s*\(\s*['"]\|['"]\s*\)\s*,\s*(\w+)\s*=\s*0\s*;"#,
-    ) else {
-        return (source.to_owned(), stats);
-    };
+    let prelude_re: &Regex = regex!(
+        r#"(?ms)(?:var|let|const)\s+(\w+)\s*=\s*['"]([\d|]+)['"]\s*\.\s*split\s*\(\s*['"]\|['"]\s*\)\s*,\s*(\w+)\s*=\s*0\s*;"#
+    );
 
     let mut out: String = String::with_capacity(source.len());
     let mut cursor: usize = 0;
-    let Ok(close_re): Result<Regex, regex::Error> = Regex::new(r"^\s*break\s*;?\s*\}") else {
-        return (source.to_owned(), stats);
-    };
+    let close_re: &Regex = regex!(r"^\s*break\s*;?\s*\}");
     for prelude in prelude_re.captures_iter(source) {
         let Some(whole): Option<regex::Match<'_>> = prelude.get(0) else {
             continue;
@@ -111,7 +108,7 @@ fn scan_balanced_block(source: &str, body_start: usize) -> Option<(&str, usize)>
 }
 
 fn parse_cases(body: &str) -> Option<BTreeMap<String, String>> {
-    let head_re: Regex = Regex::new(r#"(?ms)case\s+['"](\d+)['"]\s*:"#).ok()?;
+    let head_re: &Regex = regex!(r#"(?ms)case\s+['"](\d+)['"]\s*:"#);
     let mut map: BTreeMap<String, String> = BTreeMap::new();
     let heads: Vec<Captures<'_>> = head_re.captures_iter(body).collect();
     for (idx, cap) in heads.iter().enumerate() {

@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -109,11 +110,7 @@ pub(super) fn build_graph(source: &str, modules: &[ExtractedModule]) -> ModuleGr
 fn collect_dynamic_chunks(source: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let Ok(import_re): Result<Regex, regex::Error> =
-        Regex::new(r#"import\s*\(\s*["']([^"']+)["']\s*\)"#)
-    else {
-        return out;
-    };
+    let import_re: &Regex = regex!(r#"import\s*\(\s*["']([^"']+)["']\s*\)"#);
     for cap in import_re.captures_iter(source) {
         let Some(path): Option<&str> = cap.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -122,11 +119,7 @@ fn collect_dynamic_chunks(source: &str) -> Vec<String> {
             out.push(path.to_owned());
         }
     }
-    let Ok(preload_re): Result<Regex, regex::Error> =
-        Regex::new(r#"__vitePreload\s*\([^)]*?["']([^"']+)["']"#)
-    else {
-        return out;
-    };
+    let preload_re: &Regex = regex!(r#"__vitePreload\s*\([^)]*?["']([^"']+)["']"#);
     for cap in preload_re.captures_iter(source) {
         let Some(path): Option<&str> = cap.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -135,11 +128,7 @@ fn collect_dynamic_chunks(source: &str) -> Vec<String> {
             out.push(path.to_owned());
         }
     }
-    let Ok(glob_re): Result<Regex, regex::Error> =
-        Regex::new(r#"import\.meta\.glob\s*\(\s*["']([^"']+)["']"#)
-    else {
-        return out;
-    };
+    let glob_re: &Regex = regex!(r#"import\.meta\.glob\s*\(\s*["']([^"']+)["']"#);
     for cap in glob_re.captures_iter(source) {
         let Some(pattern): Option<&str> = cap.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -153,11 +142,7 @@ fn collect_dynamic_chunks(source: &str) -> Vec<String> {
 }
 
 fn extract_named_export_functions(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(");
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {
@@ -188,11 +173,7 @@ fn extract_named_export_functions(source: &str, modules: &mut ModuleCollector) {
 }
 
 fn extract_import_statements(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"import\s+(?:[^;]+)\s+from\s+["']([^"']+)["']\s*;?"#)
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r#"import\s+(?:[^;]+)\s+from\s+["']([^"']+)["']\s*;?"#);
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for caps in re.captures_iter(source) {
         let Some(path): Option<&str> = caps.get(1).map(|m| m.as_str()) else {

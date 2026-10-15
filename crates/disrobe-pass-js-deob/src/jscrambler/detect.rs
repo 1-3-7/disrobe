@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -203,11 +204,7 @@ pub fn detect_full(source: &str) -> JscramblerDetection {
 }
 
 fn count_a0_hex_idents(text: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> =
-        Regex::new(r"\ba\d{1,2}_0x[0-9a-fA-F]{4,6}\b")
-    else {
-        return 0;
-    };
+    let re: &Regex = regex!(r"\ba\d{1,2}_0x[0-9a-fA-F]{4,6}\b");
     re.find_iter(text).count()
 }
 

@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -15,11 +16,9 @@ pub struct ShuffleReversalResult {
 pub fn reverse_shuffle(source: &str) -> ShuffleReversalResult {
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     let bytes: &[u8] = source.as_bytes();
-    let Ok(decl_re): Result<Regex, regex::Error> = Regex::new(
-        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*\[\s*((?:-?\d+\s*,\s*){2,}-?\d+)\s*\]\s*;",
-    ) else {
-        return passthrough(source);
-    };
+    let decl_re: &Regex = regex!(
+        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*\[\s*((?:-?\d+\s*,\s*){2,}-?\d+)\s*\]\s*;"
+    );
     for caps in decl_re.captures_iter(source) {
         let Some(list_match): Option<regex::Match<'_>> = caps.get(2) else {
             continue;

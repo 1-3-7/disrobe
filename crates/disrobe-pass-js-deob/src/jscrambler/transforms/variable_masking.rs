@@ -1,6 +1,7 @@
 use core::ops::Range;
 use std::collections::BTreeSet;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{BindingPatternKind, Expression, VariableDeclaration, VariableDeclarator};
@@ -15,9 +16,7 @@ use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(proxy_pattern()) else {
-        return 0;
-    };
+    let re: &Regex = proxy_pattern();
     re.find_iter(source).count()
 }
 
@@ -197,8 +196,8 @@ fn declarator_removal_span(declaration: &VariableDeclaration<'_>, index: usize) 
     }
 }
 
-const fn proxy_pattern() -> &'static str {
-    r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;"
+fn proxy_pattern() -> &'static Regex {
+    regex!(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*;")
 }
 
 #[cfg(test)]

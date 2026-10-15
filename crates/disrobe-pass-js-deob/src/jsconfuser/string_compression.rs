@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -72,11 +73,9 @@ const MAX_LZSTRING_DICT_ENTRIES: usize = 1 << 20;
 
 fn collect_lzstring_calls(source: &str, edits: &mut Vec<(Range<usize>, Option<String>)>) {
     let assigned_literals: BTreeMap<String, Vec<u16>> = collect_static_string_assignments(source);
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?ms)(?:\b[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*(?:\.\s*|\[\s*["']))?\b(?P<method>decompressFromBase64|decompressFromEncodedURIComponent|decompressFromUTF16|decompress)(?:["']\s*\])?\s*\("#,
-    ) else {
-        return;
-    };
+    let re: &Regex = regex!(
+        r#"(?ms)(?:\b[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*(?:\.\s*|\[\s*["']))?\b(?P<method>decompressFromBase64|decompressFromEncodedURIComponent|decompressFromUTF16|decompress)(?:["']\s*\])?\s*\("#
+    );
     for caps in re.captures_iter(source) {
         let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
             continue;
@@ -101,11 +100,7 @@ fn collect_lzstring_calls(source: &str, edits: &mut Vec<(Range<usize>, Option<St
 }
 
 fn collect_static_string_assignments(source: &str) -> BTreeMap<String, Vec<u16>> {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"(?ms)"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#)
-    else {
-        return BTreeMap::new();
-    };
+    let re: &Regex = regex!(r#"(?ms)"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#);
     let mut assignments: BTreeMap<String, Vec<u16>> = BTreeMap::new();
     for literal_match in re.find_iter(source) {
         let Some(eq_pos): Option<usize> = previous_non_ws(source, literal_match.start()) else {
@@ -267,11 +262,9 @@ fn normalize_js_expr(expr: &str) -> String {
 }
 
 fn collect_split_string_arrays(source: &str, edits: &mut Vec<(Range<usize>, Option<String>)>) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r#"(?ms)(?:var|let|const)\s+[A-Za-z_$][\w$]*\s*=\s*['"]([^'"]+)['"]\.split\(\s*['"]([^'"]{1,2})['"]\s*\)"#,
-    ) else {
-        return;
-    };
+    let re: &Regex = regex!(
+        r#"(?ms)(?:var|let|const)\s+[A-Za-z_$][\w$]*\s*=\s*['"]([^'"]+)['"]\.split\(\s*['"]([^'"]{1,2})['"]\s*\)"#
+    );
     for caps in re.captures_iter(source) {
         let Some(payload): Option<&str> = caps.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -304,11 +297,7 @@ fn collect_split_string_arrays(source: &str, edits: &mut Vec<(Range<usize>, Opti
 }
 
 fn collect_string_fromcharcode_runs(source: &str, edits: &mut Vec<(Range<usize>, Option<String>)>) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"String\.fromCharCode\(\s*((?:\s*\d+\s*,){2,}\s*\d+\s*)\)")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"String\.fromCharCode\(\s*((?:\s*\d+\s*,){2,}\s*\d+\s*)\)");
     for caps in re.captures_iter(source) {
         let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
             continue;

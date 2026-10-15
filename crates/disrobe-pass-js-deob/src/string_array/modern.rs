@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::sandbox::{
@@ -260,11 +261,8 @@ fn count_array_items(body: &str) -> usize {
 }
 
 fn accessor_name_set(source: &str, decoder: &str, toplevel_aliases: &[AliasDecl]) -> Vec<String> {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n)]")
-    else {
-        return vec![decoder.to_owned()];
-    };
+    let re: &Regex =
+        regex!(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n)]");
     let mut known: Vec<String> = vec![decoder.to_owned()];
     known.extend(toplevel_aliases.iter().map(|a| a.name.clone()));
     let mut progressed: bool = true;
@@ -330,12 +328,12 @@ struct IdentifierUse {
     is_provider: bool,
 }
 
-fn function_header_re() -> Option<Regex> {
-    Regex::new(r"function\s+([A-Za-z_$][\w$]*)\s*\(").ok()
+fn function_header_re() -> &'static Regex {
+    regex!(r"function\s+([A-Za-z_$][\w$]*)\s*\(")
 }
 
 fn find_provider(source: &str) -> Option<ProviderFn> {
-    let re: Regex = function_header_re()?;
+    let re: &Regex = function_header_re();
     let bytes: &[u8] = source.as_bytes();
     for cap in re.captures_iter(source) {
         let name: &str = cap.get(1)?.as_str();
@@ -366,7 +364,7 @@ fn is_provider_body(body: &str, name: &str) -> bool {
 }
 
 fn find_decoder(source: &str, provider: &str) -> Option<DecoderFn> {
-    let re: Regex = function_header_re()?;
+    let re: &Regex = function_header_re();
     let bytes: &[u8] = source.as_bytes();
     for cap in re.captures_iter(source) {
         let name: &str = cap.get(1)?.as_str();
@@ -400,11 +398,8 @@ fn is_decoder_body(body: &str, provider: &str) -> bool {
 }
 
 fn find_aliases(source: &str, decoder: &str) -> Vec<AliasDecl> {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n]")
-    else {
-        return Vec::new();
-    };
+    let re: &Regex =
+        regex!(r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*[;,\n]");
     let depths: Vec<usize> = brace_depth_table(source);
     let mut known: Vec<String> = vec![decoder.to_owned()];
     let mut out: Vec<AliasDecl> = Vec::new();
@@ -487,7 +482,7 @@ fn brace_depth_table(source: &str) -> Vec<usize> {
 }
 
 fn find_rotation_iife(source: &str, provider: &str) -> Option<Range<usize>> {
-    let re: Regex = Regex::new(r"\(function\s*\([^)]*\)\s*\{").ok()?;
+    let re: &Regex = regex!(r"\(function\s*\([^)]*\)\s*\{");
     let bytes: &[u8] = source.as_bytes();
     for m in re.find_iter(source) {
         let outer_open: usize = m.start();
@@ -613,11 +608,9 @@ fn build_prelude(
 }
 
 fn find_proxy_functions(source: &str, accessor_names: &[String]) -> Vec<ProxyFn> {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\{\s*return\s+([A-Za-z_$][\w$]*)\s*\(",
-    ) else {
-        return Vec::new();
-    };
+    let re: &Regex = regex!(
+        r"function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*\{\s*return\s+([A-Za-z_$][\w$]*)\s*\("
+    );
     let bytes: &[u8] = source.as_bytes();
     let mut known: Vec<String> = accessor_names.to_vec();
     let mut out: Vec<ProxyFn> = Vec::new();
@@ -954,14 +947,8 @@ fn inline_sites(
 }
 
 fn find_inbody_alias_edits(source: &str, accessor_names: &[String]) -> Vec<Range<usize>> {
-    let Ok(kw_re): Result<Regex, regex::Error> = Regex::new(r"\b(?:var|let|const)\b") else {
-        return Vec::new();
-    };
-    let Ok(alias_re): Result<Regex, regex::Error> =
-        Regex::new(r"^([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)$")
-    else {
-        return Vec::new();
-    };
+    let kw_re: &Regex = regex!(r"\b(?:var|let|const)\b");
+    let alias_re: &Regex = regex!(r"^([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)$");
     let depths: Vec<usize> = brace_depth_table(source);
     let bytes: &[u8] = source.as_bytes();
     let mut removals: Vec<Range<usize>> = Vec::new();
@@ -983,7 +970,7 @@ fn find_inbody_alias_edits(source: &str, accessor_names: &[String]) -> Vec<Range
             .iter()
             .enumerate()
             .filter_map(|(idx, part): (usize, &Range<usize>)| {
-                is_accessor_alias(&source[part.clone()], &alias_re, accessor_names).then_some(idx)
+                is_accessor_alias(&source[part.clone()], alias_re, accessor_names).then_some(idx)
             })
             .collect();
         if alias_indices.is_empty() {

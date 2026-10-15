@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -114,17 +115,13 @@ struct DefineCall<'source> {
 }
 
 fn count_define_calls(source: &str) -> usize {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"(?:^|[^.\w$])define\s*\(") else {
-        return 0;
-    };
+    let re: &Regex = regex!(r"(?:^|[^.\w$])define\s*\(");
     re.find_iter(source).count()
 }
 
 fn parse_define_calls(source: &str) -> Vec<DefineCall<'_>> {
     let bytes: &[u8] = source.as_bytes();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"(?:^|[^.\w$])define\s*\(") else {
-        return Vec::new();
-    };
+    let re: &Regex = regex!(r"(?:^|[^.\w$])define\s*\(");
     let mut out: Vec<DefineCall<'_>> = Vec::new();
     for mat in re.find_iter(source) {
         let paren_open: usize = mat.end() - 1;
@@ -181,8 +178,7 @@ fn parse_define_args(source: &str, start: usize, end: usize) -> Option<DefineCal
 fn extract_cjs_factory(source: &str, factory_start: usize, end: usize) -> Option<Vec<String>> {
     let bytes: &[u8] = source.as_bytes();
     let rest: &str = source.get(factory_start..end)?;
-    let header_re: Regex =
-        Regex::new(r"^function\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\(|^function\s*\(").ok()?;
+    let header_re: &Regex = regex!(r"^function\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\(|^function\s*\(");
     if !header_re.is_match(rest) {
         return None;
     }

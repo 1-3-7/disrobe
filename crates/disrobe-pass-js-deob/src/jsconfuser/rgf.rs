@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -151,8 +152,7 @@ impl Event {
 }
 
 fn find_rgf_declaration(source: &str) -> Option<RgfDeclaration> {
-    let header_re: Regex =
-        Regex::new(r"(?ms)(?:var|let|const)\s+(_rgf_\w*|_\w+_rgf)\s*=\s*\[").ok()?;
+    let header_re: &Regex = regex!(r"(?ms)(?:var|let|const)\s+(_rgf_\w*|_\w+_rgf)\s*=\s*\[");
     let Some(cap): Option<regex::Captures<'_>> = header_re.captures(source) else {
         return find_unprefixed_rgf_declaration(source);
     };
@@ -193,9 +193,7 @@ fn find_unprefixed_rgf_declaration(source: &str) -> Option<RgfDeclaration> {
 }
 
 fn body_contains_new_function(body: &str) -> bool {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"(?ms)\bnew\s+Function\s*\(") else {
-        return false;
-    };
+    let re: &Regex = regex!(r"(?ms)\bnew\s+Function\s*\(");
     re.is_match(body)
 }
 
@@ -203,7 +201,7 @@ fn parse_rgf_entries(body: &str) -> Option<Vec<String>> {
     let bytes: &[u8] = body.as_bytes();
     let mut entries: Vec<String> = Vec::new();
     let mut i: usize = 0;
-    let new_fn_re: Regex = Regex::new(r"(?ms)\bnew\s+Function\s*\(").ok()?;
+    let new_fn_re: &Regex = regex!(r"(?ms)\bnew\s+Function\s*\(");
     while i < bytes.len() {
         while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n' | b',') {
             i += 1;

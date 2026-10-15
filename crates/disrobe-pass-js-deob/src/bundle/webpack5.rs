@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkAnnotation, ChunkKind, ChunkNode, ModuleGraph};
@@ -15,11 +16,7 @@ pub(super) struct MagicComment {
 }
 
 pub(super) fn parse_magic_comments(source: &str) -> Vec<MagicComment> {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"import\s*\(\s*((?:/\*[\s\S]*?\*/\s*)+)?["']([^"']+)["']"#)
-    else {
-        return Vec::new();
-    };
+    let re: &Regex = regex!(r#"import\s*\(\s*((?:/\*[\s\S]*?\*/\s*)+)?["']([^"']+)["']"#);
     let mut out: Vec<MagicComment> = Vec::new();
     for caps in re.captures_iter(source) {
         let Some(target): Option<&str> = caps.get(2).map(|m: regex::Match<'_>| m.as_str()) else {
@@ -231,11 +228,9 @@ struct ConcatMarker {
 }
 
 fn scan_concat_markers(source: &str) -> Vec<ConcatMarker> {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"(?m)^[ \t]*;?[ \t]*//[ \t]*(?:CONCATENATED MODULE:[ \t]*)?((?:\./|\.\./|/)?[A-Za-z0-9_./@\-]+\.(?:js|mjs|cjs|jsx|ts|tsx))[ \t]*\r?$",
-    ) else {
-        return Vec::new();
-    };
+    let re: &Regex = regex!(
+        r"(?m)^[ \t]*;?[ \t]*//[ \t]*(?:CONCATENATED MODULE:[ \t]*)?((?:\./|\.\./|/)?[A-Za-z0-9_./@\-]+\.(?:js|mjs|cjs|jsx|ts|tsx))[ \t]*\r?$"
+    );
     let mut markers: Vec<ConcatMarker> = Vec::new();
     for caps in re.captures_iter(source) {
         let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
@@ -386,11 +381,8 @@ fn group_modules_by_chunk(
 fn collect_require_e_calls(source: &str) -> std::collections::BTreeMap<String, Vec<String>> {
     let mut out: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"__webpack_require__\.[et]\s*\(\s*([0-9]+|\x22[^\x22]+\x22|'[^']+')\s*\)")
-    else {
-        return out;
-    };
+    let re: &Regex =
+        regex!(r"__webpack_require__\.[et]\s*\(\s*([0-9]+|\x22[^\x22]+\x22|'[^']+')\s*\)");
     let mut all: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for cap in re.captures_iter(source) {
@@ -411,11 +403,9 @@ fn collect_require_e_calls(source: &str) -> std::collections::BTreeMap<String, V
 fn collect_chunk_push_ids(source: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"webpackChunk[A-Za-z_0-9$]*\s*\|\|\s*\[\]\)\.push\s*\(\s*\[\s*\[\s*([0-9]+|\x22[^\x22]+\x22|'[^']+')",
-    ) else {
-        return out;
-    };
+    let re: &Regex = regex!(
+        r"webpackChunk[A-Za-z_0-9$]*\s*\|\|\s*\[\]\)\.push\s*\(\s*\[\s*\[\s*([0-9]+|\x22[^\x22]+\x22|'[^']+')"
+    );
     for cap in re.captures_iter(source) {
         let Some(raw): Option<&str> = cap.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -429,11 +419,7 @@ fn collect_chunk_push_ids(source: &str) -> Vec<String> {
 }
 
 fn extract_module_table(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"(?:var|let|const)\s+__webpack_modules__\s*=\s*\(?\s*\{")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"(?:var|let|const)\s+__webpack_modules__\s*=\s*\(?\s*\{");
     let Some(mat): Option<regex::Match<'_>> = re.find(source) else {
         return;
     };
@@ -450,11 +436,9 @@ fn extract_module_table(source: &str, modules: &mut ModuleCollector) {
 }
 
 fn extract_chunk_push(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"(?:self|globalThis|window)\.webpackChunk[A-Za-z_0-9$]*(?:\s*=\s*(?:self|globalThis|window)\.webpackChunk[A-Za-z_0-9$]*\s*\|\|\s*\[\])?\s*\)?\s*\.\s*push\s*\(\s*\[",
-    ) else {
-        return;
-    };
+    let re: &Regex = regex!(
+        r"(?:self|globalThis|window)\.webpackChunk[A-Za-z_0-9$]*(?:\s*=\s*(?:self|globalThis|window)\.webpackChunk[A-Za-z_0-9$]*\s*\|\|\s*\[\])?\s*\)?\s*\.\s*push\s*\(\s*\["
+    );
     let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let array_open: usize = mat.end() - 1;

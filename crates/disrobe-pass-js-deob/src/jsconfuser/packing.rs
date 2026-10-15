@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -14,11 +15,9 @@ pub struct PackingReversalResult {
 #[must_use]
 pub fn reverse_packing(source: &str) -> PackingReversalResult {
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*\{",
-    ) else {
-        return passthrough(source);
-    };
+    let re: &Regex = regex!(
+        r"eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*\{"
+    );
     let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let body_open: usize = mat.end() - 1;

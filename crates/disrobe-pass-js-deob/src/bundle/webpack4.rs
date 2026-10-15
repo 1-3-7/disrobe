@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -125,11 +126,8 @@ fn group_modules_by_chunk(
 fn collect_require_e_chunks(source: &str) -> std::collections::BTreeMap<String, Vec<String>> {
     let mut out: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"__webpack_require__\.e\s*\(\s*([0-9]+|\x22[^\x22]+\x22|'[^']+')\s*\)")
-    else {
-        return out;
-    };
+    let re: &Regex =
+        regex!(r"__webpack_require__\.e\s*\(\s*([0-9]+|\x22[^\x22]+\x22|'[^']+')\s*\)");
     let mut all: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for cap in re.captures_iter(source) {
@@ -148,19 +146,14 @@ fn collect_require_e_chunks(source: &str) -> std::collections::BTreeMap<String, 
 }
 
 fn looks_like_webpack4_iife(text: &str) -> bool {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"\(function\s*\(\s*modules\s*\)\s*\{[\s\S]{0,2000}__webpack_require__")
-    else {
-        return false;
-    };
+    let re: &Regex =
+        regex!(r"\(function\s*\(\s*modules\s*\)\s*\{[\s\S]{0,2000}__webpack_require__");
     re.is_match(text)
 }
 
 fn extract_iife_array(source: &str, modules: &mut ModuleCollector) {
     let bytes: &[u8] = source.as_bytes();
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"\}\s*\)\s*\(\s*\[") else {
-        return;
-    };
+    let re: &Regex = regex!(r"\}\s*\)\s*\(\s*\[");
     for mat in re.find_iter(source) {
         let array_open: usize = mat.end() - 1;
         let Some(array_close): Option<usize> = find_bracket_close(bytes, array_open + 1) else {
@@ -243,11 +236,8 @@ fn split_array_function_entries(source: &str, array_open: usize) -> Vec<(usize, 
 }
 
 fn extract_jsonp_chunks(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(
-        r"webpackJsonp(?:\s*=\s*window\.webpackJsonp\s*\|\|\s*\[\])?\s*\.\s*push\s*\(\s*\[",
-    ) else {
-        return;
-    };
+    let re: &Regex =
+        regex!(r"webpackJsonp(?:\s*=\s*window\.webpackJsonp\s*\|\|\s*\[\])?\s*\.\s*push\s*\(\s*\[");
     let bytes: &[u8] = source.as_bytes();
     for mat in re.find_iter(source) {
         let array_open: usize = mat.end() - 1;

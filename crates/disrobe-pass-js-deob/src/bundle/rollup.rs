@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 #[cfg(test)]
@@ -92,11 +93,7 @@ pub(super) fn extract(source: &str) -> Vec<ExtractedModule> {
 }
 
 fn extract_export_const(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=");
     for caps in re.captures_iter(source) {
         let Some(name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {
             continue;
@@ -115,11 +112,7 @@ fn extract_export_const(source: &str, modules: &mut ModuleCollector) {
 }
 
 fn extract_export_functions(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(");
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {
@@ -149,11 +142,7 @@ fn extract_export_functions(source: &str, modules: &mut ModuleCollector) {
 }
 
 fn extract_export_classes(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"export\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"export\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)");
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {

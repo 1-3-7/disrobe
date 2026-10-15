@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::SourceType;
@@ -80,10 +81,9 @@ fn passthrough(source: &str, table_id: Option<String>) -> DispatcherReversalResu
 }
 
 fn find_table_declaration(source: &str) -> Option<(String, Range<usize>)> {
-    let re: Regex = Regex::new(
-        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*Object\s*\.\s*create\s*\(\s*null\s*\)\s*;?",
-    )
-    .ok()?;
+    let re: &Regex = regex!(
+        r"(?ms)(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*Object\s*\.\s*create\s*\(\s*null\s*\)\s*;?"
+    );
     let cap: regex::Captures<'_> = re.captures(source)?;
     let id: String = cap.get(1)?.as_str().to_owned();
     let whole: regex::Match<'_> = cap.get(0)?;
@@ -123,7 +123,7 @@ fn find_entry_assignments(source: &str, table_id: &str) -> Vec<(String, String, 
 
 fn find_dispatcher_fn(source: &str, table_id: &str) -> Option<(String, Range<usize>)> {
     let escaped: String = regex::escape(table_id);
-    let header_re: Regex = Regex::new(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(").ok()?;
+    let header_re: &Regex = regex!(r"(?ms)function\s+([A-Za-z_$][\w$]*)\s*\(");
     let bytes: &[u8] = source.as_bytes();
     let body_probe_re: Regex =
         Regex::new(&format!(r"(?ms){escaped}\s*\[[^\]]+\]\s*\.\s*apply\s*\(")).ok()?;

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use lazy_regex::regex;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     BindingPatternKind, Expression, Program, Statement, VariableDeclaration,
@@ -46,10 +47,7 @@ pub fn reverse_variable_masking(source: &str) -> VariableMaskingResult {
             edits.push((mat.start()..mat.end(), Some(String::new())));
         }
     }
-    let identifier_re: Regex = match Regex::new(r"[A-Za-z_$][\w$]*") {
-        Ok(re) => re,
-        Err(_) => return passthrough(source),
-    };
+    let identifier_re: &Regex = regex!(r"[A-Za-z_$][\w$]*");
     for mat in identifier_re.find_iter(source) {
         let name: &str = mat.as_str();
         if let Some(target) = resolved.get(name) {

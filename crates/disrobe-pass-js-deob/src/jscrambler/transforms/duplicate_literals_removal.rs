@@ -1,21 +1,18 @@
 use core::ops::Range;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::{TransformOpts, TransformOutput, TransformStats};
 use crate::jscrambler::scanner::apply_splice_edits;
 
 pub(in crate::jscrambler) fn detect(source: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(table_pattern()) else {
-        return 0;
-    };
+    let re: &Regex = table_pattern();
     re.find_iter(source).count()
 }
 
 pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> TransformOutput {
-    let Ok(re): core::result::Result<Regex, regex::Error> = Regex::new(table_pattern()) else {
-        return TransformOutput::noop(source);
-    };
+    let re: &Regex = table_pattern();
     let mut stats: TransformStats = TransformStats::default();
     let Some(cap): Option<regex::Captures<'_>> = re.captures(source) else {
         return TransformOutput::noop(source);
@@ -31,12 +28,11 @@ pub(in crate::jscrambler) fn reverse(source: &str, _opts: &TransformOpts) -> Tra
             stats,
         };
     };
-    let (Ok(literal_re), Ok(idx_re), Ok(any_use_re)): (
-        core::result::Result<Regex, regex::Error>,
+    let literal_re: &Regex = regex!(r#"'([^']*)'|"([^"]*)""#);
+    let (Ok(idx_re), Ok(any_use_re)): (
         core::result::Result<Regex, regex::Error>,
         core::result::Result<Regex, regex::Error>,
     ) = (
-        Regex::new(r#"'([^']*)'|"([^"]*)""#),
         Regex::new(&format!(
             r"\b{}\s*\[\s*(\d+)\s*\]",
             regex::escape(name.as_str())
@@ -102,8 +98,10 @@ fn index_edits(
         .collect()
 }
 
-const fn table_pattern() -> &'static str {
-    r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*\[\s*((?:['\x22][^'\x22]*['\x22]\s*,?\s*){2,})\]\s*;"
+fn table_pattern() -> &'static Regex {
+    regex!(
+        r"(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*\[\s*((?:['\x22][^'\x22]*['\x22]\s*,?\s*){2,})\]\s*;"
+    )
 }
 
 #[cfg(test)]

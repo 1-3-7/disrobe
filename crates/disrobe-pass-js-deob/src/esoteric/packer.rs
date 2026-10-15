@@ -1,3 +1,4 @@
+use lazy_regex::regex;
 use regex::Regex;
 use serde::Serialize;
 
@@ -58,16 +59,7 @@ pub fn unpack(source: &str) -> PackerDecode {
     };
     let outer_base: u32 = first.base;
     let outer_words: usize = first.words.len();
-    let Some(mut current): Option<String> = unpack_with(&first.payload, first.base, &first.words)
-    else {
-        return PackerDetection {
-            matched: true,
-            base: outer_base,
-            word_count: outer_words,
-            layers: 1,
-        }
-        .into_decode(None);
-    };
+    let mut current: String = unpack_with(&first.payload, first.base, &first.words);
     let mut layers: usize = 1;
     while layers < MAX_PEEL_LAYERS {
         if !current.contains(PACKER_SIGNATURE) {
@@ -76,10 +68,7 @@ pub fn unpack(source: &str) -> PackerDecode {
         let Some(inner): Option<PackerArgs> = extract_args(&current) else {
             break;
         };
-        let Some(next): Option<String> = unpack_with(&inner.payload, inner.base, &inner.words)
-        else {
-            break;
-        };
+        let next: String = unpack_with(&inner.payload, inner.base, &inner.words);
         if next == current {
             break;
         }
@@ -195,8 +184,8 @@ fn take_number(input: &str) -> Option<(&str, &str)> {
     Some((&trimmed[..end], &trimmed[end..]))
 }
 
-fn unpack_with(payload: &str, base: u32, words: &[String]) -> Option<String> {
-    let re: Regex = Regex::new(r"(?-u:\b\w+\b)").ok()?;
+fn unpack_with(payload: &str, base: u32, words: &[String]) -> String {
+    let re: &Regex = regex!(r"(?-u:\b\w+\b)");
     let out: std::borrow::Cow<'_, str> = re.replace_all(payload, |caps: &regex::Captures<'_>| {
         let token: &str = &caps[0];
         let Some(idx): Option<usize> = decode_base(token, base) else {
@@ -208,7 +197,7 @@ fn unpack_with(payload: &str, base: u32, words: &[String]) -> Option<String> {
             token.to_owned()
         }
     });
-    Some(out.into_owned())
+    out.into_owned()
 }
 
 fn decode_base(token: &str, base: u32) -> Option<usize> {

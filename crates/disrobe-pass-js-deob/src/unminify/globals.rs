@@ -1,4 +1,5 @@
 use base64::Engine as _;
+use lazy_regex::regex;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
@@ -14,16 +15,12 @@ pub(super) struct GlobalsEvalStats {
 
 pub(super) fn evaluate_globals(source: &str) -> (String, GlobalsEvalStats) {
     let mut stats: GlobalsEvalStats = GlobalsEvalStats::default();
-    let Ok(single): Result<Regex, regex::Error> = Regex::new(
-        r"\b(atob|unescape|decodeURI|decodeURIComponent)\s*\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*\)",
-    ) else {
-        return (source.to_owned(), stats);
-    };
-    let Ok(double): Result<Regex, regex::Error> = Regex::new(
-        r#"\b(atob|unescape|decodeURI|decodeURIComponent)\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*\)"#,
-    ) else {
-        return (source.to_owned(), stats);
-    };
+    let single: &Regex = regex!(
+        r"\b(atob|unescape|decodeURI|decodeURIComponent)\s*\(\s*'([^'\\]*(?:\\.[^'\\]*)*)'\s*\)"
+    );
+    let double: &Regex = regex!(
+        r#"\b(atob|unescape|decodeURI|decodeURIComponent)\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*\)"#
+    );
 
     let current: String = source.to_owned();
     let after_single: std::borrow::Cow<'_, str> =

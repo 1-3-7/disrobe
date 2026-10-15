@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -109,11 +110,7 @@ pub(super) fn build_graph(source: &str, modules: &[ExtractedModule]) -> ModuleGr
 fn collect_resolve_sync_calls(source: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"(?:Bun\.resolveSync|__require)\s*\(\s*["']([^"']+)["']"#)
-    else {
-        return out;
-    };
+    let re: &Regex = regex!(r#"(?:Bun\.resolveSync|__require)\s*\(\s*["']([^"']+)["']"#);
     for cap in re.captures_iter(source) {
         let Some(path): Option<&str> = cap.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
@@ -126,9 +123,7 @@ fn collect_resolve_sync_calls(source: &str) -> Vec<String> {
 }
 
 fn extract_bun_register_table(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"__bun_register\s*\(\s*\{") else {
-        return;
-    };
+    let re: &Regex = regex!(r"__bun_register\s*\(\s*\{");
     for mat in re.find_iter(source) {
         let object_open: usize = mat.end() - 1;
         let Some(entries): Option<Vec<super::scan::ObjectEntry>> =
@@ -147,11 +142,7 @@ fn extract_bun_register_table(source: &str, modules: &mut ModuleCollector) {
 }
 
 fn extract_export_functions(source: &str, modules: &mut ModuleCollector) {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
-    else {
-        return;
-    };
+    let re: &Regex = regex!(r"export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(");
     let bytes: &[u8] = source.as_bytes();
     for caps in re.captures_iter(source) {
         let Some(name): Option<&str> = caps.get(1).map(|m| m.as_str()) else {

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use base64::Engine as _;
+use lazy_regex::regex;
 use regex::{Captures, Regex};
 use serde::Serialize;
 
@@ -44,11 +45,7 @@ fn resolve_atob_aliases(source: &str) -> String {
 }
 
 fn strip_global_atob_btoa(source: &str) -> String {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r"\b(?:window|globalThis|self|global)\s*\.\s*(atob|btoa)\b")
-    else {
-        return source.to_owned();
-    };
+    let re: &Regex = regex!(r"\b(?:window|globalThis|self|global)\s*\.\s*(atob|btoa)\b");
     re.replace_all(source, |caps: &Captures<'_>| caps[1].to_owned())
         .into_owned()
 }
@@ -109,11 +106,7 @@ fn substitute_identifier(source: &str, alias: &str, target: &str) -> String {
 }
 
 fn fold_atob(source: &str, stats: &mut AtobIndirectionStats, payloads: &mut Vec<String>) -> String {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"\batob\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)"#)
-    else {
-        return source.to_owned();
-    };
+    let re: &Regex = regex!(r#"\batob\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)"#);
     let replaced: Cow<'_, str> = re.replace_all(source, |caps: &Captures<'_>| {
         let raw: Option<&str> = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
         let Some(payload): Option<&str> = raw else {
@@ -138,11 +131,7 @@ fn fold_atob(source: &str, stats: &mut AtobIndirectionStats, payloads: &mut Vec<
 }
 
 fn fold_btoa(source: &str, stats: &mut AtobIndirectionStats) -> String {
-    let Ok(re): Result<Regex, regex::Error> =
-        Regex::new(r#"\bbtoa\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)"#)
-    else {
-        return source.to_owned();
-    };
+    let re: &Regex = regex!(r#"\bbtoa\s*\(\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")\s*\)"#);
     let replaced: Cow<'_, str> = re.replace_all(source, |caps: &Captures<'_>| {
         let raw: Option<&str> = caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str());
         let Some(payload): Option<&str> = raw else {

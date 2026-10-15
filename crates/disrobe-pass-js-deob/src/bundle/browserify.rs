@@ -1,5 +1,6 @@
 use super::limits::ModuleCollector;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::graph::{ChunkNode, ModuleGraph};
@@ -92,11 +93,7 @@ pub(super) fn build_graph(source: &str, modules: &[ExtractedModule]) -> ModuleGr
 
 fn extract_browser_pack(source: &str, modules: &mut ModuleCollector) {
     let bytes: &[u8] = source.as_bytes();
-    let Ok(open_re): Result<Regex, regex::Error> =
-        Regex::new(r"\}\s*\)\s*(?:\(\s*\)\s*)?\(\s*[\{\[]")
-    else {
-        return;
-    };
+    let open_re: &Regex = regex!(r"\}\s*\)\s*(?:\(\s*\)\s*)?\(\s*[\{\[]");
     for mat in open_re.find_iter(source) {
         let open_byte: usize = mat.end() - 1;
         let modules_started: usize = modules.len();
@@ -192,9 +189,7 @@ fn split_pack_pair(source: &str, start: usize, hard_end: usize) -> Option<(&str,
         return None;
     }
     let func_start: usize = i;
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(r"^function\s*\(") else {
-        return None;
-    };
+    let re: &Regex = regex!(r"^function\s*\(");
     if !re.is_match(source.get(func_start..)?) {
         return None;
     }

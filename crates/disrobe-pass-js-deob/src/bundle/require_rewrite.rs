@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use lazy_regex::regex;
 use regex::Regex;
 
 use super::ExtractedModule;
@@ -36,7 +37,7 @@ fn unwrap_module_wrapper(source: &str) -> Option<String> {
     } else {
         trimmed_start
     };
-    let re: Regex = Regex::new(r"^function\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\(|^function\s*\(").ok()?;
+    let re: &Regex = regex!(r"^function\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\(|^function\s*\(");
     let rest: &str = source.get(func_start..)?;
     let paren_open: usize = if let Some(header) = re.find(rest) {
         func_start + header.end() - 1
