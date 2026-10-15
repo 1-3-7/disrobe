@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2344 bounds (count 226, other 1101, output 69, recursion 233, size 528, work 187).
+2347 bounds (count 227, other 1101, output 69, recursion 234, size 529, work 187).
 
-Exceeded: error 962, recorded 197, panic 0, delegated 49, silent 1077, unclassified 18, allocation 33, unused 8.
+Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -276,6 +276,7 @@ Exceeded: error 962, recorded 197, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-cli` | `MAX_IN_HOUSE_DEX_CLASSES` | other | recorded: flag `omitted` | `usize` | `65_536` | `crates/disrobe-cli/src/cli/jvm.rs` |
 | `disrobe-cli` | `MAX_IN_HOUSE_DEX_INPUT_BYTES` | size | error: untyped `miette!` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-cli/src/cli/jvm.rs` |
 | `disrobe-cli` | `MAX_IN_HOUSE_DEX_OUTPUT_BYTES` | output | error: untyped `miette!` | `usize` | `128 * 1024 * 1024` | `crates/disrobe-cli/src/cli/jvm.rs` |
+| `disrobe-cli` | `MAX_KEYED_ARCHIVE_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/macho.rs` |
 | `disrobe-cli` | `DELPHI_LIST_LIMIT` | other | silent: `.take()` in `render_delphi_classes`; `.take()` in `render_delphi_forms`; `.take()` in `render_delphi_types`; 3 more | `usize` | `20` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `DEVIRT_FUNCTION_LIMIT` | other | unclassified: compound assignment in `decompile_native_pcode`; value in `decompile_native_pcode` | `usize` | `2048` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `DIFF_DEFAULT_LISTING_LIMIT` | other | error: untyped `miette!` | `usize` | `25` | `crates/disrobe-cli/src/cli/native.rs` |
@@ -2080,6 +2081,8 @@ Exceeded: error 962, recorded 197, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-pass-swift-objc` | `MAX_ENTRY_BYTES` | size | error: `Error::Ipa` (DR-IOS-0002) | `u64` | `512 * 1024 * 1024` | `crates/disrobe-pass-swift-objc/src/ipa.rs` |
 | `disrobe-pass-swift-objc` | `MAX_PREALLOC` | other | allocation: `with_capacity` in `read_zip_entry_limited` | `u64` | `64 * 1024 * 1024` | `crates/disrobe-pass-swift-objc/src/ipa.rs` |
 | `disrobe-pass-swift-objc` | `MAX_ZIP_ENTRY_COUNT` | count | error: `Error::Ipa` (DR-IOS-0002) | `usize` | `65_536` | `crates/disrobe-pass-swift-objc/src/ipa.rs` |
+| `disrobe-pass-swift-objc` | `MAX_DEPTH` | recursion | recorded: `ArchivedValue::Truncated` | `usize` | `256` | `crates/disrobe-pass-swift-objc/src/keyed_archive.rs` |
+| `disrobe-pass-swift-objc` | `MAX_NODES` | count | recorded: `ArchivedValue::Truncated` | `usize` | `1_000_000` | `crates/disrobe-pass-swift-objc/src/keyed_archive.rs` |
 | `disrobe-pass-swift-objc` | `FAT_ARCH_COUNT_CAP` | count | error: `Error::BadFatHeader` (DR-IOS-0006) | `usize` | `4096` | `crates/disrobe-pass-swift-objc/src/macho.rs` |
 | `disrobe-pass-swift-objc` | `MAX_DYLIBS` | other | silent: skipped in `parse_slice` | `usize` | `4096` | `crates/disrobe-pass-swift-objc/src/macho.rs` |
 | `disrobe-pass-swift-objc` | `MAX_EXPORT_DEPTH` | recursion | silent: `return` in `walk_export_node` | `usize` | `128` | `crates/disrobe-pass-swift-objc/src/macho.rs` |
