@@ -1,0 +1,36 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "Microsoft C/C++ Optimizing Compiler 19.44.35229 for x64, Microsoft Incremental Linker 14.44.35229.0, Windows SDK 10.0.26100.0"
+note = "self-authored C whose MSVC /O2 /GS build passes the addresses of stack locals (a struct, an int array, a /GS-guarded byte buffer zeroed with a 16-byte vector store) to callees, calls a variadic function with six arguments, and keeps out-parameters and a va_list in the home area; graded by crates/disrobe-pass-native/tests/oracles/msvc_decompile_behaviour.rs, which compiles the recovered C with clang and runs it against the original function inside this DLL, and which requires the home-area address cases to be refused"
+
+[provenance]
+compile = "cl /nologo /c /O2 /GS /Gy /Brepro /Fo:address_taken.obj address_taken.c; cl /nologo /c /O2 /GS- /Gy /Brepro /Fo:gs_support.obj gs_support.c"
+link = "link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x180000000 /Brepro /OPT:REF /OPT:NOICF /OUT:address_taken.dll address_taken.obj gs_support.obj"
+environment = "INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 include and x64 library directories; no CRT is linked (/NOENTRY /NODEFAULTLIB), so gs_support.c supplies __security_cookie, __security_check_cookie, __GSHandlerCheck and a load configuration naming the cookie; the fixed base lets the recovered C and the original share absolute addresses"
+reproducible = "relinking the same objects under the same output name yields the same bytes (/Brepro); no debug information or host path is embedded"
+
+[[fixture]]
+name = "address_taken.c"
+path = "address_taken.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "24a42c27e3393fe1321d4e030b5dfb1e83e10e8a8917ec58690acefb0638894f"
+description = "callers that pass &local struct, &local array and a guarded local byte buffer to callees, a six-argument call to a variadic summing function, and out-parameters MSVC keeps in the home area"
+
+[[fixture]]
+name = "gs_support.c"
+path = "gs_support.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "c01350025cb969d4614927b1cfd81a25529b8c5494867b94ebf0b72cf56bb053"
+description = "the /GS cookie, its checker, the GS exception handler stub and the load configuration that names the cookie"
+
+[[fixture]]
+name = "address_taken.dll"
+path = "address_taken.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "address_taken.c"
+sha256 = "6a6a9e5ed86e13ce040ec91708a50f2aa85554e298a327eeb41e0446310ff971"
+description = "the MSVC /O2 /GS build; exports call_va, through_out_params, through_struct, through_array and guarded_scan"

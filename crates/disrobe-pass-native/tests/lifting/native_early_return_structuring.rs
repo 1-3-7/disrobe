@@ -1691,9 +1691,6 @@ fn early_exit_shapes_recompile_to_equivalence_or_name_their_abstention() {
 
 const SIBLING_TAIL_IN_MULTI_RETURN: &str = "__attribute__((noinline,noclone)) long long DISROBE_EARLY_RETURN_ABI er_sib_h(long long x, long long y){ return x * 3 + y; }\nlong long DISROBE_EARLY_RETURN_ABI er_sib_entry(long long a, long long b, long long c){ if (a < 0) return -1; if (b < 0) return -2; long long s = c; for (long long i = 0; i < 12; i++) { s = er_sib_h(a + i, b + s); } return s; }";
 
-const LEAVES_FUNCTION_PRECONDITION: &str =
-    "a direct jump leaves this function, so its target is not an edge inside the block graph";
-
 const fn sibling_tail_shape(permit_sibling_calls: bool) -> ExitShape {
     ExitShape {
         tag: "sibling_tail_in_multi_return",
@@ -1724,19 +1721,34 @@ fn recover_sibling_tail(shape: &ExitShape, opt: &str, extra: &[&str]) -> Recover
     recover_shape(&object, shape, PseudoAbi::MsX64)
 }
 
+static SIBLING_TAIL_AFTER_EPILOGUE: ExitShape = sibling_tail_shape(true);
+
 #[test]
-fn a_sibling_tail_call_among_several_returns_abstains_instead_of_becoming_a_back_edge() {
-    let shape: ExitShape = sibling_tail_shape(true);
-    let outcome: RecoverOutcome = recover_sibling_tail(&shape, "-O3", &[]);
-    let RecoverOutcome::Abstained(reason) = outcome else {
+fn a_sibling_tail_call_after_an_epilogue_recovers_as_a_call_and_recompiles_equivalent() {
+    let outcome: RecoverOutcome = recover_sibling_tail(&SIBLING_TAIL_AFTER_EPILOGUE, "-O3", &[]);
+    let RecoverOutcome::Ok(recovered) = outcome else {
         panic!(
-            "a tail jump to a callee that sits below this function's entry must not be resolved as an intra-function edge"
+            "a tail jump made after the epilogue restores the entry stack must recover as a call"
         );
     };
     assert!(
-        reason.contains(LEAVES_FUNCTION_PRECONDITION),
-        "the abstention must name the precondition that failed, got: {reason}"
+        recovered.tu.contains("rec_er_sib_h("),
+        "the callee below this function's entry must be reached as a call, never as an intra-function edge: {}",
+        recovered.tu
     );
+    let compiler: CompilerId = available_x86_compilers()
+        .into_iter()
+        .find(|compiler: &CompilerId| compiler.bin == "gcc")
+        .expect("gcc compiles the sibling-tail fixture");
+    let row: ExitRow = grade_row(
+        &SIBLING_TAIL_AFTER_EPILOGUE,
+        &compiler,
+        "-O3",
+        AbiTarget::MsX64,
+        true,
+    );
+    assert!(matches!(row.verdict, Verdict::Equivalent), "{row:?}");
+    assert!(row.teeth_confirmed, "{row:?}");
 }
 
 #[test]

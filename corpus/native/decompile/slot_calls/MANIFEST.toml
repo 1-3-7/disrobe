@@ -1,0 +1,28 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "Microsoft C/C++ Optimizing Compiler 19.44.35229 for x64, Microsoft Incremental Linker 14.44.35229.0, Windows SDK 10.0.26100.0"
+note = "self-authored C whose MSVC /O2 /MD build calls KERNEL32 and UCRT imports through their import-address-table slots and calls a function pointer held in a writable global and one loaded into a register; graded by crates/disrobe-pass-native/tests/oracles/msvc_decompile_behaviour.rs, which compiles the recovered C with clang and runs it against the original function inside this DLL, and which requires the floating-point import call to be refused"
+
+[provenance]
+compile = "cl /nologo /c /O2 /MD /GS- /Gy /Brepro /Fo:slot_calls.obj slot_calls.c"
+link = "link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x180000000 /Brepro /OPT:REF /OPT:NOICF /OUT:slot_calls.dll slot_calls.obj kernel32.lib ucrt.lib"
+environment = "INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 include and x64 library directories; /MD makes every UCRT call an import-table call; no CRT startup code is linked (/NOENTRY /NODEFAULTLIB), so the source defines _fltused itself; the fixed base lets the recovered C and the original share absolute addresses"
+reproducible = "rebuilding with the commands above yields the same bytes (/Brepro); no debug information or host path is embedded"
+
+[[fixture]]
+name = "slot_calls.c"
+path = "slot_calls.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "625886215302b40b3cb526f0cb622b424b1a8bd7360c369278693e0f628fa903"
+description = "MulDiv and CompareStringA called through the import table (the second with stack arguments), a function pointer global called through its slot, a function pointer loaded from a constant table and called through a register, lround called through the import table with a double argument, and free called through the import table before a three-argument sibling call"
+
+[[fixture]]
+name = "slot_calls.dll"
+path = "slot_calls.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "slot_calls.c"
+sha256 = "2620aed913990cc8c6ce8297b7d198cd6d12ec0b0ab9fa3c4a3164123d0117ab"
+description = "the MSVC /O2 build of slot_calls.c; exports scale_by_import, compare_through_import, call_through_global, call_through_register, release_twice and round_through_import; imports MulDiv and CompareStringA from KERNEL32.dll, free from api-ms-win-crt-heap-l1-1-0.dll and lround from api-ms-win-crt-math-l1-1-0.dll"

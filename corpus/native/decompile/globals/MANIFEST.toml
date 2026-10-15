@@ -1,0 +1,28 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "Microsoft C/C++ Optimizing Compiler 19.44.35229 for x64, Microsoft Incremental Linker 14.44.35229.0, Windows SDK 10.0.26100.0"
+note = "self-authored C whose MSVC /O2 build reads, writes, compares and tests writable and read-only globals through RIP-relative operands, and tests a byte in memory and a register pair with `test`; graded by crates/disrobe-pass-native/tests/oracles/msvc_decompile_behaviour.rs, which compiles the recovered C with clang, runs it against the original function inside this DLL, restores the DLL's writable sections before each call and compares them after it"
+
+[provenance]
+compile = "cl /nologo /c /O2 /GS- /Gy /Brepro /Fo:globals.obj globals.c"
+link = "link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x180000000 /Brepro /OPT:REF /OPT:NOICF /OUT:globals.dll globals.obj"
+environment = "INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 include and x64 library directories; no CRT is linked (/NOENTRY /NODEFAULTLIB); the fixed base lets the recovered C and the original share the globals' absolute addresses"
+reproducible = "rebuilding with the commands above yields the same bytes (/Brepro); no debug information or host path is embedded"
+
+[[fixture]]
+name = "globals.c"
+path = "globals.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "0be785e36d03eff2c6343f5bdf1f473cb615c7e8fc7a4609703b51382fb86e54"
+description = "a 64-bit counter updated in place and clamped, a constant table indexed through a RIP-relative base, a static mode word written and tested, a volatile byte read and rewritten, and bit tests of a global byte, a byte table entry and a register pair"
+
+[[fixture]]
+name = "globals.dll"
+path = "globals.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "globals.c"
+sha256 = "097bf74a24ac6b436dbf17dda6612e9455da9f7b7c95a8a38ee061c2eec88d0e"
+description = "the MSVC /O2 build of globals.c; exports bump, table_pick, set_mode, mode_flags, clamp_counter, toggle_flags, flag_bit, masked_counter, bits_test, bits_select and byte_table_test"

@@ -7,6 +7,7 @@ mod copyprop_oracle;
 mod ebpf_oracle;
 mod emu_strings_memdelta_oracle;
 mod ignored_tests_are_classified;
+mod msvc_decompile_behaviour;
 mod native_recompile_matrix;
 mod native_typed_locals_oracle;
 mod pseudo_c_const_division_oracle;

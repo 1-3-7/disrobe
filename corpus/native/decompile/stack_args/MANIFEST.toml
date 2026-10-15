@@ -1,0 +1,28 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-14"
+toolchain = "Microsoft C/C++ Optimizing Compiler 19.44.35229 for x64, Microsoft Incremental Linker 14.44.35229.0, Windows SDK 10.0.26100.0"
+note = "self-authored C whose MSVC /O2 build passes arguments five to seven through the outgoing stack area ([rsp+0x20] upward) and whose callees read them back from their incoming stack slots; graded by crates/disrobe-pass-native/tests/oracles/msvc_decompile_behaviour.rs, which compiles the recovered C with clang and runs it against the original function inside this DLL"
+
+[provenance]
+compile = "cl /nologo /c /O2 /GS- /Gy /Brepro /Fo:stack_args.obj stack_args.c"
+link = "link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x180000000 /Brepro /OPT:REF /OPT:NOICF /OUT:stack_args.dll stack_args.obj"
+environment = "INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 include and x64 library directories; no CRT is linked (/NOENTRY /NODEFAULTLIB), and the fixed base lets the recovered C and the original share absolute addresses"
+reproducible = "rebuilding with the commands above yields the same bytes (/Brepro); no debug information or host path is embedded"
+
+[[fixture]]
+name = "stack_args.c"
+path = "stack_args.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "f63448a37f8742dfcaea34c7eae4280491cd319024f905ac039cecb54305d539"
+description = "six- and seven-argument callees (mix6, mix7, pick5 and an opaque_mix6 the decompiler refuses) and the exported callers that store their stack arguments: a resolved sibling, an unresolved callee, a null pointer argument and 32-bit arguments"
+
+[[fixture]]
+name = "stack_args.dll"
+path = "stack_args.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "stack_args.c"
+sha256 = "98c3a78af0e199196f1a6255849d8804e8558bdfd994eb2b268956d60658c0a9"
+description = "the MSVC /O2 build of stack_args.c; exports pass_six, pass_unresolved, pass_null, pass_five_int and the jump thunks call_mix6 and call_mix7"

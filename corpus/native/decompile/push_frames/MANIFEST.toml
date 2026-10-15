@@ -1,0 +1,28 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "Microsoft C/C++ Optimizing Compiler 19.44.35229 for x64, Microsoft Incremental Linker 14.44.35229.0, Windows SDK 10.0.26100.0"
+note = "self-authored C whose MSVC /O2 build saves callee-saved registers with pushes and with home-area stores before `sub rsp`, keeps values in its own home area across calls, reads incoming stack arguments past the pushed registers and passes outgoing stack arguments from a push-built frame; graded by crates/disrobe-pass-native/tests/oracles/msvc_decompile_behaviour.rs, which compiles the recovered C with clang and runs it against the original function inside this DLL"
+
+[provenance]
+compile = "cl /nologo /c /O2 /GS- /Gy /Brepro /Fo:push_frames.obj push_frames.c"
+link = "link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x180000000 /Brepro /OPT:REF /OPT:NOICF /OUT:push_frames.dll push_frames.obj"
+environment = "INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 include and x64 library directories; no CRT is linked (/NOENTRY /NODEFAULTLIB), and the fixed base lets the recovered C and the original share absolute addresses"
+reproducible = "rebuilding with the commands above yields the same bytes (/Brepro); no debug information or host path is embedded"
+
+[[fixture]]
+name = "push_frames.c"
+path = "push_frames.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "f64d7d09601c337ede77a79d4e1ede1179ae015fe1044c76ed0cdfeff68fdf31"
+description = "callers whose frames are built by pushes: seven-argument calls made twice, values kept in callee-saved registers and spilled to the home area across calls, incoming stack arguments read after a call, a loop of calls and a frameless six-argument leaf"
+
+[[fixture]]
+name = "push_frames.dll"
+path = "push_frames.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "push_frames.c"
+sha256 = "38608c919eb96d52a97acf27c85e5c0ca956226b432d9b904975b83cfee54d2e"
+description = "the MSVC /O2 build of push_frames.c; exports pass_seven_twice, keep_across_calls, wide_leaf, chain_calls, call_wide_leaf, stack_args_across_call and spill_across_calls"
