@@ -84,7 +84,7 @@ pub(crate) struct FigureBudget {
     pub(crate) digest: &'static str,
 }
 
-const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 31] = [
+const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 32] = [
     FigureBudget {
         path: "README.md",
         figures: 3,
@@ -164,6 +164,11 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 31] = [
         path: "docs/src/languages/dotnet.md",
         figures: 3,
         digest: "a1727cb174b2b88b",
+    },
+    FigureBudget {
+        path: "docs/src/languages/evm.md",
+        figures: 6,
+        digest: "10035ec20e0cdb88",
     },
     FigureBudget {
         path: "docs/src/languages/go.md",
