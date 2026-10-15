@@ -1,5 +1,7 @@
-"""Write the authored asset catalog in corpus/apple/src/Assets.xcassets: an app icon, a
-three-scale image set, a colour set and a data set, from deterministic stdlib-made PNGs."""
+"""Write the authored asset catalog in corpus/apple/src/Assets.xcassets: a patterned app icon,
+a three-scale patterned image set, a colour set and a data set, from deterministic stdlib-made
+PNGs whose every opaque pixel follows icon_colour or badge_colour, so a decoder is graded on
+pixel values, row order and channel order."""
 
 import json
 import pathlib
@@ -10,8 +12,20 @@ import zlib
 root = pathlib.Path(sys.argv[1]) / 'Assets.xcassets'
 
 
+def icon_colour(x, y):
+    return ((x >> 2) & 0xff, (y >> 2) & 0xff, (((x >> 6) + (y >> 6)) * 16) & 0xff, 255)
+
+
+def badge_colour(scale, x, y):
+    return ((x * 37 + scale * 11) % 256, (y * 53) % 256, ((x + y) * 29) % 256, 255)
+
+
 def png(width, height, colour):
-    raw = b''.join(b'\x00' + bytes(colour) * width for _ in range(height))
+    def row(y):
+        pixels = b''.join(bytes(colour(x, y)) for x in range(width))
+        return b'\x01' + bytes((pixels[i] - (pixels[i - 4] if i >= 4 else 0)) & 0xff for i in range(len(pixels)))
+
+    raw = b''.join(row(y) for y in range(height))
 
     def chunk(kind, data):
         body = kind + data
@@ -31,7 +45,7 @@ write_json(root / 'Contents.json', {'info': info})
 
 icon = root / 'AppIcon.appiconset'
 (icon).mkdir(parents=True, exist_ok=True)
-(icon / 'icon-1024.png').write_bytes(png(1024, 1024, (32, 96, 160, 255)))
+(icon / 'icon-1024.png').write_bytes(png(1024, 1024, icon_colour))
 write_json(icon / 'Contents.json', {
     'images': [{'filename': 'icon-1024.png', 'idiom': 'universal', 'platform': 'ios', 'size': '1024x1024'}],
     'info': info,
@@ -42,7 +56,7 @@ image.mkdir(parents=True, exist_ok=True)
 images = []
 for scale in (1, 2, 3):
     name = f'badge@{scale}x.png'
-    (image / name).write_bytes(png(16 * scale, 12 * scale, (200, 40 + 50 * scale, 20, 255)))
+    (image / name).write_bytes(png(16 * scale, 12 * scale, lambda x, y, s=scale: badge_colour(s, x, y)))
     images.append({'filename': name, 'idiom': 'universal', 'scale': f'{scale}x'})
 write_json(image / 'Contents.json', {'images': images, 'info': info})
 
