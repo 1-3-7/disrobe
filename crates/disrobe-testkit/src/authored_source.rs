@@ -147,7 +147,22 @@ fn authorize_from_manifest(
             actual,
         });
     }
-    Ok(resolved)
+    Ok(without_verbatim_prefix(resolved))
+}
+
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let plain: Option<PathBuf> = path
+        .to_str()
+        .and_then(|text: &str| text.strip_prefix(r"\\?\"))
+        .filter(|rest: &&str| {
+            let bytes: &[u8] = rest.as_bytes();
+            bytes.len() > 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'\\'
+        })
+        .map(PathBuf::from);
+    plain.unwrap_or(path)
 }
 
 fn parse_manifest(text: &str) -> Result<BTreeMap<String, String>, AuthoredSourceError> {
@@ -203,7 +218,7 @@ fn is_sha256(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthoredSourceError, authorize_from_manifest};
+    use super::{AuthoredSourceError, authorize_from_manifest, without_verbatim_prefix};
 
     const MARKER: &[u8] = b"print('approved')\n";
 
@@ -296,5 +311,16 @@ mod tests {
             AuthoredSourceError::OutsideWorkspace { .. }
         ));
         Ok(())
+    }
+
+    #[test]
+    fn verbatim_drive_paths_lose_their_prefix_and_unc_paths_keep_it() {
+        let drive: std::path::PathBuf = std::path::PathBuf::from(r"\\?\C:\work\a.php");
+        assert_eq!(
+            without_verbatim_prefix(drive),
+            std::path::PathBuf::from(r"C:\work\a.php")
+        );
+        let unc: std::path::PathBuf = std::path::PathBuf::from(r"\\?\UNC\host\share\a.php");
+        assert_eq!(without_verbatim_prefix(unc.clone()), unc);
     }
 }
