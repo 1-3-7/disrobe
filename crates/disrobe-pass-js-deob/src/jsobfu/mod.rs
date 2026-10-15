@@ -1,11 +1,14 @@
 mod detect;
 mod fold_chars;
+mod literals;
 mod rewrite;
 
 use serde::Serialize;
 
 pub use detect::{JsObfuDetection, detect_jsobfu};
 pub use fold_chars::{CharFoldStats, fold_char_constructors};
+pub use literals::LiteralSettleStats;
+use literals::settle_literals;
 pub use rewrite::{JsObfuRewriteStats, rewrite_bracket_access};
 
 use crate::error::Result;
@@ -18,6 +21,7 @@ pub struct JsObfuRecovery {
     pub source: String,
     pub char_fold: CharFoldStats,
     pub bracket_rewrite: JsObfuRewriteStats,
+    pub literal_settle: LiteralSettleStats,
     pub passes_run: usize,
 }
 
@@ -29,6 +33,7 @@ pub fn recover(source: &str) -> JsObfuRecovery {
             source: source.to_owned(),
             char_fold: CharFoldStats::default(),
             bracket_rewrite: JsObfuRewriteStats::default(),
+            literal_settle: LiteralSettleStats::default(),
             passes_run: 0,
         },
     }
@@ -53,7 +58,9 @@ pub fn try_recover(source: &str) -> Result<JsObfuRecovery> {
             break;
         }
     }
-    let (peeled, _peephole): (String, UnminifyStats) = unminify(&current);
+    let (settled, settle_stats): (String, LiteralSettleStats) = settle_literals(&current);
+    recovery.literal_settle = settle_stats;
+    let (peeled, _peephole): (String, UnminifyStats) = unminify(&settled);
     let (beautified, _ast): (String, AstUnminifyStats) = try_unminify_ast(&peeled)?;
     recovery.source = beautified;
     Ok(recovery)

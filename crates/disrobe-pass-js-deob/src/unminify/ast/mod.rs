@@ -1417,6 +1417,18 @@ fn apply_edits(source: &str, edits: &[Edit]) -> Option<String> {
     splice_edits(source, edits)
 }
 
+pub(crate) fn splice_spans(source: &str, spans: Vec<(usize, usize, String)>) -> Option<String> {
+    let edits: Vec<Edit> = spans
+        .into_iter()
+        .map(|(start, end, replacement): (usize, usize, String)| Edit {
+            start,
+            end,
+            replacement,
+        })
+        .collect();
+    splice_edits(source, &edits)
+}
+
 fn splice_edits(source: &str, edits: &[Edit]) -> Option<String> {
     let mut sorted: Vec<&Edit> = edits.iter().collect();
     sorted.sort_by(|a, b| b.start.cmp(&a.start).then_with(|| b.end.cmp(&a.end)));

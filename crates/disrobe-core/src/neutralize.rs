@@ -34,6 +34,12 @@ pub enum RuntimeCheck {
     CpuidHypervisorLeaf,
     TlsCallback,
     VectoredExceptionHandler,
+    JsDomainLock,
+    JsHostEnvironmentProbe,
+    JsDateLock,
+    JsDebuggerTrap,
+    JsConsoleHijack,
+    JsIntegrityHash,
 }
 
 impl RuntimeCheck {
@@ -64,6 +70,12 @@ impl RuntimeCheck {
             Self::CpuidHypervisorLeaf => "cpuid-hypervisor-leaf",
             Self::TlsCallback => "tls-callback",
             Self::VectoredExceptionHandler => "vectored-exception-handler",
+            Self::JsDomainLock => "js-domain-lock",
+            Self::JsHostEnvironmentProbe => "js-host-environment-probe",
+            Self::JsDateLock => "js-date-lock",
+            Self::JsDebuggerTrap => "js-debugger-trap",
+            Self::JsConsoleHijack => "js-console-hijack",
+            Self::JsIntegrityHash => "js-integrity-hash",
         }
     }
 
@@ -84,11 +96,16 @@ impl RuntimeCheck {
             | Self::Int2dTrap
             | Self::IcebpTrap
             | Self::TlsCallback
-            | Self::VectoredExceptionHandler => Technique::AntiDebug,
-            Self::RdtscDelta | Self::TickCountDelta | Self::PerformanceCounterDelta => {
-                Technique::TimingEvasion
-            }
+            | Self::VectoredExceptionHandler
+            | Self::JsDebuggerTrap
+            | Self::JsConsoleHijack => Technique::AntiDebug,
+            Self::RdtscDelta
+            | Self::TickCountDelta
+            | Self::PerformanceCounterDelta
+            | Self::JsDateLock => Technique::TimingEvasion,
             Self::CpuidHypervisorBit | Self::CpuidHypervisorLeaf => Technique::AntiVm,
+            Self::JsDomainLock | Self::JsHostEnvironmentProbe => Technique::AntiSandbox,
+            Self::JsIntegrityHash => Technique::Rasp,
         }
     }
 
@@ -130,6 +147,22 @@ impl RuntimeCheck {
             Self::TlsCallback => "TLS callback executed before the entry point",
             Self::VectoredExceptionHandler => {
                 "vectored exception handler registered to redirect control flow"
+            }
+            Self::JsDomainLock => {
+                "script compares the page hostname or domain against an allow list and diverts when it differs"
+            }
+            Self::JsHostEnvironmentProbe => {
+                "script probes for a browser or Node.js host (window, document, navigator, process) and diverts on the unexpected one"
+            }
+            Self::JsDateLock => {
+                "script compares the clock against a start or end date and diverts outside it"
+            }
+            Self::JsDebuggerTrap => {
+                "debugger statement or Function-constructed debugger loop that stalls an attached debugger"
+            }
+            Self::JsConsoleHijack => "script replaces the console methods with silent stand-ins",
+            Self::JsIntegrityHash => {
+                "script hashes its own function source and traps when the digest differs from the embedded one"
             }
         }
     }
@@ -689,7 +722,7 @@ mod tests {
 
     #[test]
     fn every_runtime_check_maps_to_a_technique_and_a_kebab_label() {
-        let all: [RuntimeCheck; 19] = [
+        let all: [RuntimeCheck; 25] = [
             RuntimeCheck::IsDebuggerPresent,
             RuntimeCheck::CheckRemoteDebuggerPresent,
             RuntimeCheck::NtQueryInformationProcessDebugPort,
@@ -709,6 +742,12 @@ mod tests {
             RuntimeCheck::CpuidHypervisorLeaf,
             RuntimeCheck::TlsCallback,
             RuntimeCheck::VectoredExceptionHandler,
+            RuntimeCheck::JsDomainLock,
+            RuntimeCheck::JsHostEnvironmentProbe,
+            RuntimeCheck::JsDateLock,
+            RuntimeCheck::JsDebuggerTrap,
+            RuntimeCheck::JsConsoleHijack,
+            RuntimeCheck::JsIntegrityHash,
         ];
         let mut labels: BTreeSet<&str> = BTreeSet::new();
         for check in all {

@@ -1,0 +1,72 @@
+title = "JavaScript anti-analysis checks for the neutralization plan"
+oracle = "crates/disrobe-pass-js-deob/tests/js_neutralize_oracle.rs: each authored positive runs under node 24 and takes its locked branch; the plan made by plan_js_neutralization is applied through disrobe_core::neutralize::apply and the patched copy must print the unlocked line. Debugger traps run under debugger_harness.js, which attaches an in-process inspector session, counts Debugger.paused events and resumes each one (skipping pauses after 64). A patch whose original bytes are altered must be refused with OriginalMismatch, and skip mode must leave the bytes unchanged."
+provenance = "every file here is hand-authored for this corpus; no obfuscator ran on this host (D-071). The obfuscator.io and JS-Confuser positives reproduce the code those tools emit, written from their published templates over small benign programs; they are not tool output. Real tool output is graded separately on corpus/src/javascript/obfuscator-io-samples (javascript-obfuscator) and corpus/js/jsconfuser/recovery (js-confuser 2.0.1) under the bounded Boa engine."
+node_version = "24.16.0"
+
+[[sample]]
+file = "domain_lock.obfuscator-io.js"
+check = "js-domain-lock"
+shape = "javascript-obfuscator DomainLockTemplate: the callController wrapper, the isName helper and its three argument-order variants, the document/domain/location/hostname name signatures [7,116,5,101,3,117,0,100] and friends, the diff-character domain list, and `that[document][location] = 'about:blank'` when no allowed domain matched"
+host_simulation = "the first line defines a global `document` for a page on mirror.invalid whose location setter prints the navigation target and exits, standing in for a browser navigation"
+locked = "locked: navigation to about:blank"
+unlocked = "unlocked: checksum 1671826638"
+patch = "the `!ok` test becomes the constant 0"
+
+[[sample]]
+file = "domain_lock.jsconfuser.js"
+check = "js-domain-lock"
+shape = "JS-Confuser lock.domainLock: `if(!new RegExp(<regex>).test(window.location.href)) { <countermeasures>() }`"
+host_simulation = "the first line defines `window.location.href` on mirror.invalid"
+locked = "locked: domain lock countermeasure"
+unlocked = "unlocked: fib(30) = 832040"
+patch = "the test spans more than 64 bytes and the branch has no else, so the countermeasure call inside the braces becomes whitespace"
+
+[[sample]]
+file = "date_lock.jsconfuser.js"
+check = "js-date-lock"
+shape = "JS-Confuser lock.startDate and lock.endDate: `if((new Date()).getTime()<start)` and `if(Date.now()>end)` with a named countermeasures function"
+locked = "locked: date lock countermeasure"
+unlocked = "unlocked: a|1;b|2"
+patch = "both tests become the constant 0"
+
+[[sample]]
+file = "host_probe.js"
+check = "js-host-environment-probe"
+shape = "browser-only code that refuses Node.js and automated browsers: `typeof window`/`typeof document` with a decoy message and return, `process.versions.node` with a throw, `navigator.webdriver` with a throw"
+locked = "locked: not a browser host"
+unlocked = "unlocked: 0:ALPHA,1:BETA,2:GAMMA"
+patch = "two tests become the constant 0; the 85-byte `process.versions` test keeps its place and its throw becomes whitespace"
+
+[[sample]]
+file = "console_hijack.obfuscator-io.js"
+check = "js-console-hijack"
+shape = "javascript-obfuscator disableConsoleOutput: `const c = that['console'] = that['console'] || {}`, the seven method names, and `c[name] = bound` inside the loop"
+locked = "(no output)"
+unlocked = "unlocked: words 5"
+patch = "the `c[name] = bound` assignment becomes the constant 0"
+
+[[sample]]
+file = "anti_debug.jsconfuser.js"
+check = "js-debugger-trap"
+shape = "JS-Confuser lock.antiDebug: bare `debugger;` statements placed in function bodies"
+locked = "8 inspector pauses"
+unlocked = "0 inspector pauses, same stdout"
+patch = "each `debugger` keyword becomes whitespace"
+
+[[sample]]
+file = "debug_protection.obfuscator-io.js"
+check = "js-debugger-trap"
+shape = "javascript-obfuscator debugProtection: the callController wrapper, the regex self-check, and the counter ratchet that builds `Function('debu' + 'gger')` and `Function('while (true) {}')`"
+locked = "64 inspector pauses (the harness limit)"
+unlocked = "0 inspector pauses, same stdout"
+patch = "each constructed body literal becomes a same-length line comment"
+
+[[sample]]
+file = "clean.js"
+check = "none"
+shape = "near misses that must not be planned: hostname routing with a value return, an isomorphic `typeof window` branch with code on both sides, a clock comparison against a runtime value, a console method table copied to another object, and the text 'debu' + 'gger' outside a Function constructor"
+plan = "empty"
+
+[[sample]]
+file = "debugger_harness.js"
+role = "grading harness, not a sample"

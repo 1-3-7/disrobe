@@ -123,8 +123,8 @@ pub use jscrambler::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use jsobfu::{
-    CharFoldStats, JsObfuDetection, JsObfuRecovery, JsObfuRewriteStats, detect_jsobfu,
-    fold_char_constructors, recover as recover_jsobfu, rewrite_bracket_access,
+    CharFoldStats, JsObfuDetection, JsObfuRecovery, JsObfuRewriteStats, LiteralSettleStats,
+    detect_jsobfu, fold_char_constructors, recover as recover_jsobfu, rewrite_bracket_access,
     try_recover as try_recover_jsobfu,
 };
 #[cfg(not(target_arch = "wasm32"))]

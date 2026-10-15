@@ -6,7 +6,7 @@ use super::{ForOfStats, recover};
 
 const CENSUS_STACK_BYTES: usize = 512 * 1024 * 1024;
 const OVERSIZED_BYTES: u64 = 4 * 1024 * 1024;
-const PINNED_FILES_SCANNED: usize = 144;
+const PINNED_FILES_SCANNED: usize = 153;
 const PINNED_FILES_OVERSIZED: usize = 1;
 const PINNED_CONVERSIONS: usize = 3;
 const PINNED_FILES_WITH_A_CONVERSION: usize = 3;

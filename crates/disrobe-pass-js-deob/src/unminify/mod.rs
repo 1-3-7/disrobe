@@ -6,6 +6,7 @@ mod protection;
 mod self_defending;
 mod string_split;
 
+pub(crate) use ast::splice_spans;
 pub use ast::{AstPipeline, AstRuleId, AstUnminifyStats, try_unminify_ast, unminify_ast};
 pub(crate) use ast::{
     PresetEnvExpressionRestore, has_preset_env_async_protection,

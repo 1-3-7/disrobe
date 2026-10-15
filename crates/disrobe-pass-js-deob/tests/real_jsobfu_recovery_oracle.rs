@@ -1,8 +1,12 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_js_deob::{Detection, JsObfuRecovery, JsObfuscator, detect, recover_jsobfu};
+use regex::Regex;
 use sha2::{Digest, Sha256};
 
 #[path = "common/mod.rs"]
@@ -130,4 +134,169 @@ fn recovered_jsobfu_output_mutation_is_rejected() {
         mutated_output, AUTHORED_REFERENCE.output,
         "mutation control must turn the grade red"
     );
+}
+
+const NODE_TIMEOUT: Duration = Duration::from_mins(1);
+const BROWSER_GLOBALS: &str = "globalThis.window = globalThis;\nglobalThis.document = {};\n";
+
+struct CommittedFixture {
+    obfuscated: &'static str,
+    authored: Option<&'static str>,
+    mutation: (&'static str, &'static str),
+}
+
+const COMMITTED_FIXTURES: [CommittedFixture; 2] = [
+    CommittedFixture {
+        obfuscated: "jsobfu/obfuscated.js",
+        authored: Some("jsobfu/input.js"),
+        mutation: ("'world'", "'w0rld'"),
+    },
+    CommittedFixture {
+        obfuscated: "../src/javascript/jsobfu-sample.js",
+        authored: None,
+        mutation: ("1.5", "2.5"),
+    },
+];
+
+struct Residue {
+    label: &'static str,
+    pattern: &'static str,
+    witness: &'static str,
+}
+
+const JSOBFU_RESIDUES: [Residue; 6] = [
+    Residue {
+        label: "String.fromCharCode",
+        pattern: r"String\.fromCharCode",
+        witness: "String.fromCharCode(97)",
+    },
+    Residue {
+        label: "literal length",
+        pattern: r#"['"][^'"\n]*['"]\s*(\.length|\[\s*\(?\s*['"]length)"#,
+        witness: "var n='abc'[('length')];",
+    },
+    Residue {
+        label: "parenthesized string key",
+        pattern: r#"\[\s*\(\s*['"]"#,
+        witness: "x[('log')](1)",
+    },
+    Residue {
+        label: "escaped string literal",
+        pattern: r"\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[0-7])",
+        witness: r#"var k="\x66\162";"#,
+    },
+    Residue {
+        label: "legacy octal number",
+        pattern: r"(^|[^0-9A-Za-z_$.])0[0-9]+",
+        witness: "f(01*0117)",
+    },
+    Residue {
+        label: "string fragment IIFE",
+        pattern: r#"\(function\s*\(\)\s*\{\s*var\s+[A-Za-z_$][\w$]*\s*=\s*['"]"#,
+        witness: "(function () { var Js='X'; return Js })()",
+    },
+];
+
+fn run_node_file(path: &Path) -> String {
+    let mut child: std::process::Child = Command::new("node")
+        .env_remove("FORCE_COLOR")
+        .env("NO_COLOR", "1")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| {
+            panic!("node is required for the jsobfu re-execution grade: {error}")
+        });
+    let started: Instant = Instant::now();
+    while child.try_wait().expect("poll node").is_none() {
+        if started.elapsed() > NODE_TIMEOUT {
+            child.kill().expect("stop node after the timeout");
+            panic!("node exceeded {NODE_TIMEOUT:?} on {}", path.display());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output: std::process::Output = child.wait_with_output().expect("collect node output");
+    assert!(
+        output.status.success(),
+        "{} failed under node: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("node stdout is UTF-8")
+}
+
+fn run_node_with_browser_globals(scratch: &ScratchDir, name: &str, script: &str) -> String {
+    let path: PathBuf = scratch.path().join(name);
+    fs::write(&path, format!("{BROWSER_GLOBALS}{script}")).expect("write the node program");
+    run_node_file(&path)
+}
+
+#[test]
+fn every_committed_jsobfu_fixture_reexecutes_identically_under_node() {
+    let scratch: ScratchDir = ScratchDir::create("disrobe-jsobfu-reexec").expect("scratch");
+    let residues: Vec<(&str, Regex)> = JSOBFU_RESIDUES
+        .iter()
+        .map(|residue: &Residue| {
+            let pattern: Regex = Regex::new(residue.pattern).expect("residue pattern");
+            assert!(
+                pattern.is_match(residue.witness),
+                "the {} check must fire on its witness",
+                residue.label
+            );
+            (residue.label, pattern)
+        })
+        .collect();
+    for (index, fixture) in COMMITTED_FIXTURES.iter().enumerate() {
+        let obfuscated: String = load(fixture.obfuscated);
+        let recovered: JsObfuRecovery = recover_jsobfu(&obfuscated);
+        assert_ne!(recovered.source, obfuscated, "{}", fixture.obfuscated);
+
+        let reference: String =
+            run_node_with_browser_globals(&scratch, &format!("obf{index}.js"), &obfuscated);
+        assert!(
+            !reference.is_empty(),
+            "{} prints nothing",
+            fixture.obfuscated
+        );
+        if let Some(authored) = fixture.authored {
+            assert_eq!(
+                run_node_file(&corpus(authored)),
+                reference,
+                "{} must behave like its authored original under node",
+                fixture.obfuscated
+            );
+        }
+        assert_eq!(
+            run_node_with_browser_globals(&scratch, &format!("rec{index}.js"), &recovered.source),
+            reference,
+            "{}: the recovered program must print what the obfuscated one prints\n{}",
+            fixture.obfuscated,
+            recovered.source
+        );
+        for (label, pattern) in &residues {
+            assert!(
+                !pattern.is_match(&recovered.source),
+                "{}: {label} survives recovery\n{}",
+                fixture.obfuscated,
+                recovered.source
+            );
+        }
+
+        let (from, to): (&str, &str) = fixture.mutation;
+        assert!(
+            recovered.source.contains(from),
+            "{}: the recovered program must spell {from} as a plain literal\n{}",
+            fixture.obfuscated,
+            recovered.source
+        );
+        let mutated: String = recovered.source.replacen(from, to, 1);
+        assert_ne!(
+            run_node_with_browser_globals(&scratch, &format!("mut{index}.js"), &mutated),
+            reference,
+            "{}: a changed literal must turn the re-execution grade red",
+            fixture.obfuscated
+        );
+    }
 }

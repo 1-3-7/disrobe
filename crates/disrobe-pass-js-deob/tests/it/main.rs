@@ -282,6 +282,9 @@ mod hotspots_sonarjs_oracle;
 #[path = "../js_literal_surrogate_reexec.rs"]
 mod js_literal_surrogate_reexec;
 
+#[path = "../js_neutralize_oracle.rs"]
+mod js_neutralize_oracle;
+
 #[path = "../jsconfuser_all.rs"]
 mod jsconfuser_all;
 

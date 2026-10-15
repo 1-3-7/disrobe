@@ -1,5 +1,6 @@
 pub mod arxan;
 pub mod jsdefender;
+pub mod neutralize;
 pub mod pace;
 
 use serde::Serialize;

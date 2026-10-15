@@ -384,7 +384,7 @@ static CATALOG: [JsCatalogEntry; CATALOG_COUNT] = [
         id: "js-jsobfu",
         display_name: "js-obfuscator (jsobfu)",
         aliases: &["jsobfu"],
-        quality: SupportQuality::Partial,
+        quality: SupportQuality::Full,
     },
     JsCatalogEntry {
         family: JsObfuscator::Webpack,
