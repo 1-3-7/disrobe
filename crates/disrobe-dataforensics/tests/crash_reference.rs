@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_dataforensics::crash::{
-    CrashFormat, CrashLimits, CrashReport, FaultKind, Location, ThreadReport, inspect,
+    CrashFormat, CrashLimits, CrashReport, FaultKind, Location, inspect,
 };
 use disrobe_tool_process::{CommandSpec, Completion, Execution};
 use serde_json::Value;
@@ -523,6 +523,7 @@ fn corrupted_cores_give_a_report_or_a_typed_error() {
 #[cfg(windows)]
 mod windows_minidumps {
     use super::*;
+    use disrobe_dataforensics::crash::ThreadReport;
 
     fn dumps() -> &'static Generated {
         static DUMPS: OnceLock<Generated> = OnceLock::new();
