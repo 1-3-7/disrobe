@@ -272,7 +272,9 @@ fn a_type_parameter_argument_renders_its_position_and_never_a_source_name() {
 
 const RECORDED_REFUSED_VECTOR_BASELINE: usize = 148;
 const RECORDED_REFUSED_VECTOR_CEILING: usize = 13;
-const RECORDED_NULLABLE_FUNCTION_TYPE_COUNT: usize = 128;
+const RECORDED_NULLABLE_FUNCTION_TYPE_COUNT: usize = 15;
+
+const RECORDED_NULLABLE_INTERFACE_TYPE_COUNT: usize = 357;
 
 #[test]
 fn committed_snapshot_function_type_renders_from_its_pinned_pool_metadata() {
@@ -286,14 +288,16 @@ fn committed_snapshot_function_type_renders_from_its_pinned_pool_metadata() {
     );
     assert_eq!(
         table.render_slot(slot, false).as_deref(),
-        Some("<void Function(IsolateSpawnException)>")
+        Some("<void Function(String)?>"),
+        "the type flags carry the class id above the nullability bit and the two type-state bits, and a clear nullability bit is the SDK's Nullability::kNullable; the ledger fixture grades both rules against types its source declares on every release"
     );
 }
 
 #[test]
-fn serialized_function_type_nullability_is_recovered_without_spreading_to_other_types() {
-    let mut unexpected: Vec<String> = Vec::new();
-    let mut carrying: usize = 0;
+fn serialized_nullability_renders_on_function_and_interface_types_alike() {
+    let mut legacy: Vec<String> = Vec::new();
+    let mut nullable_functions: usize = 0;
+    let mut nullable_interfaces: usize = 0;
     let mut rendered: usize = 0;
     let mut refused: usize = 0;
     for sample in COMMITTED_SAMPLES {
@@ -312,31 +316,37 @@ fn serialized_function_type_nullability_is_recovered_without_spreading_to_other_
                 continue;
             };
             rendered += 1;
-            let carries: bool = text.ends_with('?')
-                || text.ends_with('*')
+            if text.contains('*') && legacy.len() < 8 {
+                legacy.push(format!("{sample}: {text}"));
+            }
+            let suffixed: bool = text.ends_with('?')
                 || text.contains("?>")
-                || text.contains("*>")
                 || text.contains("?,")
-                || text.contains("*,");
-            if carries {
-                carrying += 1;
-                if !text.contains("Function(") && unexpected.len() < 8 {
-                    unexpected.push(format!("{sample}: {text}"));
-                }
+                || text.contains("?]");
+            if !suffixed {
+                continue;
+            }
+            if text.contains(")?") {
+                nullable_functions += 1;
+            } else {
+                nullable_interfaces += 1;
             }
         }
     }
     eprintln!(
-        "recovered type renderings: {rendered}, refused: {refused}, nullable function types: {carrying}"
+        "recovered type renderings: {rendered}, refused: {refused}, nullable function types: {nullable_functions}, nullable interface types: {nullable_interfaces}"
     );
     assert!(
-        unexpected.is_empty(),
-        "a nullability suffix escaped the FunctionType decoder: {unexpected:?}"
+        legacy.is_empty(),
+        "Dart 3.12 types are never legacy, so no rendering may carry a star: {legacy:?}"
     );
     assert_eq!(
-        carrying, RECORDED_NULLABLE_FUNCTION_TYPE_COUNT,
-        "the committed Dart 3.12.2 snapshots contain \
-         {RECORDED_NULLABLE_FUNCTION_TYPE_COUNT} nullable FunctionType renderings"
+        (nullable_functions, nullable_interfaces),
+        (
+            RECORDED_NULLABLE_FUNCTION_TYPE_COUNT,
+            RECORDED_NULLABLE_INTERFACE_TYPE_COUNT
+        ),
+        "the committed Dart 3.12.2 snapshots carry {RECORDED_NULLABLE_FUNCTION_TYPE_COUNT} renderings with a nullable function type and {RECORDED_NULLABLE_INTERFACE_TYPE_COUNT} with only nullable interface types"
     );
     assert!(
         rendered > 0,
@@ -394,9 +404,9 @@ fn an_unreadable_type_flag_word_no_longer_discards_a_resolved_class_name() {
 const UNNAMED_CLASS_PREFIX: &str = "cid@";
 
 #[test]
-fn a_class_whose_metadata_the_precompiler_dropped_surfaces_by_class_id() {
-    let mut unnamed: usize = 0;
-    let mut examples: Vec<String> = Vec::new();
+fn every_rendered_type_names_a_class_the_snapshot_serializes() {
+    let mut unnamed: Vec<String> = Vec::new();
+    let mut types: usize = 0;
     for sample in COMMITTED_SAMPLES {
         let table: DartPoolTable = pool_table_for(sample);
         for index in 0..table.slot_count() {
@@ -410,29 +420,20 @@ fn a_class_whose_metadata_the_precompiler_dropped_surfaces_by_class_id() {
             let Some(text): Option<String> = table.render_slot(index, false) else {
                 continue;
             };
-            for at in text.match_indices(UNNAMED_CLASS_PREFIX).map(|(at, _)| at) {
-                let digits: String = text[at + UNNAMED_CLASS_PREFIX.len()..]
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect::<String>();
-                assert!(
-                    !digits.is_empty(),
-                    "{sample} rendered an unnamed class without its class id in {text}"
-                );
-                unnamed += 1;
-                if examples.len() < 4 {
-                    examples.push(format!("{sample}: {text}"));
-                }
+            types += 1;
+            if text.contains(UNNAMED_CLASS_PREFIX) && unnamed.len() < 8 {
+                unnamed.push(format!("{sample}: {text}"));
             }
         }
     }
-    eprintln!("classes surfacing by class id because their metadata was dropped: {unnamed}");
-    eprintln!("examples: {examples:?}");
+    eprintln!("rendered types and type-argument vectors: {types}");
     assert!(
-        unnamed > 0,
-        "the committed corpus carries types whose class metadata the precompiler dropped; if none \
-         surfaces by class id the recovery has either started inventing names or gone back to \
-         refusing the type"
+        types > 0,
+        "the corpus must render types for this check to read"
+    );
+    assert!(
+        unnamed.is_empty(),
+        "every type the committed snapshots serialize names a class they also serialize once the class id is read from above the nullability and type-state bits; a type surfacing by class id means the flag layout was misread: {unnamed:?}"
     );
 }
 

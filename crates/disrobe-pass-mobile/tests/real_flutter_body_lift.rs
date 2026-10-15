@@ -19,9 +19,9 @@ const COMMITTED_SAMPLES: [&str; 4] = [
 
 const RECORDED_LIFTED_FLOOR_PERCENT: usize = 70;
 
-const RECORDED_LIFTED_BASELINE: usize = 401_382;
+const RECORDED_LIFTED_BASELINE: usize = 410_579;
 
-const RECORDED_STATEMENT_POPULATION: usize = 503_319;
+const RECORDED_STATEMENT_POPULATION: usize = 512_516;
 
 fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -366,7 +366,7 @@ fn a_join_keeps_the_operands_every_path_agrees_on_and_raises_the_lifted_populati
     );
     assert!(
         lifted_total > RECORDED_LIFTED_BASELINE,
-        "merging the tracker state at a join must lift more body statements than the recorded baseline of {RECORDED_LIFTED_BASELINE}, got {lifted_total}"
+        "merging the tracker state at a join must lift more body statements than the recorded baseline of {RECORDED_LIFTED_BASELINE}, the pre-join count plus every statement the obfuscated build gained when its boundaries came from the instructions table, got {lifted_total}"
     );
 }
 

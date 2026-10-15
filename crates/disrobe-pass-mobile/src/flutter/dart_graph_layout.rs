@@ -68,8 +68,10 @@ pub enum DartClusterTagEncoding {
 pub struct DartClassBodyLayout {
     pub reference_count: usize,
     pub name_reference: usize,
+    pub interfaces_reference: usize,
     pub library_reference: usize,
     pub top_level_class_id_offset: i32,
+    pub transformed_mixin_application_bit: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -78,6 +80,10 @@ pub struct DartFunctionBodyLayout {
     pub name_reference: usize,
     pub owner_reference: usize,
     pub signature_reference: usize,
+    pub data_reference: usize,
+    pub kind_bits: u32,
+    pub extension_member_bit: u32,
+    pub extension_type_member_bit: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -102,10 +108,81 @@ pub struct DartPatchClassBodyLayout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DartCodeBodyLayout {
+    pub owner_reference: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DartClosureDataBodyLayout {
+    pub parent_function_reference: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct DartCodeTableLayout {
     pub object_header_bytes: usize,
+    pub first_entry_with_code_offset: usize,
     pub descriptor_bytes: usize,
     pub entry_stride: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DartBaseObjectReferences {
+    pub null: u32,
+    pub empty_array: u32,
+    pub dynamic_type: u32,
+    pub void_type: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DartAbstractTypeFlags {
+    pub nullability_bits: u32,
+    pub type_state_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DartTypeNullability {
+    Nullable,
+    NonNullable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DartTypeState {
+    FinalizedInstantiated,
+    FinalizedUninstantiated,
+}
+
+impl DartAbstractTypeFlags {
+    #[must_use]
+    pub const fn class_id_shift(self) -> u32 {
+        self.nullability_bits + self.type_state_bits
+    }
+
+    #[must_use]
+    pub const fn nullability(self, flags: u64) -> Option<DartTypeNullability> {
+        match flags & ((1 << self.nullability_bits) - 1) {
+            0 => Some(DartTypeNullability::Nullable),
+            1 => Some(DartTypeNullability::NonNullable),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(self, flags: u64) -> Option<DartTypeState> {
+        match (flags >> self.nullability_bits) & ((1 << self.type_state_bits) - 1) {
+            1 => Some(DartTypeState::FinalizedInstantiated),
+            2 => Some(DartTypeState::FinalizedUninstantiated),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DartCallingConvention {
+    StackArguments,
+    RegisterArguments,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -115,6 +192,8 @@ pub struct DartDeclarationBodyLayouts {
     pub field: DartFieldBodyLayout,
     pub library: DartLibraryBodyLayout,
     pub patch_class: DartPatchClassBodyLayout,
+    pub code: DartCodeBodyLayout,
+    pub closure_data: DartClosureDataBodyLayout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -128,6 +207,9 @@ pub struct DartPinnedLayout {
     pub word_32_parts: usize,
     pub declarations: DartDeclarationBodyLayouts,
     pub code_table: DartCodeTableLayout,
+    pub base_objects: DartBaseObjectReferences,
+    pub abstract_type_flags: DartAbstractTypeFlags,
+    pub calling_convention: DartCallingConvention,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -137,7 +219,35 @@ struct DartRelease {
     cluster_tags: DartClusterTagEncoding,
     field_kind_bits_width: u32,
     loading_unit_id_width: u32,
+    transformed_mixin_application_bit: u32,
+    base_objects: DartBaseObjectReferences,
+    abstract_type_flags: DartAbstractTypeFlags,
+    calling_convention: DartCallingConvention,
 }
+
+const LEGACY_NULLABILITY_TYPE_FLAGS: DartAbstractTypeFlags = DartAbstractTypeFlags {
+    nullability_bits: 2,
+    type_state_bits: 2,
+};
+
+const TYPE_FLAGS: DartAbstractTypeFlags = DartAbstractTypeFlags {
+    nullability_bits: 1,
+    type_state_bits: 2,
+};
+
+const BASE_OBJECTS_WITH_TRANSITION_SENTINEL: DartBaseObjectReferences = DartBaseObjectReferences {
+    null: 1,
+    empty_array: 5,
+    dynamic_type: 8,
+    void_type: 9,
+};
+
+const BASE_OBJECTS: DartBaseObjectReferences = DartBaseObjectReferences {
+    null: 1,
+    empty_array: 4,
+    dynamic_type: 7,
+    void_type: 8,
+};
 
 const DART_3_3: DartRelease = DartRelease {
     version_hash: "ee1eb666c76a5cb7746faf39d0b97547",
@@ -145,6 +255,10 @@ const DART_3_3: DartRelease = DartRelease {
     cluster_tags: DartClusterTagEncoding::ClassIdAndCanonical,
     field_kind_bits_width: 16,
     loading_unit_id_width: 32,
+    transformed_mixin_application_bit: 12,
+    base_objects: BASE_OBJECTS_WITH_TRANSITION_SENTINEL,
+    abstract_type_flags: LEGACY_NULLABILITY_TYPE_FLAGS,
+    calling_convention: DartCallingConvention::StackArguments,
 };
 
 const DART_3_4: DartRelease = DartRelease {
@@ -155,17 +269,24 @@ const DART_3_4: DartRelease = DartRelease {
     },
     field_kind_bits_width: 16,
     loading_unit_id_width: 32,
+    transformed_mixin_application_bit: 12,
+    base_objects: BASE_OBJECTS_WITH_TRANSITION_SENTINEL,
+    abstract_type_flags: LEGACY_NULLABILITY_TYPE_FLAGS,
+    calling_convention: DartCallingConvention::RegisterArguments,
 };
 
 const DART_3_5: DartRelease = DartRelease {
     version_hash: "80a49c7111088100a233b2ae788e1f48",
     loading_unit_id_width: 64,
+    base_objects: BASE_OBJECTS,
+    abstract_type_flags: TYPE_FLAGS,
     ..DART_3_4
 };
 
 const DART_3_6: DartRelease = DartRelease {
     version_hash: "f956f595844a2f845a55707faaaa51e4",
     class_ids: DART_3_6_CLASS_IDS,
+    transformed_mixin_application_bit: 10,
     ..DART_3_5
 };
 
@@ -206,29 +327,36 @@ const DART_3_12: DartRelease = DartRelease {
 
 const DART_CODE_TABLE: DartCodeTableLayout = DartCodeTableLayout {
     object_header_bytes: 20,
+    first_entry_with_code_offset: 4,
     descriptor_bytes: 12,
     entry_stride: 8,
 };
 
-const fn declarations(field_kind_bits_width: u32) -> DartDeclarationBodyLayouts {
+const fn declarations(release: DartRelease) -> DartDeclarationBodyLayouts {
     DartDeclarationBodyLayouts {
         class: DartClassBodyLayout {
             reference_count: 13,
             name_reference: 0,
+            interfaces_reference: 5,
             library_reference: 7,
             top_level_class_id_offset: TOP_LEVEL_CLASS_ID_OFFSET,
+            transformed_mixin_application_bit: release.transformed_mixin_application_bit,
         },
         function: DartFunctionBodyLayout {
             reference_count: 4,
             name_reference: 0,
             owner_reference: 1,
             signature_reference: 2,
+            data_reference: 3,
+            kind_bits: 5,
+            extension_member_bit: 28,
+            extension_type_member_bit: 29,
         },
         field: DartFieldBodyLayout {
             reference_count: 4,
             name_reference: 0,
             owner_reference: 1,
-            kind_bits_width: field_kind_bits_width,
+            kind_bits_width: release.field_kind_bits_width,
         },
         library: DartLibraryBodyLayout {
             reference_count: 10,
@@ -238,6 +366,10 @@ const fn declarations(field_kind_bits_width: u32) -> DartDeclarationBodyLayouts 
         patch_class: DartPatchClassBodyLayout {
             reference_count: 2,
             wrapped_class_reference: 0,
+        },
+        code: DartCodeBodyLayout { owner_reference: 0 },
+        closure_data: DartClosureDataBodyLayout {
+            parent_function_reference: 0,
         },
     }
 }
@@ -251,8 +383,11 @@ const fn pinned(release: DartRelease, features: &'static str) -> DartPinnedLayou
         loading_unit_id_width: release.loading_unit_id_width,
         instance_header_words: 2,
         word_32_parts: 2,
-        declarations: declarations(release.field_kind_bits_width),
+        declarations: declarations(release),
         code_table: DART_CODE_TABLE,
+        base_objects: release.base_objects,
+        abstract_type_flags: release.abstract_type_flags,
+        calling_convention: release.calling_convention,
     }
 }
 
@@ -293,6 +428,14 @@ pub fn pinned_dart_graph_layout(version_hash: &str, features: &str) -> Option<Da
         .find(|layout: &DartPinnedLayout| {
             layout.version_hash == version_hash && layout.features == features
         })
+}
+
+#[must_use]
+pub fn pinned_calling_convention(version_hash: &str) -> Option<DartCallingConvention> {
+    PINNED_DART_GRAPH_LAYOUTS
+        .iter()
+        .find(|layout: &&DartPinnedLayout| layout.version_hash == version_hash)
+        .map(|layout: &DartPinnedLayout| layout.calling_convention)
 }
 
 #[must_use]

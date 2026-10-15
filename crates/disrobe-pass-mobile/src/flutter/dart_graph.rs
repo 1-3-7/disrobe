@@ -163,6 +163,8 @@ pub(super) struct DartGraphNode {
     pub(super) text_is_escaped: bool,
     pub(super) type_flags: Option<u64>,
     pub(super) code_index: Option<u64>,
+    pub(super) code_ordinal: Option<usize>,
+    pub(super) state_bits: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,7 +359,7 @@ pub(super) fn parse_dart_graph(
     clustered_offset: usize,
     role: DartGraphSnapshotRole,
     base_nodes: Option<&[DartGraphNode]>,
-    layout: DartPinnedLayout,
+    layout: &DartPinnedLayout,
     limits: DartGraphLimits,
 ) -> Result<DartParsedGraph> {
     let declared: &[u8] =
@@ -456,7 +458,7 @@ pub(super) fn parse_dart_graph(
     }
     let mut parser: DartGraphParser<'_> = DartGraphParser {
         cursor,
-        layout,
+        layout: *layout,
         limits,
         role,
         code_class_id: class_id_of(layout, "Code"),
@@ -623,9 +625,11 @@ impl DartGraphParser<'_> {
 
     fn allocate_code(&mut self, index: usize) -> Result<DartGraphAllocation> {
         let primary_count: usize = self.read_count(index, "code count")?;
-        for _ in 0..primary_count {
+        for ordinal in 0..primary_count {
             let _state_bits: i32 = self.cursor.read_i32("code state bits")?;
+            let reference: usize = self.next_reference;
             self.assign_nodes(index, 1, DartGraphNodeKind::Other, self.code_class_id)?;
+            self.node_mut(reference)?.code_ordinal = Some(ordinal);
         }
         let deferred_count: usize = self.read_count(index, "deferred code count")?;
         for _ in 0..deferred_count {
@@ -851,13 +855,14 @@ impl DartGraphParser<'_> {
             let _type_arguments_offset: i32 = self.cursor.read_i32("type arguments offset")?;
             let _type_argument_count: i16 = self.cursor.read_i16("type argument count")?;
             let _native_field_count: u16 = self.cursor.read_u16("native field count")?;
-            let _state_bits: u32 = self.cursor.read_u32("class state bits")?;
+            let state_bits: u32 = self.cursor.read_u32("class state bits")?;
             if position < predefined_count || class_id < layout.top_level_class_id_offset {
                 let _unboxed_fields: u64 = self.cursor.read_unsigned("unboxed fields")?;
             }
             let node: &mut DartGraphNode = self.node_mut(reference)?;
             node.references = references;
             node.class_id = Some(class_id);
+            node.state_bits = Some(state_bits);
         }
         Ok(())
     }
@@ -867,10 +872,11 @@ impl DartGraphParser<'_> {
         for reference in cluster.start_reference..cluster.end_reference {
             let references: Vec<u32> = self.read_references(reference_count)?;
             let code_index: u64 = self.cursor.read_unsigned("function code index")?;
-            let _kind_tag: u32 = self.cursor.read_u32("function kind tag")?;
+            let kind_tag: u32 = self.cursor.read_u32("function kind tag")?;
             let node: &mut DartGraphNode = self.node_mut(reference)?;
             node.references = references;
             node.code_index = Some(code_index);
+            node.state_bits = Some(kind_tag);
         }
         Ok(())
     }
@@ -975,15 +981,17 @@ impl DartGraphParser<'_> {
         for reference in cluster.start_reference..cluster.end_reference {
             let references: Vec<u32> = self.read_references(3)?;
             let flags: u64 = self.cursor.read_unsigned("type flags")?;
-            let class_id: i32 =
-                i32::try_from(flags >> 4).map_err(|_: std::num::TryFromIntError| -> Error {
-                    Error::DartGraphInvalidClusterValue {
-                        index: cluster.index,
-                        field: "type class id",
-                        value: i64::MAX,
-                        offset: self.cursor.position(),
-                    }
-                })?;
+            let class_id: i32 = i32::try_from(
+                flags >> self.layout.abstract_type_flags.class_id_shift(),
+            )
+            .map_err(|_: std::num::TryFromIntError| -> Error {
+                Error::DartGraphInvalidClusterValue {
+                    index: cluster.index,
+                    field: "type class id",
+                    value: i64::MAX,
+                    offset: self.cursor.position(),
+                }
+            })?;
             let node: &mut DartGraphNode = self.node_mut(reference)?;
             node.references = references;
             node.class_id = Some(class_id);
@@ -1524,7 +1532,7 @@ impl DartGraphParser<'_> {
     }
 }
 
-fn class_id_of(layout: DartPinnedLayout, name: &str) -> Option<i32> {
+fn class_id_of(layout: &DartPinnedLayout, name: &str) -> Option<i32> {
     layout
         .class_id(name)
         .and_then(|class_id: u32| i32::try_from(class_id).ok())
@@ -1662,7 +1670,7 @@ mod tests {
             0,
             DartGraphSnapshotRole::Vm,
             None,
-            DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
+            &DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
             DartGraphLimits::default(),
         );
         match outcome {

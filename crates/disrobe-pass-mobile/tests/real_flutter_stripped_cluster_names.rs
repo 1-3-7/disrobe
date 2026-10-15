@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use disrobe_pass_mobile::flutter::DartCodeNameRole;
 use disrobe_pass_mobile::{
     AotLiftReport, DartCodeName, DartFunctionSymbol, DartGraphRecoveryOptions,
     DartGraphRecoveryReport, DartGraphRecoveryStatus, DartLiftedFunction, Error, LibAppLayout,
@@ -25,8 +26,6 @@ const RECORDED_SHARED_OFFSETS: usize = 2_692;
 const RECORDED_MEMBER_AGREEMENTS: usize = 2_691;
 
 const RECORDED_STRIPPED_STRUCTURED_BODIES: usize = 2_122;
-
-const EXTENSION_SEPARATOR_DIVERGENCE: &str = "IterableExtensions.elementAtOrNull";
 
 fn fixture(name: &str) -> Vec<u8> {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -229,13 +228,51 @@ fn a_stripped_libapp_recovers_offset_to_name_from_the_isolate_snapshot_clusters(
         "the stripped walk and the linker symbol table must name at least \
          {RECORDED_SHARED_OFFSETS} offsets in common, got {compared}"
     );
-    assert_eq!(
-        divergent.as_slice(),
-        [EXTENSION_SEPARATOR_DIVERGENCE],
-        "the only accepted divergence is the extension-member separator, which the snapshot \
-         spells with a bar and the linker spells with a dot; any other divergence is a \
-         mis-attributed body"
+    assert!(
+        divergent.is_empty(),
+        "every offset both sides name must agree on the member, extension members included now \
+         that their bar separator is scrubbed to the dot the linker writes; divergent={divergent:?}"
     );
+}
+
+#[test]
+fn every_code_owner_and_allocation_stub_takes_the_exact_linker_name() {
+    let bytes: Vec<u8> = fixture(SAMPLE);
+    let stripped: Vec<u8> = strip_elf_symtab(&bytes);
+    let reference: BTreeMap<u64, Vec<String>> = linker_code_symbols(&bytes);
+    let report: DartGraphRecoveryReport =
+        recover_dart_pinned_elf(&stripped, &DartGraphRecoveryOptions::default())
+            .expect("pinned cluster recovery");
+    let mut owners: usize = 0;
+    let mut stubs: usize = 0;
+    let mut mismatched: Vec<String> = Vec::new();
+    for entry in &report.code_names.entries {
+        match entry.role {
+            DartCodeNameRole::CodeOwner => owners += 1,
+            DartCodeNameRole::AllocationStub => stubs += 1,
+            DartCodeNameRole::SharedCode
+            | DartCodeNameRole::DroppedOwner
+            | DartCodeNameRole::DiscardedCode => continue,
+        }
+        let expected: Option<&Vec<String>> = reference.get(&entry.instructions_offset);
+        let agrees: bool =
+            expected.is_some_and(|names: &Vec<String>| names.contains(&entry.qualified_name));
+        if !agrees && mismatched.len() < 8 {
+            mismatched.push(format!(
+                "{:#x}: linker {expected:?}, recovered {}",
+                entry.instructions_offset, entry.qualified_name
+            ));
+        }
+    }
+    eprintln!(
+        "code owners {owners}, allocation stubs {stubs}, linker symbols {}",
+        reference.len()
+    );
+    assert!(
+        mismatched.is_empty(),
+        "the code object's owner names it the way gen_snapshot names its ELF symbol: {mismatched:?}"
+    );
+    assert!(owners >= RECORDED_SHARED_OFFSETS && stubs > 0);
 }
 
 #[test]
@@ -248,7 +285,11 @@ fn cluster_recovered_names_are_present_in_the_snapshot_and_never_invented() {
     let haystack: Vec<u8> = stripped;
     let mut absent: Vec<String> = Vec::new();
     for entry in &report.code_names.entries {
-        let member: &str = member_of(&entry.member_name);
+        let member: &str = if entry.role == DartCodeNameRole::AllocationStub {
+            entry.class_name.as_deref().unwrap_or_default()
+        } else {
+            member_of(&entry.member_name).trim_end_matches('=')
+        };
         if member.is_empty() {
             continue;
         }
@@ -424,6 +465,30 @@ fn a_truncated_read_only_image_yields_a_typed_error_and_no_panic() {
     );
 }
 
+fn linker_code_symbols(bytes: &[u8]) -> BTreeMap<u64, Vec<String>> {
+    use object::{Object as _, ObjectSymbol as _};
+    let file: object::File<'_> = object::File::parse(bytes).expect("the sample is an ELF");
+    let base: u64 = file
+        .dynamic_symbols()
+        .find(|symbol| symbol.name() == Ok("_kDartIsolateSnapshotInstructions"))
+        .map(|symbol| symbol.address())
+        .expect("the sample exports its isolate instructions");
+    let mut symbols: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+    for symbol in file.symbols() {
+        if symbol.kind() != object::SymbolKind::Text {
+            continue;
+        }
+        let Some(offset) = symbol.address().checked_sub(base) else {
+            continue;
+        };
+        symbols
+            .entry(offset)
+            .or_default()
+            .push(symbol.name().expect("symbol names are UTF-8").to_owned());
+    }
+    symbols
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     find_from(haystack, needle, 0).is_some()
 }
@@ -466,8 +531,15 @@ fn the_code_name_table_is_deterministic_and_sorted() {
             .entries
             .windows(2)
             .all(|pair: &[DartCodeName]| {
-                (pair[0].instructions_offset, pair[0].qualified_name.as_str())
-                    <= (pair[1].instructions_offset, pair[1].qualified_name.as_str())
+                (
+                    pair[0].instructions_offset,
+                    pair[0].role,
+                    pair[0].qualified_name.as_str(),
+                ) <= (
+                    pair[1].instructions_offset,
+                    pair[1].role,
+                    pair[1].qualified_name.as_str(),
+                )
             }),
         "the table must be emitted in a stable order so recovered source bytes never vary"
     );

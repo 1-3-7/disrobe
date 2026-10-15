@@ -3,13 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::aot_lift::escape_dart_string;
-use super::cid_table::predefined_name;
 use super::dart_graph::{
     DartFunctionTypeShape, DartGraphLimits, DartGraphNode, DartGraphNodeKind, DartParsedGraph,
     DartPoolResetKind, DartPoolSlot,
 };
 use super::dart_graph_inventory::DartPinnedInventory;
-use super::dart_graph_layout::{DartClusterBodyKind, DartPinnedLayout};
+use super::dart_graph_layout::{
+    DartAbstractTypeFlags, DartClusterBodyKind, DartPinnedLayout, DartTypeNullability,
+};
 use super::dart_graph_recovery::{DartPinnedGraph, parse_pinned_isolate_graph};
 use crate::error::Result;
 
@@ -30,7 +31,7 @@ pub const fn pool_offset_of_slot(slot: u64) -> u64 {
     DART_POOL_ELEMENT_BASE_BYTES.saturating_add(slot.saturating_mul(DART_POOL_ENTRY_BYTES))
 }
 
-const MINT_CLASS_ID: i32 = 61;
+const MINT_CLASS_NAME: &str = "Mint";
 
 const IMMUTABLE_ARRAY_NAME: &str = "ImmutableArray";
 
@@ -54,19 +55,7 @@ const UNNAMED_CLASS_PREFIX: &str = "cid@";
 
 const RECORD_TYPE_TOKEN: &str = "recordType";
 
-const NULL_OBJECT_REFERENCE: u32 = 1;
-
-const EMPTY_ARRAY_REFERENCE: u32 = 4;
-
-const DYNAMIC_TYPE_REFERENCE: u32 = 7;
-
-const VOID_TYPE_REFERENCE: u32 = 8;
-
-const ABSTRACT_TYPE_NULLABILITY_MASK: u64 = 1;
-
-const ABSTRACT_TYPE_STATE_MASK: u64 = 0b110;
-
-const ABSTRACT_TYPE_FLAGS_MASK: u64 = 0b111;
+const NULL_CLASS_NAME: &str = "Null";
 
 const SYMBOL_CLASS_NAME: &str = "Symbol";
 
@@ -201,10 +190,10 @@ impl DartPoolTable {
             index_function_parameters(&inventory);
         let mut objects: Vec<DartPoolObject> = nodes
             .iter()
-            .map(|node: &DartGraphNode| compact(node, layout))
+            .map(|node: &DartGraphNode| compact(node, &layout))
             .collect::<Vec<DartPoolObject>>();
-        classify_base_objects(&mut objects);
-        classify_symbol_objects(&mut objects, layout);
+        classify_base_objects(&mut objects, &layout);
+        classify_symbol_objects(&mut objects, &layout);
         Ok(Some(Self {
             slots,
             objects,
@@ -510,7 +499,7 @@ impl DartPoolTable {
         } else {
             u16::try_from(class_id)
                 .ok()
-                .and_then(predefined_name)
+                .and_then(|cid: u16| self.declarations.class_ids.name(cid))
                 .map(str::to_owned)
         };
         let mut rendered: String =
@@ -528,8 +517,19 @@ impl DartPoolTable {
             }
             rendered.push_str(&self.render_object(arguments, depth + 1, path, budget)?);
         }
-        if object.type_flags.is_none() {
-            return Err(DartPoolUnresolvedReason::TypeFlagsMissing);
+        let flags: u64 = object
+            .type_flags
+            .ok_or(DartPoolUnresolvedReason::TypeFlagsMissing)?;
+        let type_flags: DartAbstractTypeFlags = self.declarations.abstract_type_flags;
+        let nullability: DartTypeNullability = type_flags
+            .nullability(flags)
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
+        let null_class: bool = u16::try_from(class_id)
+            .ok()
+            .and_then(|cid: u16| self.declarations.class_ids.name(cid))
+            == Some(NULL_CLASS_NAME);
+        if nullability == DartTypeNullability::Nullable && !null_class {
+            rendered.push('?');
         }
         Ok(rendered)
     }
@@ -589,11 +589,13 @@ impl DartPoolTable {
         let flags: u64 = object
             .type_flags
             .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
-        if flags & !ABSTRACT_TYPE_FLAGS_MASK != 0
-            || !matches!(flags & ABSTRACT_TYPE_STATE_MASK, 0b010 | 0b100)
-        {
+        let type_flags: DartAbstractTypeFlags = self.declarations.abstract_type_flags;
+        if flags >> type_flags.class_id_shift() != 0 || type_flags.state(flags).is_none() {
             return Err(DartPoolUnresolvedReason::TypeArgumentsMalformed);
         }
+        let nullability: DartTypeNullability = type_flags
+            .nullability(flags)
+            .ok_or(DartPoolUnresolvedReason::TypeArgumentsMalformed)?;
         if object.references.len() != 6
             || shape.parent_type_arguments != 0
             || shape.type_parameters != 0
@@ -657,12 +659,11 @@ impl DartPoolTable {
             (true, false) => format!("[{optional}]"),
             (false, false) => format!("{required}, [{optional}]"),
         };
-        let nullability: &str = if flags & ABSTRACT_TYPE_NULLABILITY_MASK == 0 {
-            ""
-        } else {
-            "?"
+        let suffix: &str = match nullability {
+            DartTypeNullability::Nullable => "?",
+            DartTypeNullability::NonNullable => "",
         };
-        Ok(format!("{result} Function({parameters}){nullability}"))
+        Ok(format!("{result} Function({parameters}){suffix}"))
     }
 
     fn array_elements(
@@ -703,7 +704,7 @@ impl DartPoolTable {
     }
 
     fn is_null_object(&self, reference: u32) -> bool {
-        if reference != NULL_OBJECT_REFERENCE {
+        if reference != self.declarations.base_objects.null {
             return false;
         }
         self.object(reference)
@@ -743,22 +744,44 @@ impl DartPoolTable {
         path: &mut BTreeSet<u32>,
         budget: &mut usize,
     ) -> String {
-        let elements: &[u32] = object
-            .references
-            .get(..object.references.len().min(MAX_LIST_ELEMENTS))
+        let (type_arguments, elements): (Option<u32>, &[u32]) =
+            match object.references.split_first() {
+                Some((first, rest)) => (Some(*first), rest),
+                None => (None, &[]),
+            };
+        let shown: &[u32] = elements
+            .get(..elements.len().min(MAX_LIST_ELEMENTS))
             .unwrap_or(&[]);
-        let mut rendered: Vec<String> = Vec::with_capacity(elements.len());
-        for element in elements {
+        let mut rendered: Vec<String> = Vec::with_capacity(shown.len());
+        for element in shown {
             rendered.push(
                 self.render_object(*element, depth + 1, path, budget)
                     .unwrap_or_else(|_: DartPoolUnresolvedReason| UNRESOLVED_TOKEN.to_owned()),
             );
         }
-        if object.references.len() > elements.len() {
+        if elements.len() > shown.len() {
             rendered.push(ELISION.to_owned());
         }
-        let prefix: &str = if immutable { "const [" } else { "[" };
-        format!("{prefix}{}]", rendered.join(", "))
+        let vector: String = match type_arguments {
+            Some(reference) if !self.is_null_object(reference) => {
+                let typed: bool = self
+                    .object(reference)
+                    .is_some_and(|value: &DartPoolObject| {
+                        value.kind == DartPoolObjectKind::TypeArguments
+                    });
+                if typed {
+                    self.render_object(reference, depth + 1, path, budget)
+                        .unwrap_or_else(|_: DartPoolUnresolvedReason| {
+                            format!("<{UNRESOLVED_TOKEN}>")
+                        })
+                } else {
+                    format!("<{UNRESOLVED_TOKEN}>")
+                }
+            }
+            _ => String::new(),
+        };
+        let prefix: &str = if immutable { "const " } else { "" };
+        format!("{prefix}{vector}[{}]", rendered.join(", "))
     }
 }
 
@@ -812,7 +835,7 @@ fn widest_pool(nodes: &[DartGraphNode]) -> Option<Vec<DartPoolSlot>> {
         .map(|node: &DartGraphNode| node.pool_slots.clone())
 }
 
-fn compact(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject {
+fn compact(node: &DartGraphNode, layout: &DartPinnedLayout) -> DartPoolObject {
     DartPoolObject {
         kind: object_kind(node, layout),
         text: node.text.clone(),
@@ -825,14 +848,17 @@ fn compact(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject {
     }
 }
 
-fn classify_base_objects(objects: &mut [DartPoolObject]) {
+fn classify_base_objects(objects: &mut [DartPoolObject], layout: &DartPinnedLayout) {
     for (reference, kind) in [
         (
-            EMPTY_ARRAY_REFERENCE,
+            layout.base_objects.empty_array,
             DartPoolObjectKind::List { immutable: true },
         ),
-        (DYNAMIC_TYPE_REFERENCE, DartPoolObjectKind::DynamicType),
-        (VOID_TYPE_REFERENCE, DartPoolObjectKind::VoidType),
+        (
+            layout.base_objects.dynamic_type,
+            DartPoolObjectKind::DynamicType,
+        ),
+        (layout.base_objects.void_type, DartPoolObjectKind::VoidType),
     ] {
         let Ok(index): std::result::Result<usize, _> = usize::try_from(reference) else {
             continue;
@@ -854,7 +880,7 @@ fn classify_base_objects(objects: &mut [DartPoolObject]) {
     }
 }
 
-fn classify_symbol_objects(objects: &mut [DartPoolObject], layout: DartPinnedLayout) {
+fn classify_symbol_objects(objects: &mut [DartPoolObject], layout: &DartPinnedLayout) {
     let mut symbol_class_id: Option<i32> = None;
     for object in objects.iter() {
         if object.kind != DartPoolObjectKind::Class {
@@ -935,7 +961,7 @@ fn exact_text(objects: &[DartPoolObject], reference: u32) -> Option<&str> {
     object.text.as_deref()
 }
 
-fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObjectKind {
+fn object_kind(node: &DartGraphNode, layout: &DartPinnedLayout) -> DartPoolObjectKind {
     match node.kind {
         DartGraphNodeKind::String => return DartPoolObjectKind::Text,
         DartGraphNodeKind::Class => return DartPoolObjectKind::Class,
@@ -950,23 +976,20 @@ fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject
     let Some(class_id): Option<i32> = node.class_id else {
         return DartPoolObjectKind::Opaque;
     };
-    if class_id == MINT_CLASS_ID {
-        return DartPoolObjectKind::Mint;
-    }
     let Ok(cid): std::result::Result<u32, std::num::TryFromIntError> = u32::try_from(class_id)
     else {
         return DartPoolObjectKind::Opaque;
     };
+    if layout.class_id(MINT_CLASS_NAME) == Some(cid) {
+        return DartPoolObjectKind::Mint;
+    }
     match layout.cluster_body_kind(cid) {
         Some(DartClusterBodyKind::TypeParameter) => DartPoolObjectKind::TypeParameter,
         Some(DartClusterBodyKind::TypeParameters) => DartPoolObjectKind::TypeParameters,
         Some(DartClusterBodyKind::RecordType) => DartPoolObjectKind::RecordType,
         Some(DartClusterBodyKind::Double) => DartPoolObjectKind::Double,
         Some(DartClusterBodyKind::Array) => DartPoolObjectKind::List {
-            immutable: u16::try_from(cid)
-                .ok()
-                .and_then(predefined_name)
-                .is_some_and(|name: &str| name == IMMUTABLE_ARRAY_NAME),
+            immutable: layout.class_id(IMMUTABLE_ARRAY_NAME) == Some(cid),
         },
         _ => DartPoolObjectKind::Opaque,
     }
@@ -1044,6 +1067,11 @@ fn render_string(text: &str, already_escaped: bool) -> String {
 mod tests {
     use super::*;
 
+    const NULL_OBJECT_REFERENCE: u32 =
+        super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT
+            .base_objects
+            .null;
+
     fn text_object(text: &str) -> DartPoolObject {
         DartPoolObject {
             kind: DartPoolObjectKind::Text,
@@ -1120,7 +1148,7 @@ mod tests {
             immediate: None,
             references,
             class_id: None,
-            type_flags: Some(2),
+            type_flags: Some(3),
             function_type_shape: Some(function_type_shape),
         }
     }
@@ -1158,7 +1186,7 @@ mod tests {
     fn table(slots: Vec<DartPoolSlot>, mut objects: Vec<DartPoolObject>) -> DartPoolTable {
         classify_symbol_objects(
             &mut objects,
-            super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
+            &super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
         );
         DartPoolTable {
             slots,
@@ -1203,8 +1231,10 @@ mod tests {
 
     #[test]
     fn base_object_classification_requires_exact_pristine_references() {
+        let layout: DartPinnedLayout =
+            super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT;
         let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 9];
-        classify_base_objects(&mut objects);
+        classify_base_objects(&mut objects, &layout);
         assert_eq!(
             objects[4].kind,
             DartPoolObjectKind::List { immutable: true }
@@ -1214,8 +1244,29 @@ mod tests {
 
         let mut malformed: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 9];
         malformed[7].class_id = Some(40);
-        classify_base_objects(&mut malformed);
+        classify_base_objects(&mut malformed, &layout);
         assert_eq!(malformed[7].kind, DartPoolObjectKind::Opaque);
+    }
+
+    #[test]
+    fn releases_with_a_transition_sentinel_shift_the_base_object_references() {
+        let layout: DartPinnedLayout = super::super::dart_graph_layout::PINNED_DART_GRAPH_LAYOUTS
+            .iter()
+            .copied()
+            .find(|layout: &DartPinnedLayout| {
+                layout.version_hash == "ee1eb666c76a5cb7746faf39d0b97547"
+            })
+            .expect("Dart 3.3 is pinned");
+        let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 10];
+        classify_base_objects(&mut objects, &layout);
+        assert_eq!(objects[4].kind, DartPoolObjectKind::Opaque);
+        assert_eq!(
+            objects[5].kind,
+            DartPoolObjectKind::List { immutable: true }
+        );
+        assert_eq!(objects[7].kind, DartPoolObjectKind::Opaque);
+        assert_eq!(objects[8].kind, DartPoolObjectKind::DynamicType);
+        assert_eq!(objects[9].kind, DartPoolObjectKind::VoidType);
     }
 
     #[test]
@@ -1283,10 +1334,11 @@ mod tests {
     fn cyclic_object_reference_terminates_with_the_placeholder() {
         let objects: Vec<DartPoolObject> = vec![
             text_object("unused"),
-            list_object(vec![2]),
-            list_object(vec![1]),
+            bare_object(DartPoolObjectKind::Opaque),
+            list_object(vec![NULL_OBJECT_REFERENCE, 3]),
+            list_object(vec![NULL_OBJECT_REFERENCE, 2]),
         ];
-        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(1)], objects);
+        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(2)], objects);
         let rendered: String = pool.render_slot(0, false).expect("a list always renders");
         assert_eq!(
             rendered, "[[?]]",
@@ -1416,7 +1468,7 @@ mod tests {
         };
         let mut objects: Vec<DartPoolObject> = vec![bare_object(DartPoolObjectKind::Opaque); 11];
         objects[2] = function_type_object(vec![0, 0, 1, 8, 9, 4], shape);
-        objects[2].type_flags = Some(3);
+        objects[2].type_flags = Some(2);
         objects[4] = bare_object(DartPoolObjectKind::List { immutable: true });
         objects[7] = bare_object(DartPoolObjectKind::DynamicType);
         objects[8] = bare_object(DartPoolObjectKind::VoidType);
@@ -1648,7 +1700,7 @@ mod tests {
                 opaque_object(Vec::new(), 5),
                 opaque_object(Vec::new(), 5),
                 type_parameter,
-                list_object(vec![3]),
+                list_object(vec![1, 3]),
             ],
         );
         assert_eq!(
@@ -1665,8 +1717,8 @@ mod tests {
         );
         assert_eq!(
             pool.render_slot(3, false).as_deref(),
-            Some("[?]"),
-            "a list element that points back at its own list stops at the cycle instead of recursing"
+            Some("<?>[?]"),
+            "a list element that points back at its own list stops at the cycle instead of recursing, and a type-argument slot that is not a vector renders as unresolved"
         );
         assert_eq!(
             pool.unresolved_reason_at_offset(pool_offset_of_slot(4), false),

@@ -144,28 +144,74 @@ fn the_class_rename_moves_every_recovered_name_with_it() {
 }
 
 #[test]
-fn the_obfuscated_build_recovers_no_authored_name_and_names_its_reason() {
+fn the_obfuscated_build_keeps_exactly_the_entry_point_names_its_source_marks() {
+    let source: String = source_text("pinned_graph_fixture/receipt_validator.dart");
+    let marked: [(&str, &str); 4] = [
+        (
+            "ReceiptValidator.computeChecksum",
+            "@pragma('vm:entry-point')\n  @pragma('vm:never-inline')\n  int computeChecksum(",
+        ),
+        (
+            "ReceiptValidator.formatReceipt",
+            "@pragma('vm:entry-point')\n  @pragma('vm:never-inline')\n  String formatReceipt(",
+        ),
+        (
+            "new ReceiptValidator",
+            "@pragma('vm:entry-point')\n  const ReceiptValidator(",
+        ),
+        (
+            "new FixtureApp",
+            "@pragma('vm:entry-point')\n  const FixtureApp(",
+        ),
+    ];
+    let unmarked: (&str, &str) = (
+        "FixtureApp.build",
+        "@override\n  Widget build(BuildContext context)",
+    );
+    for (_, declaration) in marked.iter().chain([&unmarked]) {
+        assert!(
+            source.contains(declaration),
+            "the fixture source must declare {declaration:?}; it is the reference this grade reads"
+        );
+    }
+
     let report: AotLiftReport = lift_libapp_aot(&read_sample(
         "pinned_graph_fixture/receipt_validator_obfuscated_arm64.so",
     ))
     .expect("lift the obfuscated sample");
-    let named: usize = report
+    let names: BTreeSet<String> = report
         .functions
         .iter()
-        .filter(|f: &&DartLiftedFunction| f.name.is_some())
-        .count();
-    assert_eq!(
-        named, 0,
-        "the obfuscated build must not claim authored names; the precompiler renamed them"
+        .filter_map(|f: &DartLiftedFunction| f.name.clone())
+        .collect::<BTreeSet<String>>();
+    eprintln!(
+        "obfuscated build: {} named of {} functions, {} distinct names",
+        report.named_function_count,
+        report.function_count,
+        names.len()
     );
-    let reason: &String = report
+    for (name, _) in marked {
+        assert!(
+            names.contains(name),
+            "{name} is a vm:entry-point the obfuscator must leave named, and the snapshot names its code"
+        );
+    }
+    assert!(
+        recovered_names("pinned_graph_fixture/receipt_validator_arm64.so").contains(unmarked.0),
+        "the unobfuscated build names {}, so its absence below is the obfuscator's doing",
+        unmarked.0
+    );
+    assert!(
+        !names.contains(unmarked.0),
+        "{} carries no entry-point pragma, so --obfuscate renamed it and the snapshot cannot name it",
+        unmarked.0
+    );
+    let note: &String = report
         .notes
         .iter()
-        .find(|note: &&String| note.contains("could not supply offset-to-name coverage"))
-        .expect("the obfuscated build must name why it recovers no name");
-    eprintln!("obfuscated build refusal: {reason}");
-    assert!(
-        reason.contains("DR-MOB-"),
-        "the refusal must carry its diagnostic code, got {reason}"
-    );
+        .find(|note: &&String| {
+            note.contains("instructions-table payloads carry a declared owning function")
+        })
+        .expect("the obfuscated build must say where its names came from");
+    eprintln!("obfuscated build naming: {note}");
 }

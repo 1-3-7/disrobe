@@ -110,7 +110,7 @@ fn cluster_objects(summary: &DartGraphSnapshotSummary, kind: DartClusterBodyKind
 
 pub(super) fn build_pinned_inventory(
     nodes: &[DartGraphNode],
-    layout: DartPinnedLayout,
+    layout: &DartPinnedLayout,
     declared: DartGraphDeclaredObjects,
 ) -> DartPinnedInventory {
     let layouts: DartDeclarationBodyLayouts = layout.declarations;

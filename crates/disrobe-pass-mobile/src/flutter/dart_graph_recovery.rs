@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::cid_table::matches_version;
-use super::code_table::{DartCodeTable, parse_code_table};
+use super::code_names::{DartCodeName, code_names};
+use super::code_table::{DartCodeTable, instructions_payload_end, parse_code_table};
 use super::dart_graph::{
     DartGraphLimits, DartGraphSnapshotRole, DartGraphSnapshotSummary, DartParsedGraph,
     parse_dart_graph,
@@ -15,7 +15,6 @@ use super::dart_graph_inventory::{
 use super::dart_graph_layout::{
     DartPinnedLayout, has_pinned_dart_graph_layout, pinned_dart_graph_layout,
 };
-use super::demangler::{DartNameKind, DemangledName, demangle};
 use super::{LibAppLayout, SnapshotSection};
 use crate::error::{Error, Result};
 
@@ -213,16 +212,6 @@ pub struct DartGraphRecoveryReport {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DartCodeName {
-    pub instructions_offset: u64,
-    pub code_index: u64,
-    pub qualified_name: String,
-    pub member_name: String,
-    pub class_name: Option<String>,
-    pub library_url: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DartCodeBoundary {
     pub instructions_offset: u64,
@@ -234,6 +223,7 @@ pub struct DartCodeNameTable {
     pub entries: Vec<DartCodeName>,
     pub boundaries: Vec<DartCodeBoundary>,
     pub table_entry_count: usize,
+    pub discarded_entry_count: usize,
     pub distinct_offset_count: usize,
     pub reason: String,
 }
@@ -309,19 +299,16 @@ pub fn recover_dart_pinned_elf(
     )?;
     let vm_data: Vec<u8> = super::vm_data_bytes(bytes)?;
     let isolate_data: Vec<u8> = super::isolate_data_bytes(bytes)?;
+    let isolate_instructions: Vec<u8> = super::isolate_instruction_bytes(bytes)?;
     let vm_instructions_len: usize = layout
         .vm_snapshot_instructions
-        .as_ref()
-        .map_or(0, |section: &SnapshotSection| section.size as usize);
-    let isolate_instructions_len: usize = layout
-        .isolate_snapshot_instructions
         .as_ref()
         .map_or(0, |section: &SnapshotSection| section.size as usize);
     recover_pinned_data_blobs(
         &vm_data,
         vm_instructions_len,
         &isolate_data,
-        isolate_instructions_len,
+        &isolate_instructions,
         options,
     )
 }
@@ -337,7 +324,7 @@ pub fn recover_dart_pinned_standalone(
         vm_data,
         vm_instructions.len(),
         isolate_data,
-        isolate_instructions.len(),
+        isolate_instructions,
         options,
     )
 }
@@ -354,9 +341,10 @@ fn recover_pinned_data_blobs(
     vm_data: &[u8],
     vm_instructions_len: usize,
     isolate_data: &[u8],
-    isolate_instructions_len: usize,
+    isolate_instructions: &[u8],
     options: &DartGraphRecoveryOptions,
 ) -> Result<DartGraphRecoveryReport> {
+    let isolate_instructions_len: usize = isolate_instructions.len();
     options.limits.validate()?;
     let vm_header: DartPinnedHeader = parse_pinned_header(vm_data)?;
     let isolate_header: DartPinnedHeader = parse_pinned_header(isolate_data)?;
@@ -412,7 +400,7 @@ fn recover_pinned_data_blobs(
         vm_header.clustered_offset,
         DartGraphSnapshotRole::Vm,
         None,
-        layout,
+        &layout,
         options.limits,
     )?;
     let isolate_graph: DartParsedGraph = parse_dart_graph(
@@ -421,13 +409,13 @@ fn recover_pinned_data_blobs(
         isolate_header.clustered_offset,
         DartGraphSnapshotRole::Isolate,
         Some(&vm_graph.nodes),
-        layout,
+        &layout,
         options.limits,
     )?;
     let declared: DartGraphDeclaredObjects =
         declared_objects(&vm_graph.summary, &isolate_graph.summary);
     let inventory: DartPinnedInventory =
-        build_pinned_inventory(&isolate_graph.nodes, layout, declared);
+        build_pinned_inventory(&isolate_graph.nodes, &layout, declared);
     let (status, name_mode, name_mode_reason): (
         DartGraphRecoveryStatus,
         DartGraphNameMode,
@@ -441,15 +429,16 @@ fn recover_pinned_data_blobs(
         layout.code_table,
     ) {
         Ok(table) => {
-            let entries: Vec<DartCodeName> = build_code_names(&inventory, &table);
+            let entries: Vec<DartCodeName> = code_names(&isolate_graph.nodes, &layout, &table);
             let mut offsets: Vec<u64> = entries
                 .iter()
                 .map(|entry: &DartCodeName| entry.instructions_offset)
                 .collect::<Vec<u64>>();
             offsets.dedup();
             DartCodeNameTable {
-                boundaries: code_boundaries(&table, isolate_instructions_len),
+                boundaries: code_boundaries(&table, isolate_instructions),
                 table_entry_count: table.len(),
+                discarded_entry_count: table.first_entry_with_code,
                 distinct_offset_count: offsets.len(),
                 reason: String::new(),
                 entries,
@@ -459,6 +448,7 @@ fn recover_pinned_data_blobs(
             entries: Vec::new(),
             boundaries: Vec::new(),
             table_entry_count: 0,
+            discarded_entry_count: 0,
             distinct_offset_count: 0,
             reason: error.to_string(),
         },
@@ -489,74 +479,25 @@ fn recover_pinned_data_blobs(
     })
 }
 
-fn code_boundaries(table: &DartCodeTable, image_len: usize) -> Vec<DartCodeBoundary> {
+fn code_boundaries(table: &DartCodeTable, isolate_instructions: &[u8]) -> Vec<DartCodeBoundary> {
+    let payload_end: Option<usize> = instructions_payload_end(isolate_instructions, table)
+        .and_then(|end: u64| usize::try_from(end).ok());
     let total: usize = table.len();
     (0..total)
         .filter_map(|ordinal: usize| {
             let index: u64 = u64::try_from(ordinal).ok()?.checked_add(1)?;
-            let (start, end): (u64, u64) = table.payload_span(index, image_len)?;
+            let end_of_last: usize = if ordinal + 1 == total {
+                payload_end?
+            } else {
+                isolate_instructions.len()
+            };
+            let (start, end): (u64, u64) = table.payload_span(index, end_of_last)?;
             Some(DartCodeBoundary {
                 instructions_offset: start,
                 payload_length: end.saturating_sub(start),
             })
         })
         .collect::<Vec<DartCodeBoundary>>()
-}
-
-fn build_code_names(inventory: &DartPinnedInventory, table: &DartCodeTable) -> Vec<DartCodeName> {
-    let mut entries: Vec<DartCodeName> = Vec::new();
-    for library in &inventory.libraries {
-        for class in &library.classes {
-            for method in &class.methods {
-                let Some(code_index) = method.code_index else {
-                    continue;
-                };
-                let Some(instructions_offset) = table.instructions_offset(code_index) else {
-                    continue;
-                };
-                let Some(raw_member) = method.name.as_deref() else {
-                    continue;
-                };
-                let demangled: DemangledName = demangle(raw_member);
-                let member: String = demangled.scrubbed;
-                let class_name: Option<String> = class
-                    .name
-                    .as_deref()
-                    .map(|name: &str| demangle(name).scrubbed)
-                    .filter(|name: &String| !name.is_empty() && name != "::");
-                let qualified: String = match demangled.kind {
-                    DartNameKind::Constructor | DartNameKind::NamedConstructor => {
-                        format!("new {member}")
-                    }
-                    DartNameKind::Getter | DartNameKind::Setter | DartNameKind::Method => {
-                        class_name.as_ref().map_or_else(
-                            || member.clone(),
-                            |owner: &String| format!("{owner}.{member}"),
-                        )
-                    }
-                };
-                entries.push(DartCodeName {
-                    instructions_offset,
-                    code_index,
-                    qualified_name: qualified,
-                    member_name: member,
-                    class_name,
-                    library_url: library.url.clone(),
-                });
-            }
-        }
-    }
-    entries.sort_by(|left: &DartCodeName, right: &DartCodeName| {
-        left.instructions_offset
-            .cmp(&right.instructions_offset)
-            .then_with(|| left.qualified_name.cmp(&right.qualified_name))
-            .then_with(|| left.code_index.cmp(&right.code_index))
-    });
-    entries.dedup_by(|left: &mut DartCodeName, right: &mut DartCodeName| {
-        left.instructions_offset == right.instructions_offset
-            && left.qualified_name == right.qualified_name
-    });
-    entries
 }
 
 pub(super) struct DartPinnedGraph {
@@ -578,9 +519,6 @@ pub(super) fn parse_pinned_isolate_graph(
             field: "snapshot compatibility hash",
         });
     }
-    if !matches_version(&isolate_header.snapshot_compatibility_hash) {
-        return Ok(None);
-    }
     let Some(layout): Option<DartPinnedLayout> = pinned_dart_graph_layout(
         &isolate_header.snapshot_compatibility_hash,
         &isolate_header.features,
@@ -593,7 +531,7 @@ pub(super) fn parse_pinned_isolate_graph(
         vm_header.clustered_offset,
         DartGraphSnapshotRole::Vm,
         None,
-        layout,
+        &layout,
         limits,
     )?;
     let graph: DartParsedGraph = parse_dart_graph(
@@ -602,11 +540,11 @@ pub(super) fn parse_pinned_isolate_graph(
         isolate_header.clustered_offset,
         DartGraphSnapshotRole::Isolate,
         Some(&vm_graph.nodes),
-        layout,
+        &layout,
         limits,
     )?;
     let declared: DartGraphDeclaredObjects = declared_objects(&vm_graph.summary, &graph.summary);
-    let inventory: DartPinnedInventory = build_pinned_inventory(&graph.nodes, layout, declared);
+    let inventory: DartPinnedInventory = build_pinned_inventory(&graph.nodes, &layout, declared);
     Ok(Some(DartPinnedGraph {
         graph,
         layout,
@@ -684,6 +622,7 @@ fn unsupported_report(
             entries: Vec::new(),
             boundaries: Vec::new(),
             table_entry_count: 0,
+            discarded_entry_count: 0,
             distinct_offset_count: 0,
             reason: reason.to_owned(),
         },

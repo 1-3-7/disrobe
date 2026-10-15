@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::DartFunctionSymbol;
 use super::arm64_data::{IntegerOperands, integer_operands};
 use super::call_args::DART_ARGUMENT_REGISTERS;
-use super::cid_table::matches_version;
 use super::dart_graph::DartGraphLimits;
+use super::dart_graph_layout::{DartCallingConvention, pinned_calling_convention};
 use super::disasm::{Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::object_pool::{DartPoolLiteral, resolve_pool_literals};
 use super::pool_table::{
@@ -286,6 +286,7 @@ fn slot_or_qm(call: &DartCallSite) -> String {
 pub struct AotLiftReport {
     pub version_hash: String,
     pub abi_resolved: bool,
+    pub calling_convention: Option<DartCallingConvention>,
     pub function_count: usize,
     pub named_function_count: usize,
     pub cluster_named_function_count: usize,
@@ -320,6 +321,8 @@ pub struct AotLiftReport {
     pub notes: Vec<String>,
 }
 
+const STACK_ARGUMENTS_NOTE: &str = "this Dart release passes every Dart argument on the stack (the register calling convention arrived in Dart 3.4), and parameter, call-argument and body lifting read register arguments only, so no body is structured and no parameter count is inferred; calls, pool loads, stub inputs and elided checks are still reported";
+
 const ABI_UNRESOLVED_NOTE: &str = "snapshot version hash is not pinned; ARM64 Dart ABI register roles (PP/THR/NULL/dispatch) are version-keyed and are not guessed, so this report is boundary and control-flow structure only";
 
 const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form and the version-keyed ObjectPool cluster is deserialized per slot, so a call-site load resolves to its own string, double, integer, list or declared name; a slot the snapshot marks as reset at load carries the value the deserializer assigns it, which is zero for a set-to-zero entry and a named runtime stub entry for a bootstrap-native, switchable-call-miss or lazy native-link entry; a slot whose body shape this layout does not model stays unresolved with a named reason";
@@ -338,7 +341,7 @@ const BODY_LIFT_NOTE: &str = "body statements are lifted to pseudo-Dart expressi
 
 const BLOCK_MERGE_NOTE: &str = "a block with more than one predecessor starts from an empty tracker state, so a value produced before a control-flow merge is not carried into it; loop bodies therefore keep more unliftedArm64 markers than straight-line code, which is a merge-conservatism boundary rather than a decode limit";
 
-const DROPPED_CLASS_NAME_NOTE: &str = "the product AOT precompiler drops the class metadata object for classes it does not otherwise need, while types continue to reference the class id; such a class surfaces as cid@N, read from the artifact, and its declared name is absent rather than guessed";
+const DROPPED_CLASS_NAME_NOTE: &str = "a type whose class id names no class object serialized in the snapshot surfaces as cid@N, read from the artifact, and its declared name is absent rather than guessed";
 
 const TYPE_PARAMETER_NAME_NOTE: &str = "the product AOT precompiler drops type-parameter names, so an uninstantiated type argument surfaces by its position in the vector as typeParam@N rather than by the name the source declared; the position is read from the artifact and the name is not reported";
 
@@ -505,7 +508,10 @@ pub fn lift_functions(
     isolate_data: &[u8],
     pool: Option<&DartPoolTable>,
 ) -> AotLiftReport {
-    let abi_resolved: bool = matches_version(version_hash);
+    let calling_convention: Option<DartCallingConvention> = pinned_calling_convention(version_hash);
+    let abi_resolved: bool = calling_convention.is_some();
+    let register_arguments: bool =
+        calling_convention == Some(DartCallingConvention::RegisterArguments);
     let index: SymbolIndex = SymbolIndex::build(symbols);
     let stubs: DartStubInputs = if abi_resolved {
         DartStubInputs::classify(instructions, &direct_call_targets(disasm))
@@ -521,6 +527,7 @@ pub fn lift_functions(
             &index,
             &stubs,
             abi_resolved,
+            register_arguments,
             pool,
             &mut call_argument_counts,
         ));
@@ -616,6 +623,9 @@ pub fn lift_functions(
         notes.push(INLINE_WALL_NOTE.to_owned());
         notes.push(BODY_LIFT_NOTE.to_owned());
         notes.push(BLOCK_MERGE_NOTE.to_owned());
+        if !register_arguments {
+            notes.push(STACK_ARGUMENTS_NOTE.to_owned());
+        }
     } else {
         notes.push(ABI_UNRESOLVED_NOTE.to_owned());
     }
@@ -623,6 +633,7 @@ pub fn lift_functions(
     AotLiftReport {
         version_hash: version_hash.to_owned(),
         abi_resolved,
+        calling_convention,
         function_count: functions.len(),
         named_function_count,
         cluster_named_function_count: 0,
@@ -666,6 +677,7 @@ fn lift_one(
     index: &SymbolIndex,
     stubs: &DartStubInputs,
     abi_resolved: bool,
+    register_arguments: bool,
     pool: Option<&DartPoolTable>,
     counts: &mut DartCallArgumentCounts,
 ) -> DartLiftedFunction {
@@ -728,9 +740,13 @@ fn lift_one(
     let source_conditional_estimate: usize =
         conditional_branch_count.saturating_sub(count_conditional_guards(&elided_checks));
 
-    let inferred_parameter_count: u8 = infer_arg_registers(func);
+    let inferred_parameter_count: u8 = if register_arguments {
+        infer_arg_registers(func)
+    } else {
+        0
+    };
     let mut arg_registers: u8 = inferred_parameter_count;
-    let structured: Option<DartStructuredBody> = if abi_resolved {
+    let structured: Option<DartStructuredBody> = if register_arguments {
         let label: String = func
             .name
             .clone()
@@ -1447,6 +1463,7 @@ mod tests {
             &index,
             &DartStubInputs::default(),
             true,
+            true,
             None,
             &mut DartCallArgumentCounts::default(),
         );
@@ -1468,6 +1485,7 @@ mod tests {
             &func,
             &index,
             &DartStubInputs::default(),
+            true,
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1492,6 +1510,7 @@ mod tests {
             &index,
             &DartStubInputs::default(),
             true,
+            true,
             None,
             &mut DartCallArgumentCounts::default(),
         );
@@ -1512,6 +1531,7 @@ mod tests {
             &func,
             &index,
             &DartStubInputs::default(),
+            true,
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1535,6 +1555,7 @@ mod tests {
             &func,
             &index,
             &DartStubInputs::default(),
+            true,
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1586,6 +1607,7 @@ mod tests {
             &index,
             &DartStubInputs::default(),
             true,
+            true,
             None,
             &mut DartCallArgumentCounts::default(),
         );
@@ -1606,6 +1628,7 @@ mod tests {
             &func,
             &index,
             &DartStubInputs::default(),
+            false,
             false,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1631,6 +1654,7 @@ mod tests {
             &func,
             &index,
             &DartStubInputs::default(),
+            true,
             true,
             None,
             &mut DartCallArgumentCounts::default(),
@@ -1659,6 +1683,7 @@ mod tests {
             &func,
             &index,
             &DartStubInputs::default(),
+            false,
             false,
             None,
             &mut DartCallArgumentCounts::default(),

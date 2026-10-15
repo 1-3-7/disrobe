@@ -14,6 +14,7 @@ pub mod arm64_traversal;
 pub(crate) mod call_args;
 pub mod cid_table;
 pub mod cluster;
+pub mod code_names;
 pub mod code_table;
 pub mod dart_graph;
 pub mod dart_graph_inventory;
@@ -50,6 +51,7 @@ pub use cluster::{
     ClusterFramingStatus, DartClusterRole, DartClusterSchemaReport, DartObservedCluster,
     DartReadStream, DartSnapshotFraming, attach_cluster_schema, parse_snapshot_framing,
 };
+pub use code_names::{DartCodeName, DartCodeNameRole, scrub_name};
 pub use code_table::{DartCodeTable, DartCodeTableEntry, parse_code_table, rodata_image_offset};
 pub use dart_graph::{DartGraphClusterSummary, DartGraphLimits, DartGraphSnapshotSummary};
 pub use dart_graph_inventory::{
@@ -60,13 +62,15 @@ pub use dart_graph_inventory::{
 pub use dart_graph_layout::{
     DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES,
     DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT, DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES,
-    DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT, DartClassBodyLayout, DartClusterBodyKind,
-    DartDeclarationBodyLayouts, DartFieldBodyLayout, DartFunctionBodyLayout, DartLibraryBodyLayout,
-    DartPatchClassBodyLayout, DartPinnedLayout, PINNED_DART_GRAPH_LAYOUTS,
-    has_pinned_dart_graph_layout, pinned_dart_graph_layout,
+    DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT, DartAbstractTypeFlags, DartBaseObjectReferences,
+    DartCallingConvention, DartClassBodyLayout, DartClosureDataBodyLayout, DartClusterBodyKind,
+    DartCodeBodyLayout, DartDeclarationBodyLayouts, DartFieldBodyLayout, DartFunctionBodyLayout,
+    DartLibraryBodyLayout, DartPatchClassBodyLayout, DartPinnedLayout, DartTypeNullability,
+    DartTypeState, PINNED_DART_GRAPH_LAYOUTS, has_pinned_dart_graph_layout,
+    pinned_calling_convention, pinned_dart_graph_layout,
 };
 pub use dart_graph_recovery::{
-    DartCodeBoundary, DartCodeName, DartCodeNameTable, DartGraphBlobSizes, DartGraphNameMode,
+    DartCodeBoundary, DartCodeNameTable, DartGraphBlobSizes, DartGraphNameMode,
     DartGraphObfuscationHint, DartGraphRecoveryOptions, DartGraphRecoveryReport,
     DartGraphRecoveryStatus, recover_dart_pinned_elf, recover_dart_pinned_standalone,
 };
