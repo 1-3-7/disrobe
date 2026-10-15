@@ -65,6 +65,27 @@ fn section_file_range(bytes: &[u8], target: &str) -> Option<(usize, usize)> {
 }
 
 #[test]
+fn the_stripped_fixture_is_the_committed_nim_build_without_symbols() {
+    let unstripped: Vec<u8> = common::fixture_or_fail(common::NIM_ELF);
+    let stripped: Vec<u8> = stripped_fixture();
+    let full: NativeImage<'_> = NativeImage::parse(&unstripped).expect("parse unstripped nim");
+    let bare: NativeImage<'_> = NativeImage::parse(&stripped).expect("parse stripped nim");
+    let full_text: &disrobe_pass_nativelang::Section<'_> =
+        full.text_section().expect("unstripped .text present");
+    let bare_text: &disrobe_pass_nativelang::Section<'_> =
+        bare.text_section().expect("stripped .text present");
+    assert_eq!(
+        (bare_text.address, bare_text.data.len()),
+        (full_text.address, full_text.data.len()),
+        "tests/fixtures/eh_frame/nim.stripped.elf must be `strip` of corpus/native/nim/hello.nim.elf; rebuild it whenever that build changes"
+    );
+    assert!(
+        bare_text.data == full_text.data,
+        "the stripped fixture's .text differs from the committed nim build; regenerate it with `strip`"
+    );
+}
+
+#[test]
 fn eh_frame_recovers_starts_from_stripped_nim_without_symbol_table() {
     let bytes: Vec<u8> = stripped_fixture();
     let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("parse stripped nim");

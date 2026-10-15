@@ -23,3 +23,10 @@ path_rewrite_record_sha256 = "942f47153f7d83454c7e60c46162f65cadac6a9ece37328b6f
 build_command = "nim c -d:release --opt:none --debugger:native --mm:orc --cpu:amd64 --os:linux --cc:clang --parallelBuild:1 --clang.exe:<wrapper> --clang.linkerexe:<wrapper> --nimcache:<nimcache> --out:hello.nim.elf hello.nim"
 compiler_wrapper = "zig cc -target x86_64-linux-gnu with -ffile-prefix-map mappings in this order: <source-root>=/src, <nimcache>=/nimcache, <nim-root>=/nim, and <zig-root>=/zig; each mapping is passed in slash and backslash spellings"
 runtime_license = "copying.txt (MIT)"
+
+[[derived]]
+path = "crates/disrobe-pass-nativelang/tests/fixtures/eh_frame/nim.stripped.elf"
+from = "hello.nim.elf"
+command = "strip -o nim.stripped.elf hello.nim.elf"
+tool = "GNU strip (GNU Binutils) 2.47"
+sha256 = "82d9b9a7642b32d6f334a8ef70db7589346789a76bbb75897d70ea5c40ef13cf"
