@@ -209,6 +209,7 @@ async fn list_commands_carries_the_read_only_allowlist() {
         "py deob",
         "flutter identity",
         "macho nib",
+        "macho car",
         "macho keyed-archive",
         "resources",
         "electron",

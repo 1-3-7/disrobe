@@ -91,6 +91,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "lua deobfuscate",
     "lua detect",
     "lua opcode-map",
+    "macho car",
     "macho classdump",
     "macho dump",
     "macho dyldcache",
