@@ -28,6 +28,7 @@
 
 - [Python](./languages/python.md)
 - [JavaScript / TypeScript](./languages/javascript.md)
+- [Electron apps](./languages/electron.md)
 - [Webview desktop frontends](./languages/webview.md)
 - [WebAssembly](./languages/wasm.md)
 - [JVM and Android](./languages/jvm-android.md)

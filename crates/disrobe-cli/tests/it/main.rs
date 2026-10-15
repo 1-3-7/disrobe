@@ -265,6 +265,9 @@ mod dotnet_native_aot_cli;
 #[path = "../dotnet_single_file.rs"]
 mod dotnet_single_file;
 
+#[path = "../electron_cli.rs"]
+mod electron_cli;
+
 #[path = "../envelope_cli_e2e.rs"]
 mod envelope_cli_e2e;
 

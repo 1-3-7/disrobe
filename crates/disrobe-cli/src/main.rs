@@ -778,6 +778,28 @@ enum Cmd {
         #[arg(long, help = "print every thread's registers")]
         registers: bool,
     },
+    #[command(
+        about = "inspect an Electron app: fuse states (Node mode, NODE_OPTIONS, inspector, ASAR integrity, load-from-asar) with what each allows, the ASAR integrity hashes declared in the executable or Info.plist, and each archive's header and per-file integrity"
+    )]
+    Electron {
+        #[arg(
+            value_name = "EXECUTABLE",
+            help = "the Electron executable, or the Electron Framework binary on macOS"
+        )]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_name = "ASAR",
+            help = "archive to check (default: resources/app.asar beside the executable or Contents/Resources/app.asar)"
+        )]
+        asar: Vec<PathBuf>,
+        #[arg(
+            long,
+            value_name = "PLIST",
+            help = "Info.plist holding ElectronAsarIntegrity (default: the bundle's Contents/Info.plist)"
+        )]
+        info_plist: Option<PathBuf>,
+    },
     #[cfg(feature = "plugin")]
     #[command(
         about = "signed WebAssembly component plugin sandbox: run, verify, list (fuel/wall-deadline/memory-capped, deny-all-imports)"
@@ -2103,6 +2125,11 @@ fn main() -> miette::Result<()> {
         ),
         #[cfg(feature = "data")]
         Cmd::Capture { path, extract } => cli::capture::run(path, extract, fmt),
+        Cmd::Electron {
+            path,
+            asar,
+            info_plist,
+        } => cli::electron::run(path, asar, info_plist, fmt),
         #[cfg(feature = "data")]
         Cmd::Crash { path, registers } => cli::crash::run(path, registers, fmt),
         #[cfg(feature = "plugin")]
