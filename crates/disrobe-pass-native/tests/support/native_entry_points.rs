@@ -79,6 +79,13 @@ fn program_function(ctx: &Ctx<'_>) -> [pseudo_c::ProgramFunction; 1] {
 
 pub(crate) const ENTRY_POINTS: &[Entry] = &[
     Entry {
+        path: "anti_runtime::plan_runtime_check_neutralization",
+        cheap: true,
+        drive: |ctx: &Ctx<'_>| {
+            from_result(anti_runtime::plan_runtime_check_neutralization(ctx.bytes))
+        },
+    },
+    Entry {
         path: "authenticode::verify",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
@@ -646,6 +653,14 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
             let _ = pseudo_c::recover_aarch64_program(ctx.bytes);
+            Verdict::NotFallible
+        },
+    },
+    Entry {
+        path: "runtime_image::detect_runtime_decrypted",
+        cheap: true,
+        drive: |ctx: &Ctx<'_>| {
+            let _ = runtime_image::detect_runtime_decrypted(ctx.bytes);
             Verdict::NotFallible
         },
     },
@@ -1431,6 +1446,19 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
                 stream_disasm::scan_rip_relative_refs(ctx.bytes, 0x1000, BOUNDED_OUTPUT).len(),
                 ctx,
             )
+        },
+    },
+    Entry {
+        path: "verify_function::verify_function",
+        cheap: false,
+        drive: |ctx: &Ctx<'_>| {
+            let mut options: verify_function::VerifyFunctionOptions =
+                verify_function::VerifyFunctionOptions::new("0x1000");
+            options.cases = 4;
+            match verify_function::verify_function(ctx.bytes, ctx.other, &options) {
+                Ok(_) => Verdict::Ok,
+                Err(error) => Verdict::Failed(error.to_string()),
+            }
         },
     },
     Entry {
