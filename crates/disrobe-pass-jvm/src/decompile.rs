@@ -9983,6 +9983,31 @@ fn type_switch_restart_slot(insns: &[Instruction], dispatch_idx: usize) -> Optio
     }
 }
 
+fn leading_null_return_arm(
+    ctx: &RenderCtx<'_>,
+    subject_slot: u16,
+    dispatch_idx: usize,
+) -> Option<String> {
+    let load: &Instruction = ctx.insns.first()?;
+    let branch: &Instruction = ctx.insns.get(1)?;
+    if aload_source_slot(load) != Some(subject_slot) || branch.opcode != 0xC7 {
+        return None;
+    }
+    let target_pc: u32 = branch_abs(branch)?;
+    let target_idx: usize = insn_index_at_pc(ctx.insns, target_pc)?;
+    if !(2..=dispatch_idx).contains(&target_idx) {
+        return None;
+    }
+    let arm: &[Instruction] = ctx.insns.get(2..target_idx)?;
+    if !arm
+        .last()
+        .is_some_and(|instruction: &Instruction| matches!(instruction.opcode, 0xAC..=0xB0))
+    {
+        return None;
+    }
+    Some(lift_value_slice(ctx, arm)?.render())
+}
+
 fn resolve_subject_to_param(
     cf: &ClassFile,
     insns: &[Instruction],
@@ -10203,6 +10228,8 @@ fn try_reconstruct_pattern_method(
 
     let ctx: RenderCtx<'_> =
         pattern_render_ctx(cf, cfg, insns, params, bootstraps, has_this, bool_return);
+    let leading_null_return: Option<String> = selector_source_slot(cf, insns, selector_slot)
+        .and_then(|source_slot: u16| leading_null_return_arm(&ctx, source_slot, dispatch_idx));
     let mut arms: Vec<PatternArm> = Vec::with_capacity(targets.cases.len());
     let mut null_before_index: Option<i32> = None;
     for (case_value, arm_pc) in &targets.cases {
@@ -10252,8 +10279,14 @@ fn try_reconstruct_pattern_method(
         &cfg.exception_regions,
         &binding_slots,
     );
+    let leading_guard: String = leading_null_return.map_or_else(String::new, |value: String| {
+        format!(
+            "        if ({} == null) {{\n            return {value};\n        }}\n",
+            subject.render()
+        )
+    });
     Some(MethodBody {
-        text: format!("{decls}        return {switch_src};\n"),
+        text: format!("{decls}{leading_guard}        return {switch_src};\n"),
         fully_lifted: true,
     })
 }
@@ -13694,6 +13727,52 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
         Some(stack.pop().unwrap_or(Expr::This))
     };
 
+    if is_static
+        && let Some(field_name) = name.strip_prefix("-$$Nest$fget")
+        && let [field_receiver] = args.as_slice()
+    {
+        stack.push(Expr::Field {
+            receiver: Box::new(field_receiver.clone()),
+            owner,
+            name: field_name.to_owned(),
+            boolean: matches!(parsed.returns, JavaType::Boolean),
+        });
+        return LiftResult::Pushed;
+    }
+    if is_static
+        && let Some(field_name) = name.strip_prefix("-$$Nest$sfget")
+        && args.is_empty()
+    {
+        stack.push(Expr::StaticField {
+            owner: descriptor::binary_to_source(&owner),
+            name: field_name.to_owned(),
+            boolean: matches!(parsed.returns, JavaType::Boolean),
+        });
+        return LiftResult::Pushed;
+    }
+    if is_static
+        && let Some(interface_owner) = owner.strip_suffix("$-CC")
+        && let Some(default_name) = name.strip_prefix("$default$")
+        && let Some((bridge_receiver, bridge_args)) = args.split_first()
+        && matches!(bridge_receiver, Expr::This)
+    {
+        let rendered_args: String = bridge_args
+            .iter()
+            .map(Expr::render)
+            .collect::<Vec<String>>()
+            .join(", ");
+        let call: String = format!(
+            "{}.super.{}({rendered_args})",
+            descriptor::binary_to_source(interface_owner),
+            descriptor::java_writable_identifier(default_name)
+        );
+        if matches!(parsed.returns, JavaType::Void) {
+            return LiftResult::Statement(call);
+        }
+        stack.push(Expr::Opaque(call));
+        return LiftResult::Pushed;
+    }
+
     if name == "<init>" {
         let ctor_args: Vec<String> = args.iter().map(Expr::render).collect();
         let joined: String = ctor_args.join(", ");
@@ -14390,12 +14469,12 @@ fn decompile_class_with_inners_scoped(
     }
     let mut d: DecompiledClass = with_enum_metadata(enum_constants, switchmaps, || {
         with_record_arities(record_arities, || {
-            with_anon_inners(anon, || {
+            with_anon_inners(anon.clone(), || {
                 with_api_outline_projections(api_outlines, || decompile_class(cf))
             })
         })
     });
-    let inner_stubs: String = build_inner_class_stubs(cf, inners);
+    let inner_stubs: String = with_anon_inners(anon, || build_inner_class_stubs(cf, inners));
     if !inner_stubs.is_empty()
         && let Some(pos) = d.source.rfind('}')
     {
@@ -14603,6 +14682,7 @@ fn render_inner_field_stub(
     field: &FieldInfo,
     is_enum: bool,
     class_signature: Option<&crate::signature::RecoveredClassSignature>,
+    initialize_unassigned_final: bool,
 ) -> Option<String> {
     if field.access_flags & ACC_SYNTHETIC != 0 {
         return None;
@@ -14626,7 +14706,7 @@ fn render_inner_field_stub(
     };
     let init: String = constant_value_initializer(inner_cf, field, &ty).map_or_else(
         || {
-            if field.access_flags & ACC_FINAL != 0 {
+            if initialize_unassigned_final && field.access_flags & ACC_FINAL != 0 {
                 format!(" = {}", java_type_default(&ty))
             } else {
                 String::new()
@@ -14638,6 +14718,100 @@ fn render_inner_field_stub(
     let annotations: String =
         render_member_annotations(annotation_renderer, inner_cf, &field.attributes, "        ");
     Some(format!("{annotations}{declaration}"))
+}
+
+fn enclosing_instance_bindings(inner_cf: &ClassFile) -> BTreeMap<(String, String), String> {
+    let Ok(owner): Result<&str> = inner_cf.this_class_name() else {
+        return BTreeMap::new();
+    };
+    inner_cf
+        .fields
+        .iter()
+        .filter(|field: &&FieldInfo| field.access_flags & ACC_SYNTHETIC != 0)
+        .filter_map(|field: &FieldInfo| {
+            let name: &str = inner_cf.utf8_at(field.name_index).ok()?;
+            if !name.starts_with("this$") {
+                return None;
+            }
+            let descriptor: &str = inner_cf.utf8_at(field.descriptor_index).ok()?;
+            let JavaType::Object(enclosing) = descriptor::parse_field(descriptor)? else {
+                return None;
+            };
+            Some((
+                (owner.to_owned(), name.to_owned()),
+                format!("{}.this", JavaType::Object(enclosing).render()),
+            ))
+        })
+        .collect()
+}
+
+fn render_nested_method(
+    inner_cf: &ClassFile,
+    method: &MethodInfo,
+    simple_name: &str,
+    is_interface: bool,
+    annotation_default: Option<&str>,
+    class_signature: Option<&crate::signature::RecoveredClassSignature>,
+    enclosing_bindings: &BTreeMap<(String, String), String>,
+) -> RenderedMethod {
+    let _opaque_statics: ThreadLocalRestore<OpaqueStatics> =
+        replace_thread_local(&OPAQUE_STATICS, class_opaque_statics(inner_cf));
+    with_emitted_lambda_targets(inner_cf, || {
+        with_capture_field_bindings(enclosing_bindings.clone(), || {
+            render_method(
+                inner_cf,
+                method,
+                simple_name,
+                is_interface,
+                annotation_default,
+                class_signature,
+            )
+        })
+    })
+}
+
+fn nested_method_refusal_reason(inner_cf: &ClassFile, method: &MethodInfo) -> Option<&'static str> {
+    let name: &str = inner_cf.utf8_at(method.name_index).ok()?;
+    let descriptor: &str = inner_cf.utf8_at(method.descriptor_index).ok()?;
+    if name == "$record$equals" {
+        return Some("desugared record equality body is not source-compatible");
+    }
+    let has_desugared_record_equals: bool =
+        inner_cf.methods.iter().any(|candidate: &MethodInfo| {
+            inner_cf
+                .utf8_at(candidate.name_index)
+                .is_ok_and(|candidate_name: &str| candidate_name == "$record$equals")
+        });
+    if name == "equals" && descriptor == "(Ljava/lang/Object;)Z" && !has_desugared_record_equals {
+        return Some("nested Object.equals body is not source-compatible");
+    }
+    let MethodCode::Decoded(code): MethodCode = find_code(inner_cf, method) else {
+        return None;
+    };
+    let instructions: Vec<Instruction> = validate_code_attribute(inner_cf, &code).ok()?;
+    instructions.iter().find_map(|instruction: &Instruction| {
+        let index: u16 = match instruction.operands {
+            Operands::ConstPool(index) if matches!(instruction.opcode, 0xB6..=0xB8) => index,
+            Operands::InvokeInterface { index, .. } if instruction.opcode == 0xB9 => index,
+            _ => return None,
+        };
+        let reference: String = bytecode::resolve_ref(inner_cf, index)?;
+        let (owner, _name, _descriptor): (String, String, String) = split_member(&reference)?;
+        is_anonymous_inner_name(&owner).then_some("nested body calls an omitted anonymous helper")
+    })
+}
+
+fn refuse_nested_method(
+    inner_cf: &ClassFile,
+    method_name: &str,
+    rendered: &RenderedMethod,
+    reason: &'static str,
+) -> RenderedMethod {
+    let signature: String = rendered.text.split_once('{').map_or_else(
+        || rendered.text.clone(),
+        |(signature, _body): (&str, &str)| signature.trim_end().to_owned(),
+    );
+    render_unrecovered_method(signature, inner_cf, method_name, reason)
 }
 
 const fn java_type_default(ty: &JavaType) -> &'static str {
@@ -14894,6 +15068,129 @@ fn d8_capture_plan(anon_cf: &ClassFile, argument_count: usize) -> Option<Vec<D8C
     Some(plan)
 }
 
+fn anonymous_constructor_initializers(
+    anon_cf: &ClassFile,
+    captured_args: &[String],
+    capture_map: &BTreeMap<(String, String), String>,
+) -> Option<Vec<String>> {
+    let mut constructors = anon_cf.methods.iter().filter(|method: &&MethodInfo| {
+        anon_cf
+            .utf8_at(method.name_index)
+            .is_ok_and(|name: &str| name == "<init>")
+    });
+    let constructor: &MethodInfo = constructors.next()?;
+    if constructors.next().is_some() {
+        return None;
+    }
+    let descriptor: &str = anon_cf.utf8_at(constructor.descriptor_index).ok()?;
+    let parsed: MethodDescriptor = descriptor::parse_method(descriptor)?;
+    if parsed.params.len() != captured_args.len() || !matches!(parsed.returns, JavaType::Void) {
+        return None;
+    }
+    let mut slot: u16 = 1;
+    let mut params: Vec<(u16, String)> = Vec::with_capacity(parsed.params.len());
+    for (ty, value) in parsed.params.iter().zip(captured_args) {
+        params.push((slot, value.clone()));
+        slot = slot.checked_add(if ty.category_two() { 2 } else { 1 })?;
+    }
+    let MethodCode::Decoded(code): MethodCode = find_code(anon_cf, constructor) else {
+        return None;
+    };
+    if !code.exception_table.is_empty() || code.dropped_exception_entries != 0 {
+        return None;
+    }
+    let instructions: Vec<Instruction> = validate_code_attribute(anon_cf, &code).ok()?;
+    let owner: String = anon_cf.this_class_name().ok()?.to_owned();
+    let capture_fields: BTreeSet<String> = capture_map
+        .keys()
+        .filter(|(field_owner, _name): &&(String, String)| field_owner == &owner)
+        .map(|(_field_owner, name): &(String, String)| name.clone())
+        .collect();
+    let required_final_fields: BTreeSet<String> = anon_cf
+        .fields
+        .iter()
+        .filter(|field: &&FieldInfo| field.access_flags & (ACC_FINAL | ACC_STATIC) == ACC_FINAL)
+        .filter_map(|field: &FieldInfo| anon_cf.utf8_at(field.name_index).ok())
+        .filter(|name: &&str| !capture_fields.contains(*name))
+        .map(str::to_owned)
+        .collect();
+    let bootstraps: Vec<crate::attributes::BootstrapMethod> =
+        crate::attributes::analyze(anon_cf).bootstrap_methods;
+    let mut stack: Vec<Expr> = Vec::new();
+    let mut initialized_fields: BTreeSet<String> = BTreeSet::new();
+    let mut statements: Vec<String> = Vec::new();
+    let lifted: Option<()> = with_capture_field_bindings(capture_map.clone(), || {
+        for instruction in &instructions {
+            let written_field: Option<(String, String)> = if instruction.opcode == 0xB5 {
+                let Operands::ConstPool(index) = instruction.operands else {
+                    return None;
+                };
+                let reference: String = bytecode::resolve_ref(anon_cf, index)?;
+                let (field_owner, field_name, _descriptor): (String, String, String) =
+                    split_member(&reference)?;
+                Some((field_owner, field_name))
+            } else {
+                None
+            };
+            let constructor_call: bool = instruction.opcode == 0xB7
+                && matches!(instruction.operands, Operands::ConstPool(index)
+                    if bytecode::resolve_ref(anon_cf, index)
+                        .and_then(|reference: String| split_member(&reference))
+                        .is_some_and(|(_call_owner, name, _descriptor): (String, String, String)| name == "<init>"));
+            let result: LiftResult = lift_one(
+                anon_cf,
+                instruction,
+                &mut stack,
+                &params,
+                &bootstraps,
+                true,
+                false,
+            );
+            if instruction.opcode == 0xB1 {
+                if !matches!(result, LiftResult::Statement(ref statement) if statement == "return")
+                {
+                    return None;
+                }
+                continue;
+            }
+            if constructor_call {
+                if !matches!(result, LiftResult::Statement(_)) {
+                    return None;
+                }
+                continue;
+            }
+            if let Some((field_owner, field_name)) = written_field {
+                if field_owner != owner {
+                    return None;
+                }
+                if capture_fields.contains(&field_name) {
+                    if !matches!(result, LiftResult::Statement(_)) {
+                        return None;
+                    }
+                    continue;
+                }
+                let LiftResult::Statement(statement) = result else {
+                    return None;
+                };
+                if !initialized_fields.insert(field_name) {
+                    return None;
+                }
+                statements.push(statement);
+                continue;
+            }
+            if !matches!(result, LiftResult::Pushed | LiftResult::Elided) {
+                return None;
+            }
+        }
+        Some(())
+    });
+    lifted?;
+    if !stack.is_empty() || !required_final_fields.is_subset(&initialized_fields) {
+        return None;
+    }
+    Some(statements)
+}
+
 fn anonymous_allocation_type(
     anon_cf: &ClassFile,
     generic_class: Option<&crate::signature::RecoveredClassSignature>,
@@ -14973,6 +15270,8 @@ fn render_anonymous_class(
         );
     }
     let is_enum: bool = anon_cf.access_flags & ACC_ENUM != 0;
+    let initializers: Option<Vec<String>> =
+        anonymous_constructor_initializers(anon_cf, captured_args, &capture_map);
     let mut annotation_renderer: crate::attributes::DeclarationAnnotationRenderer =
         crate::attributes::DeclarationAnnotationRenderer::new(anon_cf);
     let mut members: Vec<String> = Vec::new();
@@ -14987,9 +15286,20 @@ fn render_anonymous_class(
             field,
             is_enum,
             generic_class.as_ref(),
+            initializers.is_none(),
         ) {
             members.push(line);
         }
+    }
+    if let Some(statements) = initializers
+        && !statements.is_empty()
+    {
+        let mut initializer: String = "{\n".to_owned();
+        for statement in statements {
+            let _ = writeln!(initializer, "    {statement};");
+        }
+        initializer.push('}');
+        members.push(initializer);
     }
     for method in &anon_cf.methods {
         let name: &str = anon_cf.utf8_at(method.name_index).unwrap_or("");
@@ -15343,20 +15653,6 @@ fn emit_nested_class_stubs(
                 }
             }
         }
-        if !is_inner_record {
-            for field in &inner_cf.fields {
-                if let Some(decl) = render_inner_field_stub(
-                    &mut annotation_renderer,
-                    inner_cf,
-                    field,
-                    is_inner_enum,
-                    generic_class.as_ref(),
-                ) && !append_inner_line(&mut out, &decl, MAX_RENDER_BYTES)
-                {
-                    return REJECTED_INNER_CLASSES.to_string();
-                }
-            }
-        }
         let record_component_names: BTreeSet<String> = if is_inner_record {
             structure
                 .record_components
@@ -15372,10 +15668,121 @@ fn emit_nested_class_stubs(
         } else {
             BTreeMap::new()
         };
+        let enclosing_bindings: BTreeMap<(String, String), String> =
+            enclosing_instance_bindings(inner_cf);
+        let has_class_type_parameters: bool = generic_class.as_ref().is_some_and(
+            |signature: &crate::signature::RecoveredClassSignature| {
+                !signature.type_parameters.is_empty()
+            },
+        );
+        let rendered_methods: Vec<Option<RenderedMethod>> = inner_cf
+            .methods
+            .iter()
+            .enumerate()
+            .map(|(method_index, method): (usize, &MethodInfo)| {
+                (!is_bridge_method(method)).then(|| {
+                    render_nested_method(
+                        inner_cf,
+                        method,
+                        &simple_name,
+                        is_inner_interface,
+                        annotation_defaults.get(&method_index).map(String::as_str),
+                        generic_class.as_ref(),
+                        &enclosing_bindings,
+                    )
+                })
+            })
+            .collect();
+        let constructor_indices: Vec<usize> = inner_cf
+            .methods
+            .iter()
+            .enumerate()
+            .filter_map(|(index, method): (usize, &MethodInfo)| {
+                inner_cf
+                    .utf8_at(method.name_index)
+                    .is_ok_and(|name: &str| name == "<init>")
+                    .then_some(index)
+            })
+            .collect();
+        let constructors_exact: bool = !is_inner_record
+            && !is_inner_enum
+            && !has_class_type_parameters
+            && enclosing_bindings.is_empty()
+            && !constructor_indices.is_empty()
+            && constructor_indices.iter().all(|index: &usize| {
+                rendered_methods[*index]
+                    .as_ref()
+                    .is_some_and(|rendered: &RenderedMethod| rendered.fully_lifted)
+            });
+        let clinit_exact: bool = inner_cf
+            .methods
+            .iter()
+            .enumerate()
+            .find(|(_index, method): &(usize, &MethodInfo)| {
+                inner_cf
+                    .utf8_at(method.name_index)
+                    .is_ok_and(|name: &str| name == "<clinit>")
+            })
+            .and_then(|(index, _method): (usize, &MethodInfo)| rendered_methods[index].as_ref())
+            .is_some_and(|rendered: &RenderedMethod| rendered.fully_lifted);
+        if !is_inner_record {
+            for field in &inner_cf.fields {
+                let initialization_exact: bool = if field.access_flags & ACC_STATIC != 0 {
+                    clinit_exact
+                } else {
+                    constructors_exact
+                };
+                if let Some(decl) = render_inner_field_stub(
+                    &mut annotation_renderer,
+                    inner_cf,
+                    field,
+                    is_inner_enum,
+                    generic_class.as_ref(),
+                    !initialization_exact,
+                ) && !append_inner_line(&mut out, &decl, MAX_RENDER_BYTES)
+                {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
+            }
+        }
         for (method_index, method) in inner_cf.methods.iter().enumerate() {
             if is_inner_record
                 && record_method_is_implicit(inner_cf, method, &record_component_names)
             {
+                continue;
+            }
+            let method_name: &str = inner_cf.utf8_at(method.name_index).unwrap_or("");
+            let exact: Option<&RenderedMethod> = rendered_methods[method_index]
+                .as_ref()
+                .filter(|rendered: &&RenderedMethod| rendered.fully_lifted)
+                .filter(|_rendered: &&RenderedMethod| {
+                    !is_inner_enum
+                        && !has_class_type_parameters
+                        && (method_name != "<init>" || constructors_exact)
+                });
+            let refused: Option<RenderedMethod> = exact.and_then(|rendered: &RenderedMethod| {
+                nested_method_refusal_reason(inner_cf, method).map(|reason: &'static str| {
+                    refuse_nested_method(inner_cf, method_name, rendered, reason)
+                })
+            });
+            if let Some(rendered) = refused.as_ref().or(exact) {
+                let annotations: String = render_member_annotations(
+                    &mut annotation_renderer,
+                    inner_cf,
+                    &method.attributes,
+                    "        ",
+                );
+                if !append_inner_output(&mut out, &annotations, MAX_RENDER_BYTES) {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
+                let Some(indented): Option<String> =
+                    reindent_block(&rendered.text, MAX_RENDER_BYTES.saturating_sub(out.len()))
+                else {
+                    return REJECTED_INNER_CLASSES.to_string();
+                };
+                if !append_inner_output(&mut out, &indented, MAX_RENDER_BYTES) {
+                    return REJECTED_INNER_CLASSES.to_string();
+                }
                 continue;
             }
             if let Some(stub) = render_inner_method_stub(
