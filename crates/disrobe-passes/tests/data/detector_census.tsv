@@ -1088,6 +1088,14 @@ corpus/native/packers/yodas_protector/AccessEnum.original.exe	native.image-class
 corpus/native/packers/yodas_protector/AccessEnum.packed.yodasprotector.exe	native.image-classify	pe	native-format	low	-	-	-
 corpus/native/packers/yodas_protector/Clockres.original.exe	native.image-classify	pe	native-format	low	-	-	-
 corpus/native/packers/yodas_protector/Clockres.packed.yodasprotector.exe	native.image-classify	pe	native-format	low	-	-	-
+corpus/native/resources/make_reference.py	-	-	-	-	-	-	-
+corpus/native/resources/reference.json	-	-	-	-	-	-	-
+corpus/native/resources/resources.exe	native.image-classify	pe	native-format	low	-	-	-
+corpus/native/resources/src/app.ico	-	-	-	-	-	-	-
+corpus/native/resources/src/app.manifest	-	-	-	-	-	-	-
+corpus/native/resources/src/payload.bin	-	-	-	-	-	-	-
+corpus/native/resources/src/resources.rc	-	-	-	-	-	-	-
+corpus/native/resources/src/stub.c	-	-	-	-	-	-	-
 corpus/native/zig/hello.zig	-	-	-	-	-	-	-
 corpus/native/zig/hello.zig.elf	nativelang.classify	zig	native-format	medium	native.image-classify	native-format	low
 corpus/native/zig/provenance.toml	-	-	-	-	-	-	-
