@@ -5,65 +5,81 @@ Command: kotlinc <Name>.kt -jvm-target 17 -d out, run in this directory once per
 Runtime libraries (not committed; the tests verify them): kotlin-stdlib 2.4.10 (https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.4.10/kotlin-stdlib-2.4.10.jar, SHA-256 4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df) and org.jetbrains annotations 13.0 (https://repo1.maven.org/maven2/org/jetbrains/annotations/13.0/annotations-13.0.jar, SHA-256 ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478), the same files kotlinc 2.4.10 ships in lib/
 
 Source: KtContinueFollow.kt
+Source SHA-256: e9802992029a4fd64ba62535a8d3a65081afba0348582f1dc0e2ab85fc442300
 Class: out/KtContinueFollow.class
 Class SHA-256: e2425fd469bafd635e6c53be9a7d5fe4da7c149d978bf615958e12f0bedf33e3
 
 Source: KtContinueLatch.kt
+Source SHA-256: 1739d6d87ed5e9820bea78c13ed86623df365fd157fab3ca4045d6e3a1abb41e
 Class: out/KtContinueLatch.class
 Class SHA-256: 16bed6bd32a60523b39d38da1ee812fc540394c831bcd678eac7ffc03586bae2
 
 Source: KtCountLoop.kt
+Source SHA-256: b1f7bf5337ed23fad2aba940c3b288a2409b250bc295aa7c4d762ee3f5d4ed4a
 Class: out/KtCountLoop.class
 Class SHA-256: 3d38afee215f94b28bfff97383455b24a8b36a0ad46220e37df837f03f5a414b
 
 Source: KtFinally.kt
+Source SHA-256: ef1e9f65b006dc45718934fe5e136a7f8726717270890710ed04276b2c41fc24
 Class: out/KtFinally.class
 Class SHA-256: 451d60e44433b3b0cc756a30d02a790c85a58b3b681f997e00cc8b88f832c781
 
 Source: KtFinallyBreak.kt
+Source SHA-256: b5756fc6a7a2fa7f9e050af832ff9e7a151fbf66b6cadf9089cb8dbd5264192e
 Class: out/KtFinallyBreak.class
 Class SHA-256: 641cbd23410a9f0fa1b0eb873d17025a9c5676c5782369eb68ec402022ea1be6
 
 Source: KtFinallyLoop.kt
+Source SHA-256: 3294724d24bf3b3f51392f159e40365a5476c03491965346ecdfe2dbe5f680e7
 Class: out/KtFinallyLoop.class
 Class SHA-256: 88fb7cafb310f849bfa9d9524d31038bc68317c6cbab5b89f456f62af7349319
 
 Source: KtFold.kt
+Source SHA-256: 7669f30de17d3f1b107ff52318212f9bc9c79f902502d850b4777c27fe930b88
 Class: out/KtFold.class
 Class SHA-256: a22712f6e5e43591a6313ff3eacb5f1cf46106cf5bcc689313447cf34583b277
 
 Source: KtFoldedTry.kt
+Source SHA-256: 36b6e24a9b88eef4e91b8a73b830360c3b46fc19940b309087ae3dd6a7281052
 Class: out/KtFoldedTry.class
 Class SHA-256: 8c095bdc7ee757afc7f1ef36241ad4604c35e4277d826ed01e5b0ddb24aa9a24
 
 Source: KtLongCompare.kt
+Source SHA-256: 515ac829a7c47fd37b12991fa02c8807ea1ef31e1670f46bc28f1d198e655ddd
 Class: out/KtLongCompare.class
 Class SHA-256: 00ab38e8b4c0942ef9ac5c3f683f4458b7bf6a7d6fb13658aa6b92b5be5646c2
 
 Source: KtNanCompare.kt
+Source SHA-256: 4d6d7d16d6b396d91e379c3f75dfe6d0507fc23397797ae1b19cb599aa55fb4e
 Class: out/KtNanCompare.class
 Class SHA-256: 0a0d76a2b1e09acc64caad8d0917db0222eec36ad7aa8dad84df84801a4e90cf
 
 Source: KtStateMachine.kt
+Source SHA-256: a1bdd26c1c9c02e87bfd4b02b5521406c9ce814b513a9134f73be7cbd92bdee4
 Class: out/KtStateMachine.class
 Class SHA-256: f858f77a1de1cc36570835c3a6767b0609218ea7358d2998946647bce1dc3ba7
 
 Source: KtSyncContinue.kt
+Source SHA-256: cf7cb7e82831416927b31c3c19365f9e9621a770fb1173fbdb0932662d6ca8c4
 Class: out/KtSyncContinue.class
 Class SHA-256: e3ca7691ddb4fe2e16a04df775632ab456f6460c2361d263c8049adf9c097c68
 
 Source: KtSyncLoop.kt
+Source SHA-256: c81fbdbc27313455a59021e1b54fbaa0306ed163b5a29d441e2d51ac4ba17a4e
 Class: out/KtSyncLoop.class
 Class SHA-256: 26b21cf96f3096c84ebcdb1f5ace01d5a57751b77e0be5cfd0b86d82353789a8
 
 Source: KtTemplate.kt
+Source SHA-256: 50178f98d758334c435f85b7d5d61a5cff81659678fda71b36795f7e6ddcfe2a
 Class: out/KtTemplate.class
 Class SHA-256: 8d991830469e9698a68cd148d1de3406d11c8b0da875a4cf492c954d7bc33538
 
 Source: KtWhen.kt
+Source SHA-256: bad12d5485e80346e54ee886df15ca0a924a938977c915a9695dc470e4932094
 Class: out/KtWhen.class
 Class SHA-256: 48e46318dea3dfa81c195ee192b8d036c0a8da1934152e9885ca7eb306a61219
 
 Source: KtWhenString.kt
+Source SHA-256: 380b1b173c0d0a8bfca88e53222845b232b304bda446e57984ca73b182a3f64b
 Class: out/KtWhenString.class
 Class SHA-256: 7eb8fcabc2e100bc94c3c8ab6a85deae76254bfd00df17d5a6cdee4e7071098d

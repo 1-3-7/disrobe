@@ -1223,6 +1223,7 @@ const KOTLIN_PROVENANCE: &str = include_str!("../fixtures/shape_matrix/kotlin/PR
 
 struct KotlinShape {
     name: &'static str,
+    source: &'static str,
     class: &'static [u8],
     driver: &'static str,
     output: &'static str,
@@ -1230,6 +1231,7 @@ struct KotlinShape {
 
 const KT_FOLD: KotlinShape = KotlinShape {
     name: "KtFold",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtFold.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFold.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtFoldDriver.java"),
     output: "22,2002,6,3004,21021;1022,4003,1010,4005,29027;2022,6004,2014,3004,40033;3022,8005,3018,4005,54039;4022,10006,4022,3004,71045;",
@@ -1237,6 +1239,7 @@ const KT_FOLD: KotlinShape = KotlinShape {
 
 const KT_COUNT_LOOP: KotlinShape = KotlinShape {
     name: "KtCountLoop",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtCountLoop.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtCountLoop.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtCountLoopDriver.java"),
     output: "4208,1,4127;3208,202,3127;2202,103,191;3247,204,3127;3208,205,3159;3252,101,191;6223,2,3111;1202,203,2127;2229,204,143;5208,305,3159;3247,1,2175;2234,202,191;",
@@ -1244,6 +1247,7 @@ const KT_COUNT_LOOP: KotlinShape = KotlinShape {
 
 const KT_WHEN: KotlinShape = KotlinShape {
     name: "KtWhen",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtWhen.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtWhen.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtWhenDriver.java"),
     output: "-1100,other,3,1,4;-201,other,3,0,4;-105,other,4,0,4;10,other,1,0,1;10,low,1,0,1;40,low,1,0,1;60,mid,1,0,1;80,mid,2,0,4;-5,mid,2,0,4;-94,other,2,0,4;49,other,2,2,4;-92,other,2,0,4;81,other,2,0,4;-90,ten,4,0,4;-89,other,4,0,4;-80,other,2,0,4;-30,other,4,2,4;1,other,3,0,4;600,other,3,2,4;900,other,3,1,4;",
@@ -1251,6 +1255,7 @@ const KT_WHEN: KotlinShape = KotlinShape {
 
 const KT_WHEN_STRING: KotlinShape = KotlinShape {
     name: "KtWhenString",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtWhenString.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtWhenString.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtWhenStringDriver.java"),
     output: "1,3,3,3,1,2,1,3,1,2,1,3,",
@@ -1258,6 +1263,7 @@ const KT_WHEN_STRING: KotlinShape = KotlinShape {
 
 const KT_STATE_MACHINE: KotlinShape = KotlinShape {
     name: "KtStateMachine",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtStateMachine.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtStateMachine.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtStateMachineDriver.java"),
     output: "ac0dac0d:6,1287;a1c2da1c2d:8,-2;a1c4da1c4d:8,1357;ac6dac6d:6,2169;a1da1d:6,1287;a1da1d:6,1483;ac12dac12d:6,3345;a1da1d:6,1455;a1da1d:6,1651;ac18dac18d:6,601;",
@@ -1265,6 +1271,7 @@ const KT_STATE_MACHINE: KotlinShape = KotlinShape {
 
 const KT_SYNC_LOOP: KotlinShape = KotlinShape {
     name: "KtSyncLoop",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtSyncLoop.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtSyncLoop.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtSyncLoopDriver.java"),
     output: "0,0,0;0,0,1;1,2,3;3,6,8;6,6,18;10,6,35;15,6,61;21,6,98;",
@@ -1272,6 +1279,7 @@ const KT_SYNC_LOOP: KotlinShape = KotlinShape {
 
 const KT_CONTINUE_LATCH: KotlinShape = KotlinShape {
     name: "KtContinueLatch",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtContinueLatch.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtContinueLatch.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtContinueLatchDriver.java"),
     output: "1 3 5 0;2 4 6 1;3 5 7 2;4 6 8 3;5 7 9 4;6 8 ad10 25;7 9 ad11 36;8 ad10 a401;9 ad11 ad13 96;ad10 aa721;ad11 ad13 ad15 0;ad12 aa881;",
@@ -1279,6 +1287,7 @@ const KT_CONTINUE_LATCH: KotlinShape = KotlinShape {
 
 const KT_SYNC_CONTINUE: KotlinShape = KotlinShape {
     name: "KtSyncContinue",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtSyncContinue.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtSyncContinue.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtSyncContinueDriver.java"),
     output: "0,0,2,8,8,24,58,58,",
@@ -1286,6 +1295,7 @@ const KT_SYNC_CONTINUE: KotlinShape = KotlinShape {
 
 const KT_LONG_COMPARE: KotlinShape = KotlinShape {
     name: "KtLongCompare",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtLongCompare.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtLongCompare.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtLongCompareDriver.java"),
     output: "0 0 110 0,-1 -9 10010 0,-1 -9 10010 1,-1 -9 10010 0,-1 -9 10010 -1,-1 -9 10010 0,-1 -9 10010 1,;1 10 11001 0,0 0 110 0,-1 -9 10010 1,-1 -9 10010 0,-1 -9 10010 -1,-1 -9 10010 0,-1 -9 10010 1,;1 10 11001 -1,1 10 11001 -1,0 0 110 0,-1 -9 10010 -1,-1 -9 10010 -1,-1 -9 10010 -1,-1 -9 10010 0,;1 10 11001 0,1 10 11001 0,1 10 11001 1,0 0 110 0,-1 -9 10010 -1,-1 -9 10010 0,-1 -9 10010 1,;1 10 11001 1,1 10 11001 1,1 10 11001 1,1 10 11001 1,0 0 110 0,-1 -9 10010 1,-1 -9 10010 1,;1 10 11001 0,1 10 11001 0,1 10 11001 1,1 10 11001 0,1 10 11001 -1,0 0 110 0,-1 -9 10010 1,;1 10 11001 -1,1 10 11001 -1,1 10 11001 0,1 10 11001 -1,1 10 11001 -1,1 10 11001 -1,0 0 110 0,;",
@@ -1293,6 +1303,7 @@ const KT_LONG_COMPARE: KotlinShape = KotlinShape {
 
 const KT_NAN_COMPARE: KotlinShape = KotlinShape {
     name: "KtNanCompare",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtNanCompare.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtNanCompare.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtNanCompareDriver.java"),
     output: "224 224 n 0 NaN,224 224 n 1 -Infinity,224 224 n 1 -1.5,224 224 n 1 -0.0,224 224 n 1 0.0,224 224 n 1 2.25,224 224 n 1 Infinity,;224 224 n -1 NaN,90 90 n 0 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,163 99 y -1 -Infinity,;224 224 n -1 NaN,108 172 n 1 -Infinity,90 90 n 0 -1.5,163 99 y -1 -1.5,163 99 y -1 -1.5,163 99 y -1 -1.5,163 99 y -1 -1.5,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,90 90 n 0 -0.0,90 90 n -1 0.0,163 99 y -1 -0.0,163 99 y -1 -0.0,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,90 90 n 1 -0.0,90 90 n 0 0.0,163 99 y -1 0.0,163 99 y -1 0.0,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,108 172 n 1 -0.0,108 172 n 1 0.0,90 90 n 0 2.25,163 99 y -1 2.25,;224 224 n -1 NaN,108 172 n 1 -Infinity,108 172 n 1 -1.5,108 172 n 1 -0.0,108 172 n 1 0.0,108 172 n 1 2.25,90 90 n 0 Infinity,;",
@@ -1300,6 +1311,7 @@ const KT_NAN_COMPARE: KotlinShape = KotlinShape {
 
 const KT_TEMPLATE: KotlinShape = KotlinShape {
     name: "KtTemplate",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtTemplate.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtTemplate.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtTemplateDriver.java"),
     output: "a=-1 b=-4999999999 c=-0.25 d=o f=false [-2]|<-1><-1>|4|v=null|;a=0 b=1 c=0.0 d=p f=true [0]|<0><0>|3|v=null|;a=1 b=5000000001 c=0.25 d=q f=false [2]|<1><1>|3|v=p1|0,;a=2 b=10000000001 c=0.5 d=r f=true [4]|<2><2>|3|v=p2|0,1,;a=3 b=15000000001 c=0.75 d=s f=false [6]|<3><3>|3|v=p3|0,1,2,;",
@@ -1307,6 +1319,7 @@ const KT_TEMPLATE: KotlinShape = KotlinShape {
 
 const KT_FINALLY: KotlinShape = KotlinShape {
     name: "KtFinally",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtFinally.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFinally.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyDriver.java"),
     output: "-100,11,-1099,-20,12;div,23,div,-2,24;100,35,1101,20,36;50,47,551,10,48;33,59,367,6,60;25,71,276,4,72;20,83,221,4,84;16,95,183,2,96;",
@@ -1314,6 +1327,7 @@ const KT_FINALLY: KotlinShape = KotlinShape {
 
 const KT_FINALLY_LOOP: KotlinShape = KotlinShape {
     name: "KtFinallyLoop",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyLoop.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFinallyLoop.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyLoopDriver.java"),
     output: "0,100,201,301,404,508,608,608,",
@@ -1321,6 +1335,7 @@ const KT_FINALLY_LOOP: KotlinShape = KotlinShape {
 
 const KT_CONTINUE_FOLLOW: KotlinShape = KotlinShape {
     name: "KtContinueFollow",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtContinueFollow.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtContinueFollow.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtContinueFollowDriver.java"),
     output: "0;45 -17;-2;30 -7;42 47 -47;56 49 -1;-16;42 47 87 -87;",
@@ -1328,6 +1343,7 @@ const KT_CONTINUE_FOLLOW: KotlinShape = KotlinShape {
 
 const KT_FINALLY_BREAK: KotlinShape = KotlinShape {
     name: "KtFinallyBreak",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyBreak.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFinallyBreak.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtFinallyBreakDriver.java"),
     output: "2 5 3;z2 z5 10 z17 3;2 5 6;2 5 3;z2 z5 10 z17 3;2 5 6;",
@@ -1335,14 +1351,111 @@ const KT_FINALLY_BREAK: KotlinShape = KotlinShape {
 
 const KT_FOLDED_TRY: KotlinShape = KotlinShape {
     name: "KtFoldedTry",
+    source: include_str!("../fixtures/shape_matrix/kotlin/KtFoldedTry.kt"),
     class: include_bytes!("../fixtures/shape_matrix/kotlin/KtFoldedTry.class"),
     driver: include_str!("../fixtures/shape_matrix/kotlin/KtFoldedTryDriver.java"),
     output: "-14014,7093,-6914,-13928,7179,14193,7200,7307,14321,7328,",
 };
 
+const KOTLIN_SHAPES: &[&KotlinShape] = &[
+    &KT_FOLD,
+    &KT_COUNT_LOOP,
+    &KT_WHEN,
+    &KT_WHEN_STRING,
+    &KT_STATE_MACHINE,
+    &KT_SYNC_LOOP,
+    &KT_CONTINUE_LATCH,
+    &KT_SYNC_CONTINUE,
+    &KT_LONG_COMPARE,
+    &KT_NAN_COMPARE,
+    &KT_TEMPLATE,
+    &KT_FINALLY,
+    &KT_FINALLY_LOOP,
+    &KT_CONTINUE_FOLLOW,
+    &KT_FINALLY_BREAK,
+    &KT_FOLDED_TRY,
+];
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest: sha2::digest::Output<sha2::Sha256> = <sha2::Sha256 as sha2::Digest>::digest(bytes);
     format!("{digest:x}")
+}
+
+fn recorded_kotlin_digest(label: &str) -> Option<&str> {
+    KOTLIN_PROVENANCE
+        .lines()
+        .skip_while(|line: &&str| *line != label)
+        .nth(1)
+        .and_then(|line: &str| line.strip_prefix("Source SHA-256: "))
+}
+
+fn kotlin_compiler_home() -> PathBuf {
+    let launcher: PathBuf = crate::common::find_on_path("kotlinc").unwrap_or_else(|| {
+        panic!("kotlinc 2.4.10 must be on PATH to rebuild the committed Kotlin shape fixtures")
+    });
+    launcher.parent().and_then(Path::parent).map_or_else(
+        || {
+            panic!(
+                "kotlinc launcher has no compiler home: {}",
+                launcher.display()
+            )
+        },
+        Path::to_path_buf,
+    )
+}
+
+fn compile_kotlin_shape(dir: &Path, shape: &KotlinShape) {
+    let source_path: PathBuf = dir.join(format!("{}.kt", shape.name));
+    std::fs::write(&source_path, shape.source).expect("write Kotlin source");
+    let output: ToolOutput = tool_output(
+        CommandSpec::new(find_on_path("java"), RUN_TIMEOUT)
+            .arg("-cp")
+            .arg(kotlin_compiler_home().join("lib").join("*"))
+            .arg("org.jetbrains.kotlin.cli.jvm.K2JVMCompiler")
+            .arg("-jvm-target")
+            .arg("17")
+            .arg("-d")
+            .arg(dir)
+            .arg(&source_path),
+    )
+    .unwrap_or_else(|error: ToolError| panic!("K2JVMCompiler could not start: {error}"));
+    assert!(
+        !output.timed_out,
+        "K2JVMCompiler did not finish within {} seconds",
+        RUN_TIMEOUT.as_secs()
+    );
+    assert!(
+        output.success,
+        "K2JVMCompiler failed: {}{}",
+        output.stdout_text(),
+        output.stderr_text()
+    );
+}
+
+#[test]
+fn committed_kotlin_shape_sources_rebuild_to_the_pinned_classfiles() {
+    let directory: ScratchDir =
+        ScratchDir::create("disrobe_jvm_kotlin_shape_build").expect("scratch dir");
+    for shape in KOTLIN_SHAPES {
+        compile_kotlin_shape(directory.path(), shape);
+        let source_label: String = format!("Source: {}.kt", shape.name);
+        assert_eq!(
+            recorded_kotlin_digest(&source_label),
+            Some(sha256_hex(shape.source.as_bytes()).as_str()),
+            "{}.kt does not match its provenance record",
+            shape.name
+        );
+        let built: Vec<u8> = std::fs::read(directory.path().join(format!("{}.class", shape.name)))
+            .unwrap_or_else(|error: std::io::Error| {
+                panic!("K2JVMCompiler wrote no {}.class: {error}", shape.name)
+            });
+        assert_eq!(
+            sha256_hex(&built),
+            sha256_hex(shape.class),
+            "K2JVMCompiler rebuilt {}.class differently from its pinned provenance artifact",
+            shape.name
+        );
+    }
 }
 
 fn kotlin_classpath(dir: &Path, libraries: &[PathBuf]) -> std::ffi::OsString {
