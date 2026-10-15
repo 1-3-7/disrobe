@@ -13,7 +13,7 @@ use crate::callgraph::{
 use crate::config::{OutArgument, ResolvedSinkPolicy, TaintConfig};
 use crate::report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
 use crate::summary::{
-    Arena, FeatureSet, FunctionSummary, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
+    Arena, FeatureSet, FunctionSummary, InPort, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
 };
 use crate::thunks::ImportThunks;
 
@@ -28,7 +28,7 @@ type ValueSig = Vec<(PathId, FactSig)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum FactKey {
-    Formal(u16),
+    Formal(InPort),
     Source(u64),
 }
 
@@ -47,9 +47,9 @@ impl Fact {
         matches!(self.key, FactKey::Source(_))
     }
 
-    const fn formal_index(&self) -> Option<u16> {
+    const fn formal_input(&self) -> Option<InPort> {
         match self.key {
-            FactKey::Formal(index) => Some(index),
+            FactKey::Formal(input) => Some(input),
             FactKey::Source(_) => None,
         }
     }
@@ -128,6 +128,25 @@ impl<'a> ResolvedModule<'a> {
         let mut collected: Vec<CallEdge> = call_edges.to_vec();
         for function in &module.functions {
             for instr in &function.instructions {
+                if let NirOp::Branch {
+                    target: Some(target),
+                } = instr.op
+                    && target != function.address
+                    && !(function.address..function.end).contains(&target)
+                    && function.instructions.iter().all(|candidate: &NirInstr| {
+                        candidate.address == instr.address
+                            || candidate.mnemonic.eq_ignore_ascii_case("nop")
+                    })
+                    && function_at.contains_key(&target)
+                    && !supplied_sites.contains(&instr.address)
+                {
+                    collected.push(CallEdge::definite(
+                        instr.address,
+                        target,
+                        CallEdgeEvidence::DirectTailTransfer,
+                    ));
+                    continue;
+                }
                 if instr.op.class() != NirClass::Call {
                     continue;
                 }
@@ -645,17 +664,90 @@ fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
     }
     let flag_fact: Fact = formal_fact(ctx.function, 0);
     state.flag.insert(flag_fact.key, flag_fact);
+    for instr in &ctx.function.instructions {
+        let defuse: DefUse = taint_def_use(ctx.resolved.abi, instr);
+        for value in &defuse.uses {
+            let ValueId::Memory(expr) = value else {
+                continue;
+            };
+            let input: Option<InPort> = memory_argument_projection(ctx.resolved.abi, expr)
+                .map(|(argument, offset): (u16, i64)| InPort::ArgumentMemory { argument, offset })
+                .or_else(|| {
+                    is_relative_memory(expr).then(|| InPort::Global(arena.location(value)))
+                });
+            let Some(input) = input else {
+                continue;
+            };
+            let fact: Fact = formal_input_fact(ctx.function, input);
+            let loc: PathId = arena.location(value);
+            state.values.entry(loc).or_default().insert(fact.key, fact);
+        }
+    }
 }
 
 fn formal_fact(function: &NirFunction, arg: u16) -> Fact {
+    formal_input_fact(function, InPort::Argument(arg))
+}
+
+fn formal_input_fact(function: &NirFunction, input: InPort) -> Fact {
     Fact {
-        key: FactKey::Formal(arg),
+        key: FactKey::Formal(input),
         kinds: KindSet::EMPTY,
         features: FeatureSet::EMPTY,
         origin_symbol: function.name.clone(),
         origin_site: function.address,
         path: vec![step(function.address, &function.name, "parameter")],
     }
+}
+
+fn memory_argument_projection(abi: CallAbi, expr: &str) -> Option<(u16, i64)> {
+    let inner: &str = memory_inner(expr)?;
+    let mut base: Option<String> = None;
+    let mut offset: i64 = 0;
+    for (_position, term) in signed_terms(inner) {
+        let sign: i64 = if term.starts_with('-') { -1 } else { 1 };
+        let core: &str = term.trim_start_matches(['+', '-']);
+        if core.contains('*') {
+            return None;
+        }
+        if let Some(register) = abi.canonical_register(core) {
+            if base.replace(register).is_some() {
+                return None;
+            }
+        } else {
+            offset = offset.checked_add(sign * parse_native_integer(core)?)?;
+        }
+    }
+    let base: String = base?;
+    let argument: usize = abi
+        .argument_registers()
+        .iter()
+        .position(|register: &&str| **register == base)?;
+    Some((u16::try_from(argument).ok()?, offset))
+}
+
+fn memory_inner(expr: &str) -> Option<&str> {
+    let trimmed: &str = expr.trim();
+    let without_size: &str = ["byte ", "word ", "dword ", "qword "]
+        .iter()
+        .find_map(|prefix: &&str| trimmed.strip_prefix(prefix))
+        .unwrap_or(trimmed);
+    without_size.strip_prefix('[')?.strip_suffix(']')
+}
+
+fn parse_native_integer(value: &str) -> Option<i64> {
+    let value: &str = value.trim();
+    if let Some(hex) = value.strip_suffix('h') {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    if let Some(hex) = value.strip_prefix("0x") {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    value.parse::<i64>().ok()
+}
+
+fn is_relative_memory(expr: &str) -> bool {
+    memory_inner(expr).is_some_and(|inner: &str| inner.trim_start().starts_with("rel "))
 }
 
 fn walk_block(
@@ -718,7 +810,7 @@ fn walk_block(
             );
         } else {
             if !is_call {
-                track_established_registers(ctx.resolved.abi, arena, &defuse, &mut state);
+                track_established_registers(ctx.resolved.abi, arena, instr, &defuse, &mut state);
             }
             propagate(arena, instr, &defuse, &mut state);
         }
@@ -738,6 +830,9 @@ fn walk_block(
 }
 
 fn taint_def_use(abi: CallAbi, instr: &NirInstr) -> DefUse {
+    if let Some(address) = abi.address_calculation(instr) {
+        return address;
+    }
     if let Some(transfer) = abi.memory_transfer(instr) {
         return transfer;
     }
@@ -863,11 +958,30 @@ fn established_out_argument_defs(
                 defs.push(value);
                 if let Some(reduced) = established_via {
                     defs.push(ValueId::memory(reduced));
+                    if let Some(base) = memory_base_register(abi, reduced)
+                        && !matches!(base.as_str(), "rsp" | "esp" | "sp")
+                    {
+                        defs.push(ValueId::register(&base));
+                    }
                 }
             }
         }
     }
     defs
+}
+
+fn memory_base_register(abi: CallAbi, expr: &str) -> Option<String> {
+    let inner: &str = memory_inner(expr)?;
+    signed_terms(inner)
+        .into_iter()
+        .find_map(|(_position, term): (usize, &str)| {
+            let core: &str = term
+                .trim_start_matches(['+', '-'])
+                .split('*')
+                .next()
+                .unwrap_or_default();
+            abi.canonical_register(core)
+        })
 }
 
 fn clear_established_argument_registers(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
@@ -880,14 +994,24 @@ fn clear_established_argument_registers(ctx: &Ctx<'_>, arena: &mut Arena, state:
 fn track_established_registers(
     abi: CallAbi,
     arena: &mut Arena,
+    instr: &NirInstr,
     defuse: &DefUse,
     state: &mut BlockState,
 ) {
-    let established_via: Option<String> =
-        defuse.uses.iter().find_map(|value: &ValueId| match value {
-            ValueId::Memory(expr) => reduce_indexed_memory_expr(abi, expr),
-            ValueId::Register(_) | ValueId::Stack(_) => None,
-        });
+    let established_via: Option<String> = if instr.mnemonic.eq_ignore_ascii_case("lea") {
+        instr.operands.get(1).and_then(|expr: &String| {
+            reduce_indexed_memory_expr(abi, expr)
+                .or_else(|| memory_inner(expr).map(|inner: &str| format!("[{inner}]")))
+        })
+    } else {
+        defuse.uses.iter().find_map(|value: &ValueId| {
+            let ValueId::Register(_) = value else {
+                return None;
+            };
+            let loc: PathId = arena.location(value);
+            state.established.get(&loc).cloned().flatten()
+        })
+    };
     for def in &defuse.defs {
         if matches!(def, ValueId::Register(_)) {
             let loc: PathId = arena.location(def);
@@ -969,12 +1093,12 @@ fn apply_sink(
                 append_step(&mut path, step(instr.address, symbol, "sink"));
                 push_finding(out, ctx.function, &fact, symbol, instr.address, path);
             }
-        } else if let (WalkMode::Summarize, Some(arg)) = (mode, fact.formal_index()) {
+        } else if let (WalkMode::Summarize, Some(input)) = (mode, fact.formal_input()) {
             let mut path: Vec<TaintStep> = fact.path.clone();
             append_step(&mut path, step(instr.address, symbol, call_kind));
             append_step(&mut path, step(instr.address, symbol, "sink"));
             out.summary.add_frame(SinkFrame {
-                in_arg: arg,
+                input,
                 via_flag,
                 sink_symbol: symbol.to_owned(),
                 sink_site: instr.address,
@@ -1030,6 +1154,16 @@ fn gather_reaching(arena: &mut Arena, defuse: &DefUse, state: &BlockState) -> Ve
                 reached.push((fact.clone(), false));
             }
         }
+        if matches!(value, ValueId::Register(_))
+            && let Some(alias) = state.established.get(&loc).and_then(Option::as_deref)
+        {
+            let memory: PathId = arena.location(&ValueId::memory(alias));
+            if let Some(map) = state.values.get(&memory) {
+                for fact in map.values() {
+                    reached.push((fact.clone(), false));
+                }
+            }
+        }
     }
     if reached.is_empty() && defuse.uses.is_empty() {
         for fact in state.flag.values() {
@@ -1060,10 +1194,6 @@ fn instantiate_callee(
         .argument_registers()
         .iter()
         .map(|register: &&str| reg_loc(arena, register))
-        .collect();
-    let arg_facts: Vec<FactMap> = arg_locs
-        .iter()
-        .map(|loc: &PathId| state.values.get(loc).cloned().unwrap_or_default())
         .collect();
     let flag_facts: FactMap = state.flag.clone();
     let returned: PathId = reg_loc(arena, ctx.resolved.abi.return_register());
@@ -1097,10 +1227,8 @@ fn instantiate_callee(
         }
     }
 
-    for (in_arg, outs) in &summary.propagations {
-        let Some(sources): Option<&FactMap> = arg_facts.get(*in_arg as usize) else {
-            continue;
-        };
+    for (input, outs) in &summary.propagations {
+        let sources: FactMap = resolve_input_facts(arena, state, &arg_locs, *input);
         for (port, propagation) in outs {
             let Some(loc): Option<PathId> = out_port_location(&arg_locs, returned, *port) else {
                 continue;
@@ -1131,10 +1259,96 @@ fn instantiate_callee(
             &callee_name,
             call_kind,
             frame,
-            &arg_facts,
+            arena,
+            state,
+            &arg_locs,
             &flag_facts,
             out,
         );
+    }
+}
+
+fn resolve_input_facts(
+    arena: &mut Arena,
+    state: &BlockState,
+    arg_locs: &[PathId],
+    input: InPort,
+) -> FactMap {
+    match input {
+        InPort::Argument(argument) => {
+            let Some(argument_loc): Option<&PathId> = arg_locs.get(argument as usize) else {
+                return FactMap::new();
+            };
+            let mut facts: FactMap = state.values.get(argument_loc).cloned().unwrap_or_default();
+            if let Some(alias) = state
+                .established
+                .get(argument_loc)
+                .and_then(Option::as_deref)
+            {
+                let loc: PathId = arena.location(&ValueId::memory(alias));
+                if let Some(alias_facts) = state.values.get(&loc) {
+                    for fact in alias_facts.values() {
+                        merge_fact(&mut facts, fact.clone());
+                    }
+                }
+            }
+            facts
+        }
+        InPort::Global(loc) => state.values.get(&loc).cloned().unwrap_or_default(),
+        InPort::ArgumentMemory { argument, offset } => {
+            let Some(argument_loc): Option<&PathId> = arg_locs.get(argument as usize) else {
+                return FactMap::new();
+            };
+            let mut facts: FactMap = state.values.get(argument_loc).cloned().unwrap_or_default();
+            let Some(alias): Option<&str> = state
+                .established
+                .get(argument_loc)
+                .and_then(Option::as_deref)
+            else {
+                return facts;
+            };
+            let Some(projected): Option<String> = offset_memory_expr(alias, offset) else {
+                return facts;
+            };
+            let loc: PathId = arena.location(&ValueId::memory(&projected));
+            if let Some(projected_facts) = state.values.get(&loc) {
+                for fact in projected_facts.values() {
+                    merge_fact(&mut facts, fact.clone());
+                }
+            }
+            facts
+        }
+    }
+}
+
+fn offset_memory_expr(expr: &str, added: i64) -> Option<String> {
+    let inner: &str = memory_inner(expr)?;
+    let mut base: Option<&str> = None;
+    let mut offset: i64 = added;
+    for (_position, term) in signed_terms(inner) {
+        let sign: i64 = if term.starts_with('-') { -1 } else { 1 };
+        let core: &str = term.trim_start_matches(['+', '-']);
+        if core.contains('*') {
+            return None;
+        }
+        if core.bytes().any(|byte: u8| byte.is_ascii_alphabetic())
+            && parse_native_integer(core).is_none()
+        {
+            if base.replace(core).is_some() {
+                return None;
+            }
+        } else {
+            offset = offset.checked_add(sign * parse_native_integer(core)?)?;
+        }
+    }
+    let base: &str = base?;
+    if offset == 0 {
+        return Some(format!("[{base}]"));
+    }
+    if offset > 0 {
+        Some(format!("[{base}+{offset:x}h]"))
+    } else {
+        Some(format!("[{base}-{:x}h]", offset.unsigned_abs()))
     }
 }
 
@@ -1146,15 +1360,16 @@ fn instantiate_frame(
     callee_name: &str,
     call_kind: &str,
     frame: &SinkFrame,
-    arg_facts: &[FactMap],
+    arena: &mut Arena,
+    state: &BlockState,
+    arg_locs: &[PathId],
     flag_facts: &FactMap,
     out: &mut Outputs,
 ) {
-    let empty: FactMap = FactMap::new();
-    let candidates: &FactMap = if frame.via_flag {
-        flag_facts
+    let candidates: FactMap = if frame.via_flag {
+        flag_facts.clone()
     } else {
-        arg_facts.get(frame.in_arg as usize).unwrap_or(&empty)
+        resolve_input_facts(arena, state, arg_locs, frame.input)
     };
     for cf in candidates.values() {
         let effective: FeatureSet = cf.features.union(frame.accumulated);
@@ -1171,7 +1386,7 @@ fn instantiate_frame(
                 }
                 push_finding(out, ctx.function, cf, callee_name, instr.address, path);
             }
-        } else if let (WalkMode::Summarize, Some(arg)) = (mode, cf.formal_index()) {
+        } else if let (WalkMode::Summarize, Some(input)) = (mode, cf.formal_input()) {
             let mut path: Vec<TaintStep> = cf.path.clone();
             append_step(&mut path, step(instr.address, callee_name, call_kind));
             append_step(&mut path, step(instr.address, callee_name, "sink"));
@@ -1179,7 +1394,7 @@ fn instantiate_frame(
                 append_step(&mut path, hop.clone());
             }
             out.summary.add_frame(SinkFrame {
-                in_arg: arg,
+                input,
                 via_flag: frame.via_flag,
                 sink_symbol: callee_name.to_owned(),
                 sink_site: instr.address,
@@ -1212,18 +1427,16 @@ fn extract_outputs(
             record_output(summary, OutPort::Return, fact, instr);
         }
     }
-    for fact in state.flag.values() {
-        if fact.is_concrete() {
-            record_output(summary, OutPort::Return, fact, instr);
-        }
-    }
     for (index, register) in abi.argument_registers().iter().enumerate() {
         let loc: PathId = reg_loc(arena, register);
         let Some(map): Option<&FactMap> = state.values.get(&loc) else {
             continue;
         };
         for fact in map.values() {
-            if fact.formal_index() == Some(index as u16) {
+            if fact.formal_input() == Some(InPort::Argument(index as u16)) {
+                continue;
+            }
+            if fact.is_concrete() {
                 continue;
             }
             record_output(summary, OutPort::Argument(index as u16), fact, instr);
@@ -1236,8 +1449,8 @@ fn record_output(summary: &mut FunctionSummary, port: OutPort, fact: &Fact, inst
     append_step(&mut path, step(instr.address, &instr.mnemonic, "return"));
     if fact.is_concrete() {
         summary.add_generation(port, fact.kinds, fact.features, &path);
-    } else if let Some(arg) = fact.formal_index() {
-        summary.add_propagation(arg, port, fact.kinds, fact.features, &path);
+    } else if let Some(input) = fact.formal_input() {
+        summary.add_propagation(input, port, fact.kinds, fact.features, &path);
     }
 }
 

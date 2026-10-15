@@ -55,6 +55,7 @@ impl SourceEntry {
 fn builtin_out_arguments(symbol: &str) -> Vec<OutArgument> {
     match symbol {
         "fgets" => vec![OutArgument::Fixed(0)],
+        "recv" | "recvfrom" => vec![OutArgument::Fixed(1)],
         _ => Vec::new(),
     }
 }
@@ -355,9 +356,12 @@ mod tests {
     }
 
     #[test]
-    fn a_source_with_no_builtin_declaration_has_no_out_arguments() {
+    fn recv_carries_a_builtin_destination_buffer_declaration() {
         let config: TaintConfig = TaintConfig::new().with_source("recv");
-        assert!(config.source_out_arguments("recv").is_empty());
+        assert_eq!(
+            config.source_out_arguments("recv"),
+            &[OutArgument::Fixed(1)]
+        );
         assert!(config.source_out_arguments("not_a_source").is_empty());
     }
 

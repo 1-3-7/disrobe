@@ -3041,6 +3041,7 @@ dependencies = [
  "disrobe-pass-native",
  "disrobe-query",
  "disrobe-testkit",
+ "goblin",
  "rayon",
  "serde",
  "serde_json",

@@ -146,6 +146,28 @@ impl CallAbi {
         })
     }
 
+    pub(crate) fn address_calculation(self, instr: &NirInstr) -> Option<DefUse> {
+        if self != Self::X86
+            || !is_native(instr.source.lang)
+            || !instr.mnemonic.eq_ignore_ascii_case("lea")
+            || instr.operands.len() != 2
+        {
+            return None;
+        }
+        let destination: ValueId = self.register_value(instr.operands.first()?)?;
+        let source: &str = instr.operands.get(1)?;
+        let mut uses: Vec<ValueId> = source
+            .split(['[', ']', '+', '-', '*', ',', ' '])
+            .filter_map(|part: &str| self.register_value(part))
+            .collect();
+        uses.sort();
+        uses.dedup();
+        Some(DefUse {
+            defs: vec![destination],
+            uses,
+        })
+    }
+
     pub(crate) fn memory_transfer(self, instr: &NirInstr) -> Option<DefUse> {
         if self != Self::Aarch64 || !is_native(instr.source.lang) {
             return None;

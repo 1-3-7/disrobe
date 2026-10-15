@@ -26,6 +26,7 @@ pub enum CallEdgeBuildError {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CallEdgeEvidence {
     DirectCall,
+    DirectTailTransfer,
     NavigationFunctionStart,
     NavigationFunctionInterior {
         target_address: u64,

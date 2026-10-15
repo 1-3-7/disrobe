@@ -139,7 +139,12 @@ impl Arena {
     }
 
     fn parse_memory(&mut self, expr: &str) -> (Base, Vec<Proj>) {
-        let trimmed: &str = expr.trim().trim_start_matches("byte ").trim();
+        let trimmed: &str = expr.trim();
+        let trimmed: &str = ["byte ", "word ", "dword ", "qword "]
+            .iter()
+            .find_map(|prefix: &&str| trimmed.strip_prefix(prefix))
+            .unwrap_or(trimmed)
+            .trim();
         let depth: usize = trimmed.bytes().filter(|b: &u8| *b == b'[').count();
         let inner: &str = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
         let mut tokens = inner.splitn(2, ['+', '-']);
@@ -175,21 +180,29 @@ impl Arena {
 fn parse_offset(token: &str) -> Option<i64> {
     let core: &str = token.split(['+', '-']).next().unwrap_or(token);
     let core: &str = core.trim();
-    if core.contains('*')
-        || core
-            .bytes()
-            .any(|b: u8| b.is_ascii_alphabetic() && b != b'x')
-    {
+    if core.contains('*') {
         return None;
     }
-    let stripped: &str = core.strip_prefix("0x").unwrap_or(core);
-    i64::from_str_radix(stripped, 16).ok()
+    if let Some(stripped) = core.strip_suffix('h') {
+        return i64::from_str_radix(stripped, 16).ok();
+    }
+    if let Some(stripped) = core.strip_prefix("0x") {
+        return i64::from_str_radix(stripped, 16).ok();
+    }
+    core.parse::<i64>().ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum OutPort {
     Return,
     Argument(u16),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum InPort {
+    Argument(u16),
+    ArgumentMemory { argument: u16, offset: i64 },
+    Global(PathId),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -208,7 +221,7 @@ pub(crate) struct PropValue {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SinkFrame {
-    pub(crate) in_arg: u16,
+    pub(crate) input: InPort,
     pub(crate) via_flag: bool,
     pub(crate) sink_symbol: String,
     pub(crate) sink_site: u64,
@@ -221,7 +234,7 @@ pub(crate) struct SinkFrame {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FunctionSummary {
     pub(crate) generations: BTreeMap<OutPort, GenValue>,
-    pub(crate) propagations: BTreeMap<u16, BTreeMap<OutPort, PropValue>>,
+    pub(crate) propagations: BTreeMap<InPort, BTreeMap<OutPort, PropValue>>,
     pub(crate) frames: Vec<SinkFrame>,
 }
 
@@ -243,7 +256,7 @@ impl FunctionSummary {
 
     pub(crate) fn add_propagation(
         &mut self,
-        in_arg: u16,
+        input: InPort,
         out: OutPort,
         kinds: KindSet,
         features: FeatureSet,
@@ -251,7 +264,7 @@ impl FunctionSummary {
     ) {
         let entry: &mut PropValue = self
             .propagations
-            .entry(in_arg)
+            .entry(input)
             .or_default()
             .entry(out)
             .or_default();
@@ -264,7 +277,7 @@ impl FunctionSummary {
 
     pub(crate) fn add_frame(&mut self, frame: SinkFrame) {
         let duplicate: bool = self.frames.iter().any(|f: &SinkFrame| {
-            f.in_arg == frame.in_arg
+            f.input == frame.input
                 && f.via_flag == frame.via_flag
                 && f.sink_site == frame.sink_site
                 && f.sink_symbol == frame.sink_symbol
@@ -285,10 +298,10 @@ impl FunctionSummary {
         let propagations: Vec<PropKey> = self
             .propagations
             .iter()
-            .flat_map(|(in_arg, outs): (&u16, &BTreeMap<OutPort, PropValue>)| {
+            .flat_map(|(input, outs): (&InPort, &BTreeMap<OutPort, PropValue>)| {
                 outs.iter()
                     .map(move |(out, value): (&OutPort, &PropValue)| {
-                        (*in_arg, *out, value.kinds.bits(), value.features.bits())
+                        (*input, *out, value.kinds.bits(), value.features.bits())
                     })
             })
             .collect();
@@ -297,7 +310,7 @@ impl FunctionSummary {
             .iter()
             .map(|f: &SinkFrame| {
                 (
-                    f.in_arg,
+                    f.input,
                     f.via_flag,
                     f.sink_site,
                     f.sink_kinds.bits(),
@@ -316,8 +329,8 @@ impl FunctionSummary {
 }
 
 type GenKey = (OutPort, u64, u64);
-type PropKey = (u16, OutPort, u64, u64);
-type FrameKey = (u16, bool, u64, u64, u64, u64);
+type PropKey = (InPort, OutPort, u64, u64);
+type FrameKey = (InPort, bool, u64, u64, u64, u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SummaryKey {
