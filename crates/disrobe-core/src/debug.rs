@@ -323,6 +323,7 @@ mod tests {
         assert_eq!(guard_secret_shaped(lowered), lowered);
     }
 
+    #[allow(clippy::redundant_pub_crate)]
     mod scoped {
         crate::debug_scope!(
             "debug-scope-probe",
