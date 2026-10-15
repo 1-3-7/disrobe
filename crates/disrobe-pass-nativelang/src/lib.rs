@@ -17,6 +17,7 @@ pub mod image;
 pub mod nir;
 pub mod pass;
 pub mod recover;
+pub mod rust_inventory;
 
 use disrobe_nir::NirModule;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,7 @@ pub use image::{
 pub use nir::lift_native_nir;
 pub use pass::{NativeLangPassReport, build_report};
 pub use recover::{GcMetadata, Recovery, module_histogram, recover};
+pub use rust_inventory::{RustInventory, RustInventoryError, rust_inventory};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
