@@ -1760,6 +1760,7 @@ corpus/native/rust-inventory/source/gitdep/Cargo.toml	-	-	-	-	-	-	-
 corpus/native/rust-inventory/source/gitdep/src/lib.rs	-	-	-	-	-	-	-
 corpus/native/rust-inventory/source/pathdep/Cargo.toml	-	-	-	-	-	-	-
 corpus/native/rust-inventory/source/pathdep/src/lib.rs	-	-	-	-	-	-	-
+corpus/native/rust-inventory/source/rustfmt.toml	-	-	-	-	-	-	-
 corpus/native/rust-inventory/source/workspace/Cargo.lock	-	-	-	-	-	-	-
 corpus/native/rust-inventory/source/workspace/Cargo.toml	-	-	-	-	-	-	-
 corpus/native/rust-inventory/source/workspace/rustinv/Cargo.toml	-	-	-	-	-	-	-

@@ -756,4 +756,40 @@ mod tests {
         assert_eq!(rustc_commit(mixed.as_bytes()), Some((0, commit)));
         assert_eq!(rustc_commit(short.as_bytes()), None);
     }
+
+    #[test]
+    fn registry_paths_match_under_any_cargo_home() {
+        let homes: [&[u8]; 4] = [
+            b"/usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/de/mod.rs",
+            b"/opt/rust/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs",
+            b"C:\\cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\serde-1.0.228\\src\\ser\\mod.rs",
+            b"msg/root/.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\serde-1.0.228\\src\\lib.rs",
+        ];
+        let mut collector: Collector = Collector::default();
+        for home in homes {
+            let mut raw: Vec<u8> = vec![0];
+            raw.extend_from_slice(home);
+            raw.push(0);
+            classify(&raw, 1, raw.len() - 1, &mut collector);
+        }
+        let entries: Vec<(&CrateKey, u64)> = collector
+            .crates
+            .iter()
+            .map(|(key, tally): (&CrateKey, &Tally)| (key, tally.occurrences))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![(
+                &CrateKey {
+                    name: Some("serde".to_owned()),
+                    version: Some("1.0.228".to_owned()),
+                    source: CrateSource::Registry {
+                        index: "index.crates.io-1949cf8c6b5b557f".to_owned(),
+                    },
+                },
+                4
+            )]
+        );
+        assert!(collector.locals.is_empty());
+    }
 }

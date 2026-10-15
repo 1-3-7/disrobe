@@ -24,11 +24,11 @@ Text output for the auditable PE fixture (paths shortened):
 
 ```text
 rust inventory: pe-1.95.0-release-auditable.exe (Pe, 674816 bytes)
-rustc: 1.95.0 59807616e1fa2540724bfbac14d7976d7e4a3860  52 paths  @0x85dc0 /rustc/59807616.../library\panic_abort\src\lib.rs
+rustc: 1.95.0 59807616e1fa2540724bfbac14d7976d7e4a3860  52 paths  @0x85db8 /rustc/59807616.../library\panic_abort\src\lib.rs
 crates: 10
-  aho-corasick 1.1.5  registry index.crates.io-1949cf8c6b5b557f  20 paths  @0x86972 registry\src\...\aho-corasick-1.1.5\src\ahocorasick.rs
-  gitdep -  git gitdep-8ea555ce1129ba1e rev 099202b  1 path  @0x85f21 git\checkouts\gitdep-8ea555ce1129ba1e\099202b\src\lib.rs
-  pathdep -  path /build\pathdep  1 path  @0x85e86 /build\pathdep\src\lib.rs
+  aho-corasick 1.1.5  registry index.crates.io-1949cf8c6b5b557f  20 paths  @0x8691e registry\src\...\aho-corasick-1.1.5\src\ahocorasick.rs
+  gitdep -  git gitdep-8ea555ce1129ba1e rev 099202b  1 path  @0x85f15 git\checkouts\gitdep-8ea555ce1129ba1e\099202b\src\lib.rs
+  pathdep -  path /build\pathdep  1 path  @0x85e7e /build\pathdep\src\lib.rs
   rustinv -  workspace rustinv  1 path  @0x85580 rustinv\src\main.rs
   ...
 auditable: .dep-v0 @0xa3800, 340 bytes compressed, 1270 bytes JSON, format 1: 16 packages, 23 edges

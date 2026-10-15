@@ -87,7 +87,7 @@ build() {
   local out="$target_dir/$target/$dir/rustinv"
   if [ "$target" = x86_64-pc-windows-msvc ]; then out="$out.exe"; fi
   cp "$out" "$BIN/$artifact"
-  if grep -a -q -i -F -e "$WIN_WORK" -e "$(cygpath -m "$WORK")" -e "$WIN_RUSTUP_HOME" -e "$(cygpath -m "$WIN_RUSTUP_HOME")" -e 'Users\' -e 'Users/' "$BIN/$artifact"; then
+  if grep -a -q -i -F -e "$WIN_WORK" -e "$(cygpath -m "$WORK")" -e "$WIN_RUSTUP_HOME" -e "$(cygpath -m "$WIN_RUSTUP_HOME")" -e "Users\\" -e 'Users/' "$BIN/$artifact"; then
     echo "$artifact embeds a build host path" >&2
     exit 1
   fi

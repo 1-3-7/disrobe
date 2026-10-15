@@ -4,13 +4,13 @@ source = "source/workspace (workspace root, member rustinv), source/pathdep (pat
 lockfile = "source/workspace/Cargo.lock"
 lockfile_sha256 = "6a20c363f4fc67b0b3845f8e112afe3b46e703f5cb839ab20a1ec02543fcc276"
 build_script = "build.sh"
-build_script_sha256 = "c436c75320b7063f184c8d5e6d0c70215ba053b2f40ffcc7a796fa150254e9e0"
+build_script_sha256 = "b92cdce8097e5aaeb8108cfecff9fe88c1a9a15162cb0b9a9e5a5a729c615675"
 symbol_reference_script = "reference_symbols.py"
 symbol_reference_script_sha256 = "31ba1f570dec18c2a779d05d2aae45aa391e314cc79d55e41e534ad18b822725"
 build_command = "CARGO_AUDITABLE=<cargo-auditable.exe 0.7.7> RUST_AUDIT_INFO=<rust-audit-info.exe 0.5.4> bash build.sh <empty work directory>"
 build_environment = "Windows 11 x86-64 host, Git Bash. build.sh copies the sources into the work directory, commits source/gitdep into a local git repository as fixture <fixture@disrobe.invalid> at 2026-01-01T00:00:00Z (commit 099202bb092f765d9b545f79b658bd646bb0ce07, the revision Cargo.lock pins) and serves it to cargo as https://git.disrobe.invalid/gitdep.git through a git url.insteadOf rewrite, uses a fresh CARGO_HOME in the work directory, and builds every artifact with cargo --locked, without a rustc wrapper and without incremental compilation."
-path_prefix_map = "--remap-path-prefix maps the work CARGO_HOME to /usr/local/cargo, the copied sources to /build and the 1.96.1 rust-src directory (<sysroot>\\lib\\rustlib\\src\\rust) to /rustc/<commit>, so no build host path reaches an artifact; build.sh fails when one does"
-reproducibility = "Rebuilding in the same absolute work directory reproduces every artifact byte for byte (checked twice). pathdep sits outside the workspace root, so cargo hashes its absolute path into the -C metadata of pathdep and rustinv; another work directory changes symbol hashes and code layout, while every reference file below stays byte-identical (checked with a second work directory)."
+path_prefix_map = "RUSTFLAGS carries --remap-path-prefix for the work directory (/work), the rustup home (/rustup), the work CARGO_HOME (/root/.cargo, so registry and git paths read /root/.cargo\\registry\\src\\index.crates.io-<hash>\\<crate>-<version>\\... as on a build host running as root), the copied sources (/build) and the toolchain rust-src directory (/rustc/<commit>, the prefix the shipped standard library already carries). rustc applies the last matching prefix, so the more specific maps follow the general ones. Each artifact records its exact RUSTFLAGS with <work> and <rustup home> standing for the two host directories. build.sh fails when a host path, the work directory or the rustup home survives in an artifact."
+reproducibility = "A second build.sh run into the same absolute work directory reproduces every artifact and reference byte for byte. pathdep sits outside the workspace root, so cargo hashes its absolute path into the -C metadata of pathdep and rustinv, and RUSTFLAGS name the work directory; a build in another work directory therefore changes symbol hashes and code layout, while every reference file stays byte-identical (both checked with the recorded flags)."
 linkers = "PE: MSVC link.exe 14.44.35229 (Visual Studio Build Tools 2022, toolset 14.44.35207, Windows SDK 10.0.26100.0) with /Brepro and /PDBALTPATH:%_PDB%. ELF and Mach-O: the rust-lld of the 1.96.1 toolchain (LLD 22.1.2, sha256 21d542ef31ee7308dffb79f3e7ebf4ffa0f4a109874c95b8cc78190c36fccbbe) as ld.lld and ld64.lld, against empty libc stub archives and text stubs, with unresolved C library symbols left undefined; the ELF entry point is main. The ELF and Mach-O artifacts are complete rustc output but not runnable."
 tools = "cargo-auditable 0.7.7 (cargo install --locked, sha256 f0e8a8132a86fe7fd76d3d3e696e0dff7f9542414a4a12019627e4c0cef752f9); rust-audit-info 0.5.4 (cargo install --locked, sha256 f2e6713b9c0a56738135c89a387189678da1600c8ed9c119a979857233585103); llvm-nm from the 1.96.1 llvm-tools component (LLVM 22.1.2)"
 source_license = "MIT (self-authored rustinv, gitdep, pathdep)"
@@ -26,7 +26,7 @@ symbols = "reference/<artifact>.symbols.tsv is reference_symbols.py over llvm-nm
 
 [[artifacts]]
 path = "bin/pe-1.95.0-release-auditable.exe"
-sha256 = "e2022bb37a711bfbb99267f8cf694598ac516d0236376089ba7a3ba4318e1bfe"
+sha256 = "67aaa6fdc1e56dcd5a29bb0bd27a8512af6c8aa5400dfc910cc5f3b8be9d8496"
 toolchain = "1.95.0"
 target = "x86_64-pc-windows-msvc"
 container = "pe"
@@ -35,11 +35,12 @@ mangling = "legacy"
 strip = "symbols"
 auditable = true
 command = "cargo-auditable auditable build --locked --bin rustinv --target x86_64-pc-windows-msvc --profile release (RUSTUP_TOOLCHAIN=1.95.0)"
+rustflags = "--remap-path-prefix=<work>=/work --remap-path-prefix=<rustup home>=/rustup --remap-path-prefix=<work>\\cargo-home=/root/.cargo --remap-path-prefix=<work>\\src=/build --remap-path-prefix=<rustup home>\\toolchains\\1.95.0-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust=/rustc/59807616e1fa2540724bfbac14d7976d7e4a3860 -C strip=symbols -C link-arg=/PDBALTPATH:%_PDB% -C link-arg=/Brepro"
 path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
 
 [[artifacts]]
 path = "bin/pe-1.95.0-dev.exe"
-sha256 = "06c91e42122503cf076d10ad0c0add47329675abacbdcf0a438d0bb080a8d693"
+sha256 = "eef66f762c4c8684367b94c8aca504913287ba3de4414aa2d430ab20f5600708"
 toolchain = "1.95.0"
 target = "x86_64-pc-windows-msvc"
 container = "pe"
@@ -48,11 +49,12 @@ mangling = "legacy"
 strip = "none"
 auditable = false
 command = "cargo +1.95.0 build --locked --bin rustinv --target x86_64-pc-windows-msvc --profile dev"
+rustflags = "--remap-path-prefix=<work>=/work --remap-path-prefix=<rustup home>=/rustup --remap-path-prefix=<work>\\cargo-home=/root/.cargo --remap-path-prefix=<work>\\src=/build --remap-path-prefix=<rustup home>\\toolchains\\1.95.0-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust=/rustc/59807616e1fa2540724bfbac14d7976d7e4a3860 -C strip=none -C link-arg=/PDBALTPATH:%_PDB% -C link-arg=/Brepro"
 path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
 
 [[artifacts]]
 path = "bin/elf-1.96.1-release-auditable.elf"
-sha256 = "753a8ae98688837117fe1e27c28c0c881a4c000002b1954d57ae8040d3a558e8"
+sha256 = "a52a756ce1d7a9f74ff8161172118de7574207ebed3c1cdc85a952b366c577fc"
 toolchain = "1.96.1"
 target = "x86_64-unknown-linux-gnu"
 container = "elf"
@@ -61,11 +63,12 @@ mangling = "legacy"
 strip = "debuginfo"
 auditable = true
 command = "cargo-auditable auditable build --locked --bin rustinv --target x86_64-unknown-linux-gnu --profile release (RUSTUP_TOOLCHAIN=1.96.1)"
+rustflags = "--remap-path-prefix=<work>=/work --remap-path-prefix=<rustup home>=/rustup --remap-path-prefix=<work>\\cargo-home=/root/.cargo --remap-path-prefix=<work>\\src=/build --remap-path-prefix=<rustup home>\\toolchains\\1.96.1-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust=/rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd -C strip=debuginfo -C linker=rust-lld -C linker-flavor=ld.lld -C link-arg=--unresolved-symbols=ignore-all -C link-arg=--entry=main -L native=<work>\\stubs"
 path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
 
 [[artifacts]]
 path = "bin/elf-1.96.1-release-stripped.elf"
-sha256 = "5c23c5cc735d7faaa37950d638fa65d9ce5a950acfb7903f4e9c0a589f127d23"
+sha256 = "2864cd68caed58714cc3ee9b57d416b3bb818ffae565eb854ce516588b59038d"
 toolchain = "1.96.1"
 target = "x86_64-unknown-linux-gnu"
 container = "elf"
@@ -74,11 +77,12 @@ mangling = "legacy"
 strip = "symbols"
 auditable = false
 command = "cargo +1.96.1 build --locked --bin rustinv --target x86_64-unknown-linux-gnu --profile release"
+rustflags = "--remap-path-prefix=<work>=/work --remap-path-prefix=<rustup home>=/rustup --remap-path-prefix=<work>\\cargo-home=/root/.cargo --remap-path-prefix=<work>\\src=/build --remap-path-prefix=<rustup home>\\toolchains\\1.96.1-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust=/rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd -C strip=symbols -C linker=rust-lld -C linker-flavor=ld.lld -C link-arg=--unresolved-symbols=ignore-all -C link-arg=--entry=main -L native=<work>\\stubs"
 path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
 
 [[artifacts]]
 path = "bin/elf-1.96.1-dev-v0.elf"
-sha256 = "7c41560778414a938dd633b38d913f5f2ba27fd4dd1032126987d1821c7e61b7"
+sha256 = "6c99a09d1cf4ec8c9ce15cf06492a2186c777769c9642370f6c693549c6793b1"
 toolchain = "1.96.1"
 target = "x86_64-unknown-linux-gnu"
 container = "elf"
@@ -87,11 +91,12 @@ mangling = "v0"
 strip = "debuginfo"
 auditable = false
 command = "cargo +1.96.1 build --locked --bin rustinv --target x86_64-unknown-linux-gnu --profile dev"
+rustflags = "--remap-path-prefix=<work>=/work --remap-path-prefix=<rustup home>=/rustup --remap-path-prefix=<work>\\cargo-home=/root/.cargo --remap-path-prefix=<work>\\src=/build --remap-path-prefix=<rustup home>\\toolchains\\1.96.1-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust=/rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd -C strip=debuginfo -C symbol-mangling-version=v0 -C linker=rust-lld -C linker-flavor=ld.lld -C link-arg=--unresolved-symbols=ignore-all -C link-arg=--entry=main -L native=<work>\\stubs"
 path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
 
 [[artifacts]]
 path = "bin/macho-1.96.1-release-auditable.macho"
-sha256 = "5bb3f12181ffe25c96e06778603e818160126c23820895a95b77c65918d1ba18"
+sha256 = "312dc2689e47376a40fea70ce586ed0906b195d062f8166af9ba7154b5a4c769"
 toolchain = "1.96.1"
 target = "x86_64-apple-darwin"
 container = "macho"
@@ -100,4 +105,5 @@ mangling = "v0"
 strip = "debuginfo"
 auditable = true
 command = "cargo-auditable auditable build --locked --bin rustinv --target x86_64-apple-darwin --profile release (RUSTUP_TOOLCHAIN=1.96.1)"
+rustflags = "--remap-path-prefix=<work>=/work --remap-path-prefix=<rustup home>=/rustup --remap-path-prefix=<work>\\cargo-home=/root/.cargo --remap-path-prefix=<work>\\src=/build --remap-path-prefix=<rustup home>\\toolchains\\1.96.1-x86_64-pc-windows-msvc\\lib\\rustlib\\src\\rust=/rustc/31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd -C strip=debuginfo -C symbol-mangling-version=v0 -C linker=rust-lld -C linker-flavor=ld64.lld -C link-arg=-undefined -C link-arg=dynamic_lookup -L native=<work>\\stubs"
 path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
