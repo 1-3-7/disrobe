@@ -147,9 +147,48 @@ impl Pass for MobilePassAdapter {
                     .collect();
                 Ok(children)
             }
+            DetectedKind::Ipa => ipa_interface_children(bytes).map_err(|e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-MOB-0907: ipa interface extract: {e}"))
+            }),
             _ => Ok(Vec::new()),
         }
     }
+}
+
+const IPA_NIB_CHILDREN_MAX: usize = 4096;
+const IPA_NIB_BYTES_MAX: usize = 256 * 1024 * 1024;
+const NIB_MAGIC: &[u8] = b"NIBArchive";
+
+fn ipa_interface_children(bytes: &[u8]) -> crate::error::Result<Vec<ChildArtifact>> {
+    let mut archive: zip::ZipArchive<std::io::Cursor<&[u8]>> =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
+    let count: usize = crate::checked_zip_entry_count(archive.len())?;
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total: usize = 0;
+    for index in 0..count {
+        let file: zip::read::ZipFile<'_> = archive.by_index(index)?;
+        let name: String = file.name().to_owned();
+        if !file.is_file() || !name.starts_with("Payload/") || !name.ends_with(".nib") {
+            continue;
+        }
+        if entries.len() >= IPA_NIB_CHILDREN_MAX {
+            return Err(crate::error::Error::Zip(format!(
+                "ipa holds more than {IPA_NIB_CHILDREN_MAX} compiled NIBs"
+            )));
+        }
+        let data: Vec<u8> = crate::read_zip_file_bounded(file, &name)?;
+        if !data.starts_with(NIB_MAGIC) {
+            continue;
+        }
+        total = total.saturating_add(data.len());
+        if total > IPA_NIB_BYTES_MAX {
+            return Err(crate::error::Error::Zip(format!(
+                "ipa compiled NIBs exceed {IPA_NIB_BYTES_MAX} bytes"
+            )));
+        }
+        entries.push((name, data));
+    }
+    Ok(to_children(entries, "apple-nib"))
 }
 
 pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
