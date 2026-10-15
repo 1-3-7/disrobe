@@ -185,6 +185,10 @@ fn aarch64_split_adrp_add_retains_a_page_value_read_before_the_fold() {
     assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
 }
 
+fn absolute_access(width: &str, address: u64) -> String {
+    format!("{{ {width} value; }}*)(uintptr_t)((uint64_t){address:#x}ULL))->value")
+}
+
 #[test]
 fn aarch64_adrp_load_folds_the_low_address_into_the_memory_operand() {
     let bytes: [u8; 12] = [
@@ -192,7 +196,13 @@ fn aarch64_adrp_load_folds_the_low_address_into_the_memory_operand() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus linked load");
-    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+    assert!(
+        recovery
+            .source
+            .contains(&absolute_access("uint64_t", 0x0021_0120)),
+        "{}",
+        recovery.source
+    );
     assert!(
         !recovery.source.contains("r_rax = 2162688LL"),
         "{}",
@@ -207,7 +217,13 @@ fn aarch64_adrp_sized_load_folds_the_low_address_into_the_memory_operand() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus linked byte load");
-    assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
+    assert!(
+        recovery
+            .source
+            .contains(&absolute_access("uint8_t", 0x0021_0123)),
+        "{}",
+        recovery.source
+    );
     assert!(
         !recovery
             .source
@@ -225,8 +241,20 @@ fn aarch64_reused_adrp_base_folds_each_memory_operand() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("one page base reused by two loads");
-    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
-    assert!(recovery.source.contains("2162984LL"), "{}", recovery.source);
+    assert!(
+        recovery
+            .source
+            .contains(&absolute_access("uint64_t", 0x0021_0120)),
+        "{}",
+        recovery.source
+    );
+    assert!(
+        recovery
+            .source
+            .contains(&absolute_access("uint64_t", 0x0021_0128)),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]
@@ -236,7 +264,14 @@ fn aarch64_adrp_store_folds_the_low_address_into_the_memory_operand() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus linked store");
-    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+    assert!(
+        recovery.source.contains(&format!(
+            "{}) = r_rax;",
+            absolute_access("uint64_t", 0x0021_0120)
+        )),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]
@@ -246,7 +281,13 @@ fn aarch64_adrp_unscaled_load_folds_the_signed_memory_displacement() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus unscaled load");
-    assert!(recovery.source.contains("2162816LL"), "{}", recovery.source);
+    assert!(
+        recovery
+            .source
+            .contains(&absolute_access("uint64_t", 0x0021_0080)),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]
@@ -256,7 +297,13 @@ fn aarch64_adrp_unscaled_load_folds_a_negative_memory_displacement() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus negative unscaled load");
-    assert!(recovery.source.contains("2162680LL"), "{}", recovery.source);
+    assert!(
+        recovery
+            .source
+            .contains(&absolute_access("uint64_t", 0x0020_fff8)),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]
@@ -266,7 +313,14 @@ fn aarch64_adrp_signed_word_load_folds_the_low_address() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus signed word load");
-    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+    assert!(
+        recovery.source.contains(&format!(
+            "(int64_t)(int32_t)(((((struct __attribute__((packed, may_alias)) {}",
+            absolute_access("uint32_t", 0x0021_0120)
+        )),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]
@@ -276,8 +330,22 @@ fn aarch64_adrp_pair_load_folds_the_low_address() {
     ];
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus pair load");
-    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
-    assert!(recovery.source.contains("2162984LL"), "{}", recovery.source);
+    assert!(
+        recovery.source.contains(&format!(
+            "r_rax = (uint64_t)(((struct __attribute__((packed, may_alias)) {}",
+            absolute_access("uint64_t", 0x0021_0120)
+        )),
+        "{}",
+        recovery.source
+    );
+    assert!(
+        recovery.source.contains(&format!(
+            "r_a64_x1 = (uint64_t)(((struct __attribute__((packed, may_alias)) {}",
+            absolute_access("uint64_t", 0x0021_0128)
+        )),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]
