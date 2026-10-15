@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2490 bounds (count 236, other 1181, output 70, recursion 246, size 564, work 193).
+2491 bounds (count 236, other 1182, output 70, recursion 246, size 564, work 193).
 
-Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1444,7 +1444,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassi
 | `disrobe-pass-native` | `MAX_OUTPUT_STACK_CELLS` | output | silent: `return` in `finalize_summary` | `usize` | `32` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_REGION_BLOCKS` | other | silent: `return` in `build_region`; `return` in `collect_leaders` | `usize` | `64` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_REGION_INSNS` | other | silent: `return` in `build_region` | `usize` | `2048` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
-| `disrobe-pass-native` | `MAX_UNROLL` | other | silent: `break` in `rs_emit_range`; `continue` in `forward_join_lowering_candidates`; `continue` in `prove_one`; 34 more | `usize` | `8` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
+| `disrobe-pass-native` | `MAX_UNROLL` | other | silent: `break` in `rs_emit_range`; `continue` in `forward_join_lowering_candidates`; `continue` in `prove_one`; 35 more | `usize` | `8` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_UNROLLED_BLOCKS` | other | silent: `return` in `unroll_one` | `usize` | `512` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `VERIFY_ARITY_CAP` | other | silent: `return` in `densify` | `u32` | `12` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_DIRECT_CALL_SWEEP_OFFSETS` | other | silent: `.min()` clamp in `add_linear_call_evidence`; `.min()` clamp in `sweep_direct_call_target_evidence`; `break` in `add_linear_call_evidence`; 1 more | `usize` | `32 * 1024 * 1024` | `crates/disrobe-pass-native/src/desync.rs` |
@@ -1608,6 +1608,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassi
 | `disrobe-pass-native` | `MAX_STATEMENTS` | other | silent: `return` in `specialize` | `usize` | `2048` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
 | `disrobe-pass-native` | `MAX_VALUES` | other | silent: `return` in `definitions` | `usize` | `4` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
 | `disrobe-pass-native` | `PATH_BUDGET` | work | error: untyped error | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/pseudo_c/return_channel.rs` |
+| `disrobe-pass-native` | `MAX_DISPATCH_BLOCKS` | other | silent: `return` in `open` | `usize` | `4096` | `crates/disrobe-pass-native/src/pseudo_c/rust_dispatch.rs` |
 | `disrobe-pass-native` | `MAX_INLINED_DEFINITIONS` | other | silent: `for` range in `inline_single_use_definitions` | `usize` | `128` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_LOOP_WEIGHT_DEPTH` | recursion | delegated: passed to `debug::dbg_line` | `u32` | `8` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_RECORDED_DECISIONS` | other | silent: `return` in `record` | `usize` | `128` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
@@ -2514,7 +2515,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassi
 
 ## Silent stops
 
-1144 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1145 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3139,7 +3140,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassi
 | `disrobe-pass-native` | `MAX_OUTPUT_STACK_CELLS` | `return` in `finalize_summary` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_REGION_BLOCKS` | `return` in `build_region`; `return` in `collect_leaders` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_REGION_INSNS` | `return` in `build_region` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
-| `disrobe-pass-native` | `MAX_UNROLL` | `break` in `rs_emit_range`; `continue` in `forward_join_lowering_candidates`; `continue` in `prove_one`; 34 more | `crates/disrobe-pass-native/src/deobf/summary.rs` |
+| `disrobe-pass-native` | `MAX_UNROLL` | `break` in `rs_emit_range`; `continue` in `forward_join_lowering_candidates`; `continue` in `prove_one`; 35 more | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_UNROLLED_BLOCKS` | `return` in `unroll_one` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `VERIFY_ARITY_CAP` | `return` in `densify` | `crates/disrobe-pass-native/src/deobf/summary.rs` |
 | `disrobe-pass-native` | `MAX_DIRECT_CALL_SWEEP_OFFSETS` | `.min()` clamp in `add_linear_call_evidence`; `.min()` clamp in `sweep_direct_call_target_evidence`; `break` in `add_linear_call_evidence`; 1 more | `crates/disrobe-pass-native/src/desync.rs` |
@@ -3240,6 +3241,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassi
 | `disrobe-pass-native` | `MAX_PROOFS` | `?` on a checked operation in `prove_one` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
 | `disrobe-pass-native` | `MAX_STATEMENTS` | `return` in `specialize` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
 | `disrobe-pass-native` | `MAX_VALUES` | `return` in `definitions` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
+| `disrobe-pass-native` | `MAX_DISPATCH_BLOCKS` | `return` in `open` | `crates/disrobe-pass-native/src/pseudo_c/rust_dispatch.rs` |
 | `disrobe-pass-native` | `MAX_INLINED_DEFINITIONS` | `for` range in `inline_single_use_definitions` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_RECORDED_DECISIONS` | `return` in `record` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_PUSHED_REGISTERS` | `return` in `plan_push_frame` | `crates/disrobe-pass-native/src/pseudo_c/stack_depth.rs` |
