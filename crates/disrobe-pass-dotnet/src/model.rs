@@ -3103,7 +3103,7 @@ impl Resolver {
         })
     }
 
-    fn member_ref_owner(&self, constructor: RowRef) -> Option<(String, String)> {
+    pub(crate) fn member_ref_owner(&self, constructor: RowRef) -> Option<(String, String)> {
         if constructor.table != TableId::MemberRef {
             return None;
         }

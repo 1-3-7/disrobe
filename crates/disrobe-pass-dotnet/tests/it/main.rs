@@ -117,6 +117,8 @@ mod goliath_dotnet;
 mod hostile_metadata_names;
 #[path = "../ilprotector_resource_emu.rs"]
 mod ilprotector_resource_emu;
+#[path = "../interop_reference.rs"]
+mod interop_reference;
 #[path = "../iterator_stub_rendering.rs"]
 mod iterator_stub_rendering;
 #[path = "../keyword_param_oracle.rs"]

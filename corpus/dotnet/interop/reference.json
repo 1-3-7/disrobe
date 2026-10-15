@@ -1,0 +1,270 @@
+{
+  "pinvokes": [
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::GetTickCount",
+      "token": 100663297,
+      "module": "kernel32.dll",
+      "entry_point": "GetTickCount",
+      "flags": 256,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::CreateFileW",
+      "token": 100663298,
+      "module": "kernel32.dll",
+      "entry_point": "CreateFileW",
+      "flags": 325,
+      "char_set": "CharSetUnicode",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": true,
+      "exact_spelling": true,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::ModuleHandle",
+      "token": 100663299,
+      "module": "kernel32",
+      "entry_point": "GetModuleHandleA",
+      "flags": 4386,
+      "char_set": "CharSetAnsi",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "BestFitMappingDisable",
+      "throw_on_unmappable": "ThrowOnUnmappableCharEnable",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::MessageBox",
+      "token": 100663300,
+      "module": "user32.dll",
+      "entry_point": "MessageBox",
+      "flags": 774,
+      "char_set": "CharSetMask",
+      "calling_convention": "CallingConventionStdCall",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::Print",
+      "token": 100663301,
+      "module": "msvcrt.dll",
+      "entry_point": "printf",
+      "flags": 512,
+      "char_set": "None",
+      "calling_convention": "CallingConventionCDecl",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::OrdinalOne",
+      "token": 100663302,
+      "module": "ntdll.dll",
+      "entry_point": "#1",
+      "flags": 256,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": false
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::ThisCallStub",
+      "token": 100663303,
+      "module": "advapi32.dll",
+      "entry_point": "ThisCallStub",
+      "flags": 9232,
+      "char_set": "None",
+      "calling_convention": "CallingConventionThisCall",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "BestFitMappingEnable",
+      "throw_on_unmappable": "ThrowOnUnmappableCharDisable",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Kernel::getpid",
+      "token": 100663304,
+      "module": "libc",
+      "entry_point": "getpid",
+      "flags": 1280,
+      "char_set": "None",
+      "calling_convention": "CallingConventionFastCall",
+      "set_last_error": false,
+      "exact_spelling": false,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::ZlibVersion",
+      "token": 100663308,
+      "module": "libz",
+      "entry_point": "zlibVersion",
+      "flags": 257,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": true,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::\u003CGetCurrentProcessId\u003Eg____PInvoke|0_0",
+      "token": 100663310,
+      "module": "kernel32.dll",
+      "entry_point": "GetCurrentProcessId",
+      "flags": 257,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": true,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::\u003CReadEnvironment\u003Eg____PInvoke|1_0",
+      "token": 100663311,
+      "module": "kernel32.dll",
+      "entry_point": "GetEnvironmentVariableW",
+      "flags": 257,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": true,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::\u003CGreet\u003Eg____PInvoke|3_0",
+      "token": 100663312,
+      "module": "libexample",
+      "entry_point": "Greet",
+      "flags": 257,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": false,
+      "exact_spelling": true,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Nested/Native::WSAGetLastError",
+      "token": 100663319,
+      "module": "ws2_32.dll",
+      "entry_point": "WSAGetLastError",
+      "flags": 320,
+      "char_set": "None",
+      "calling_convention": "CallingConventionWinApi",
+      "set_last_error": true,
+      "exact_spelling": false,
+      "best_fit": "None",
+      "throw_on_unmappable": "None",
+      "preserve_sig": true
+    }
+  ],
+  "library_imports": [
+    {
+      "method": "Disrobe.Samples.Interop.Generated::GetCurrentProcessId",
+      "token": 100663306,
+      "library": "kernel32.dll",
+      "named": {
+        "SetLastError": true
+      }
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::ReadEnvironment",
+      "token": 100663307,
+      "library": "kernel32.dll",
+      "named": {
+        "EntryPoint": "GetEnvironmentVariableW",
+        "StringMarshalling": 2
+      }
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::ZlibVersion",
+      "token": 100663308,
+      "library": "libz",
+      "named": {
+        "EntryPoint": "zlibVersion"
+      }
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Generated::Greet",
+      "token": 100663309,
+      "library": "libexample",
+      "named": {
+        "StringMarshalling": 1
+      }
+    }
+  ],
+  "native_callable": [
+    {
+      "method": "Disrobe.Samples.Interop.Exports::Add",
+      "token": 100663313,
+      "named": {
+        "EntryPoint": "disrobe_add"
+      }
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Exports::Twice",
+      "token": 100663314,
+      "named": {
+        "CallConvs": [
+          "System.Runtime.CompilerServices.CallConvCdecl, System.Runtime, Version=8.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a"
+        ]
+      }
+    },
+    {
+      "method": "Disrobe.Samples.Interop.Exports::Tick",
+      "token": 100663315,
+      "named": {
+        "EntryPoint": "disrobe_stdcall",
+        "CallConvs": [
+          "System.Runtime.CompilerServices.CallConvStdcall, System.Runtime, Version=8.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a",
+          "System.Runtime.CompilerServices.CallConvSuppressGCTransition, System.Runtime, Version=8.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a"
+        ]
+      }
+    }
+  ],
+  "com_imports": [
+    {
+      "type": "Disrobe.Samples.Interop.IUnknownLike",
+      "token": 33554438,
+      "guid": "00000000-0000-0000-C000-000000000046",
+      "is_interface": true
+    },
+    {
+      "type": "Disrobe.Samples.Interop.IServiceProviderLike",
+      "token": 33554439,
+      "guid": "6D5140C1-7436-11CE-8034-00AA006009FA",
+      "is_interface": true
+    },
+    {
+      "type": "Disrobe.Samples.Interop.ShellApplication",
+      "token": 33554440,
+      "guid": "13709620-C279-11CE-A49E-444553540000",
+      "is_interface": false
+    }
+  ]
+}

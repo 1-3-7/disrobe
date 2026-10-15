@@ -283,6 +283,8 @@ pub struct Tables {
     pub custom_attributes: Vec<CustomAttributeRow>,
     pub module_refs: Vec<ModuleRefRow>,
     pub type_specs: Vec<TypeSpecRow>,
+    #[serde(default)]
+    pub impl_maps: Vec<ImplMapRow>,
     pub method_specs: Vec<MethodSpecRow>,
     pub assembly: Option<AssemblyRow>,
     pub assembly_refs: Vec<AssemblyRefRow>,
@@ -414,6 +416,14 @@ pub struct CustomAttributeRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleRefRow {
     pub name: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImplMapRow {
+    pub flags: u16,
+    pub member: Option<RowRef>,
+    pub import_name: u32,
+    pub import_scope: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1070,6 +1080,21 @@ fn decode_table(
                 let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
                 let name: u32 = c.index(sz.heap.strings)?;
                 out.module_refs.push(ModuleRefRow { name });
+            }
+        }
+        TableId::ImplMap => {
+            for k in 0..count as usize {
+                let mut c: Cursor<'_> = Cursor::new(stream, base + k * width)?;
+                let flags: u16 = c.u16()?;
+                let member: Option<RowRef> = coded(&mut c, CodedIndex::MemberForwarded)?;
+                let import_name: u32 = c.index(sz.heap.strings)?;
+                let import_scope: u32 = c.index(sz.simple_index(TableId::ModuleRef))?;
+                out.impl_maps.push(ImplMapRow {
+                    flags,
+                    member,
+                    import_name,
+                    import_scope,
+                });
             }
         }
         TableId::TypeSpec => {

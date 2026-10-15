@@ -21,6 +21,7 @@ pub mod devirt;
 pub(crate) mod display_class_lowering;
 pub mod error;
 pub(crate) mod field_rva;
+pub mod interop;
 pub(crate) mod interpolation_reverse;
 pub mod iterator_reverse;
 pub mod lambda_reverse;
@@ -71,6 +72,7 @@ pub use decompile::{
     emit_csharp,
 };
 pub use error::{Error, Result};
+pub use interop::{InteropReport, interop, interop_report};
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "llm-metadata")]
 pub use llm::{DotnetInstr, DotnetLlmInput, METADATA_CAPABILITY as DOTNET_METADATA_CAPABILITY};
