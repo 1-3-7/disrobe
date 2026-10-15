@@ -134,7 +134,7 @@ The tables list parser, subprocess, and network surfaces. The attack-surface che
 | Python ecosystem | `disrobe-pass-py-decompile`, `disrobe-pass-py-disasm`, `disrobe-pass-py-deob`, `disrobe-pass-pyarmor`, `disrobe-pyarmor-cextract`, `disrobe-pyarmor-pytrace`, `disrobe-pass-pyinstaller`, `disrobe-pass-pyfreeze`, `disrobe-pass-nuitka`, `disrobe-pass-pickle`, `disrobe-py-marshal`, `disrobe-pass-sourcedefender` |
 | JavaScript / wasm | `disrobe-pass-js-deob`, `disrobe-pass-wasm-deob` |
 | Scripting / VM bytecode / mobile | `disrobe-pass-lua`, `disrobe-pass-ruby`, `disrobe-pass-php`, `disrobe-pass-shell`, `disrobe-pass-scriptlang`, `disrobe-pass-beam`, `disrobe-pass-go`, `disrobe-pass-as3`, `disrobe-pass-swift-objc`, `disrobe-pass-mobile` (React Native, Hermes, Flutter/Dart AOT snapshot, Xamarin, Cordova/Capacitor, NativeScript) |
-| Application data and captures | `disrobe-dataforensics` (SQLite databases with write-ahead logs and deleted-record carving; pcap, pcapng, HAR and SAZ captures) |
+| Application data and captures | `disrobe-dataforensics` (SQLite databases with write-ahead logs and deleted-record carving; pcap, pcapng, HAR and SAZ captures; ELF cores and minidumps) |
 | Internal envelope / IR | `disrobe-ir` (`.dr` envelope decoder), `disrobe-nir` |
 
 **Subprocess-capable code** (every non-test spawn site, `std::process::Command`, `CommandSpec` or `run_captured`, found by `xtask regen`):
