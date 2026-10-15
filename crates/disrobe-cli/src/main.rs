@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use clap::ValueEnum;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
+use cli::agent::{self as agent_cmd, AgentCmd};
 use cli::annot::{self, AnnotCmd};
 #[cfg(feature = "jvm")]
 use cli::apk;
@@ -1101,6 +1102,24 @@ enum Cmd {
         #[command(subcommand)]
         action: GuardCmd,
     },
+    #[command(
+        about = "serve the MCP server over stdio for coding agents (same server as `serve --mcp`)"
+    )]
+    Mcp {
+        #[arg(
+            long = "root",
+            value_name = "DIR",
+            help = "another directory whose files the path and target tools may read (repeatable; the working directory and DISROBE_MCP_ROOTS always count)"
+        )]
+        roots: Vec<PathBuf>,
+    },
+    #[command(
+        about = "register `disrobe mcp` with coding agents (Claude Code, Codex, Cursor, Gemini CLI, VS Code, Windsurf, ...), report or remove the registration"
+    )]
+    Agent {
+        #[command(subcommand)]
+        action: AgentCmd,
+    },
     #[command(about = "run disrobe as an HTTP daemon, gRPC server, or LSP-over-stdio")]
     Serve {
         #[arg(long, default_value = "127.0.0.1:7373", help = "HTTP bind address")]
@@ -1781,6 +1800,22 @@ pub(crate) fn subcommand_names() -> std::collections::BTreeSet<String> {
 }
 
 #[cfg(feature = "auto")]
+#[cfg(feature = "server")]
+fn mcp_options(roots: Vec<PathBuf>) -> miette::Result<disrobe_mcp::ServerOptions> {
+    let program: PathBuf = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|error: std::io::Error| {
+            miette::miette!("DR-CLI-0961: cannot locate the running disrobe executable: {error}")
+        })?;
+    Ok(disrobe_mcp::ServerOptions {
+        roots,
+        commands: Some(disrobe_mcp::CommandCatalog::from_clap(
+            program,
+            &Cli::command(),
+        )),
+    })
+}
+
 pub(crate) fn subcommand_paths() -> std::collections::BTreeSet<String> {
     let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for top in <Cli as clap::CommandFactory>::command().get_subcommands() {
@@ -2301,13 +2336,27 @@ fn main() -> miette::Result<()> {
             cors_origin,
             max_body_size,
             roots,
-        } => serve::run(bind, stdio, mcp, grpc, cors_origin, max_body_size, &roots),
+        } => serve::run(
+            bind,
+            stdio,
+            if mcp { Some(mcp_options(roots)?) } else { None },
+            grpc,
+            cors_origin,
+            max_body_size,
+        ),
         #[cfg(not(feature = "server"))]
         Cmd::Serve { .. } => Err(miette::miette!(
             "DR-CLI-0326: this binary was built without the `server` feature, so it carries no HTTP \
              daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or \
              use the default build which enables it"
         )),
+        #[cfg(feature = "server")]
+        Cmd::Mcp { roots } => disrobe_mcp::run_stdio_with(mcp_options(roots)?),
+        #[cfg(not(feature = "server"))]
+        Cmd::Mcp { .. } => Err(miette::miette!(
+            "DR-CLI-0969: this binary was built without the `server` feature, so it carries no MCP server; use the default build which enables it"
+        )),
+        Cmd::Agent { action } => agent_cmd::run(action, global_dry_run, fmt),
         Cmd::InstallDeps {
             action,
             all,

@@ -10,7 +10,7 @@ mod common;
 
 const LSP_ADVERTISED_METHODS: [&str; 2] = ["disrobe/analyze", "disrobe/explain"];
 
-const MCP_TOOL_NAMES: [&str; 33] = [
+const MCP_TOOL_NAMES: [&str; 35] = [
     "add_note",
     "annot",
     "auto",
@@ -28,6 +28,7 @@ const MCP_TOOL_NAMES: [&str; 33] = [
     "inspect_crash",
     "inspect_sqlite",
     "ioc",
+    "list_commands",
     "list_functions",
     "list_notes",
     "locate",
@@ -38,6 +39,7 @@ const MCP_TOOL_NAMES: [&str; 33] = [
     "read_bytes",
     "references_to",
     "rename",
+    "run_command",
     "search_bytes",
     "secret_scan",
     "strings",

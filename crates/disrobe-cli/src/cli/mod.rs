@@ -1,3 +1,4 @@
+pub(crate) mod agent;
 pub(crate) mod annot;
 #[cfg(feature = "jvm")]
 pub(crate) mod apk;

@@ -139,6 +139,7 @@ disrobe-dataforensics = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+toml_edit = "0.25"
 wasmparser = { workspace = true }
 object = { workspace = true }
 axum = { workspace = true, optional = true }

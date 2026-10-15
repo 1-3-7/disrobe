@@ -1,5 +1,9 @@
 #![allow(clippy::duplicate_mod)]
 
+#[cfg(feature = "server")]
+#[path = "../agent_setup.rs"]
+mod agent_setup;
+
 #[path = "../apk_e2e.rs"]
 mod apk_e2e;
 

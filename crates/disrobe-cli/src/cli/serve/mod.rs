@@ -31,14 +31,13 @@ const SERVE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn run(
     bind: String,
     stdio: bool,
-    mcp: bool,
+    mcp: Option<disrobe_mcp::ServerOptions>,
     grpc: bool,
     cors_origins: Vec<String>,
     max_body_size: usize,
-    mcp_roots: &[std::path::PathBuf],
 ) -> miette::Result<()> {
-    if mcp {
-        return disrobe_mcp::run_stdio_with_roots(mcp_roots);
+    if let Some(options) = mcp {
+        return disrobe_mcp::run_stdio_with(options);
     }
     if stdio {
         return lsp::run_stdio_lsp();
