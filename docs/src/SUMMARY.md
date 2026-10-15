@@ -35,6 +35,7 @@
 - [.NET / CIL](./languages/dotnet.md)
 - [Native (PE / ELF / Mach-O / NE)](./languages/native.md)
   - [Native decompile](./languages/native-decompile.md)
+  - [Verify a native reconstruction](./languages/native-verify.md)
   - [Native unpacking and devirtualization](./languages/native-unpack.md)
   - [PE resources](./languages/pe-resources.md)
 - [Go](./languages/go.md)
