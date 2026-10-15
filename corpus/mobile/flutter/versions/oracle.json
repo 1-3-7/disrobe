@@ -1,0 +1,244 @@
+{
+  "source": "receipt_validator.dart",
+  "application_library": "org-dartlang-fixture:///receipt_validator.dart",
+  "known_classes": [
+    "FixtureApp",
+    "ReceiptValidator"
+  ],
+  "known_methods": [
+    {
+      "name": "FixtureApp.build",
+      "parameter_count": 1
+    },
+    {
+      "name": "ReceiptValidator.computeChecksum",
+      "parameter_count": 1
+    },
+    {
+      "name": "ReceiptValidator.formatReceipt",
+      "parameter_count": 1
+    }
+  ],
+  "known_fields": [
+    "ReceiptValidator.merchantTag",
+    "ReceiptValidator.modulus"
+  ],
+  "releases": [
+    {
+      "dart_version": "3.11.5",
+      "dart_revision": "c70f78e7d682c158c15ca0c26c729b3ccb932284",
+      "flutter_version": "3.41.9",
+      "engine_revision": "42d3d75a56efe1a2e9902f52dc8006099c45d937",
+      "snapshot_compatibility_hash": "78da37fed6bf1489361a312568249f3f",
+      "relabel_as": "3.8.1",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.11.5/receipt_validator_arm64.so",
+          "sha256": "135abe71ba547179210286c0a114eef4ed7bd818a4e02a4f28bcb1ee4d41a775",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers",
+          "cluster_report": "dart-3.11.5/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.11.5/receipt_validator_obfuscated_arm64.so",
+          "sha256": "8c6833a9bbef0d6a5905388feb5045ebbda4f2a845b7e7d597804215e08452ba",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers",
+          "cluster_report": "dart-3.11.5/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.10.9",
+      "dart_revision": "7c8a3e077e8a3c6209c865301aada26e9fde764a",
+      "flutter_version": "3.38.10",
+      "engine_revision": "cafcda5721a78a7884db92f13c5e89f7643d52dd",
+      "snapshot_compatibility_hash": "1ce86630892e2dca9a8543fdb8ed8e22",
+      "relabel_as": "3.8.1",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.10.9/receipt_validator_arm64.so",
+          "sha256": "a387ecfbbe1746492331fa386dccae93874fc94af91a25200679c0b8810a1d13",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
+          "cluster_report": "dart-3.10.9/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.10.9/receipt_validator_obfuscated_arm64.so",
+          "sha256": "db9e77e85ae63d9446c85aff0c3d0dda31823a2432021fdcc6adac23fc7543c3",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
+          "cluster_report": "dart-3.10.9/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.9.2",
+      "dart_revision": "a29e08c72e2ce21813c1edf50cbcdfcac7a7acdd",
+      "flutter_version": "3.35.7",
+      "engine_revision": "035316565ad77281a75305515e4682e6c4c6f7ca",
+      "snapshot_compatibility_hash": "97ff04a728735e6b6b098bdf983faaba",
+      "relabel_as": "3.8.1",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.9.2/receipt_validator_arm64.so",
+          "sha256": "772cfb4c1b2be3ed5d534efb03beb207fe0c507f227a532d812e8eb0bd2eb241",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
+          "cluster_report": "dart-3.9.2/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.9.2/receipt_validator_obfuscated_arm64.so",
+          "sha256": "6344d5500bf0e11215b25b3eab3c9d52c562281151cae8f2481cd8f4c598286f",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
+          "cluster_report": "dart-3.9.2/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.8.1",
+      "dart_revision": "05589740efb305ceef593b3db6cab2910c17d480",
+      "flutter_version": "3.32.8",
+      "engine_revision": "ef0cd000916d64fa0c5d09cc809fa7ad244a5767",
+      "snapshot_compatibility_hash": "830f4f59e7969c70b595182826435c19",
+      "relabel_as": "3.9.2",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.8.1/receipt_validator_arm64.so",
+          "sha256": "db7467d2750fe11fc903871e05c68a31b573f5454e4dff8c9c333b9b43168b91",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.8.1/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.8.1/receipt_validator_obfuscated_arm64.so",
+          "sha256": "d5ffa1c0a613897114d99d86610b141df705c60323b8c2722b1fb4a6701d62bd",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.8.1/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.7.2",
+      "dart_revision": "9594995093f642957b780603c6435d9e7a61b923",
+      "flutter_version": "3.29.3",
+      "engine_revision": "cf56914b326edb0ccb123ffdc60f00060bd513fa",
+      "snapshot_compatibility_hash": "d91c0e6f35f0eb2e44124e8f42aa44a7",
+      "relabel_as": "3.5.4",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.7.2/receipt_validator_arm64.so",
+          "sha256": "7116fca077c3449c714730e3557eaad7c87129ee123f04abcc21ba484e94cd44",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.7.2/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.7.2/receipt_validator_obfuscated_arm64.so",
+          "sha256": "c297ed93643555205cbb4cbdf844e3e3d28decdecbb7e1557cf6752cde105eda",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.7.2/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.6.2",
+      "dart_revision": "42f3fc1c648bc66e56c822a95e6139bb116020c3",
+      "flutter_version": "3.27.4",
+      "engine_revision": "82bd5b7209295a5b7ff8cae0df96e7870171e3a5",
+      "snapshot_compatibility_hash": "f956f595844a2f845a55707faaaa51e4",
+      "relabel_as": "3.5.4",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.6.2/receipt_validator_arm64.so",
+          "sha256": "d2c08303d97ded35b1771dccaaa508cb1502ce305193cd0e86dacea712774c0c",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.6.2/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.6.2/receipt_validator_obfuscated_arm64.so",
+          "sha256": "e9d0e425a7958d513e0c5335edc4ab5314d5b4c1e74d6a64e26722ab1b5d915b",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.6.2/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.5.4",
+      "dart_revision": "88c9758ef131d430d8ce595c6bfb4c90574d3ddd",
+      "flutter_version": "3.24.5",
+      "engine_revision": "a18df97ca57a249df5d8d68cd0820600223ce262",
+      "snapshot_compatibility_hash": "80a49c7111088100a233b2ae788e1f48",
+      "relabel_as": "3.6.2",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.5.4/receipt_validator_arm64.so",
+          "sha256": "cb0233705335b08512fca36a83d731a5f34e918121b08045602ccf5a2212c969",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.5.4/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.5.4/receipt_validator_obfuscated_arm64.so",
+          "sha256": "fc7861c6a1b404aa00ad047634268b4f5e6d9e47f76affaa22158e108bd6665f",
+          "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+          "cluster_report": "dart-3.5.4/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.4.4",
+      "dart_revision": "60465149414572c8ca189d8f65fdb39795c4b97d",
+      "flutter_version": "3.22.3",
+      "engine_revision": "235db911ba279722f5e685f38b0ed30fa7e8570a",
+      "snapshot_compatibility_hash": "d20a1be77c3d3c41b2a5accaee1ce549",
+      "relabel_as": "3.3.4",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.4.4/receipt_validator_arm64.so",
+          "sha256": "74af4303ffb108f5aaab5af18b5a9c4d45ec3a2b8f596ba9e23903c20d713273",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
+          "cluster_report": "dart-3.4.4/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.4.4/receipt_validator_obfuscated_arm64.so",
+          "sha256": "9f87ded8804796ce08284d9095809f0bf08206feec2a2a4286d9b5e1483d8bc4",
+          "features": "product no-code_comments dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
+          "cluster_report": "dart-3.4.4/clusters_obfuscated.txt"
+        }
+      ]
+    },
+    {
+      "dart_version": "3.3.4",
+      "dart_revision": "d70d99a911b3316ca0d442caaf24fe57afe59893",
+      "flutter_version": "3.19.6",
+      "engine_revision": "c4cd48e186460b32d44585ce3c103271ab676355",
+      "snapshot_compatibility_hash": "ee1eb666c76a5cb7746faf39d0b97547",
+      "relabel_as": "3.4.4",
+      "builds": [
+        {
+          "name": "source",
+          "artifact": "dart-3.3.4/receipt_validator_arm64.so",
+          "sha256": "4da8672f41eae5e939eb63c7a94e5adc79cd4d0ac428f75d98b1bed49cd1ac4d",
+          "features": "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
+          "cluster_report": "dart-3.3.4/clusters.txt"
+        },
+        {
+          "name": "obfuscated",
+          "artifact": "dart-3.3.4/receipt_validator_obfuscated_arm64.so",
+          "sha256": "65513d120f97fb0f9d274bac2f1212e78a99ea8689834e087b48638a3de6acf6",
+          "features": "product no-code_comments dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
+          "cluster_report": "dart-3.3.4/clusters_obfuscated.txt"
+        }
+      ]
+    }
+  ]
+}

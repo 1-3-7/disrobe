@@ -24,12 +24,12 @@ Real RustDesk 1.4.9 Android build. lib/arm64-v8a/libapp.so (12190624 bytes) and
 lib/arm64-v8a/libflutter.so (10714752 bytes) are read directly out of this APK zip by
 crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs, which grades the RAW static
 recovery path (ARM64 frame-prologue function boundaries, isolate-data class and method
-name strings, an independent whole-file `package:*.dart` uri oracle). This build's Dart
-snapshot version does not match the Dart 3.12.2 android-arm64 product tuple pinned in
-crates/disrobe-pass-mobile/src/flutter/dart_graph_layout.rs. The declaration-graph path
-(`flutter inventory`) correctly reports unsupported-version on it, which this file also
-grades, but it never recovers a name from this build; declaration-graph NAME recovery is
-graded separately against the pinned pinned_graph_fixture/ set. Reproduce with:
+name strings, an independent whole-file `package:*.dart` uri oracle). This build's
+snapshot is Dart 3.5 (Flutter 3.24), one of the releases
+crates/disrobe-pass-mobile/src/flutter/dart_graph_layout.rs pins, so the same file grades
+the declaration-graph path (`flutter inventory`) on it: library, class, method and field
+counts pinned by equality, and every package: library URL the walk names checked against
+the whole-file uri oracle. Reproduce with:
 mkdir -p "$TMPDIR/disrobe-scratch/rustdesk-flutter-cache" && curl -sSL -o
 "$TMPDIR/disrobe-scratch/rustdesk-flutter-cache/rustdesk-1.4.9-aarch64-signed.apk"
 "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/rustdesk-1.4.9-aarch64-signed.apk"

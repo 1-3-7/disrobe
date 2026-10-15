@@ -38,6 +38,11 @@ const PINNED_RAW_CLASS_NAME_STRINGS: usize = 10_351;
 const PINNED_RAW_METHOD_NAME_STRINGS: usize = 28_952;
 const PINNED_RAW_LIBRARY_URIS: usize = 1_489;
 const PINNED_INDEPENDENT_ORACLE_DART_URIS: usize = 1_271;
+const RUSTDESK_DART_3_5_SNAPSHOT_HASH: &str = "80a49c7111088100a233b2ae788e1f48";
+const PINNED_GRAPH_LIBRARIES: usize = 1_237;
+const PINNED_GRAPH_CLASSES: usize = 6_360;
+const PINNED_GRAPH_METHODS: usize = 29_620;
+const PINNED_GRAPH_FIELDS: usize = 1_906;
 
 fn cache_root() -> PathBuf {
     scratch_root().join("rustdesk-flutter-cache")
@@ -405,25 +410,61 @@ fn rustdesk_structured_recovery_vs_independent_uri_oracle() {
 }
 
 #[test]
-fn rustdesk_declaration_graph_reports_unsupported_version_on_a_real_unpinned_build() {
-    let bytes: Vec<u8> = match load_libapp(
-        "rustdesk_declaration_graph_reports_unsupported_version_on_a_real_unpinned_build",
-    ) {
+fn rustdesk_declaration_graph_recovers_its_dart_3_5_build() {
+    let bytes: Vec<u8> = match load_libapp("rustdesk_declaration_graph_recovers_its_dart_3_5_build")
+    {
         Some(b) => b,
         None => return,
     };
     let report: DartGraphRecoveryReport =
         recover_dart_pinned_elf(&bytes, &DartGraphRecoveryOptions::default())
-            .expect("declaration-graph recovery attempt on a real libapp.so must not error");
+            .expect("declaration-graph recovery on the real RustDesk libapp.so must not error");
+    assert_eq!(
+        report.snapshot_compatibility_hash, RUSTDESK_DART_3_5_SNAPSHOT_HASH,
+        "RustDesk {RUSTDESK_RELEASE_TAG} was built by Flutter 3.24 on Dart 3.5"
+    );
     assert_eq!(
         report.status,
-        DartGraphRecoveryStatus::UnsupportedVersion,
-        "RustDesk {RUSTDESK_RELEASE_TAG} ships a Dart snapshot version outside the pinned Dart \
-         3.12.2 android-arm64 product tuple, so the declaration-graph path (`flutter inventory`) \
-         must name that limit rather than guess at a cluster layout it has no pin for; a status \
-         other than UnsupportedVersion here means either this real build now matches the pinned \
-         tuple (update the docs) or the version fence stopped fencing"
+        DartGraphRecoveryStatus::Recovered,
+        "the Dart 3.5 android-arm64 product tuple is pinned, so the whole graph must walk"
     );
+    let declared = report.inventory.declared;
+    let residue = report.inventory.residue;
+    let counts = &report.inventory.counts;
+    assert_eq!(
+        counts.classes + residue.unattributed_classes,
+        declared.classes
+    );
+    assert_eq!(
+        counts.methods + residue.unattributed_methods,
+        declared.functions
+    );
+    assert_eq!(counts.fields + residue.unattributed_fields, declared.fields);
+    assert_eq!(
+        counts.libraries,
+        declared.libraries + residue.synthesized_libraries
+    );
+    let independent: std::collections::BTreeSet<String> = independent_uri_oracle(&bytes);
+    let package_urls: Vec<&str> = report
+        .inventory
+        .libraries
+        .iter()
+        .filter_map(
+            |library: &disrobe_pass_mobile::DartPinnedLibraryInventory| library.url.as_deref(),
+        )
+        .filter(|url: &&str| url.starts_with("package:"))
+        .collect();
+    assert!(package_urls.contains(&"package:flutter_hbb/main.dart"));
+    for url in &package_urls {
+        assert!(
+            independent.contains(*url),
+            "the walk named library {url}, which the whole-file string scan never saw"
+        );
+    }
+    assert_eq!(counts.libraries, PINNED_GRAPH_LIBRARIES);
+    assert_eq!(counts.classes, PINNED_GRAPH_CLASSES);
+    assert_eq!(counts.methods, PINNED_GRAPH_METHODS);
+    assert_eq!(counts.fields, PINNED_GRAPH_FIELDS);
 }
 
 fn corpus_manifest_path() -> PathBuf {

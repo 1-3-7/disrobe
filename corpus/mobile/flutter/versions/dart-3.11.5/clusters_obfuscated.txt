@@ -1,0 +1,112 @@
+Snapshot 0x00000000000000c8 (914), Data 0x00000000000005d0 (0): Alloc String (909)
+Snapshot 0x000000000000045a (7), Data 0x00000000000005d0 (0): Alloc int (2)
+Snapshot 0x0000000000000461 (179), Data 0x00000000000005d0 (0): Alloc Code (173)
+Snapshot 0x0000000000000514 (4), Data 0x00000000000005d0 (0): Alloc Function (1)
+Snapshot 0x0000000000000518 (6), Data 0x00000000000005d0 (0): Alloc WeakArray (1)
+Snapshot 0x000000000000051e (4), Data 0x00000000000005d0 (0): Alloc FunctionType (1)
+Snapshot 0x0000000000000522 (9118): Fill String
+Snapshot 0x00000000000028c0 (0): Fill int
+Snapshot 0x00000000000028c0 (1212): Fill Code
+Snapshot 0x0000000000002d7c (11): Fill Function
+Snapshot 0x0000000000002d87 (2935): Fill WeakArray
+Snapshot 0x00000000000038fe (11): Fill FunctionType
+Snapshot 0x00000000000000c9 (3063), Data 0x0000000000007680 (0): Alloc String (1519)
+Snapshot 0x0000000000000cc0 (5190), Data 0x0000000000007680 (0): Alloc int (1104)
+Snapshot 0x0000000000002106 (4), Data 0x0000000000007680 (0): Alloc double (1)
+Snapshot 0x000000000000210a (32), Data 0x0000000000007680 (0): Alloc TypeParameter (25)
+Snapshot 0x000000000000212a (220), Data 0x0000000000007680 (0): Alloc Type (543)
+Snapshot 0x0000000000002206 (181), Data 0x0000000000007680 (0): Alloc TypeArguments (87)
+Snapshot 0x00000000000022bb (345), Data 0x0000000000007680 (0): Alloc Code (339)
+Snapshot 0x0000000000002414 (5), Data 0x0000000000007680 (0): Alloc Function (480)
+Snapshot 0x0000000000002419 (4), Data 0x0000000000007680 (0): Alloc Closure (14)
+Snapshot 0x000000000000241d (358), Data 0x0000000000007680 (0): Alloc FunctionType (350)
+Snapshot 0x0000000000002583 (4), Data 0x0000000000007680 (0): Alloc Map (1)
+Snapshot 0x0000000000002587 (5), Data 0x0000000000007680 (0): Alloc Array (1)
+Snapshot 0x000000000000258c (35), Data 0x0000000000007680 (0): Alloc Array (28)
+Snapshot 0x00000000000025af (6), Data 0x0000000000007680 (0): Alloc Instance (3)
+Snapshot 0x00000000000025b5 (6), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025bb (6), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025c1 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025c8 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025cf (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025d6 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025dd (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025e4 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025eb (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025f2 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x00000000000025f9 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x0000000000002600 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x0000000000002607 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x000000000000260e (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x0000000000002615 (228), Data 0x0000000000007680 (0): Alloc Class (496)
+Snapshot 0x00000000000026f9 (4), Data 0x0000000000007680 (0): Alloc PatchClass (79)
+Snapshot 0x00000000000026fd (5), Data 0x0000000000007680 (0): Alloc TypeParameters (142)
+Snapshot 0x0000000000002702 (4), Data 0x0000000000007680 (0): Alloc ClosureData (117)
+Snapshot 0x0000000000002706 (4), Data 0x0000000000007680 (0): Alloc Field (93)
+Snapshot 0x000000000000270a (5), Data 0x0000000000007680 (0): Alloc Script (158)
+Snapshot 0x000000000000270f (4), Data 0x0000000000007680 (0): Alloc Library (22)
+Snapshot 0x0000000000002713 (6), Data 0x0000000000007680 (0): Alloc WeakArray (2)
+Snapshot 0x0000000000002719 (6), Data 0x0000000000007680 (0): Alloc ObjectPool (1)
+Snapshot 0x000000000000271f (27), Data 0x0000000000007680 (0): Alloc PcDescriptors (23)
+Snapshot 0x000000000000273a (28), Data 0x0000000000007680 (0): Alloc ExceptionHandlers (24)
+Snapshot 0x0000000000002756 (4), Data 0x0000000000007680 (0): Alloc UnlinkedCall (4)
+Snapshot 0x000000000000275a (4), Data 0x0000000000007680 (0): Alloc SubtypeTestCache (20)
+Snapshot 0x000000000000275e (4), Data 0x0000000000007680 (0): Alloc LoadingUnit (1)
+Snapshot 0x0000000000002762 (4), Data 0x0000000000007680 (0): Alloc Closure (1)
+Snapshot 0x0000000000002766 (1015), Data 0x0000000000007680 (0): Alloc Array (1007)
+Snapshot 0x0000000000002b5d (4), Data 0x0000000000007680 (0): Alloc GrowableObjectArray (2)
+Snapshot 0x0000000000002b61 (26), Data 0x0000000000007680 (0): Alloc String (22)
+Snapshot 0x0000000000002b7b (27), Data 0x0000000000007680 (0): Alloc TypedData (23)
+Snapshot 0x0000000000002b96 (5), Data 0x0000000000007680 (0): Alloc TypedData (1)
+Snapshot 0x0000000000002b9b (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x0000000000002ba2 (7), Data 0x0000000000007680 (0): Alloc Instance (1)
+Snapshot 0x0000000000002ba9 (26488): Fill String
+Snapshot 0x0000000000009321 (0): Fill int
+Snapshot 0x0000000000009321 (1): Fill double
+Snapshot 0x0000000000009322 (225): Fill TypeParameter
+Snapshot 0x0000000000009403 (3986): Fill Type
+Snapshot 0x000000000000a395 (909): Fill TypeArguments
+Snapshot 0x000000000000a722 (2824): Fill Code
+Snapshot 0x000000000000b22a (6945): Fill Function
+Snapshot 0x000000000000cd4b (98): Fill Closure
+Snapshot 0x000000000000cdad (4468): Fill FunctionType
+Snapshot 0x000000000000df21 (10): Fill Map
+Snapshot 0x000000000000df2b (2): Fill Array
+Snapshot 0x000000000000df2d (1524): Fill Array
+Snapshot 0x000000000000e521 (13): Fill Instance
+Snapshot 0x000000000000e52e (1): Fill Instance
+Snapshot 0x000000000000e52f (9): Fill Instance
+Snapshot 0x000000000000e538 (5): Fill Instance
+Snapshot 0x000000000000e53d (5): Fill Instance
+Snapshot 0x000000000000e542 (5): Fill Instance
+Snapshot 0x000000000000e547 (4): Fill Instance
+Snapshot 0x000000000000e54b (3): Fill Instance
+Snapshot 0x000000000000e54e (4): Fill Instance
+Snapshot 0x000000000000e552 (1): Fill Instance
+Snapshot 0x000000000000e553 (1): Fill Instance
+Snapshot 0x000000000000e554 (3): Fill Instance
+Snapshot 0x000000000000e557 (7): Fill Instance
+Snapshot 0x000000000000e55e (7): Fill Instance
+Snapshot 0x000000000000e565 (5): Fill Instance
+Snapshot 0x000000000000e56a (14718): Fill Class
+Snapshot 0x0000000000011ee8 (316): Fill PatchClass
+Snapshot 0x0000000000012024 (862): Fill TypeParameters
+Snapshot 0x0000000000012382 (638): Fill ClosureData
+Snapshot 0x0000000000012600 (1097): Fill Field
+Snapshot 0x0000000000012a49 (578): Fill Script
+Snapshot 0x0000000000012c8b (440): Fill Library
+Snapshot 0x0000000000012e43 (26): Fill WeakArray
+Snapshot 0x0000000000012e5d (3510): Fill ObjectPool
+Snapshot 0x0000000000013c13 (182): Fill PcDescriptors
+Snapshot 0x0000000000013cc9 (228): Fill ExceptionHandlers
+Snapshot 0x0000000000013dad (16): Fill UnlinkedCall
+Snapshot 0x0000000000013dbd (60): Fill SubtypeTestCache
+Snapshot 0x0000000000013df9 (2): Fill LoadingUnit
+Snapshot 0x0000000000013dfb (7): Fill Closure
+Snapshot 0x0000000000013e02 (6869): Fill Array
+Snapshot 0x00000000000158d7 (9): Fill GrowableObjectArray
+Snapshot 0x00000000000158e0 (210): Fill String
+Snapshot 0x00000000000159b2 (317): Fill TypedData
+Snapshot 0x0000000000015aef (5): Fill TypedData
+Snapshot 0x0000000000015af4 (1): Fill Instance
+Snapshot 0x0000000000015af5 (1): Fill Instance

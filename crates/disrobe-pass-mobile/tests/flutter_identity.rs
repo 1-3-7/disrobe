@@ -17,6 +17,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 const ENGINE_PREREQUISITE: &str = "disrobe-pass-mobile::flutter-engine-3.44.6";
+const DART_3_2_SNAPSHOT_HASH: &str = "f71c76320d35b65f1164dbaa6d95fe09";
 const ENGINE_JAR_NAME: &str =
     "arm64_v8a_release-1.0.0-83675ed27633283e7fc296c8bca22e841224c096.jar";
 const ENGINE_JAR_URL: &str = "https://storage.googleapis.com/download.flutter.io/io/flutter/arm64_v8a_release/1.0.0-83675ed27633283e7fc296c8bca22e841224c096/arm64_v8a_release-1.0.0-83675ed27633283e7fc296c8bca22e841224c096.jar";
@@ -180,7 +181,7 @@ fn a_changed_snapshot_hash_claims_no_sdk() {
 fn an_unpinned_snapshot_names_its_dart_release_when_recovery_refuses() {
     let reference: Value = json("identity/reference.json");
     let hash: &str = text(&reference, "snapshot_hash");
-    let other: &str = text(&reference, "other_snapshot_hash");
+    let other: &str = DART_3_2_SNAPSHOT_HASH;
     let mut bytes: Vec<u8> = read(REAL_LIBRARIES[0]);
     let mut at: usize = 0;
     while let Some(found) = bytes[at..]
@@ -197,7 +198,7 @@ fn an_unpinned_snapshot_names_its_dart_release_when_recovery_refuses() {
     assert!(
         report
             .name_mode_reason
-            .ends_with("(Dart 3.5.0, 3.5.1, 3.5.2, 3.5.3, 3.5.4)"),
+            .ends_with("(Dart 3.2.0, 3.2.1, 3.2.2, 3.2.3, 3.2.4, 3.2.5, 3.2.6)"),
         "{}",
         report.name_mode_reason
     );
@@ -206,7 +207,12 @@ fn an_unpinned_snapshot_names_its_dart_release_when_recovery_refuses() {
         .into_iter()
         .map(|release: DartSdkRelease| release.dart_version)
         .collect();
-    assert_eq!(versions, ["3.5.0", "3.5.1", "3.5.2", "3.5.3", "3.5.4"]);
+    assert_eq!(
+        versions,
+        [
+            "3.2.0", "3.2.1", "3.2.2", "3.2.3", "3.2.4", "3.2.5", "3.2.6"
+        ]
+    );
 }
 
 #[test]

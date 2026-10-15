@@ -1,0 +1,307 @@
+schema = "disrobe-corpus-v1"
+category = "mobile.flutter.versions"
+target_crate = "disrobe-pass-mobile"
+generated = "2026-10-15"
+notes = """
+Self-authored Dart AOT snapshots, one per Dart minor release that Flutter stable shipped
+from Flutter 3.19 (Dart 3.3) to Flutter 3.41 (Dart 3.11). receipt_validator.dart is the
+pinned_graph_fixture source with the Flutter widget replaced by a plain main, so it needs
+only the Dart SDK. Each release is compiled twice from the same kernel by the official
+Flutter engine android-arm64-release gen_snapshot of that Flutter release: plain, and the
+way `flutter build apk --obfuscate --split-debug-info` compiles (DWARF stack traces,
+obfuscation, stripped ELF). The toolchains are the published archives below, fetched by URL
+and checked against the sha256 recorded here (the Dart SDK archive also against its
+published .sha256sum, the engine archive against its storage md5). They compile only this
+source; no third-party code is built or committed. build.sh rebuilds every artifact.
+clusters*.txt is what gen_snapshot --print_cluster_information wrote to stderr for that
+build: the VM snapshot and then the isolate snapshot, each cluster's allocation and fill
+offset, size and object count. tests/dart_graph_releases.rs grades disrobe's cluster walk
+against it. The snapshot hash and feature tuple of every build are read from the ELF.
+"""
+kernel_command = "dartaotruntime bin/snapshots/gen_kernel_aot.dart.snapshot --platform <platform_dill> --aot -Ddart.vm.product=true --filesystem-scheme org-dartlang-fixture --filesystem-root <directory holding receipt_validator.dart> -o receipt_validator.aot.dill org-dartlang-fixture:///receipt_validator.dart"
+
+[[fixture]]
+name = "receipt_validator.dart"
+path = "receipt_validator.dart"
+kind = "dart-source"
+provenance = "self-authored"
+sha256 = "a9fe56bd23c434e5f6d3ca58f4ed501266e9c51dcb852861e0cf1a15af4eff09"
+
+[[release]]
+dart_version = "3.11.5"
+dart_revision = "c70f78e7d682c158c15ca0c26c729b3ccb932284"
+flutter_version = "3.41.9"
+engine_revision = "42d3d75a56efe1a2e9902f52dc8006099c45d937"
+snapshot_compatibility_hash = "78da37fed6bf1489361a312568249f3f"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.11.5/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "044b9c58f45c7e8b67467395eaad469f67cd8797a73fbd1d2bb8a89a53b2dcba"
+dartaotruntime_sha256 = "31a09f8ae9b377be3697228ed53896a0a91707f055d2386f0f1516364595bbe2"
+gen_kernel_aot_sha256 = "1939ed2ab6becd27ea950d74ef97e3eaa3c2bbff55195cd5d6d9511638840121"
+platform_dill = "lib/_internal/vm_platform_product.dill"
+platform_dill_sha256 = "3a94837247f9c37df6d0ac7599a25a6b967777601e60fd0cc4d61a046f8fa991"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/42d3d75a56efe1a2e9902f52dc8006099c45d937/android-arm64-release/windows-x64.zip"
+engine_sha256 = "0b5f342509454ebc8ac26b43d013a811e0f2bba11f346f27189a2635a1a5c25a"
+gen_snapshot_sha256 = "a3f10617d96939e0684bbe69bb7002deeeb45b09c9c28ef962ea0549cd75fe74"
+kernel_sha256 = "a9754ce4ff64a25e520aca069cb5ba1ea92696e99ad57e8ac05e8985aa66376a"
+
+[[release.build]]
+name = "source"
+path = "dart-3.11.5/receipt_validator_arm64.so"
+sha256 = "135abe71ba547179210286c0a114eef4ed7bd818a4e02a4f28bcb1ee4d41a775"
+cluster_report = "dart-3.11.5/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.11.5/receipt_validator_obfuscated_arm64.so"
+sha256 = "8c6833a9bbef0d6a5905388feb5045ebbda4f2a845b7e7d597804215e08452ba"
+cluster_report = "dart-3.11.5/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.10.9"
+dart_revision = "7c8a3e077e8a3c6209c865301aada26e9fde764a"
+flutter_version = "3.38.10"
+engine_revision = "cafcda5721a78a7884db92f13c5e89f7643d52dd"
+snapshot_compatibility_hash = "1ce86630892e2dca9a8543fdb8ed8e22"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.10.9/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "f3a9bbcce80384ed431376262beade4c67d8cd1de232a6eef49817cad6cb3fa7"
+dartaotruntime_sha256 = "060dc4486491b23799c945804dd8ec981bf4c5d5a17fa7eb82c7689bfcf9f357"
+gen_kernel_aot_sha256 = "1acb97ee9ffb8aa7783c92dab716cb8d8f4ddd5217655a939c4e48e97a0d15c1"
+platform_dill = "lib/_internal/vm_platform_product.dill"
+platform_dill_sha256 = "4dc48b92f6d6ad886d73e8cf7fe478df0b075b253e820005b3de9c1e11b42320"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/cafcda5721a78a7884db92f13c5e89f7643d52dd/android-arm64-release/windows-x64.zip"
+engine_sha256 = "af407c541d7a2ffcc6c84a29394a05263f8f6fd5a07c6d08bfe539cfc77a3cae"
+gen_snapshot_sha256 = "77f525fa15b0e252a511936861574c90413d4839498db83bb8c7b42ffaa3e9e6"
+kernel_sha256 = "96affdec0516e74da2ed7e9feeda722f8e92457cb47e4139a9aa97e7c249d9e6"
+
+[[release.build]]
+name = "source"
+path = "dart-3.10.9/receipt_validator_arm64.so"
+sha256 = "a387ecfbbe1746492331fa386dccae93874fc94af91a25200679c0b8810a1d13"
+cluster_report = "dart-3.10.9/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.10.9/receipt_validator_obfuscated_arm64.so"
+sha256 = "db9e77e85ae63d9446c85aff0c3d0dda31823a2432021fdcc6adac23fc7543c3"
+cluster_report = "dart-3.10.9/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.9.2"
+dart_revision = "a29e08c72e2ce21813c1edf50cbcdfcac7a7acdd"
+flutter_version = "3.35.7"
+engine_revision = "035316565ad77281a75305515e4682e6c4c6f7ca"
+snapshot_compatibility_hash = "97ff04a728735e6b6b098bdf983faaba"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.9.2/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "f46190c90cb0842f7274c71b42db07c51607291c8fdb0c078f05b6fbc23b2da3"
+dartaotruntime_sha256 = "c7c057f3f27656aceb27e9e9ed6c1e33e6fd93e3862577f33d49be52a5675fa4"
+gen_kernel_aot_sha256 = "adc5b79e76a4ad411a1ffb1c5c0eec0622e0dafdf44494160f385a0d0c5751ed"
+platform_dill = "lib/_internal/vm_platform_product.dill"
+platform_dill_sha256 = "8a624601100caa20215dc0c24899f7c202132a406c5e5197be7e4f0cbe3b0e17"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/035316565ad77281a75305515e4682e6c4c6f7ca/android-arm64-release/windows-x64.zip"
+engine_sha256 = "5ebb65dd6057bf32e79ff235bc2b06212f83c93084f6025804b0ee727fc7f2ee"
+gen_snapshot_sha256 = "e499e41ed01401dfc85d25748c436f425997144cf7ad7d8f0b3caeca13b110c6"
+kernel_sha256 = "5441021ed123c64af3814d318141c6f10566686920b00d73f2eb4d76940ef573"
+
+[[release.build]]
+name = "source"
+path = "dart-3.9.2/receipt_validator_arm64.so"
+sha256 = "772cfb4c1b2be3ed5d534efb03beb207fe0c507f227a532d812e8eb0bd2eb241"
+cluster_report = "dart-3.9.2/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.9.2/receipt_validator_obfuscated_arm64.so"
+sha256 = "6344d5500bf0e11215b25b3eab3c9d52c562281151cae8f2481cd8f4c598286f"
+cluster_report = "dart-3.9.2/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.8.1"
+dart_revision = "05589740efb305ceef593b3db6cab2910c17d480"
+flutter_version = "3.32.8"
+engine_revision = "ef0cd000916d64fa0c5d09cc809fa7ad244a5767"
+snapshot_compatibility_hash = "830f4f59e7969c70b595182826435c19"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.8.1/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "ea9a316616b7892707cb3837ac1ca0622df841e61ccd5a5dc6547deda67c1441"
+dartaotruntime_sha256 = "5242e132221008d4254097d22a578902430b627bdd8b0ad7ac701b11da1a9c75"
+gen_kernel_aot_sha256 = "c0a8130d8bc021ea23831107ad81cd35601262e8a885cbdf4b52a05e1eb337a4"
+platform_dill = "lib/_internal/vm_platform_strong_product.dill"
+platform_dill_sha256 = "3870715ccf86b74cb77707549772ab81baaacec00e0b96e1069ce8ebe805a44c"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/ef0cd000916d64fa0c5d09cc809fa7ad244a5767/android-arm64-release/windows-x64.zip"
+engine_sha256 = "a51fd0310ce7dca6e36453c1cac4399007e4702dd576ac7dee32cc43688bd82b"
+gen_snapshot_sha256 = "21d21519e701660a465a72903fab8c0a6d03dfc5e4f27319dd2c397537160114"
+kernel_sha256 = "68c480265967213a6a596405ac8b624c2b6460bae4227c982268d1cdbe28d2fe"
+
+[[release.build]]
+name = "source"
+path = "dart-3.8.1/receipt_validator_arm64.so"
+sha256 = "db7467d2750fe11fc903871e05c68a31b573f5454e4dff8c9c333b9b43168b91"
+cluster_report = "dart-3.8.1/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.8.1/receipt_validator_obfuscated_arm64.so"
+sha256 = "d5ffa1c0a613897114d99d86610b141df705c60323b8c2722b1fb4a6701d62bd"
+cluster_report = "dart-3.8.1/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.7.2"
+dart_revision = "9594995093f642957b780603c6435d9e7a61b923"
+flutter_version = "3.29.3"
+engine_revision = "cf56914b326edb0ccb123ffdc60f00060bd513fa"
+snapshot_compatibility_hash = "d91c0e6f35f0eb2e44124e8f42aa44a7"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.7.2/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "f08efe6c7a7c3f0476353a6bb31e875edc9612d00aaa60b43dd07291e31ceab7"
+dartaotruntime_sha256 = "00f6e7cffa4792b2ae2d0e2cc8c003761b88893dab79d9232d17717b4acb854b"
+gen_kernel_aot_sha256 = "8bb84fca02566578bdb291077f0a05fa0f4878292556cbdb82500faa7b2ed188"
+platform_dill = "lib/_internal/vm_platform_strong_product.dill"
+platform_dill_sha256 = "4fcfc72109cc01b9a5fbf38676df059d70e7aeb2b0138534bb1b9f0dccbd4d32"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/cf56914b326edb0ccb123ffdc60f00060bd513fa/android-arm64-release/windows-x64.zip"
+engine_sha256 = "b3f8f06385cb42400d10769cd43d39c4d4e6390f9e7bf5e60899aeef9ceaf436"
+gen_snapshot_sha256 = "1617328f4e8e5e412481074c97f0b3cc68ba2691e738e1ef227f49611196759b"
+kernel_sha256 = "08a7bb51428e686302716420aea8518f3f11e78b51dae1e5337d9aa4d562240a"
+
+[[release.build]]
+name = "source"
+path = "dart-3.7.2/receipt_validator_arm64.so"
+sha256 = "7116fca077c3449c714730e3557eaad7c87129ee123f04abcc21ba484e94cd44"
+cluster_report = "dart-3.7.2/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.7.2/receipt_validator_obfuscated_arm64.so"
+sha256 = "c297ed93643555205cbb4cbdf844e3e3d28decdecbb7e1557cf6752cde105eda"
+cluster_report = "dart-3.7.2/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.6.2"
+dart_revision = "42f3fc1c648bc66e56c822a95e6139bb116020c3"
+flutter_version = "3.27.4"
+engine_revision = "82bd5b7209295a5b7ff8cae0df96e7870171e3a5"
+snapshot_compatibility_hash = "f956f595844a2f845a55707faaaa51e4"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.6.2/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "9effb4316e77903b118de6784835c73eafbdb2e7c01c3ad000f24e06daa92254"
+dartaotruntime_sha256 = "d9d0e3b2841175ff365b9967bdc0b9fd666e804d3a7d620eee9c1b55f31681f9"
+gen_kernel_aot_sha256 = "b3777badc3a0d19c7fceb28ef7d03223494f7293433c98080cb1bbf55a5182e5"
+platform_dill = "lib/_internal/vm_platform_strong_product.dill"
+platform_dill_sha256 = "b591662afd7fd2b97de79d63f8a4327921c8aae72457fc176c0f6ad0e2bcb460"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/82bd5b7209295a5b7ff8cae0df96e7870171e3a5/android-arm64-release/windows-x64.zip"
+engine_sha256 = "8fb97e4ddb9264f0c2c008244b69642c66fc7d805b3e23092843f9aeeaa44692"
+gen_snapshot_sha256 = "f75206e5310bc84f4632999035579985c78cf943172285ffac7612e7e6386cb4"
+kernel_sha256 = "29eda510fbf449571b351994b98d02cdf89f2a449403d189ede876fd7df4f272"
+
+[[release.build]]
+name = "source"
+path = "dart-3.6.2/receipt_validator_arm64.so"
+sha256 = "d2c08303d97ded35b1771dccaaa508cb1502ce305193cd0e86dacea712774c0c"
+cluster_report = "dart-3.6.2/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.6.2/receipt_validator_obfuscated_arm64.so"
+sha256 = "e9d0e425a7958d513e0c5335edc4ab5314d5b4c1e74d6a64e26722ab1b5d915b"
+cluster_report = "dart-3.6.2/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.5.4"
+dart_revision = "88c9758ef131d430d8ce595c6bfb4c90574d3ddd"
+flutter_version = "3.24.5"
+engine_revision = "a18df97ca57a249df5d8d68cd0820600223ce262"
+snapshot_compatibility_hash = "80a49c7111088100a233b2ae788e1f48"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.5.4/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "f506de8f479a0da9fb6f5d3bc4c8daa5a850fc766d1919bd426feff1e1d5f245"
+dartaotruntime_sha256 = "17b6f029fc5b32354489ca75ef3e6e75d3cb2db2a7565df77a011a2d77d03fb0"
+gen_kernel_aot_sha256 = "c9381283896eb56ac339813bcd8f0809721f6c47a075513cfa6b644fa4e621b1"
+platform_dill = "lib/_internal/vm_platform_strong_product.dill"
+platform_dill_sha256 = "cd2276866ad719ef315d667c4b639a1c93c2031ce376c14579e781bfddc5123a"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/a18df97ca57a249df5d8d68cd0820600223ce262/android-arm64-release/windows-x64.zip"
+engine_sha256 = "33332d69c002b51fcaca7318bc3016fda998c522dbda49a90358e18d8dfa97a1"
+gen_snapshot_sha256 = "c5c8d94f7e818c83ef801c11bbdf8d3bf26771cfe419c0ad1e42c59aef19d39b"
+kernel_sha256 = "5f6b236145675f57287655c80807729187165749eea809b07c534ef0983ff8b7"
+
+[[release.build]]
+name = "source"
+path = "dart-3.5.4/receipt_validator_arm64.so"
+sha256 = "cb0233705335b08512fca36a83d731a5f34e918121b08045602ccf5a2212c969"
+cluster_report = "dart-3.5.4/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.5.4/receipt_validator_obfuscated_arm64.so"
+sha256 = "fc7861c6a1b404aa00ad047634268b4f5e6d9e47f76affaa22158e108bd6665f"
+cluster_report = "dart-3.5.4/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.4.4"
+dart_revision = "60465149414572c8ca189d8f65fdb39795c4b97d"
+flutter_version = "3.22.3"
+engine_revision = "235db911ba279722f5e685f38b0ed30fa7e8570a"
+snapshot_compatibility_hash = "d20a1be77c3d3c41b2a5accaee1ce549"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.4.4/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "81f8dae963aa13a97b0111e08bc5b2986de83e24d63094058ed5e2085f35d087"
+dartaotruntime_sha256 = "38bcbe2f23ae7b0847e8a5a018301c5ea19b6643eda740a36ace28a98b8fc7e2"
+gen_kernel_aot_sha256 = "795614b1474e8128096012325af5b1238c798cd8564ef906d53a5b9f5deb69df"
+platform_dill = "lib/_internal/vm_platform_strong_product.dill"
+platform_dill_sha256 = "1d9302fa0dd48c49016e90552368bd3d36871a12a6ef4b5c3752922175e539fc"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/235db911ba279722f5e685f38b0ed30fa7e8570a/android-arm64-release/windows-x64.zip"
+engine_sha256 = "099a6536f8af72f007016d2a1b8769a045dbbf7f5a3825be7b84745d0d9272a2"
+gen_snapshot_sha256 = "fecaee743d98f68aef5d476cce6acdedd9e548207da87f91c70aee807fb9cefb"
+kernel_sha256 = "4469f868e4b8b964254e62226ee99eba9d3d48e5be4bf46790a126a91595b0b0"
+
+[[release.build]]
+name = "source"
+path = "dart-3.4.4/receipt_validator_arm64.so"
+sha256 = "74af4303ffb108f5aaab5af18b5a9c4d45ec3a2b8f596ba9e23903c20d713273"
+cluster_report = "dart-3.4.4/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.4.4/receipt_validator_obfuscated_arm64.so"
+sha256 = "9f87ded8804796ce08284d9095809f0bf08206feec2a2a4286d9b5e1483d8bc4"
+cluster_report = "dart-3.4.4/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
+
+[[release]]
+dart_version = "3.3.4"
+dart_revision = "d70d99a911b3316ca0d442caaf24fe57afe59893"
+flutter_version = "3.19.6"
+engine_revision = "c4cd48e186460b32d44585ce3c103271ab676355"
+snapshot_compatibility_hash = "ee1eb666c76a5cb7746faf39d0b97547"
+dart_sdk_url = "https://storage.googleapis.com/dart-archive/channels/stable/release/3.3.4/sdk/dartsdk-windows-x64-release.zip"
+dart_sdk_sha256 = "fb65fbc4c7c001118264e79c3f7594c1086398b7c66b829a5edd96c210dd0b65"
+dartaotruntime_sha256 = "b9d68629136871d14f368ab8cf53dae70ea344bce1be17ab42556a58c5103a02"
+gen_kernel_aot_sha256 = "723372ef7cd4dac257466c0727b0b31d6a30fd2a9206646132867df6f3369226"
+platform_dill = "lib/_internal/vm_platform_strong_product.dill"
+platform_dill_sha256 = "dcd3eb66749e35d611761926641bfdd823a9f5685bfa333c76467be89c1e676b"
+engine_url = "https://storage.googleapis.com/flutter_infra_release/flutter/c4cd48e186460b32d44585ce3c103271ab676355/android-arm64-release/windows-x64.zip"
+engine_sha256 = "d3440d5a206a0759e45c6aef5853aab99721bc4a4690dfd9702c48ef30a575bd"
+gen_snapshot_sha256 = "6d03ea0f8dd2a348b430ecfd4d3085bb905fd0d86d52a3089b62e509f8e23e22"
+kernel_sha256 = "05425c4fdaf6c8575c01c8205370a21c94fa1f70e84eedb8140ae7ad2c55695d"
+
+[[release.build]]
+name = "source"
+path = "dart-3.3.4/receipt_validator_arm64.so"
+sha256 = "4da8672f41eae5e939eb63c7a94e5adc79cd4d0ac428f75d98b1bed49cd1ac4d"
+cluster_report = "dart-3.3.4/clusters.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_arm64.so --print_cluster_information receipt_validator.aot.dill"
+
+[[release.build]]
+name = "obfuscated"
+path = "dart-3.3.4/receipt_validator_obfuscated_arm64.so"
+sha256 = "65513d120f97fb0f9d274bac2f1212e78a99ea8689834e087b48638a3de6acf6"
+cluster_report = "dart-3.3.4/clusters_obfuscated.txt"
+command = "gen_snapshot --deterministic --snapshot_kind=app-aot-elf --elf=receipt_validator_obfuscated_arm64.so --print_cluster_information --dwarf-stack-traces --strip --save-debugging-info=app.android-arm64.symbols --obfuscate --save-obfuscation-map=obfuscation_map.json receipt_validator.aot.dill"
