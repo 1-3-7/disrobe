@@ -78,6 +78,7 @@ impl AstBuilder for DefaultAstBuilder {
             build_frame(code, &frame_tree.root, &stream.ops)?
         };
         loops::verify_recovered_loops(&stream, &raw_body)?;
+        verify_emittable_scope(&raw_body)?;
         let stripped: Vec<Stmt> =
             strip_module_implicit_return(strip_module_docstring_stmt(raw_body, code));
         let mut postprocessed: Vec<Stmt> = postprocess_body(stripped, BodyKind::Module);
@@ -90,6 +91,63 @@ impl AstBuilder for DefaultAstBuilder {
             blank_lines: std::collections::BTreeMap::new(),
         })
     }
+}
+
+fn verify_emittable_scope(body: &[Stmt]) -> Result<()> {
+    for stmt in body {
+        match stmt {
+            Stmt::If { body, orelse, .. }
+            | Stmt::For { body, orelse, .. }
+            | Stmt::While { body, orelse, .. } => {
+                verify_emittable_scope(body)?;
+                verify_emittable_scope(orelse)?;
+            }
+            Stmt::With { body, .. } => verify_emittable_scope(body)?,
+            Stmt::Try {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            }
+            | Stmt::TryStar {
+                body,
+                handlers,
+                orelse,
+                finalbody,
+                ..
+            } => {
+                if handlers.is_empty() && finalbody.is_empty() {
+                    return Err(DecompileError::AstDesync {
+                        offset: 0,
+                        reason:
+                            "try statement has neither an exception handler nor a finally clause"
+                                .to_owned(),
+                    });
+                }
+                if handlers.is_empty() && !orelse.is_empty() {
+                    return Err(DecompileError::AstDesync {
+                        offset: 0,
+                        reason: "try statement has an else clause without an exception handler"
+                            .to_owned(),
+                    });
+                }
+                verify_emittable_scope(body)?;
+                for handler in handlers {
+                    verify_emittable_scope(&handler.body)?;
+                }
+                verify_emittable_scope(orelse)?;
+                verify_emittable_scope(finalbody)?;
+            }
+            Stmt::Match { cases, .. } => {
+                for case in cases {
+                    verify_emittable_scope(&case.body)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn legacy_loop_module_route(version: &PyVersion, root: &Frame) -> bool {

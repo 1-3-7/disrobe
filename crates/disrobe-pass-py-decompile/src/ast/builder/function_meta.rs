@@ -17,7 +17,7 @@ use super::try_with::{cold_section_start, is_forward_cond_jump};
 use super::{
     CodeObjDepthGuard, DecodedStream, NestedCodeScope, class_docstring, decode_stream,
     decode_stream_with_offsets, enter_codeobj_depth, extract_docstring, future_annotations_active,
-    pick_nested_version, record_stubbed_scope,
+    pick_nested_version, record_stubbed_scope, verify_emittable_scope,
 };
 use crate::ast::node::{Arguments, ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::{CanonicalOp, CmpOp, OpcodeMap, is_deref_local, map_for};
@@ -309,13 +309,21 @@ pub(super) fn try_build_class_def(
             Ok(stream) => {
                 let structured: Result<Vec<Stmt>> = {
                     let _code_scope: NestedCodeScope = NestedCodeScope::enter();
-                    structure_stmts(nested, &stream, 0, stream.ops.len())
+                    structure_stmts(nested, &stream, 0, stream.ops.len()).and_then(
+                        |body: Vec<Stmt>| {
+                            verify_recovered_loops(&stream, &body)?;
+                            verify_emittable_scope(&body)?;
+                            Ok(body)
+                        },
+                    )
                 };
-                let body: Vec<Stmt> = structured.unwrap_or_else(|_refused: DecompileError| {
-                    record_stubbed_scope(nested);
-                    Vec::new()
-                });
-                (body, class_docstring(nested, &stream.ops))
+                match structured {
+                    Ok(body) => (body, class_docstring(nested, &stream.ops)),
+                    Err(err) => {
+                        record_stubbed_scope(nested);
+                        (Vec::new(), Some(format!("decompile-error: {err}")))
+                    }
+                }
             }
             Err(err) => {
                 record_stubbed_scope(nested);
@@ -2181,6 +2189,7 @@ pub(super) fn build_nested_function_def(
         let _code_scope: NestedCodeScope = NestedCodeScope::enter();
         structure_stmts(nested, &stream, 0, stream.ops.len()).and_then(|body: Vec<Stmt>| {
             verify_recovered_loops(&stream, &body)?;
+            verify_emittable_scope(&body)?;
             Ok(body)
         })
     };
