@@ -23,3 +23,4 @@ mod simd_devirt_oracle;
 mod stack_string_oracle;
 mod vm_devirt_oracle;
 mod vm_layout_generator_grade;
+mod x86_32_decompile_behaviour;

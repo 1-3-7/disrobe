@@ -1,0 +1,137 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "clang 19.1.7 and LLD 19.1.7 (LLVM release); gcc 16.2.0 (MSYS2 ucrt64 Rev3, x86_64-w64-mingw32 driver with -m32) and LLD 19.1.7; Microsoft C/C++ Optimizing Compiler 19.44.35229 for x86 and Microsoft Incremental Linker 14.44.35229.0 (MSVC 14.44.35207, Windows SDK 10.0.26100.0); clang 19.1.7 and LLD 19.1.7 targeting i386-unknown-linux-gnu"
+note = "self-authored C built for x86-32 with four toolchains at three optimisation levels; graded by crates/disrobe-pass-native/tests/oracles/x86_32_decompile_behaviour.rs, which compiles the recovered C with clang for i686-pc-windows-msvc and calls it beside the original function (the PE DLL loaded at its preferred base, the ELF image mapped at its link address) on 1000 generated inputs"
+
+[provenance]
+environment = "each build runs in a fresh temporary directory holding only the source; INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 x86 directories for cl and link; no CRT or libc is linked (link and lld-link run with /NOENTRY /NODEFAULTLIB, and ld.lld is given only the object), and the fixed base 0x10000000 lets the recovered C and the original share absolute addresses"
+reproducible = "rebuilding with the per-fixture build commands yields the same bytes (/Brepro, /brepro, --build-id=none); no debug information or host path is embedded"
+
+[[fixture]]
+name = "conventions.c"
+path = "conventions.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "057fd3baf71669c282dd55f08f254f5f1839d1328a262b6f307fb7a10e1b5d20"
+description = "integer functions under each x86-32 convention: cdecl leaves and callers, 64-bit add, subtract and widening multiply returned in edx:eax, stdcall callees and their caller, fastcall callees and their caller, thiscall methods over a struct and their caller (attribute builds only), PC-relative globals, and two floating-point functions whose x87 return is refused"
+
+[[fixture]]
+name = "conventions_clang_o0.dll"
+path = "conventions_clang_o0.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "clang --target=i686-pc-windows-msvc -O0 -fno-stack-protector -c conventions.c -o conventions.obj && lld-link /nologo /dll /noentry /nodefaultlib /dynamicbase:no /base:0x10000000 /brepro /opt:ref /opt:noicf /out:conventions_clang_o0.dll conventions.obj"
+sha256 = "743ca36a93eb7a4512ddad004babd6157cf3cf8ced874510002d0f07febae28e"
+description = "the clang i686-pc-windows-msvc -O0 PE DLL build of conventions.c"
+
+[[fixture]]
+name = "conventions_gcc_o0.dll"
+path = "conventions_gcc_o0.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "gcc -m32 -O0 -fno-stack-protector -fno-asynchronous-unwind-tables -c conventions.c -o conventions.o && lld-link /lldmingw /nologo /dll /noentry /nodefaultlib /dynamicbase:no /base:0x10000000 /brepro /opt:ref /opt:noicf /out:conventions_gcc_o0.dll conventions.o"
+sha256 = "1aa6987f3d7d3c987680090fcf3d41f952ca4aad14a74224af9cb52dc0e94f65"
+description = "the gcc -m32 -O0 PE DLL build of conventions.c, linked by lld-link in MinGW mode"
+
+[[fixture]]
+name = "conventions_msvc_o0.dll"
+path = "conventions_msvc_o0.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "cl /nologo /c /Od /GS- /Gy /Brepro /Foconventions.obj conventions.c && link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x10000000 /Brepro /OPT:REF /OPT:NOICF /OUT:conventions_msvc_o0.dll conventions.obj"
+sha256 = "671226621ee0da9ad067c0e3a2edf1bd0912935d6ff89c6552539d876617ed34"
+description = "the MSVC x86 /Od PE DLL build of conventions.c (no thiscall cases: MSVC accepts __thiscall only on C++ members)"
+
+[[fixture]]
+name = "conventions_elf_o0.so"
+path = "conventions_elf_o0.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "conventions.c"
+build = "clang --target=i386-unknown-linux-gnu -O0 -fPIC -fno-stack-protector -fno-asynchronous-unwind-tables -c conventions.c -o conventions.o && ld.lld -shared -Bsymbolic --image-base=0x10000000 --hash-style=sysv --build-id=none -z norelro -o conventions_elf_o0.so conventions.o"
+sha256 = "be8f4e53ba81129e6e3f6bebbd692665ef2de8745e04f27b9d2c779325c3dd36"
+description = "the clang i386 -O0 -fPIC ELF shared object build of conventions.c, linked -Bsymbolic at 0x10000000 so only R_386_RELATIVE relocations remain"
+
+[[fixture]]
+name = "conventions_clang_o1.dll"
+path = "conventions_clang_o1.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "clang --target=i686-pc-windows-msvc -O1 -fno-stack-protector -c conventions.c -o conventions.obj && lld-link /nologo /dll /noentry /nodefaultlib /dynamicbase:no /base:0x10000000 /brepro /opt:ref /opt:noicf /out:conventions_clang_o1.dll conventions.obj"
+sha256 = "65869797fa4776daecf4c8be8a3e91c03ac0af32253c9c691efb86d8da23f0ec"
+description = "the clang i686-pc-windows-msvc -O1 PE DLL build of conventions.c"
+
+[[fixture]]
+name = "conventions_gcc_o1.dll"
+path = "conventions_gcc_o1.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "gcc -m32 -O1 -fno-stack-protector -fno-asynchronous-unwind-tables -c conventions.c -o conventions.o && lld-link /lldmingw /nologo /dll /noentry /nodefaultlib /dynamicbase:no /base:0x10000000 /brepro /opt:ref /opt:noicf /out:conventions_gcc_o1.dll conventions.o"
+sha256 = "3c8099527a3e8bab7aca3a1ea2c84121d45e4f0720e2a4f3eb450d6163c532c7"
+description = "the gcc -m32 -O1 PE DLL build of conventions.c, linked by lld-link in MinGW mode"
+
+[[fixture]]
+name = "conventions_msvc_o1.dll"
+path = "conventions_msvc_o1.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "cl /nologo /c /O1 /GS- /Gy /Brepro /Foconventions.obj conventions.c && link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x10000000 /Brepro /OPT:REF /OPT:NOICF /OUT:conventions_msvc_o1.dll conventions.obj"
+sha256 = "74ea498ebc3e086ab6e6ed03750c855d031c9814dd1107623f69f88a121061cd"
+description = "the MSVC x86 /O1 PE DLL build of conventions.c (no thiscall cases: MSVC accepts __thiscall only on C++ members)"
+
+[[fixture]]
+name = "conventions_elf_o1.so"
+path = "conventions_elf_o1.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "conventions.c"
+build = "clang --target=i386-unknown-linux-gnu -O1 -fPIC -fno-stack-protector -fno-asynchronous-unwind-tables -c conventions.c -o conventions.o && ld.lld -shared -Bsymbolic --image-base=0x10000000 --hash-style=sysv --build-id=none -z norelro -o conventions_elf_o1.so conventions.o"
+sha256 = "c5be13ce3f9e486b2b5b95d55c4d517102b3dc64e074ba4e4c3a890fbdc6b2f5"
+description = "the clang i386 -O1 -fPIC ELF shared object build of conventions.c, linked -Bsymbolic at 0x10000000 so only R_386_RELATIVE relocations remain"
+
+[[fixture]]
+name = "conventions_clang_o2.dll"
+path = "conventions_clang_o2.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "clang --target=i686-pc-windows-msvc -O2 -fno-stack-protector -c conventions.c -o conventions.obj && lld-link /nologo /dll /noentry /nodefaultlib /dynamicbase:no /base:0x10000000 /brepro /opt:ref /opt:noicf /out:conventions_clang_o2.dll conventions.obj"
+sha256 = "ab97a556976e111bf11db41df22159fe4df5e2da319d701a7be0e17ac21becf4"
+description = "the clang i686-pc-windows-msvc -O2 PE DLL build of conventions.c"
+
+[[fixture]]
+name = "conventions_gcc_o2.dll"
+path = "conventions_gcc_o2.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "gcc -m32 -O2 -fno-stack-protector -fno-asynchronous-unwind-tables -c conventions.c -o conventions.o && lld-link /lldmingw /nologo /dll /noentry /nodefaultlib /dynamicbase:no /base:0x10000000 /brepro /opt:ref /opt:noicf /out:conventions_gcc_o2.dll conventions.o"
+sha256 = "4c5f38f03de8607c0612ae2b182ad3bf2bb84712d5f967157338bbfd3f1fe438"
+description = "the gcc -m32 -O2 PE DLL build of conventions.c, linked by lld-link in MinGW mode"
+
+[[fixture]]
+name = "conventions_msvc_o2.dll"
+path = "conventions_msvc_o2.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "conventions.c"
+build = "cl /nologo /c /O2 /GS- /Gy /Brepro /Foconventions.obj conventions.c && link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x10000000 /Brepro /OPT:REF /OPT:NOICF /OUT:conventions_msvc_o2.dll conventions.obj"
+sha256 = "6a85ada286ae15c52ef19f8d6474b515416e528abc7561d564b86a6209959557"
+description = "the MSVC x86 /O2 PE DLL build of conventions.c (no thiscall cases: MSVC accepts __thiscall only on C++ members)"
+
+[[fixture]]
+name = "conventions_elf_o2.so"
+path = "conventions_elf_o2.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "conventions.c"
+build = "clang --target=i386-unknown-linux-gnu -O2 -fPIC -fno-stack-protector -fno-asynchronous-unwind-tables -c conventions.c -o conventions.o && ld.lld -shared -Bsymbolic --image-base=0x10000000 --hash-style=sysv --build-id=none -z norelro -o conventions_elf_o2.so conventions.o"
+sha256 = "a82ad74d5f23b93d1bb140ae9ae35572f93710fa2c544a1bed2eadeca0fd7c00"
+description = "the clang i386 -O2 -fPIC ELF shared object build of conventions.c, linked -Bsymbolic at 0x10000000 so only R_386_RELATIVE relocations remain"

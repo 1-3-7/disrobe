@@ -1,0 +1,47 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "Microsoft C/C++ Optimizing Compiler 19.44.35229 for x86 and Microsoft Incremental Linker 14.44.35229.0 (MSVC 14.44.35207, Windows SDK 10.0.26100.0)"
+note = "self-authored C++ whose member functions MSVC compiles as __thiscall (this in ecx, callee-popped stack arguments); graded by crates/disrobe-pass-native/tests/oracles/x86_32_decompile_behaviour.rs"
+
+[provenance]
+environment = "each build runs in a fresh temporary directory holding only the source; INCLUDE and LIB point at the MSVC 14.44.35207 and Windows SDK 10.0.26100.0 x86 directories; no CRT is linked"
+reproducible = "rebuilding with the per-fixture build commands yields the same bytes (/Brepro); no debug information or host path is embedded"
+
+[[fixture]]
+name = "thiscall_msvc.cpp"
+path = "thiscall_msvc.cpp"
+kind = "cpp-source"
+provenance = "self-authored"
+sha256 = "fc1a96bfd13b3c2e661bd13f720057285a03a83953e5685da99f1b230dd3a9f1"
+description = "a dllexport struct whose member functions are MSVC __thiscall: a getter, a mutator, a method that calls both, and a three-argument method"
+
+[[fixture]]
+name = "thiscall_msvc_o0.dll"
+path = "thiscall_msvc_o0.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "thiscall_msvc.cpp"
+build = "cl /nologo /c /Od /GS- /GR- /Gy /Brepro /Fothiscall_msvc.obj thiscall_msvc.cpp && link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x10000000 /Brepro /OPT:REF /OPT:NOICF /OUT:thiscall_msvc_o0.dll thiscall_msvc.obj"
+sha256 = "2ee2acc38935aef6fc8ee0756ed9c2e4370781fda87d46d4e1f98fcec0c61611"
+description = "the MSVC x86 /Od PE DLL build of thiscall_msvc.cpp; exports the member functions under their MSVC decorated names"
+
+[[fixture]]
+name = "thiscall_msvc_o1.dll"
+path = "thiscall_msvc_o1.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "thiscall_msvc.cpp"
+build = "cl /nologo /c /O1 /GS- /GR- /Gy /Brepro /Fothiscall_msvc.obj thiscall_msvc.cpp && link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x10000000 /Brepro /OPT:REF /OPT:NOICF /OUT:thiscall_msvc_o1.dll thiscall_msvc.obj"
+sha256 = "67549e09c06a7af505f009a31f96bfa1e96d953234453bcaa9b196528d2fc10f"
+description = "the MSVC x86 /O1 PE DLL build of thiscall_msvc.cpp; exports the member functions under their MSVC decorated names"
+
+[[fixture]]
+name = "thiscall_msvc_o2.dll"
+path = "thiscall_msvc_o2.dll"
+kind = "pe-dll"
+provenance = "real"
+source = "thiscall_msvc.cpp"
+build = "cl /nologo /c /O2 /GS- /GR- /Gy /Brepro /Fothiscall_msvc.obj thiscall_msvc.cpp && link /nologo /DLL /NOENTRY /NODEFAULTLIB /DYNAMICBASE:NO /BASE:0x10000000 /Brepro /OPT:REF /OPT:NOICF /OUT:thiscall_msvc_o2.dll thiscall_msvc.obj"
+sha256 = "8ce822cbeb4f666e7156ab9aea34620815a4b50b135fe2f571b2ce6615712e14"
+description = "the MSVC x86 /O2 PE DLL build of thiscall_msvc.cpp; exports the member functions under their MSVC decorated names"

@@ -1,0 +1,27 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "clang 19.1.7 and LLD 19.1.7 targeting i386-unknown-linux-gnu"
+note = "gcc emits __x86.get_pc_thunk.* for i386 PIC but no i386-linux gcc is installed on the build host, so the thunk shape is authored in assembly and assembled with clang; graded by crates/disrobe-pass-native/tests/oracles/x86_32_decompile_behaviour.rs"
+
+[provenance]
+environment = "assembled and linked in a fresh temporary directory holding only the source"
+reproducible = "rebuilding with the build command yields the same bytes (--build-id=none)"
+
+[[fixture]]
+name = "pic_thunk.S"
+path = "pic_thunk.S"
+kind = "asm-source"
+provenance = "self-authored"
+sha256 = "14494a83ab03887e63e827545f8156326f55afb7961bd0d5368ab0610b02b3a6"
+description = "gcc-style position-independent i386 code written by hand: __x86.get_pc_thunk.bx and .cx thunks followed by add _GLOBAL_OFFSET_TABLE_, a GOTOFF-indexed table read, a GOT-slot load of a global, and the call/pop idiom in esi"
+
+[[fixture]]
+name = "pic_thunk.so"
+path = "pic_thunk.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "pic_thunk.S"
+build = "clang --target=i386-unknown-linux-gnu -c pic_thunk.S -o pic_thunk.o && ld.lld -shared -Bsymbolic --image-base=0x10000000 --hash-style=sysv --build-id=none -z norelro -o pic_thunk.so pic_thunk.o"
+sha256 = "ce0b2078c978ef043a4d98faf0fc8e646bc7ef0aaca941255e31ed2f99a4b8dc"
+description = "the shared object assembled and linked from pic_thunk.S; exports thunk_table_pick, thunk_bump and thunk_call_pop"

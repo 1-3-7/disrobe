@@ -35,7 +35,9 @@ pub(super) fn object_compiler(compiler: &str, abi: PseudoAbi) -> (String, Vec<&'
     let ms_abi: bool = match abi {
         PseudoAbi::MsX64 => true,
         PseudoAbi::SysV => false,
-        PseudoAbi::Aapcs64 => panic!("AAPCS64 is not an x86 oracle ABI"),
+        PseudoAbi::Aapcs64 | PseudoAbi::I386 => {
+            panic!("{abi:?} is not an x86-64 object-compiler ABI")
+        }
     };
     let family: &str = if compiler == "cc" {
         cc_family()

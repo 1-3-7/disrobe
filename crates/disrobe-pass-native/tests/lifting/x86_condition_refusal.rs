@@ -107,16 +107,18 @@ enum Setter {
     TestSelf,
     TestMask,
     And,
+    Shl,
     Ucomisd,
 }
 
-const ALL_SETTERS: [Setter; 7] = [
+const ALL_SETTERS: [Setter; 8] = [
     Setter::CmpImm,
     Setter::CmpMem,
     Setter::Add,
     Setter::TestSelf,
     Setter::TestMask,
     Setter::And,
+    Setter::Shl,
     Setter::Ucomisd,
 ];
 
@@ -129,6 +131,7 @@ impl Setter {
             Self::TestSelf => &[0x85, 0xff],
             Self::TestMask => &[0xf7, 0xc7, 0x10, 0x00, 0x00, 0x00],
             Self::And => &[0x21, 0xf7],
+            Self::Shl => &[0xd1, 0xe7],
             Self::Ucomisd => &[0x66, 0x0f, 0x2e, 0xc1],
         }
     }
@@ -143,7 +146,7 @@ impl Setter {
                 }
             }
             _ if cc.parity() => Some(PARITY),
-            Self::CmpImm | Self::CmpMem | Self::TestSelf => None,
+            Self::CmpImm | Self::CmpMem | Self::TestSelf | Self::And => None,
             Self::Add => {
                 if cc.signed_order() {
                     Some(SIGNED_AFTER_ADD)
@@ -158,7 +161,7 @@ impl Setter {
                     Some(MASKED_TEST)
                 }
             }
-            Self::And => {
+            Self::Shl => {
                 if cc.sign_or_zero() {
                     None
                 } else {
@@ -240,6 +243,6 @@ fn every_x86_condition_code_is_admitted_or_refused_by_name() {
             }
         }
     }
-    assert_eq!(refused, 138);
-    assert_eq!(rendered, 198);
+    assert_eq!(refused, 144);
+    assert_eq!(rendered, 240);
 }
