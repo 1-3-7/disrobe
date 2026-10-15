@@ -1,0 +1,137 @@
+{
+  "files": {
+    "files/branches.Medium.lua": "0b8d9cb67c335cd00f9e24f5ac229716f76d9c1eca783a6a1effbecccb9db964",
+    "files/branches.Minify.lua": "4cb10e5546371543823126ea0e135e5b613b82ee26f1a14145d5ebf024fb02d0",
+    "files/branches.Strong.lua": "06858739959bc7cbb0572b87bfbacb627f456e302731812d24078402007cc4a7",
+    "files/branches.Weak.lua": "1f339eb0d26d8ad941a36dbd62fd3258514ee89afd6ab207598cfe395d2fe1db",
+    "files/loops.Medium.lua": "0d1424ef1d0d71c6c6ec3a8a89d9d01c272dc02459a9f8cc56e1422aa38d9df1",
+    "files/loops.Minify.lua": "340dea3b04de945380789a690f8736bd2d84edd535abbad8465eaf0f5373add5",
+    "files/loops.Strong.lua": "1fa84149bde889deddda07ff813578b29d1b194e7d72c98a305ddb818695e1bd",
+    "files/loops.Weak.lua": "7f7dd8665233fd4155b68cb6c7082a39b0f72dcf3edb9ba54583ea1d87ff6cf6",
+    "files/values.Medium.lua": "880ece34f1026e36f2fc0bc66a9f5ab5fb4c9e426ccdeb447838cabee6709958",
+    "files/values.Minify.lua": "57295b10e3a6fcba45486916ff89a29a1ee1666f37f029715f13acc5788d56ce",
+    "files/values.Strong.lua": "3b93ee3cbac1c7bfad4a5df569e2fba6498afa2f42ec05bd38bd0f892c5fa71d",
+    "files/values.Weak.lua": "9c664bc6c44f7e76f05826900859a7f4ba16f3482975f0272f498c1f4a312edf"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "lua5.1 cli.lua --preset Minify --Lua51 values.lua",
+      "input": "corpus/lua/behaviour/values.lua",
+      "input_sha256": "883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1",
+      "output": "files/values.Minify.lua",
+      "output_bytes": 1628,
+      "output_sha256": "57295b10e3a6fcba45486916ff89a29a1ee1666f37f029715f13acc5788d56ce"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Weak --Lua51 values.lua",
+      "input": "corpus/lua/behaviour/values.lua",
+      "input_sha256": "883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1",
+      "output": "files/values.Weak.lua",
+      "output_bytes": 11419,
+      "output_sha256": "9c664bc6c44f7e76f05826900859a7f4ba16f3482975f0272f498c1f4a312edf"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Medium --Lua51 values.lua",
+      "input": "corpus/lua/behaviour/values.lua",
+      "input_sha256": "883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1",
+      "output": "files/values.Medium.lua",
+      "output_bytes": 35856,
+      "output_sha256": "880ece34f1026e36f2fc0bc66a9f5ab5fb4c9e426ccdeb447838cabee6709958"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Strong --Lua51 values.lua",
+      "input": "corpus/lua/behaviour/values.lua",
+      "input_sha256": "883ca464a064cdc00abe2517d8c038e57b46e66f0e1b3c5583f3d2e1eb56eef1",
+      "output": "files/values.Strong.lua",
+      "output_bytes": 135414,
+      "output_sha256": "3b93ee3cbac1c7bfad4a5df569e2fba6498afa2f42ec05bd38bd0f892c5fa71d"
+    },
+    {
+      "behaviour": "same",
+      "command": "lua5.1 cli.lua --preset Minify --Lua51 loops.lua",
+      "input": "corpus/lua/behaviour/loops.lua",
+      "input_sha256": "399617080981e32f366a623b2dde9632c6b0707ff2ed4b711bed3448fa9d6510",
+      "output": "files/loops.Minify.lua",
+      "output_bytes": 2458,
+      "output_sha256": "340dea3b04de945380789a690f8736bd2d84edd535abbad8465eaf0f5373add5"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Weak --Lua51 loops.lua",
+      "input": "corpus/lua/behaviour/loops.lua",
+      "input_sha256": "399617080981e32f366a623b2dde9632c6b0707ff2ed4b711bed3448fa9d6510",
+      "output": "files/loops.Weak.lua",
+      "output_bytes": 13852,
+      "output_sha256": "7f7dd8665233fd4155b68cb6c7082a39b0f72dcf3edb9ba54583ea1d87ff6cf6"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Medium --Lua51 loops.lua",
+      "input": "corpus/lua/behaviour/loops.lua",
+      "input_sha256": "399617080981e32f366a623b2dde9632c6b0707ff2ed4b711bed3448fa9d6510",
+      "output": "files/loops.Medium.lua",
+      "output_bytes": 39967,
+      "output_sha256": "0d1424ef1d0d71c6c6ec3a8a89d9d01c272dc02459a9f8cc56e1422aa38d9df1"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Strong --Lua51 loops.lua",
+      "input": "corpus/lua/behaviour/loops.lua",
+      "input_sha256": "399617080981e32f366a623b2dde9632c6b0707ff2ed4b711bed3448fa9d6510",
+      "output": "files/loops.Strong.lua",
+      "output_bytes": 168299,
+      "output_sha256": "1fa84149bde889deddda07ff813578b29d1b194e7d72c98a305ddb818695e1bd"
+    },
+    {
+      "behaviour": "same",
+      "command": "lua5.1 cli.lua --preset Minify --Lua51 branches.lua",
+      "input": "corpus/lua/behaviour/branches.lua",
+      "input_sha256": "e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c",
+      "output": "files/branches.Minify.lua",
+      "output_bytes": 928,
+      "output_sha256": "4cb10e5546371543823126ea0e135e5b613b82ee26f1a14145d5ebf024fb02d0"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Weak --Lua51 branches.lua",
+      "input": "corpus/lua/behaviour/branches.lua",
+      "input_sha256": "e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c",
+      "output": "files/branches.Weak.lua",
+      "output_bytes": 8090,
+      "output_sha256": "1f339eb0d26d8ad941a36dbd62fd3258514ee89afd6ab207598cfe395d2fe1db"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Medium --Lua51 branches.lua",
+      "input": "corpus/lua/behaviour/branches.lua",
+      "input_sha256": "e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c",
+      "output": "files/branches.Medium.lua",
+      "output_bytes": 31163,
+      "output_sha256": "0b8d9cb67c335cd00f9e24f5ac229716f76d9c1eca783a6a1effbecccb9db964"
+    },
+    {
+      "behaviour": "differs",
+      "command": "lua5.1 cli.lua --preset Strong --Lua51 branches.lua",
+      "input": "corpus/lua/behaviour/branches.lua",
+      "input_sha256": "e55be8b42b9930e233ae0b514fa2b558b29916ba416bc7de33eea4d1717a537c",
+      "output": "files/branches.Strong.lua",
+      "output_bytes": 83284,
+      "output_sha256": "06858739959bc7cbb0572b87bfbacb627f456e302731812d24078402007cc4a7"
+    }
+  ],
+  "recipe": "prometheus",
+  "repository_commit": "d0d19f673fe2af953c1c5ef67609fcbba55f9ece",
+  "runner_image": "ubuntu24 20261012.334.1",
+  "tool": {
+    "commit": "a4efc5f381c50ae2a111bdbb9272fa3203685be3",
+    "name": "Prometheus",
+    "runtime": "Lua 5.1.5  Copyright (C) 1994-2012 Lua.org, PUC-Rio",
+    "tree": "c5433ac4c87ae4ee72eb94c1207a45d2d91e2403",
+    "url": "https://github.com/prometheus-lua/Prometheus"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/38688972687"
+}
