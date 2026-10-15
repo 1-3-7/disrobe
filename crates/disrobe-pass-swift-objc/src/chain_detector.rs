@@ -21,6 +21,8 @@ use crate::macho::{
 };
 use crate::pass::{SwiftObjcReport, analyze as analyze_swift_objc};
 
+pub use crate::archive_pass::{APPLE_ARCHIVE_PASS, PASS_ID as APPLE_ARCHIVE_PASS_ID};
+
 pub const PASS_ID: PassId = "swift-objc.classify";
 
 const TAG_MACHO_SLICE32: &str = "macho-slice-32";
