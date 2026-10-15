@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.XIB" version="3.0" toolsVersion="23504" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES">
+    <dependencies>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="23506"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <objects>
+        <placeholder placeholderIdentifier="IBFilesOwner" id="-1" userLabel="File's Owner" customClass="SettingsCell" customModule="Fixture">
+            <connections>
+                <outlet property="nameField" destination="fld-01-bbb" id="out-01-bbb"/>
+                <outletCollection property="valueLabels" destination="lbl-01-bbb" id="col-01-bbb"/>
+                <outletCollection property="valueLabels" destination="lbl-02-bbb" id="col-02-bbb"/>
+            </connections>
+        </placeholder>
+        <placeholder placeholderIdentifier="IBFirstResponder" id="-2" customClass="UIResponder"/>
+        <tableViewCell contentMode="scaleToFill" selectionStyle="default" indentationWidth="10" reuseIdentifier="SettingsCell" id="cell-0-bbb" customClass="SettingsCellView" customModule="Fixture">
+            <rect key="frame" x="0.0" y="0.0" width="390" height="64"/>
+            <autoresizingMask key="autoresizingMask"/>
+            <tableViewCellContentView key="contentView" opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="center" tableViewCell="cell-0-bbb" id="cnt-0-bbb">
+                <rect key="frame" x="0.0" y="0.0" width="390" height="64"/>
+                <autoresizingMask key="autoresizingMask"/>
+                <subviews>
+                    <textField opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="left" contentVerticalAlignment="center" borderStyle="roundedRect" placeholder="Name" textAlignment="natural" minimumFontSize="17" translatesAutoresizingMaskIntoConstraints="NO" id="fld-01-bbb">
+                        <rect key="frame" x="16" y="8" width="200" height="34"/>
+                        <fontDescription key="fontDescription" type="system" pointSize="14"/>
+                        <textInputTraits key="textInputTraits"/>
+                        <connections>
+                            <action selector="nameEdited:" destination="-1" eventType="editingDidEnd" id="act-01-bbb"/>
+                        </connections>
+                    </textField>
+                    <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="First value" textAlignment="natural" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="lbl-01-bbb">
+                        <rect key="frame" x="230" y="8" width="140" height="21"/>
+                        <fontDescription key="fontDescription" type="system" pointSize="15"/>
+                        <nil key="textColor"/>
+                        <nil key="highlightedColor"/>
+                    </label>
+                    <label opaque="NO" userInteractionEnabled="NO" contentMode="left" text="Second value" textAlignment="natural" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="lbl-02-bbb">
+                        <rect key="frame" x="230" y="35" width="140" height="21"/>
+                        <fontDescription key="fontDescription" type="system" pointSize="15"/>
+                        <nil key="textColor"/>
+                        <nil key="highlightedColor"/>
+                    </label>
+                </subviews>
+                <constraints>
+                    <constraint firstItem="fld-01-bbb" firstAttribute="leading" secondItem="cnt-0-bbb" secondAttribute="leading" constant="16" id="con-01-bbb"/>
+                    <constraint firstItem="fld-01-bbb" firstAttribute="top" secondItem="cnt-0-bbb" secondAttribute="top" constant="8" id="con-02-bbb"/>
+                    <constraint firstItem="lbl-01-bbb" firstAttribute="leading" secondItem="fld-01-bbb" secondAttribute="trailing" constant="14" id="con-03-bbb"/>
+                    <constraint firstItem="lbl-01-bbb" firstAttribute="top" secondItem="fld-01-bbb" secondAttribute="top" id="con-04-bbb"/>
+                    <constraint firstItem="lbl-02-bbb" firstAttribute="leading" secondItem="lbl-01-bbb" secondAttribute="leading" id="con-05-bbb"/>
+                    <constraint firstItem="lbl-02-bbb" firstAttribute="top" secondItem="lbl-01-bbb" secondAttribute="bottom" constant="6" id="con-06-bbb"/>
+                </constraints>
+            </tableViewCellContentView>
+        </tableViewCell>
+    </objects>
+</document>

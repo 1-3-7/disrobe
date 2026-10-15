@@ -20,13 +20,16 @@ on:
           - proguard
           - yguard
           - jsobfu
+          - prometheus
+          - linux-cores
+          - apple-formats
 
 permissions:
   contents: read
 
 jobs:
   produce:
-    runs-on: ${{ inputs.recipe == 'confuserex' && 'windows-2025' || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs.recipe == 'confuserex' && 'windows-2025' || inputs.recipe == 'apple-formats' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.recipe == 'ollvm' && 330 || 60 }}
     env:
       RECIPE: ${{ inputs.recipe }}
