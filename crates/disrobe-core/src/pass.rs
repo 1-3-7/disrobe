@@ -9,6 +9,7 @@ use crate::chain::detector::Detector;
 use crate::chain::ecosystem::{Ecosystem, ecosystem_for};
 use crate::chain::obfuscator_catalog::SupportQuality;
 use crate::error::Result as CoreResult;
+use crate::recon::ioc::Indicator;
 
 pub type PassId = &'static str;
 
@@ -131,6 +132,15 @@ pub trait Pass: Debug + Send + Sync {
         _context: PassContext<'_>,
     ) -> CoreResult<Vec<ChildArtifact>> {
         self.extract_children(input)
+    }
+
+    fn extract_children_sharing_indicators(
+        &self,
+        input: &Artifact,
+        context: PassContext<'_>,
+        _indicators: &mut Option<Vec<Indicator>>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
+        self.extract_children_with_context(input, context)
     }
 
     fn chain_metadata(&self, _input: &Artifact) -> CoreResult<BTreeMap<String, String>> {

@@ -137,6 +137,16 @@ pub trait PassRunner {
         config: &ChainConfig,
         path_hint: Option<&str>,
     ) -> Result<PassRunOutcome, String>;
+
+    fn run_returning_input(
+        &self,
+        pick: &DetectorPick,
+        bytes: Vec<u8>,
+        config: &ChainConfig,
+        path_hint: Option<&str>,
+    ) -> (Result<PassRunOutcome, String>, Option<Vec<u8>>) {
+        (self.run(pick, bytes, config, path_hint), None)
+    }
 }
 
 #[derive(Debug)]
@@ -170,6 +180,17 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         path_hint: Option<String>,
         sink: &mut dyn FnMut(&ExtractedArtifact, &[ChildHandle]),
     ) -> ChainPlan {
+        self.run_returning_seed(seed, spec, path_hint, sink).0
+    }
+
+    #[must_use]
+    pub fn run_returning_seed(
+        &self,
+        seed: Vec<u8>,
+        spec: &ChainSpec,
+        path_hint: Option<String>,
+        sink: &mut dyn FnMut(&ExtractedArtifact, &[ChildHandle]),
+    ) -> (ChainPlan, Option<Vec<u8>>) {
         let started: Instant = Instant::now();
         let mut nodes: Vec<Node> = Vec::new();
         let mut extracted: Vec<ExtractedArtifact> = Vec::new();
@@ -216,7 +237,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                 has_multiple_branches: false,
                 extracted: Vec::new(),
             };
-            return plan;
+            return (plan, Some(seed));
         }
 
         let mut queue: VecDeque<WorkItem> = VecDeque::new();
@@ -237,9 +258,12 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
 
         let mut cumulative_output_bytes: u64 = 0;
         let mut output_budget_exceeded: bool = false;
+        let mut root_pending: bool = true;
+        let mut kept_seed: Option<Vec<u8>> = None;
 
         while let Some(item) = queue.pop_front() {
             let item_started: Instant = Instant::now();
+            let is_root: bool = std::mem::take(&mut root_pending);
             if item.depth > spec.cap() {
                 if self.config.persist_children
                     && let Some(artifact) = ended_recovery(&nodes, &item)
@@ -259,6 +283,9 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     Verdict::CapReached,
                     item_started.elapsed(),
                 );
+                if is_root {
+                    kept_seed = Some(item.bytes);
+                }
                 continue;
             }
             if output_budget_exceeded {
@@ -280,6 +307,9 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     Verdict::CapReached,
                     item_started.elapsed(),
                 );
+                if is_root {
+                    kept_seed = Some(item.bytes);
+                }
                 continue;
             }
             let in_hash: [u8; 32] = blake3_of(&item.bytes);
@@ -303,6 +333,9 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     Verdict::Cycle,
                     item_started.elapsed(),
                 );
+                if is_root {
+                    kept_seed = Some(item.bytes);
+                }
                 continue;
             }
             let ctx: DetectContext<'_> = DetectContext {
@@ -342,6 +375,9 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     unclaimed,
                     item_started.elapsed(),
                 );
+                if is_root {
+                    kept_seed = Some(item.bytes);
+                }
                 continue;
             };
             let layer_id: NodeId = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
@@ -358,9 +394,16 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                     None
                 };
             let input_bytes: Vec<u8> = item.bytes;
-            let pass_run: Result<PassRunOutcome, String> =
-                self.runner
-                    .run(&pick, input_bytes, &self.config, item.path_hint.as_deref());
+            let (pass_run, returned_input): (Result<PassRunOutcome, String>, Option<Vec<u8>>) =
+                self.runner.run_returning_input(
+                    &pick,
+                    input_bytes,
+                    &self.config,
+                    item.path_hint.as_deref(),
+                );
+            if is_root {
+                kept_seed = returned_input;
+            }
             match pass_run {
                 Err(msg) => {
                     if let Some(artifact) = rescue {
@@ -854,7 +897,7 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
         });
         let total: Duration = started.elapsed();
         nodes[0].duration = Some(total);
-        ChainPlan {
+        let plan: ChainPlan = ChainPlan {
             nodes,
             root_id: 0,
             verdict: final_verdict,
@@ -864,7 +907,8 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             rejected_passes: rejected,
             has_multiple_branches,
             extracted,
-        }
+        };
+        (plan, kept_seed)
     }
 }
 
@@ -1351,6 +1395,93 @@ mod tests {
         let d: ChainDriver<'_, CountingRunner> =
             ChainDriver::new(r, &runner, ChainConfig::default());
         d.run(b"container".to_vec(), &ChainSpec::Auto { cap: 8 }, None)
+    }
+
+    #[derive(Debug)]
+    struct InputReturningRunner;
+    impl PassRunner for InputReturningRunner {
+        fn run(
+            &self,
+            pick: &DetectorPick,
+            bytes: Vec<u8>,
+            cfg: &ChainConfig,
+            path_hint: Option<&str>,
+        ) -> Result<PassRunOutcome, String> {
+            self.run_returning_input(pick, bytes, cfg, path_hint).0
+        }
+
+        fn run_returning_input(
+            &self,
+            _pick: &DetectorPick,
+            bytes: Vec<u8>,
+            _cfg: &ChainConfig,
+            _path_hint: Option<&str>,
+        ) -> (Result<PassRunOutcome, String>, Option<Vec<u8>>) {
+            let outcome: PassRunOutcome = PassRunOutcome {
+                output_bytes: STUB_ALREADY_CLEAN_SOURCE.to_vec(),
+                kind: OutputKind::Source {
+                    language: Language::Python,
+                    formatted: true,
+                },
+                duration: Duration::from_millis(1),
+                metadata: BTreeMap::new(),
+                children: Vec::new(),
+            };
+            (Ok(outcome), Some(bytes))
+        }
+    }
+
+    #[test]
+    fn the_driver_hands_the_seed_back_on_every_root_path() {
+        let r: PassRegistry = registry_with_a();
+        let runner: InputReturningRunner = InputReturningRunner;
+        let d: ChainDriver<'_, InputReturningRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let mut noop = |_: &ExtractedArtifact, _: &[ChildHandle]| {};
+        let cases: [(&[u8], ChainSpec, Option<&str>); 4] = [
+            (b"claimed", ChainSpec::Auto { cap: 8 }, Some("stub.a")),
+            (STUB_ALREADY_CLEAN_SOURCE, ChainSpec::Auto { cap: 8 }, None),
+            (b"capped", ChainSpec::Auto { cap: 0 }, None),
+            (b"planned", ChainSpec::PlanOnly { cap: 8 }, None),
+        ];
+        for (seed, spec, pass) in cases {
+            let (plan, returned): (ChainPlan, Option<Vec<u8>>) =
+                d.run_returning_seed(seed.to_vec(), &spec, None, &mut noop);
+            assert_eq!(returned.as_deref(), Some(seed), "{spec:?}");
+            assert_eq!(plan.root().input_blake3, blake3_of(seed));
+            assert_eq!(
+                plan.nodes
+                    .get(1)
+                    .and_then(|node: &Node| node.pass_id.as_deref()),
+                pass,
+                "{spec:?}: {:?}",
+                plan.verdict
+            );
+        }
+        let counting: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, bytes: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: bytes.to_vec(),
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let consuming: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &counting, ChainConfig::default());
+        let (_, returned): (ChainPlan, Option<Vec<u8>>) = consuming.run_returning_seed(
+            b"claimed".to_vec(),
+            &ChainSpec::Auto { cap: 8 },
+            None,
+            &mut noop,
+        );
+        assert_eq!(returned, None);
     }
 
     #[test]
