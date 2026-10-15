@@ -237,6 +237,9 @@ mod chain_routing_real;
 #[path = "../debug_framework.rs"]
 mod debug_framework;
 
+#[path = "../deob_defect_node_battery.rs"]
+mod deob_defect_node_battery;
+
 #[path = "../electron_nwjs.rs"]
 mod electron_nwjs;
 

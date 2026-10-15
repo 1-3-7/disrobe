@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-use disrobe_pass_js_deob::{UnminifyStats, unminify};
+use disrobe_pass_js_deob::{AstUnminifyStats, UnminifyStats, unminify, unminify_ast};
 use std::process::{Command, Output};
 
 const BATTERY: &str = r"
@@ -49,9 +49,34 @@ fn double_negation_keeps_boolean_results() {
 
 #[test]
 fn de_morgan_keeps_the_parent_precedence() {
-    assert_same_behaviour(
-        "de morgan under &&",
-        "function subject(x, y) { const z = x === y; if (!(x && y) && z) { return 1; } return 2; }",
+    let authored: &str =
+        "function subject(x, y) { const z = x === y; if (!(x && y) && z) { return 1; } return 2; }";
+    let (unminified, stats): (String, AstUnminifyStats) = unminify_ast(authored);
+    assert_eq!(stats.de_morgan_and_negations, 1, "{unminified}");
+    let before: String = run_node(&format!("{authored}\n{BATTERY}"));
+    let after: String = run_node(&format!("{unminified}\n{BATTERY}"));
+    assert_eq!(
+        before, after,
+        "de morgan under &&: unminify changed behaviour\n--- authored\n{authored}\n--- unminified\n{unminified}"
+    );
+}
+
+#[test]
+fn de_morgan_parent_precedence_mutation_turns_the_node_grade_red() {
+    let authored: &str =
+        "function subject(x, y) { const z = x === y; if (!(x && y) && z) { return 1; } return 2; }";
+    let (unminified, stats): (String, AstUnminifyStats) = unminify_ast(authored);
+    assert_eq!(stats.de_morgan_and_negations, 1, "{unminified}");
+    let mutated: String = unminified.replacen("(!x || !y) && z", "!x || !y && z", 1usize);
+    assert_ne!(
+        mutated, unminified,
+        "the recovered De Morgan expression must retain parentheses beneath &&:\n{unminified}"
+    );
+    let before: String = run_node(&format!("{authored}\n{BATTERY}"));
+    let after: String = run_node(&format!("{mutated}\n{BATTERY}"));
+    assert_ne!(
+        before, after,
+        "removing the De Morgan parent-precedence grouping must change the fixed node battery"
     );
 }
 
