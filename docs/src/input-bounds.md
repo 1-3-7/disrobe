@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2347 bounds (count 227, other 1101, output 69, recursion 234, size 529, work 187).
+2366 bounds (count 229, other 1109, output 70, recursion 236, size 533, work 189).
 
-Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassified 18, allocation 33, unused 8.
+Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -225,6 +225,7 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-binfmt` | `MAX_RESOURCE_RECORDS` | count | error: `ne_error()` | `usize` | `65_536` | `crates/disrobe-binfmt/src/ne.rs` |
 | `disrobe-binfmt` | `MAX_TOTAL_ITERATED_BYTES` | work | error: `ne_error()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-binfmt/src/ne.rs` |
 | `disrobe-binfmt` | `MAX_UNIQUE_IMPORTS` | other | error: `ne_error()` | `usize` | `65_536` | `crates/disrobe-binfmt/src/ne.rs` |
+| `disrobe-binfmt` | `MAX_ENTRIES` | count | silent: `break` in `read` | `usize` | `65_536` | `crates/disrobe-binfmt/src/pe_resources.rs` |
 | `disrobe-binfmt` | `MAX_ENTRY_COMPONENT_BYTES` | size | recorded: `note()` | `usize` | `255` | `crates/disrobe-binfmt/src/quota.rs` |
 | `disrobe-binfmt` | `MAX_ENTRY_PATH_BYTES` | size | error: `Error::Rpm` (DR-BINFMT-0017); `Error::Tar` (DR-BINFMT-0005); `malformed()` | `usize` | `4096` | `crates/disrobe-binfmt/src/quota.rs` |
 | `disrobe-binfmt` | `MAX_NOTES_PER_SEGMENT` | other | silent: `for` range in `find_build_ids` | `usize` | `1_024` | `crates/disrobe-binfmt/src/rewrite/elf.rs` |
@@ -296,6 +297,7 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-cli` | `MAX_REPORT_ANALYSIS_INPUT_BYTES` | size | error: untyped `format!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/report.rs` |
 | `disrobe-cli` | `MAX_BEHAVIOR_EVIDENCE` | other | silent: `.take()` in `render_behavior_row`; no action in `render_behavior_row` | `usize` | `6` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-cli` | `MAX_IOC_ROWS` | other | silent: `.take()` in `render_indicators`; no action in `render_indicators` | `usize` | `200` | `crates/disrobe-cli/src/cli/report_html.rs` |
+| `disrobe-cli` | `MAX_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `4 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/resources.rs` |
 | `disrobe-cli` | `DEFAULT_LISTING_LIMIT` | other | error: untyped `miette!` | `usize` | `40` | `crates/disrobe-cli/src/cli/semdiff.rs` |
 | `disrobe-cli` | `MAX_SEMDIFF_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/semdiff.rs` |
 | `disrobe-cli` | `MAX_DATABASE_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/sqlite.rs` |
@@ -916,13 +918,20 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-pass-js-deob` | `MAX_FOLD_PASSES` | other | silent: `for` range in `fold_char_constructors` | `usize` | `8` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
 | `disrobe-pass-js-deob` | `MAX_IIFE_BYTES` | size | silent: `return` in `try_fold_iife` | `usize` | `8 * 1024` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
 | `disrobe-pass-js-deob` | `MAX_RESULT_CHARS` | other | silent: `return` in `is_safe_literal_body` | `usize` | `4096` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
+| `disrobe-pass-js-deob` | `MAX_FOLDED_STRING_BYTES` | size | silent: `return` in `fold_binary` | `usize` | `4096` | `crates/disrobe-pass-js-deob/src/jsobfu/literals.rs` |
+| `disrobe-pass-js-deob` | `MAX_SAFE_INTEGER` | other | error: `ProbeRefusal::EvaluationFailed` | `f64` | `9_007_199_254_740_991.0` | `crates/disrobe-pass-js-deob/src/jsobfu/literals.rs` |
+| `disrobe-pass-js-deob` | `MAX_SETTLE_ROUNDS` | work | silent: `for` range in `settle_literals` | `usize` | `16` | `crates/disrobe-pass-js-deob/src/jsobfu/literals.rs` |
 | `disrobe-pass-js-deob` | `MAX_RECOVER_PASSES` | other | silent: `for` range in `try_recover` | `usize` | `6` | `crates/disrobe-pass-js-deob/src/jsobfu/mod.rs` |
 | `disrobe-pass-js-deob` | `MAX_PRIOR_CONFIDENCE` | other | error: `Error::AuthorizationRequired` (DR-JSDEOB-0010); `Error::NoFamilyMatched` (DR-JSDEOB-0001) | `u8` | `Confidence::LOW.0` | `crates/disrobe-pass-js-deob/src/mangled_names/corpus_source.rs` |
 | `disrobe-pass-js-deob` | `MAX_PASS_CEILING` | other | recorded: flag `hit_pass_ceiling` | `u32` | `32` | `crates/disrobe-pass-js-deob/src/obfuscator_io/dispatch.rs` |
+| `disrobe-pass-js-deob` | `MAX_CONCAT_DEPTH` | recursion | silent: `return` in `trap_literals` | `usize` | `32` | `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs` |
+| `disrobe-pass-js-deob` | `MAX_EVIDENCE_CHARS` | other | silent: `.take()` in `anchor` | `usize` | `96` | `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs` |
+| `disrobe-pass-js-deob` | `MAX_SCAN_BYTES` | size | error: `JsNeutralizeError::TooLarge` (DR-JSDEOB-0020) | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs` |
+| `disrobe-pass-js-deob` | `MAX_SITES` | other | error: `JsNeutralizeError::TooManySites` (DR-JSDEOB-0023) | `usize` | `1024` | `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs` |
 | `disrobe-pass-js-deob` | `MAX_ARRAY_BUFFER_BYTES` | size | unclassified: stored in `max_buffer_size()` with no read found | `u64` | `64 * 1_024 * 1_024` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
-| `disrobe-pass-js-deob` | `MAX_EXPRESSION_DEPTH` | recursion | error: `ProbeRefusal::UnsafeNesting` | `usize` | `28_000` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
-| `disrobe-pass-js-deob` | `MAX_OPERATOR_CHAIN` | other | error: `Error::SyntaxLimit` (DR-JSDEOB-0005); `ProbeRefusal::UnsafeNesting` | `usize` | `600` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
-| `disrobe-pass-js-deob` | `MAX_SYNTACTIC_NESTING_DEPTH` | recursion | error: `Error::SyntaxLimit` (DR-JSDEOB-0005); `ProbeRefusal::UnsafeNesting` | `usize` | `600` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
+| `disrobe-pass-js-deob` | `MAX_EXPRESSION_DEPTH` | recursion | error: `JsNeutralizeError::TooDeep` (DR-JSDEOB-0021); `ProbeRefusal::UnsafeNesting` | `usize` | `28_000` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
+| `disrobe-pass-js-deob` | `MAX_OPERATOR_CHAIN` | other | error: `Error::SyntaxLimit` (DR-JSDEOB-0005); `JsNeutralizeError::TooDeep` (DR-JSDEOB-0021); `ProbeRefusal::UnsafeNesting` | `usize` | `600` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
+| `disrobe-pass-js-deob` | `MAX_SYNTACTIC_NESTING_DEPTH` | recursion | error: `Error::SyntaxLimit` (DR-JSDEOB-0005); `JsNeutralizeError::TooDeep` (DR-JSDEOB-0021); `ProbeRefusal::UnsafeNesting` | `usize` | `600` | `crates/disrobe-pass-js-deob/src/sandbox_guard.rs` |
 | `disrobe-pass-js-deob` | `MAX_TEMPLATE_SCAN_DEPTH` | recursion | error: `ProbeRefusal::UnsafeNesting` | `usize` | `256` | `crates/disrobe-pass-js-deob/src/string_array/mod.rs` |
 | `disrobe-pass-js-deob` | `MAX_ROTATIONS` | other | silent: `for` range in `simulate` | `u32` | `4096` | `crates/disrobe-pass-js-deob/src/string_array/rotate.rs` |
 | `disrobe-pass-js-deob` | `DEFAULT_LOOP_ITERATION_LIMIT` | work | delegated: passed to `.set_loop_iteration_limit` | `u64` | `100_000` | `crates/disrobe-pass-js-deob/src/string_array/sandbox.rs` |
@@ -2153,7 +2162,14 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-pass-wasm-deob` | `MAX_SECTION_HEADER_BYTES` | size | error: `Error::Parse` (DR-WASMDEOB-0001) | `usize` | `5` | `crates/disrobe-pass-wasm-deob/src/obfuscators/name_obfuscator/name_section.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_ITERATIONS` | work | silent: `break` in `unflatten`; `for` range in `unflatten_to_fixed_point` | `usize` | `64` | `crates/disrobe-pass-wasm-deob/src/obfuscators/tigress/unflatten.rs` |
 | `disrobe-pass-wasm-deob` | `FUEL_BUDGET` | work | delegated: `.set_fuel()?` | `u64` | `100_000_000` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
-| `disrobe-pass-wasm-deob` | `TABLE_ELEMENT_LIMIT` | other | delegated: `.call()?`; `.get_memory()?`; `.instantiate()?`; 1 more | `usize` | `1 << 16` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_DECRYPT_OUTPUT` | output | recorded: `UnresolvedReason::OutputBudgetExhausted` | `usize` | `4 << 20` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_DECRYPT_SPAN` | other | silent: fallback value in `collect_decrypt_probes` | `i32` | `1 << 20` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_STUBS_PER_MODULE` | other | silent: `.min()` clamp in `collect_decrypt_probes` | `usize` | `64` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
+| `disrobe-pass-wasm-deob` | `TABLE_ELEMENT_LIMIT` | other | delegated: `.call()?`; `.get_func()?`; `.get_memory()?`; 2 more | `usize` | `1 << 16` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_EVAL_DEPTH` | recursion | error: `.to_owned()` | `usize` | `2` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wobfuscator/host_table.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_HOST_ENTRIES` | count | error: `Error::Parse` (DR-WASMDEOB-0001); `limit_error()` | `usize` | `4096` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wobfuscator/host_table.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_HOST_SCRIPT_BYTES` | size | error: `Error::Parse` (DR-WASMDEOB-0001); `limit_error()` | `usize` | `1 << 20` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wobfuscator/host_table.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_TOKENS` | other | error: `Error::Parse` (DR-WASMDEOB-0001); `limit_error()` | `usize` | `1 << 18` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wobfuscator/host_table.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_EXPR_NODES` | count | silent: `return` in `parse_value` | `usize` | `96` | `crates/disrobe-pass-wasm-deob/src/recover.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_FOLD_INSTRUCTIONS` | other | recorded: flag `intra_function_folding_skipped` | `usize` | `1 << 21` | `crates/disrobe-pass-wasm-deob/src/recover.rs` |
 | `disrobe-pass-wasm-deob` | `NESTED_SEQ_LIMIT` | recursion | recorded: flag `truncated` | `usize` | `4096` | `crates/disrobe-pass-wasm-deob/src/recover/cff.rs` |
@@ -2162,10 +2178,13 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-pass-wasm-deob` | `MAX_MODULE_STEPS` | work | recorded: flag `guard_folding_budget_exhausted` | `u64` | `50_000_000` | `crates/disrobe-pass-wasm-deob/src/recover/pure_eval.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_STEPS` | work | silent: `return` in `eval_guard`; `return` in `run_seq` | `u64` | `2_000_000` | `crates/disrobe-pass-wasm-deob/src/recover/pure_eval.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_VALUE_STACK` | other | silent: `return` in `run_seq` | `usize` | `4_096` | `crates/disrobe-pass-wasm-deob/src/recover/pure_eval.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_SWITCH_TARGETS` | other | error: `WallReason::TooManyCases` | `usize` | `4096` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
 | `disrobe-pass-wasm-deob` | `MULTI_EXIT_LIMIT` | other | unclassified: match pattern in `render` | `usize` | `16` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
-| `disrobe-pass-wasm-deob` | `NODE_LIMIT` | other | silent: `.take()` in `collect_branch_transitions`; `return` in `accesses_cell_outside_root`; `return` in `accesses_cell`; 8 more | `usize` | `512` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
+| `disrobe-pass-wasm-deob` | `NODE_LIMIT` | other | silent: `.take()` in `collect_branch_transitions`; `return` in `accesses_cell_outside_root`; `return` in `accesses_cell`; 9 more | `usize` | `512` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
 | `disrobe-pass-wasm-deob` | `STATE_EXPRESSION_LIMIT` | other | silent: `?` on a checked operation in `expression_suffix`; `?` on a checked operation in `state_write_expression`; `return` in `eval_value`; 5 more | `usize` | `64` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
 | `disrobe-pass-wasm-deob` | `TRANSITION_INSTRUCTION_LIMIT` | other | silent: `return` in `classify_select_conditional`; `return` in `condition_has_isolated_value_stack`; `return` in `structured_work_is_bounded` | `usize` | `512` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_ROUNDS` | work | silent: `for` range in `forward_compiler_temporaries` | `usize` | `8` | `crates/disrobe-pass-wasm-deob/src/recover/temps.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_SEQUENCES` | other | silent: `for` range in `executes_after`; `return` in `of` | `usize` | `4096` | `crates/disrobe-pass-wasm-deob/src/recover/temps.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_BOUNDARY_RESOURCES` | other | error: `Error::Parse` (DR-WASMDEOB-0001) | `usize` | `MAX_BOUNDARY_LINKS` | `crates/disrobe-pass-wasm-deob/src/signature.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_FUNCTION_LOCALS` | other | delegated: passed to `iter::repeat_n` | `usize` | `100_000` | `crates/disrobe-pass-wasm-deob/src/signature.rs` |
 | `disrobe-pass-webview` | `COMPRESSED_SAMPLE_CAP` | other | silent: `.min()` clamp in `looks_compressed` | `usize` | `4096` | `crates/disrobe-pass-webview/src/decompress.rs` |
@@ -2371,7 +2390,7 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 
 ## Silent stops
 
-1077 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1086 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2428,6 +2447,7 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-binfmt` | `MAX_PROGRAM_HEADERS` | `return` in `parse_elf_dynamic` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
 | `disrobe-binfmt` | `MAX_STRING_LEN` | `.min()` clamp in `read_cstr` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
 | `disrobe-binfmt` | `MAX_DISK_NESTING_DEPTH` | `return` in `recurse_into_filesystem` | `crates/disrobe-binfmt/src/extract.rs` |
+| `disrobe-binfmt` | `MAX_ENTRIES` | `break` in `read` | `crates/disrobe-binfmt/src/pe_resources.rs` |
 | `disrobe-binfmt` | `MAX_NOTES_PER_SEGMENT` | `for` range in `find_build_ids` | `crates/disrobe-binfmt/src/rewrite/elf.rs` |
 | `disrobe-binfmt` | `MAX_DIRECTORY_SLOTS` | `.min()` clamp in `plan` | `crates/disrobe-binfmt/src/rewrite/pe.rs` |
 | `disrobe-capabilities` | `MAX_FILE_STRING_FEATURES` | `.take()` in `push_file_strings_with_limits` | `crates/disrobe-capabilities/src/extract.rs` |
@@ -2734,7 +2754,11 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-pass-js-deob` | `MAX_FOLD_PASSES` | `for` range in `fold_char_constructors` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
 | `disrobe-pass-js-deob` | `MAX_IIFE_BYTES` | `return` in `try_fold_iife` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
 | `disrobe-pass-js-deob` | `MAX_RESULT_CHARS` | `return` in `is_safe_literal_body` | `crates/disrobe-pass-js-deob/src/jsobfu/fold_chars.rs` |
+| `disrobe-pass-js-deob` | `MAX_FOLDED_STRING_BYTES` | `return` in `fold_binary` | `crates/disrobe-pass-js-deob/src/jsobfu/literals.rs` |
+| `disrobe-pass-js-deob` | `MAX_SETTLE_ROUNDS` | `for` range in `settle_literals` | `crates/disrobe-pass-js-deob/src/jsobfu/literals.rs` |
 | `disrobe-pass-js-deob` | `MAX_RECOVER_PASSES` | `for` range in `try_recover` | `crates/disrobe-pass-js-deob/src/jsobfu/mod.rs` |
+| `disrobe-pass-js-deob` | `MAX_CONCAT_DEPTH` | `return` in `trap_literals` | `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs` |
+| `disrobe-pass-js-deob` | `MAX_EVIDENCE_CHARS` | `.take()` in `anchor` | `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs` |
 | `disrobe-pass-js-deob` | `MAX_ROTATIONS` | `for` range in `simulate` | `crates/disrobe-pass-js-deob/src/string_array/rotate.rs` |
 | `disrobe-pass-js-deob` | `MAX_BATCH_OUTPUT_UNITS` | `while` condition in `usize_decimal_len` | `crates/disrobe-pass-js-deob/src/string_array/sandbox.rs` |
 | `disrobe-pass-js-deob` | `MAX_CONCURRENT_PROBES` | `while` condition in `acquire_probe_permit_from` | `crates/disrobe-pass-js-deob/src/string_array/sandbox.rs` |
@@ -3380,14 +3404,18 @@ Exceeded: error 963, recorded 199, panic 0, delegated 49, silent 1077, unclassif
 | `disrobe-pass-wasm-deob` | `MAX_SYNTHETIC_STRUCT_FIELDS` | `.clamp()` clamp in `record_struct_field_count`; `.min()` clamp in `record_struct_new_field_types`; `return` in `record_struct_field_index` | `crates/disrobe-pass-wasm-deob/src/lift_wat.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_TREE_NODES` | `return` in `lower_inner` | `crates/disrobe-pass-wasm-deob/src/obfuscators/mba.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_ITERATIONS` | `break` in `unflatten`; `for` range in `unflatten_to_fixed_point` | `crates/disrobe-pass-wasm-deob/src/obfuscators/tigress/unflatten.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_DECRYPT_SPAN` | fallback value in `collect_decrypt_probes` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_STUBS_PER_MODULE` | `.min()` clamp in `collect_decrypt_probes` | `crates/disrobe-pass-wasm-deob/src/obfuscators/wasmixer/sandbox_unwrap.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_EXPR_NODES` | `return` in `parse_value` | `crates/disrobe-pass-wasm-deob/src/recover.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_GUARD_LEN` | `return` in `match_diamond` | `crates/disrobe-pass-wasm-deob/src/recover/opaque.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_CALL_DEPTH` | `return` in `invoke` | `crates/disrobe-pass-wasm-deob/src/recover/pure_eval.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_STEPS` | `return` in `eval_guard`; `return` in `run_seq` | `crates/disrobe-pass-wasm-deob/src/recover/pure_eval.rs` |
 | `disrobe-pass-wasm-deob` | `MAX_VALUE_STACK` | `return` in `run_seq` | `crates/disrobe-pass-wasm-deob/src/recover/pure_eval.rs` |
-| `disrobe-pass-wasm-deob` | `NODE_LIMIT` | `.take()` in `collect_branch_transitions`; `return` in `accesses_cell_outside_root`; `return` in `accesses_cell`; 8 more | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
+| `disrobe-pass-wasm-deob` | `NODE_LIMIT` | `.take()` in `collect_branch_transitions`; `return` in `accesses_cell_outside_root`; `return` in `accesses_cell`; 9 more | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
 | `disrobe-pass-wasm-deob` | `STATE_EXPRESSION_LIMIT` | `?` on a checked operation in `expression_suffix`; `?` on a checked operation in `state_write_expression`; `return` in `eval_value`; 5 more | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
 | `disrobe-pass-wasm-deob` | `TRANSITION_INSTRUCTION_LIMIT` | `return` in `classify_select_conditional`; `return` in `condition_has_isolated_value_stack`; `return` in `structured_work_is_bounded` | `crates/disrobe-pass-wasm-deob/src/recover/reloop.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_ROUNDS` | `for` range in `forward_compiler_temporaries` | `crates/disrobe-pass-wasm-deob/src/recover/temps.rs` |
+| `disrobe-pass-wasm-deob` | `MAX_SEQUENCES` | `for` range in `executes_after`; `return` in `of` | `crates/disrobe-pass-wasm-deob/src/recover/temps.rs` |
 | `disrobe-pass-webview` | `COMPRESSED_SAMPLE_CAP` | `.min()` clamp in `looks_compressed` | `crates/disrobe-pass-webview/src/decompress.rs` |
 | `disrobe-pass-webview` | `MAX_EVIDENCE_MARKERS` | `.truncate()` in `classify_all`; `.truncate()` in `marker_evidence` | `crates/disrobe-pass-webview/src/detect.rs` |
 | `disrobe-pass-webview` | `MAX_ENTRY_PATH_BYTES` | `return` in `bounded_join`; `while` condition in `bounded_join`; slice in `bounded_join` | `crates/disrobe-pass-webview/src/electron.rs` |

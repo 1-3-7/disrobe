@@ -4,16 +4,16 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2048 |
-| Emission sites | 2515 |
-| Sites carrying a message | 2427 |
-| Distinct emitted codes | 1886 |
+| Scanned source files | 2054 |
+| Emission sites | 2531 |
+| Sites carrying a message | 2443 |
+| Distinct emitted codes | 1896 |
 | Registered codes | 177 |
-| Codes with two or more distinct messages | 279 |
-| Emitted codes missing from the registry | 1709 |
+| Codes with two or more distinct messages | 280 |
+| Emitted codes missing from the registry | 1719 |
 | Registered codes no source emits | 0 |
 
-## Codes with two or more distinct messages (279)
+## Codes with two or more distinct messages (280)
 
 ### `DR-BINFMT-0009`
 
@@ -22,7 +22,7 @@
 
 ### `DR-CLI-0001`
 
-- `"DR error code, e.g. DR-CLI-0001 or just CLI-1"`: `crates/disrobe-cli/src/main.rs:1143`
+- `"DR error code, e.g. DR-CLI-0001 or just CLI-1"`: `crates/disrobe-cli/src/main.rs:1156`
 - `"cannot read wrapper at {}: {}"`: `crates/disrobe-cli/src/cli/pyarmor.rs:163`
 
 ### `DR-CLI-0016`
@@ -93,7 +93,7 @@
 
 - `"cannot write output: {}"`: `crates/disrobe-cli/src/cli/py/deob.rs:70`, `crates/disrobe-cli/src/cli/py/deob.rs:161`
 - `"cannot write python skeleton: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:411`
-- `"out dir {} already exists; pass --force to overwrite"`: `crates/disrobe-cli/src/cli/js.rs:1695`
+- `"out dir {} already exists; pass --force to overwrite"`: `crates/disrobe-cli/src/cli/js.rs:1920`
 
 ### `DR-CLI-0033`
 
@@ -124,30 +124,30 @@
 ### `DR-CLI-0037`
 
 - `"cannot re-read input for carving: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:742`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/js.rs:1091`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/js.rs:1128`
 - `"cannot write source: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:126`
 
 ### `DR-CLI-0038`
 
 - `"--key is not valid hex: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:159`
-- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:1121`
+- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:1158`
 - `"refusing unsafe bundled path '{}' (traversal)"`: `crates/disrobe-cli/src/cli/nuitka.rs:784`
 
 ### `DR-CLI-0039`
 
 - `"--key must decode to exactly 32 bytes (aes-256), got {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:162`
 - `"cannot create carve dir: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:790`
-- `"cannot write detection: {}"`: `crates/disrobe-cli/src/cli/js.rs:1129`
+- `"cannot write detection: {}"`: `crates/disrobe-cli/src/cli/js.rs:1166`
 
 ### `DR-CLI-0040`
 
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:445`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:472`
 - `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:793`
 - `"modern .pye produced neither a recovered body nor a wall"`: `crates/disrobe-cli/src/cli/py/extract.rs:226`
 
 ### `DR-CLI-0041`
 
-- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:171`, `crates/disrobe-cli/src/cli/wasm.rs:194`, `crates/disrobe-cli/src/cli/wasm.rs:243`, `crates/disrobe-cli/src/cli/wasm.rs:459`
+- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:185`, `crates/disrobe-cli/src/cli/wasm.rs:208`, `crates/disrobe-cli/src/cli/wasm.rs:270`, `crates/disrobe-cli/src/cli/wasm.rs:486`
 - `"cannot create frozen dir: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:682`
 - `"modern v16 body is an aes-256-gcm wall ({}); supply the 32-byte key via --key to decrypt statically"`: `crates/disrobe-cli/src/cli/py/extract.rs:252`
 - `"modern v16 body is an aes-256-gcm wall ({}); the supplied --key did not authenticate it"`: `crates/disrobe-cli/src/cli/py/extract.rs:247`
@@ -155,70 +155,70 @@
 ### `DR-CLI-0042`
 
 - `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:269`
-- `"cannot write boundary links: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:188`
-- `"cannot write deobfuscated wat: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:174`
-- `"cannot write lifted output: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:246`
-- `"cannot write output: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:464`
+- `"cannot write boundary links: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:202`
+- `"cannot write deobfuscated wat: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:188`
+- `"cannot write lifted output: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:273`
+- `"cannot write output: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:491`
 - `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:687`
-- `"input is not UTF-8: {}"`: `crates/disrobe-cli/src/cli/js.rs:1094`
+- `"input is not UTF-8: {}"`: `crates/disrobe-cli/src/cli/js.rs:1131`
 - `"serialize capabilities: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:837`
 
 ### `DR-CLI-0043`
 
 - `"cannot create native dir: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:655`
-- `"cannot write deobfuscated source: {}"`: `crates/disrobe-cli/src/cli/js.rs:1172`
-- `"cannot write recovered wasm: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:197`
+- `"cannot write deobfuscated source: {}"`: `crates/disrobe-cli/src/cli/js.rs:1213`
+- `"cannot write recovered wasm: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:211`
 - `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:839`, `crates/disrobe-cli/src/cli/py/extract.rs:272`
-- `"serialize: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:462`
+- `"serialize: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:489`
 
 ### `DR-CLI-0044`
 
-- `"cannot write recovery: {}"`: `crates/disrobe-cli/src/cli/js.rs:1191`
-- `"embedded {} byte range {}..{} is out of bounds (file is {} bytes)"`: `crates/disrobe-cli/src/cli/wasm.rs:410`
+- `"cannot write recovery: {}"`: `crates/disrobe-cli/src/cli/js.rs:1232`
+- `"embedded {} byte range {}..{} is out of bounds (file is {} bytes)"`: `crates/disrobe-cli/src/cli/wasm.rs:437`
 - `"serialize recon: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:848`
 
 ### `DR-CLI-0045`
 
-- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:1424`, `crates/disrobe-cli/src/cli/js.rs:1518`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/js.rs:1673`
-- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:421`
+- `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:1643`, `crates/disrobe-cli/src/cli/js.rs:1737`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/js.rs:1898`
+- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:448`
 - `"recovery-manifest serialize: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:546`
 
 ### `DR-CLI-0046`
 
-- `"cannot write deobfuscated source: {}"`: `crates/disrobe-cli/src/cli/js.rs:1427`, `crates/disrobe-cli/src/cli/js.rs:1521`
+- `"cannot write deobfuscated source: {}"`: `crates/disrobe-cli/src/cli/js.rs:1646`, `crates/disrobe-cli/src/cli/js.rs:1740`
 - `"cannot write recovery-manifest: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:548`
-- `"input is not UTF-8: {}"`: `crates/disrobe-cli/src/cli/js.rs:1675`
-- `` "wasm deob needs an input file (or `--list` to show supported obfuscators)" ``: `crates/disrobe-cli/src/cli/wasm.rs:149`
+- `"input is not UTF-8: {}"`: `crates/disrobe-cli/src/cli/js.rs:1900`
+- `` "wasm deob needs an input file (or `--list` to show supported obfuscators)" ``: `crates/disrobe-cli/src/cli/wasm.rs:151`
 
 ### `DR-CLI-0047`
 
 - `"cannot create native dir: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:564`
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:1701`
-- `"gc-hir serialize: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:50`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:1926`
+- `"gc-hir serialize: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:51`
 - `` "pyarmor unpack needs an input file (or `--list` to show supported versions)" ``: `crates/disrobe-cli/src/cli/pyarmor.rs:158`
-- `"serialize pipeline: {}"`: `crates/disrobe-cli/src/cli/js.rs:1441`, `crates/disrobe-cli/src/cli/js.rs:1535`
+- `"serialize pipeline: {}"`: `crates/disrobe-cli/src/cli/js.rs:1660`, `crates/disrobe-cli/src/cli/js.rs:1754`
 
 ### `DR-CLI-0048`
 
-- `"auto-unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1705`
-- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:57`
-- `"cannot write pipeline: {}"`: `crates/disrobe-cli/src/cli/js.rs:1443`, `crates/disrobe-cli/src/cli/js.rs:1537`
+- `"auto-unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1930`
+- `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:58`
+- `"cannot write pipeline: {}"`: `crates/disrobe-cli/src/cli/js.rs:1662`, `crates/disrobe-cli/src/cli/js.rs:1756`
 - `"serialize name map: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:566`
 
 ### `DR-CLI-0049`
 
-- `"cannot write gc rust source: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:62`
+- `"cannot write gc rust source: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:63`
 - `"cannot write name-map.json: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:568`
-- `"webpack4 unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1708`
+- `"webpack4 unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1933`
 
 ### `DR-CLI-0050`
 
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:18`
 - `"cannot read the opcode reference: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:128`
-- `"cannot write gc ts source: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:65`
+- `"cannot write gc ts source: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:66`
 - `"cannot write name-map.txt: {}"`: `crates/disrobe-cli/src/cli/nuitka.rs:602`
-- `"webpack5 unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1712`
+- `"webpack5 unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1937`
 
 ### `DR-CLI-0051`
 
@@ -226,42 +226,42 @@
 - `"not a valid .pyc: {}"`: `crates/disrobe-cli/src/cli/py/decompile.rs:67`, `crates/disrobe-cli/src/cli/py/disasm.rs:20`
 - `"the opcode reference is not a valid .pyc: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:130`
 - `"the opcode reference was compiled by CPython {}.{}, the input by {}.{}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:134`
-- `"vite unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1716`
+- `"vite unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1941`
 
 ### `DR-CLI-0052`
 
 - `".pyc body is not a code object"`: `crates/disrobe-cli/src/cli/py/decompile.rs:72`, `crates/disrobe-cli/src/cli/py/disasm.rs:25`
-- `"rollup unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1720`
+- `"rollup unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1945`
 - `"the opcode reference body is not a code object"`: `crates/disrobe-cli/src/cli/py/disasm.rs:143`
 
 ### `DR-CLI-0053`
 
 - `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:44`
-- `"esbuild unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1724`
+- `"esbuild unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1949`
 
 ### `DR-CLI-0054`
 
 - `"cannot write disasm: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:47`
-- `"turbopack unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1730`
+- `"turbopack unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1955`
 
 ### `DR-CLI-0055`
 
-- `"bun unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1733`
+- `"bun unbundle failed: {}"`: `crates/disrobe-cli/src/cli/js.rs:1958`
 - `"cannot write disasm json: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:52`
 
 ### `DR-CLI-0056`
 
-- `"cannot write modules: {}"`: `crates/disrobe-cli/src/cli/js.rs:1747`
+- `"cannot write modules: {}"`: `crates/disrobe-cli/src/cli/js.rs:1972`
 - `"serialize disasm json: {}"`: `crates/disrobe-cli/src/cli/py/disasm.rs:50`
 
 ### `DR-CLI-0060`
 
 - `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/pyfreeze.rs:58`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/js.rs:524`, `crates/disrobe-cli/src/cli/py/decompile.rs:37`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/js.rs:560`, `crates/disrobe-cli/src/cli/py/decompile.rs:37`
 
 ### `DR-CLI-0061`
 
-- `"cannot create json dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:687`
+- `"cannot create json dir: {}"`: `crates/disrobe-cli/src/cli/js.rs:723`
 - `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/py/decompile.rs:62`, `crates/disrobe-cli/src/cli/py/decompile.rs:180`
 - `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/pyfreeze.rs:65`
 
@@ -269,104 +269,104 @@
 
 - `"cannot write decompiled source: {}"`: `crates/disrobe-cli/src/cli/py/decompile.rs:82`, `crates/disrobe-cli/src/cli/py/decompile.rs:184`
 - `"manifest serialize: {}"`: `crates/disrobe-cli/src/cli/pyfreeze.rs:63`
-- `"serialize v8 report: {}"`: `crates/disrobe-cli/src/cli/js.rs:692`
+- `"serialize v8 report: {}"`: `crates/disrobe-cli/src/cli/js.rs:728`
 
 ### `DR-CLI-0063`
 
-- `"cannot write v8 report json: {}"`: `crates/disrobe-cli/src/cli/js.rs:695`
+- `"cannot write v8 report json: {}"`: `crates/disrobe-cli/src/cli/js.rs:731`
 - `"manifest serialize: {}"`: `crates/disrobe-cli/src/cli/py/decompile.rs:97`, `crates/disrobe-cli/src/cli/py/decompile.rs:196`
 
 ### `DR-CLI-0064`
 
-- `"cannot create carve dir {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:710`
+- `"cannot create carve dir {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:746`
 - `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/py/decompile.rs:99`, `crates/disrobe-cli/src/cli/py/decompile.rs:198`
 
 ### `DR-CLI-0065`
 
 - `"native decompile engine failed: {}"`: `crates/disrobe-cli/src/cli/py/decompile.rs:252`
-- `"re-parse asar for carve: {}"`: `crates/disrobe-cli/src/cli/js.rs:722`
+- `"re-parse asar for carve: {}"`: `crates/disrobe-cli/src/cli/js.rs:758`
 
 ### `DR-CLI-0066`
 
-- `"carve asar entry: {}"`: `crates/disrobe-cli/src/cli/js.rs:726`
+- `"carve asar entry: {}"`: `crates/disrobe-cli/src/cli/js.rs:762`
 - `` "py decompile needs an input .pyc (or `--list` to show supported obfuscators)" ``: `crates/disrobe-cli/src/cli/py/decompile.rs:32`
 
 ### `DR-CLI-0067`
 
 - `"could not decompile: input is neither a known obfuscator nor a decodable .pyc"`: `crates/disrobe-cli/src/cli/py/decompile.rs:55`
-- `"nexe footer vanished on re-parse"`: `crates/disrobe-cli/src/cli/js.rs:739`
+- `"nexe footer vanished on re-parse"`: `crates/disrobe-cli/src/cli/js.rs:775`
 
 ### `DR-CLI-0068`
 
-- `"carve nexe payload: {}"`: `crates/disrobe-cli/src/cli/js.rs:742`
+- `"carve nexe payload: {}"`: `crates/disrobe-cli/src/cli/js.rs:778`
 - `"deobfuscation produced no source"`: `crates/disrobe-cli/src/cli/py/decompile.rs:177`
 
 ### `DR-CLI-0070`
 
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:6`
-- `"carve sea main code: {}"`: `crates/disrobe-cli/src/cli/js.rs:763`
+- `"carve sea main code: {}"`: `crates/disrobe-cli/src/cli/js.rs:799`
 
 ### `DR-CLI-0071`
 
 - `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:14`
-- `"cannot write jsc disassembly: {}"`: `crates/disrobe-cli/src/cli/js.rs:799`
+- `"cannot write jsc disassembly: {}"`: `crates/disrobe-cli/src/cli/js.rs:835`
 
 ### `DR-CLI-0072`
 
 - `"input {} is not a recognized archive (.whl/.zip/.tar/.tar.gz/.7z/.asar/...)"`: `crates/disrobe-cli/src/cli/py/extract.rs:18`
-- `"refusing to carve member with traversal/absolute path: {}"`: `crates/disrobe-cli/src/cli/js.rs:822`
+- `"refusing to carve member with traversal/absolute path: {}"`: `crates/disrobe-cli/src/cli/js.rs:858`
 
 ### `DR-CLI-0073`
 
-- `"cannot create dir {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:831`
+- `"cannot create dir {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:867`
 - `"extract failed: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:24`
 
 ### `DR-CLI-0074`
 
-- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:835`
+- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:871`
 - `"manifest serialize: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:42`
 
 ### `DR-CLI-0075`
 
 - `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/py/extract.rs:44`
-- `"nw.js zip open: {}"`: `crates/disrobe-cli/src/cli/js.rs:852`
+- `"nw.js zip open: {}"`: `crates/disrobe-cli/src/cli/js.rs:888`
 
 ### `DR-CLI-0080`
 
 - `` "Run `disrobe envelope verify $1` & report the result. Surface DR-CODES (e.g. DR-CLI-0080, DR-CLI-0087) verbatim." ``: `crates/disrobe-cli/src/cli/init.rs:160`
 - `"cannot read envelope: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:474`
-- `"write {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:909`
+- `"write {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:945`
 
 ### `DR-CLI-0081`
 
 - `"malformed sidecar: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:476`
-- `"nw.js zip entry count {} exceeds cap {}"`: `crates/disrobe-cli/src/cli/js.rs:856`
+- `"nw.js zip entry count {} exceeds cap {}"`: `crates/disrobe-cli/src/cli/js.rs:892`
 
 ### `DR-CLI-0082`
 
-- `"nw.js zip output exceeds total cap {}"`: `crates/disrobe-cli/src/cli/js.rs:881`
+- `"nw.js zip output exceeds total cap {}"`: `crates/disrobe-cli/src/cli/js.rs:917`
 - `"only --rung raw is implemented in v0.1; got {}"`: `crates/disrobe-cli/src/cli/envelope.rs:516`
 
 ### `DR-CLI-0083`
 
 - `"cannot read source: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:520`
-- `"nw.js zip entry {} declared size {} exceeds cap {}"`: `crates/disrobe-cli/src/cli/js.rs:887`
+- `"nw.js zip entry {} declared size {} exceeds cap {}"`: `crates/disrobe-cli/src/cli/js.rs:923`
 
 ### `DR-CLI-0084`
 
-- `"nw.js zip copy cap overflow for {}"`: `crates/disrobe-cli/src/cli/js.rs:902`
+- `"nw.js zip copy cap overflow for {}"`: `crates/disrobe-cli/src/cli/js.rs:938`
 - `"rkyv encode failed: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:560`
 
 ### `DR-CLI-0085`
 
-- `"nw.js zip entry {} exceeds cap {}"`: `crates/disrobe-cli/src/cli/js.rs:914`
+- `"nw.js zip entry {} exceeds cap {}"`: `crates/disrobe-cli/src/cli/js.rs:950`
 - `"postcard encode failed: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:569`
 
 ### `DR-CLI-0086`
 
 - `"cannot encode envelope: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:573`
 - `"cannot write envelope: {}"`: `crates/disrobe-cli/src/cli/envelope.rs:593`, `crates/disrobe-cli/src/cli/envelope.rs:595`, `crates/disrobe-cli/src/cli/envelope.rs:597`
-- `"nw.js zip output byte counter overflow"`: `crates/disrobe-cli/src/cli/js.rs:919`
+- `"nw.js zip output byte counter overflow"`: `crates/disrobe-cli/src/cli/js.rs:955`
 
 ### `DR-CLI-0087`
 
@@ -380,19 +380,19 @@
 
 ### `DR-CLI-0092`
 
-- `"cannot read referenced map {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:240`
+- `"cannot read referenced map {}: {}"`: `crates/disrobe-cli/src/cli/js.rs:276`
 - `"stdout write: {}"`: `crates/disrobe-cli/src/cli/output.rs:55`, `crates/disrobe-cli/src/cli/output.rs:61`
 
 ### `DR-CLI-0093`
 
-- `` "input references external map `{}` which was not found next to {}; fetch it and pass the .map directly" ``: `crates/disrobe-cli/src/cli/js.rs:246`
+- `` "input references external map `{}` which was not found next to {}; fetch it and pass the .map directly" ``: `crates/disrobe-cli/src/cli/js.rs:282`
 - `"sarif inner deserialize: {}"`: `crates/disrobe-cli/src/cli/output.rs:99`
 - `"sarif inner serialize: {}"`: `crates/disrobe-cli/src/cli/output.rs:92`
 - `"sarif spool: {}"`: `crates/disrobe-cli/src/cli/output.rs:89`, `crates/disrobe-cli/src/cli/output.rs:96`, `crates/disrobe-cli/src/cli/output.rs:104`
 
 ### `DR-CLI-0102`
 
-- `"input is not UTF-8: {}"`: `crates/disrobe-cli/src/cli/js.rs:335`
+- `"input is not UTF-8: {}"`: `crates/disrobe-cli/src/cli/js.rs:371`
 - `"{}"`: `crates/disrobe-cli/src/cli/explain/mod.rs:48`
 
 ### `DR-CLI-0111`
@@ -501,12 +501,12 @@
 ### `DR-CLI-0326`
 
 - `"annotation serialize: {}"`: `crates/disrobe-cli/src/cli/annot.rs:68`
-- `` "this binary was built without the `server` feature, so it carries no HTTP daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:2293`
+- `` "this binary was built without the `server` feature, so it carries no HTTP daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:2307`
 
 ### `DR-CLI-0327`
 
 - `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/annot.rs:71`
-- `` "this binary was built without the `prowl` feature, so it carries no archive and threat-intel harvester and no keyring for provider credentials. rebuild with `--features prowl`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:1973`
+- `` "this binary was built without the `prowl` feature, so it carries no archive and threat-intel harvester and no keyring for provider credentials. rebuild with `--features prowl`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:1986`
 
 ### `DR-CLI-0328`
 
@@ -573,6 +573,14 @@
 
 - `"cannot read {}: {}"`: `crates/disrobe-cli/src/cli/electron.rs:34`, `crates/disrobe-cli/src/cli/electron.rs:43`
 - `"{} is {} bytes, above the {}-byte limit"`: `crates/disrobe-cli/src/cli/electron.rs:38`
+
+### `DR-CLI-0418`
+
+- `"cannot create {}: {}"`: `crates/disrobe-cli/src/cli/resources.rs:57`
+- `"cannot read {}: {}"`: `crates/disrobe-cli/src/cli/resources.rs:36`, `crates/disrobe-cli/src/cli/resources.rs:45`
+- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/resources.rs:74`
+- `"{} is {} bytes, above the {}-byte limit"`: `crates/disrobe-cli/src/cli/resources.rs:40`
+- `"{}: {}"`: `crates/disrobe-cli/src/cli/electron.rs:130`, `crates/disrobe-cli/src/cli/resources.rs:47`
 
 ### `DR-CLI-0419`
 
@@ -1108,7 +1116,7 @@
 
 ### `DR-CLI-0843`
 
-- `` "`auto --llm` / `--metadata-pack-N` is not supported; the chain engine writes a single chain.json. Run the matching per-language subcommand (e.g. `disrobe py decompile <input> --llm`) to emit the llm metadata bundle." ``: `crates/disrobe-cli/src/main.rs:2197`
+- `` "`auto --llm` / `--metadata-pack-N` is not supported; the chain engine writes a single chain.json. Run the matching per-language subcommand (e.g. `disrobe py decompile <input> --llm`) to emit the llm metadata bundle." ``: `crates/disrobe-cli/src/main.rs:2211`
 - `"{} exceeds the {} JVM hierarchy-edge limit"`: `crates/disrobe-cli/src/cli/query.rs:175`
 
 ### `DR-CLI-0844`
@@ -1602,15 +1610,15 @@
 
 ### `DR-WASMDEOB-0001`
 
-- `"boundary links: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:163`
-- `"cfg fn {}: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:350`
+- `"boundary links: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:177`
+- `"cfg fn {}: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:377`
 - `"input is not a valid WebAssembly module: {}"`: `crates/disrobe-pass-wasm-deob/src/error.rs:99`
-- `"parse: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:347`
-- `"the module could not be printed as WAT: a section does not parse or the code section disagrees with the function section"`: `crates/disrobe-cli/src/cli/wasm.rs:260`
-- `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:159`
+- `"parse: {}"`: `crates/disrobe-cli/src/cli/wasm.rs:374`
+- `"the module could not be printed as WAT: a section does not parse or the code section disagrees with the function section"`: `crates/disrobe-cli/src/cli/wasm.rs:287`
+- `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:173`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1709)
+## Emitted codes missing from the registry (1719)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -1772,44 +1780,44 @@
 - `DR-CLI-0027`: `crates/disrobe-cli/src/cli/nuitka.rs:241`, `crates/disrobe-cli/src/cli/nuitka.rs:998`, `crates/disrobe-cli/src/cli/pyarmor.rs:372`
 - `DR-CLI-0028`: `crates/disrobe-cli/src/cli/nuitka.rs:243`, `crates/disrobe-cli/src/cli/nuitka.rs:1000`, `crates/disrobe-cli/src/cli/pyarmor.rs:378`
 - `DR-CLI-0029`: `crates/disrobe-cli/src/cli/nuitka.rs:982`
-- `DR-CLI-0045`: `crates/disrobe-cli/src/cli/js.rs:1424`, `crates/disrobe-cli/src/cli/js.rs:1518`, `crates/disrobe-cli/src/cli/js.rs:1673`, `crates/disrobe-cli/src/cli/nuitka.rs:546`, `crates/disrobe-cli/src/cli/wasm.rs:421`
-- `DR-CLI-0046`: `crates/disrobe-cli/src/cli/js.rs:1427`, `crates/disrobe-cli/src/cli/js.rs:1521`, `crates/disrobe-cli/src/cli/js.rs:1675`, `crates/disrobe-cli/src/cli/nuitka.rs:548`, `crates/disrobe-cli/src/cli/wasm.rs:149`
-- `DR-CLI-0047`: `crates/disrobe-cli/src/cli/js.rs:1441`, `crates/disrobe-cli/src/cli/js.rs:1535`, `crates/disrobe-cli/src/cli/js.rs:1701`, `crates/disrobe-cli/src/cli/nuitka.rs:564`, `crates/disrobe-cli/src/cli/pyarmor.rs:158`, `crates/disrobe-cli/src/cli/wasm.rs:50`
-- `DR-CLI-0048`: `crates/disrobe-cli/src/cli/js.rs:1443`, `crates/disrobe-cli/src/cli/js.rs:1537`, `crates/disrobe-cli/src/cli/js.rs:1705`, `crates/disrobe-cli/src/cli/nuitka.rs:566`, `crates/disrobe-cli/src/cli/wasm.rs:57`
-- `DR-CLI-0049`: `crates/disrobe-cli/src/cli/js.rs:1708`, `crates/disrobe-cli/src/cli/nuitka.rs:568`, `crates/disrobe-cli/src/cli/wasm.rs:62`
-- `DR-CLI-0056`: `crates/disrobe-cli/src/cli/js.rs:1747`, `crates/disrobe-cli/src/cli/py/disasm.rs:50`
-- `DR-CLI-0057`: `crates/disrobe-cli/src/cli/js.rs:1752`
-- `DR-CLI-0058`: `crates/disrobe-cli/src/cli/js.rs:1825`
-- `DR-CLI-0059`: `crates/disrobe-cli/src/cli/js.rs:1828`
-- `DR-CLI-0063`: `crates/disrobe-cli/src/cli/js.rs:695`, `crates/disrobe-cli/src/cli/py/decompile.rs:97`, `crates/disrobe-cli/src/cli/py/decompile.rs:196`
-- `DR-CLI-0064`: `crates/disrobe-cli/src/cli/js.rs:710`, `crates/disrobe-cli/src/cli/py/decompile.rs:99`, `crates/disrobe-cli/src/cli/py/decompile.rs:198`
-- `DR-CLI-0065`: `crates/disrobe-cli/src/cli/js.rs:722`, `crates/disrobe-cli/src/cli/py/decompile.rs:252`
-- `DR-CLI-0066`: `crates/disrobe-cli/src/cli/js.rs:726`, `crates/disrobe-cli/src/cli/py/decompile.rs:32`
-- `DR-CLI-0067`: `crates/disrobe-cli/src/cli/js.rs:739`, `crates/disrobe-cli/src/cli/py/decompile.rs:55`
-- `DR-CLI-0068`: `crates/disrobe-cli/src/cli/js.rs:742`, `crates/disrobe-cli/src/cli/py/decompile.rs:177`
-- `DR-CLI-0069`: `crates/disrobe-cli/src/cli/js.rs:761`
-- `DR-CLI-0070`: `crates/disrobe-cli/src/cli/js.rs:763`, `crates/disrobe-cli/src/cli/py/extract.rs:6`
-- `DR-CLI-0071`: `crates/disrobe-cli/src/cli/js.rs:799`, `crates/disrobe-cli/src/cli/py/extract.rs:14`
-- `DR-CLI-0072`: `crates/disrobe-cli/src/cli/js.rs:822`, `crates/disrobe-cli/src/cli/py/extract.rs:18`
-- `DR-CLI-0073`: `crates/disrobe-cli/src/cli/js.rs:831`, `crates/disrobe-cli/src/cli/py/extract.rs:24`
-- `DR-CLI-0074`: `crates/disrobe-cli/src/cli/js.rs:835`, `crates/disrobe-cli/src/cli/py/extract.rs:42`
-- `DR-CLI-0075`: `crates/disrobe-cli/src/cli/js.rs:852`, `crates/disrobe-cli/src/cli/py/extract.rs:44`
-- `DR-CLI-0076`: `crates/disrobe-cli/src/cli/js.rs:864`
-- `DR-CLI-0077`: `crates/disrobe-cli/src/cli/js.rs:872`
-- `DR-CLI-0078`: `crates/disrobe-cli/src/cli/js.rs:893`
-- `DR-CLI-0079`: `crates/disrobe-cli/src/cli/js.rs:898`
-- `DR-CLI-0095`: `crates/disrobe-cli/src/cli/js.rs:265`
-- `DR-CLI-0096`: `crates/disrobe-cli/src/cli/js.rs:272`
-- `DR-CLI-0097`: `crates/disrobe-cli/src/cli/js.rs:276`
-- `DR-CLI-0098`: `crates/disrobe-cli/src/cli/js.rs:303`
-- `DR-CLI-0099`: `crates/disrobe-cli/src/cli/js.rs:310`
-- `DR-CLI-0103`: `crates/disrobe-cli/src/cli/js.rs:357`
-- `DR-CLI-0104`: `crates/disrobe-cli/src/cli/js.rs:364`
-- `DR-CLI-0105`: `crates/disrobe-cli/src/cli/js.rs:387`
-- `DR-CLI-0106`: `crates/disrobe-cli/src/cli/js.rs:435`
-- `DR-CLI-0107`: `crates/disrobe-cli/src/cli/js.rs:443`
-- `DR-CLI-0108`: `crates/disrobe-cli/src/cli/js.rs:231`, `crates/disrobe-cli/src/cli/js.rs:236`
-- `DR-CLI-0109`: `crates/disrobe-cli/src/cli/js.rs:351`
+- `DR-CLI-0045`: `crates/disrobe-cli/src/cli/js.rs:1643`, `crates/disrobe-cli/src/cli/js.rs:1737`, `crates/disrobe-cli/src/cli/js.rs:1898`, `crates/disrobe-cli/src/cli/nuitka.rs:546`, `crates/disrobe-cli/src/cli/wasm.rs:448`
+- `DR-CLI-0046`: `crates/disrobe-cli/src/cli/js.rs:1646`, `crates/disrobe-cli/src/cli/js.rs:1740`, `crates/disrobe-cli/src/cli/js.rs:1900`, `crates/disrobe-cli/src/cli/nuitka.rs:548`, `crates/disrobe-cli/src/cli/wasm.rs:151`
+- `DR-CLI-0047`: `crates/disrobe-cli/src/cli/js.rs:1660`, `crates/disrobe-cli/src/cli/js.rs:1754`, `crates/disrobe-cli/src/cli/js.rs:1926`, `crates/disrobe-cli/src/cli/nuitka.rs:564`, `crates/disrobe-cli/src/cli/pyarmor.rs:158`, `crates/disrobe-cli/src/cli/wasm.rs:51`
+- `DR-CLI-0048`: `crates/disrobe-cli/src/cli/js.rs:1662`, `crates/disrobe-cli/src/cli/js.rs:1756`, `crates/disrobe-cli/src/cli/js.rs:1930`, `crates/disrobe-cli/src/cli/nuitka.rs:566`, `crates/disrobe-cli/src/cli/wasm.rs:58`
+- `DR-CLI-0049`: `crates/disrobe-cli/src/cli/js.rs:1933`, `crates/disrobe-cli/src/cli/nuitka.rs:568`, `crates/disrobe-cli/src/cli/wasm.rs:63`
+- `DR-CLI-0056`: `crates/disrobe-cli/src/cli/js.rs:1972`, `crates/disrobe-cli/src/cli/py/disasm.rs:50`
+- `DR-CLI-0057`: `crates/disrobe-cli/src/cli/js.rs:1977`
+- `DR-CLI-0058`: `crates/disrobe-cli/src/cli/js.rs:2050`
+- `DR-CLI-0059`: `crates/disrobe-cli/src/cli/js.rs:2053`
+- `DR-CLI-0063`: `crates/disrobe-cli/src/cli/js.rs:731`, `crates/disrobe-cli/src/cli/py/decompile.rs:97`, `crates/disrobe-cli/src/cli/py/decompile.rs:196`
+- `DR-CLI-0064`: `crates/disrobe-cli/src/cli/js.rs:746`, `crates/disrobe-cli/src/cli/py/decompile.rs:99`, `crates/disrobe-cli/src/cli/py/decompile.rs:198`
+- `DR-CLI-0065`: `crates/disrobe-cli/src/cli/js.rs:758`, `crates/disrobe-cli/src/cli/py/decompile.rs:252`
+- `DR-CLI-0066`: `crates/disrobe-cli/src/cli/js.rs:762`, `crates/disrobe-cli/src/cli/py/decompile.rs:32`
+- `DR-CLI-0067`: `crates/disrobe-cli/src/cli/js.rs:775`, `crates/disrobe-cli/src/cli/py/decompile.rs:55`
+- `DR-CLI-0068`: `crates/disrobe-cli/src/cli/js.rs:778`, `crates/disrobe-cli/src/cli/py/decompile.rs:177`
+- `DR-CLI-0069`: `crates/disrobe-cli/src/cli/js.rs:797`
+- `DR-CLI-0070`: `crates/disrobe-cli/src/cli/js.rs:799`, `crates/disrobe-cli/src/cli/py/extract.rs:6`
+- `DR-CLI-0071`: `crates/disrobe-cli/src/cli/js.rs:835`, `crates/disrobe-cli/src/cli/py/extract.rs:14`
+- `DR-CLI-0072`: `crates/disrobe-cli/src/cli/js.rs:858`, `crates/disrobe-cli/src/cli/py/extract.rs:18`
+- `DR-CLI-0073`: `crates/disrobe-cli/src/cli/js.rs:867`, `crates/disrobe-cli/src/cli/py/extract.rs:24`
+- `DR-CLI-0074`: `crates/disrobe-cli/src/cli/js.rs:871`, `crates/disrobe-cli/src/cli/py/extract.rs:42`
+- `DR-CLI-0075`: `crates/disrobe-cli/src/cli/js.rs:888`, `crates/disrobe-cli/src/cli/py/extract.rs:44`
+- `DR-CLI-0076`: `crates/disrobe-cli/src/cli/js.rs:900`
+- `DR-CLI-0077`: `crates/disrobe-cli/src/cli/js.rs:908`
+- `DR-CLI-0078`: `crates/disrobe-cli/src/cli/js.rs:929`
+- `DR-CLI-0079`: `crates/disrobe-cli/src/cli/js.rs:934`
+- `DR-CLI-0095`: `crates/disrobe-cli/src/cli/js.rs:301`
+- `DR-CLI-0096`: `crates/disrobe-cli/src/cli/js.rs:308`
+- `DR-CLI-0097`: `crates/disrobe-cli/src/cli/js.rs:312`
+- `DR-CLI-0098`: `crates/disrobe-cli/src/cli/js.rs:339`
+- `DR-CLI-0099`: `crates/disrobe-cli/src/cli/js.rs:346`
+- `DR-CLI-0103`: `crates/disrobe-cli/src/cli/js.rs:393`
+- `DR-CLI-0104`: `crates/disrobe-cli/src/cli/js.rs:400`
+- `DR-CLI-0105`: `crates/disrobe-cli/src/cli/js.rs:423`
+- `DR-CLI-0106`: `crates/disrobe-cli/src/cli/js.rs:471`
+- `DR-CLI-0107`: `crates/disrobe-cli/src/cli/js.rs:479`
+- `DR-CLI-0108`: `crates/disrobe-cli/src/cli/js.rs:267`, `crates/disrobe-cli/src/cli/js.rs:272`
+- `DR-CLI-0109`: `crates/disrobe-cli/src/cli/js.rs:387`
 - `DR-CLI-0114`: `crates/disrobe-cli/src/cli/init.rs:409`
 - `DR-CLI-0115`: `crates/disrobe-cli/src/cli/init.rs:359`, `crates/disrobe-cli/src/cli/init.rs:371`
 - `DR-CLI-0160`: `crates/disrobe-cli/src/cli/emit.rs:196`, `crates/disrobe-cli/src/cli/emit.rs:220`
@@ -1871,8 +1879,8 @@
 - `DR-CLI-0268`: `crates/disrobe-cli/src/cli/install_deps.rs:106`
 - `DR-CLI-0269`: `crates/disrobe-cli/src/cli/self_update.rs:45`
 - `DR-CLI-0270`: `crates/disrobe-cli/src/cli/install/mod.rs:120`
-- `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2345`
-- `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2309`
+- `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2359`
+- `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2323`
 - `DR-CLI-0291`: `crates/disrobe-cli/src/cli/chain_v1.rs:612`, `crates/disrobe-cli/src/cli/chain_v1.rs:1320`
 - `DR-CLI-0292`: `crates/disrobe-cli/src/cli/chain_v1.rs:616`, `crates/disrobe-cli/src/cli/chain_v1.rs:628`
 - `DR-CLI-0293`: `crates/disrobe-cli/src/cli/chain_v1.rs:651`, `crates/disrobe-cli/src/cli/chain_v1.rs:758`, `crates/disrobe-cli/src/cli/chain_v1.rs:1379`
@@ -1902,8 +1910,8 @@
 - `DR-CLI-0323`: `crates/disrobe-cli/src/cli/annot.rs:39`, `crates/disrobe-cli/src/cli/context.rs:164`
 - `DR-CLI-0324`: `crates/disrobe-cli/src/cli/annot.rs:52`, `crates/disrobe-cli/src/cli/annot.rs:89`, `crates/disrobe-cli/src/cli/annot.rs:120`, `crates/disrobe-cli/src/cli/context.rs:186`
 - `DR-CLI-0325`: `crates/disrobe-cli/src/cli/annot.rs:64`, `crates/disrobe-cli/src/cli/context.rs:145`
-- `DR-CLI-0326`: `crates/disrobe-cli/src/cli/annot.rs:68`, `crates/disrobe-cli/src/main.rs:2293`
-- `DR-CLI-0327`: `crates/disrobe-cli/src/cli/annot.rs:71`, `crates/disrobe-cli/src/main.rs:1973`
+- `DR-CLI-0326`: `crates/disrobe-cli/src/cli/annot.rs:68`, `crates/disrobe-cli/src/main.rs:2307`
+- `DR-CLI-0327`: `crates/disrobe-cli/src/cli/annot.rs:71`, `crates/disrobe-cli/src/main.rs:1986`
 - `DR-CLI-0328`: `crates/disrobe-cli/src/cli/annot.rs:81`, `crates/disrobe-cli/src/cli/install_deps.rs:227`
 - `DR-CLI-0329`: `crates/disrobe-cli/src/cli/annot.rs:107`, `crates/disrobe-cli/src/cli/annot.rs:131`, `crates/disrobe-cli/src/cli/annot.rs:150`, `crates/disrobe-cli/src/cli/install_deps.rs:277`
 - `DR-CLI-0330`: `crates/disrobe-cli/src/cli/config.rs:145`, `crates/disrobe-cli/src/cli/rename.rs:54`
@@ -1913,7 +1921,7 @@
 - `DR-CLI-0334`: `crates/disrobe-cli/src/cli/config.rs:278`, `crates/disrobe-cli/src/cli/rename.rs:88`
 - `DR-CLI-0335`: `crates/disrobe-cli/src/cli/config.rs:287`, `crates/disrobe-cli/src/cli/rename.rs:90`
 - `DR-CLI-0336`: `crates/disrobe-cli/src/cli/config.rs:294`
-- `DR-CLI-0337`: `crates/disrobe-cli/src/main.rs:1814`
+- `DR-CLI-0337`: `crates/disrobe-cli/src/main.rs:1827`
 - `DR-CLI-0340`: `crates/disrobe-cli/src/cli/batch.rs:405`
 - `DR-CLI-0341`: `crates/disrobe-cli/src/cli/batch.rs:418`
 - `DR-CLI-0342`: `crates/disrobe-cli/src/cli/batch.rs:420`
@@ -1956,7 +1964,7 @@
 - `DR-CLI-0415`: `crates/disrobe-cli/src/cli/jvm.rs:1716`
 - `DR-CLI-0416`: `crates/disrobe-cli/src/cli/jvm.rs:1714`
 - `DR-CLI-0417`: `crates/disrobe-cli/src/cli/electron.rs:34`, `crates/disrobe-cli/src/cli/electron.rs:38`, `crates/disrobe-cli/src/cli/electron.rs:43`
-- `DR-CLI-0418`: `crates/disrobe-cli/src/cli/electron.rs:130`
+- `DR-CLI-0418`: `crates/disrobe-cli/src/cli/electron.rs:130`, `crates/disrobe-cli/src/cli/resources.rs:36`, `crates/disrobe-cli/src/cli/resources.rs:40`, `crates/disrobe-cli/src/cli/resources.rs:45`, `crates/disrobe-cli/src/cli/resources.rs:47`, `crates/disrobe-cli/src/cli/resources.rs:57`, `crates/disrobe-cli/src/cli/resources.rs:74`
 - `DR-CLI-0419`: `crates/disrobe-cli/src/cli/macho.rs:104`, `crates/disrobe-cli/src/cli/macho.rs:108`, `crates/disrobe-cli/src/cli/macho.rs:113`, `crates/disrobe-cli/src/cli/macho.rs:115`, `crates/disrobe-cli/src/cli/macho.rs:118`
 - `DR-CLI-0420`: `crates/disrobe-cli/src/cli/jvm.rs:565`, `crates/disrobe-cli/src/cli/jvm.rs:1814`, `crates/disrobe-cli/src/cli/jvm.rs:2281`, `crates/disrobe-cli/src/cli/llm.rs:274`
 - `DR-CLI-0421`: `crates/disrobe-cli/src/cli/jvm.rs:567`, `crates/disrobe-cli/src/cli/jvm.rs:1842`, `crates/disrobe-cli/src/cli/jvm.rs:2286`
@@ -2263,7 +2271,7 @@
 - `DR-CLI-0840`: `crates/disrobe-cli/src/cli/capabilities.rs:14`, `crates/disrobe-cli/src/cli/query.rs:111`
 - `DR-CLI-0841`: `crates/disrobe-cli/src/cli/capabilities.rs:28`, `crates/disrobe-cli/src/cli/query.rs:117`
 - `DR-CLI-0842`: `crates/disrobe-cli/src/cli/capabilities.rs:41`, `crates/disrobe-cli/src/cli/query.rs:143`
-- `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:175`, `crates/disrobe-cli/src/main.rs:2197`
+- `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:175`, `crates/disrobe-cli/src/main.rs:2211`
 - `DR-CLI-0844`: `crates/disrobe-cli/src/cli/chain_v1.rs:620`, `crates/disrobe-cli/src/cli/extract.rs:40`, `crates/disrobe-cli/src/cli/luks1_input.rs:43`, `crates/disrobe-cli/src/cli/luks1_input.rs:46`, `crates/disrobe-cli/src/cli/luks1_input.rs:55`, `crates/disrobe-cli/src/cli/luks1_input.rs:62`, `crates/disrobe-cli/src/cli/query.rs:182`, `crates/disrobe-cli/src/cli/taint.rs:244`
 - `DR-CLI-0850`: `crates/disrobe-cli/src/cli/taint.rs:101`
 - `DR-CLI-0851`: `crates/disrobe-cli/src/cli/nir_source.rs:41`
@@ -2298,17 +2306,22 @@
 - `DR-CLI-0914`: `crates/disrobe-cli/src/cli/dotnet.rs:148`, `crates/disrobe-cli/src/cli/dotnet.rs:154`
 - `DR-CLI-0915`: `crates/disrobe-cli/src/cli/dotnet.rs:225`, `crates/disrobe-cli/src/cli/dotnet.rs:230`
 - `DR-CLI-0916`: `crates/disrobe-cli/src/cli/dotnet.rs:264`, `crates/disrobe-cli/src/cli/dotnet.rs:266`
+- `DR-CLI-0970`: `crates/disrobe-cli/src/cli/js.rs:1495`
+- `DR-CLI-0971`: `crates/disrobe-cli/src/cli/js.rs:1502`
+- `DR-CLI-0972`: `crates/disrobe-cli/src/cli/js.rs:1517`
+- `DR-CLI-0973`: `crates/disrobe-cli/src/cli/js.rs:1519`
+- `DR-CLI-0974`: `crates/disrobe-cli/src/cli/wasm.rs:159`
 - `DR-CORE-0003`: `crates/disrobe-core/src/error.rs:8`
 - `DR-CORE-0004`: `crates/disrobe-core/src/error.rs:12`
-- `DR-CORE-0040`: `crates/disrobe-core/src/neutralize.rs:318`
-- `DR-CORE-0041`: `crates/disrobe-core/src/neutralize.rs:321`
-- `DR-CORE-0042`: `crates/disrobe-core/src/neutralize.rs:329`
-- `DR-CORE-0043`: `crates/disrobe-core/src/neutralize.rs:337`
-- `DR-CORE-0044`: `crates/disrobe-core/src/neutralize.rs:340`
-- `DR-CORE-0045`: `crates/disrobe-core/src/neutralize.rs:344`
-- `DR-CORE-0046`: `crates/disrobe-core/src/neutralize.rs:354`
-- `DR-CORE-0047`: `crates/disrobe-core/src/neutralize.rs:363`
-- `DR-CORE-0048`: `crates/disrobe-core/src/neutralize.rs:367`
+- `DR-CORE-0040`: `crates/disrobe-core/src/neutralize.rs:351`
+- `DR-CORE-0041`: `crates/disrobe-core/src/neutralize.rs:354`
+- `DR-CORE-0042`: `crates/disrobe-core/src/neutralize.rs:362`
+- `DR-CORE-0043`: `crates/disrobe-core/src/neutralize.rs:370`
+- `DR-CORE-0044`: `crates/disrobe-core/src/neutralize.rs:373`
+- `DR-CORE-0045`: `crates/disrobe-core/src/neutralize.rs:377`
+- `DR-CORE-0046`: `crates/disrobe-core/src/neutralize.rs:387`
+- `DR-CORE-0047`: `crates/disrobe-core/src/neutralize.rs:396`
+- `DR-CORE-0048`: `crates/disrobe-core/src/neutralize.rs:400`
 - `DR-CORE-0101`: `crates/disrobe-core/src/chain/spec.rs:158`
 - `DR-CORE-0102`: `crates/disrobe-core/src/chain/spec.rs:160`
 - `DR-CORE-0103`: `crates/disrobe-core/src/chain/spec.rs:162`
@@ -2488,6 +2501,11 @@
 - `DR-JSDEOB-0010`: `crates/disrobe-pass-js-deob/src/error.rs:38`
 - `DR-JSDEOB-0011`: `crates/disrobe-pass-js-deob/src/error.rs:43`
 - `DR-JSDEOB-0012`: `crates/disrobe-pass-js-deob/src/error.rs:47`
+- `DR-JSDEOB-0020`: `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs:75`
+- `DR-JSDEOB-0021`: `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs:80`
+- `DR-JSDEOB-0022`: `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs:84`
+- `DR-JSDEOB-0023`: `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs:88`
+- `DR-JSDEOB-0024`: `crates/disrobe-pass-js-deob/src/protectors/neutralize.rs:92`
 - `DR-JVM-0001`: `crates/disrobe-pass-jvm/src/error.rs:10`
 - `DR-JVM-0002`: `crates/disrobe-pass-jvm/src/error.rs:13`
 - `DR-JVM-0003`: `crates/disrobe-pass-jvm/src/error.rs:17`
