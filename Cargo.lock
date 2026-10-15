@@ -1909,6 +1909,7 @@ dependencies = [
  "disrobe-pass-as3",
  "disrobe-pass-beam",
  "disrobe-pass-dotnet",
+ "disrobe-pass-evm",
  "disrobe-pass-go",
  "disrobe-pass-js-deob",
  "disrobe-pass-jvm",
@@ -2261,6 +2262,17 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "toml",
+]
+
+[[package]]
+name = "disrobe-pass-evm"
+version = "0.10.6"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

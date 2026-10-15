@@ -1,0 +1,238 @@
+schema_version = 1
+crate = "disrobe-pass-evm"
+generated = "2026-10-14"
+toolchain = "solc-js 0.8.37, 0.8.19, 0.6.12 and 0.4.26 (npm install --ignore-scripts solc@<version>) on node 24.21.0; Vyper 0.4.3 (pip install vyper==0.4.3 into a Python 3.10 venv)"
+purpose = "Authored Solidity and Vyper contracts compiled by the reference compilers; graders compare disrobe evm selectors, mutability, argument types, events, errors and the creation/runtime split with the compilers' own ABI, method identifiers and deployed bytecode. The EIP-1167 and EIP-7511 clones are written from the EIP texts with the implementation address 0xbebe...be."
+
+[provenance]
+build = [
+    "DISROBE_SOLCJS_ROOT=<dir holding solcjs-<version>> sh corpus/evm/build.sh  (runs node corpus/evm/build.cjs per build; standard JSON; fails on a 'can be restricted to' warning)",
+    "<venv>/python -I corpus/evm/build_vyper.py --vyper <venv>/Scripts/vyper  (vyper -O gas and -O codesize)",
+]
+oracle = "solc and vyper ABI, method identifiers and deployedBytecode/bytecode_runtime SHA-256 in each reference.json; require messages and constant/immutable getter names read from solc's AST"
+
+[compilers]
+"solc-js 0.8.37" = "soljson.js sha256 221d7a667378b5068d913e75fe092507e061363cd1d23b64c49ae82febabad4c"
+"solc-js 0.8.19" = "soljson.js sha256 fba49e26930967a28d4f301088e126002ab6fbb755f37b5d0ee22b1bf4787070"
+"solc-js 0.6.12" = "soljson.js sha256 3e1956c550ca48e289044c7c0bd892403081b4b5e17e77ce707c815ce6c4228f"
+"solc-js 0.4.26" = "soljson.js sha256 357adb49bb74c9eabaa034db28f96b4105def2b052c7795db8e30ad9a34cc551"
+"vyper 0.4.3" = "vyper-0.4.3 wheel from PyPI, vyper --version 0.4.3+commit.bff19ea2"
+
+[[source]]
+path = "src/AbiZoo.sol"
+sha256 = "0d1d74756e9ca2799ea40ac2d8787fc4d2c28daf5cd12b00db63766cfcdbfc31"
+
+[[source]]
+path = "src/Erc20.sol"
+sha256 = "68e7cf73c08871610f3eb7d39612d9dc2530e9402165c4f762c9fa7f1d8d21c0"
+
+[[source]]
+path = "src/Errors.sol"
+sha256 = "c15260539d70eb516f1fdb2d5b2976f1807e757cb2c5a0b9a857830f119671d8"
+
+[[source]]
+path = "src/Legacy.sol"
+sha256 = "b7ae2b5262e24a55445223c5c7d2d968d722d8d004a6c07085ed85974cfb0055"
+
+[[source]]
+path = "src/Multi.sol"
+sha256 = "8408b4810f1840211b25632c4c9423d97d493ade49ac4d0c171d7160da560726"
+
+[[source]]
+path = "src/Nft.sol"
+sha256 = "4440561cba7bff11df08820a126100141c9c6c35d19637529a0d0bd25b87aff1"
+
+[[source]]
+path = "src/Proxy.sol"
+sha256 = "f7dab05f09a7e30c308c75821ab9011b181d947cec6c937a77b3caf5687fad6d"
+
+[[source]]
+path = "src/Vault.sol"
+sha256 = "7a0b7c613e83f87211706d0add25eac317f73c51425d13226ea21690b70b4347"
+
+[[source]]
+path = "vyper-src/Ledger.vy"
+sha256 = "0be0687ebbec070f52d283e1c2a5ac7ce4798ce1b072786e2122fc6e081d569a"
+
+[[build]]
+path = "solc/0.4.26-o0"
+compiler = "0.4.26+commit.4563c3fc.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": false, \"viaIR\": false}"
+reference_sha256 = "3e3319e9ce53da928b313cec55a0360c74b2bc1914d3a01dcf8ffe8b9d273ee7"
+outputs = [
+    { contract = "Legacy", file = "Legacy.hex", sha256 = "9da23124161bb2f8490911eccb04f63ef27a5335ffa8a3a50270acfdecaf5064", runtime_sha256 = "c9b2bbe6027a29559ccf6cbdef0dee51b98bd125a5347fe95a6f5d940384a2c0" },
+]
+
+[[build]]
+path = "solc/0.4.26-o1"
+compiler = "0.4.26+commit.4563c3fc.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": true, \"viaIR\": false}"
+reference_sha256 = "0f6944dc026e6c823c67f3e89a0b3a5ed1a52aa3b42a2815cb483f102d1f220e"
+outputs = [
+    { contract = "Legacy", file = "Legacy.hex", sha256 = "9f622cc505c1980adf7bf2469cbd374204d0f3ca3804658048f922776e2c2201", runtime_sha256 = "6687969803976adbcdb21e2ac2edd8c4a473d4d7ed4fd2e00b53c18c0af504eb" },
+]
+
+[[build]]
+path = "solc/0.6.12-o0"
+compiler = "0.6.12+commit.27d51765.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": false, \"viaIR\": false}"
+reference_sha256 = "889ff4dbf5265856800d73ba24012d014eb8fb658af19159bd95bd42167fec0a"
+outputs = [
+    { contract = "Legacy", file = "Legacy.hex", sha256 = "a587327aeef43710fa725272a5c54b3315cda7f50aa77c5faa142a81bfc210cb", runtime_sha256 = "3087dc6690cfbccfeb3d32ea415f713c64acfa4821951e642d5b6d2ed66b4ad0" },
+]
+
+[[build]]
+path = "solc/0.6.12-o1"
+compiler = "0.6.12+commit.27d51765.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": true, \"viaIR\": false}"
+reference_sha256 = "99346b87c3625f6cefbc4042eccd6511263f9f197699886b6baea6e096a60a60"
+outputs = [
+    { contract = "Legacy", file = "Legacy.hex", sha256 = "9f5ab2a24509567fef2b047c3c6aba0b7b50cb8f352bd72293a06dc85ac76e60", runtime_sha256 = "d985721a736a03922757221e4e8a65792534f2b6ac4dd77b23814e364346ef78" },
+]
+
+[[build]]
+path = "solc/0.8.19-ir-o1"
+compiler = "0.8.19+commit.7dd6d404.Emscripten.clang"
+settings = "{\"appendCBOR\": false, \"bytecodeHash\": null, \"optimizer\": true, \"viaIR\": true}"
+reference_sha256 = "9921530726ceb5bbb9ddc47f16d509bfb4f0961b2d472ee63f948917a1c7bf72"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "6c7b660613a67711a7de90752f0148ab4b6e8bbf5a40ff1cf84a3fe07d2dac85", runtime_sha256 = "d18137f5c9778dc23edf2dc0926e87efb1cdd1888da34bbc6a28c76b34346d9e" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "f6af8ba7921ed9cab847edd4b591763f15a9e53fb0c69ba0c311a36d89c2073f", runtime_sha256 = "547672d24de1647fcb7fe5930e2d9f6d42cd0dca7b07a24bd399a62669810bf5" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "3a810bd132e4101645f3a5b0cde382423dca2deb7fe2f274c5f961b70cc5e3aa", runtime_sha256 = "5de9709d2c30c536a8138e62886d1fb4c981e348df4799785ece0aea4bbc1d5c" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "71ed2ba9027dd2f04939adfcbdc8e657ab8f143667b12d1fd201b57332da2bab", runtime_sha256 = "bbda00925fc28057fa3c092eaad53bf39c76a3eae66841ac949b73227bf890af" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "5b0ffe9140b13bceb3c5da720f2c9788a3490030f552a343f83a87d8007c2ffd", runtime_sha256 = "cfa57d0dc6afc1c1776f6f1c53338fdf35a4e9ba0b0389e132b5af5fc05f3c4e" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "0611bacdb3a9bf31e9f4e8d2bae6b9a5f16de532349dbffdfb130df0f02aa8c0", runtime_sha256 = "cf8f8b38528a79a20db3b81e174ec7120666eea5f61b80d9b2f959f55d37243a" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "696a9be3a4057028443ef9c9bc4535ae8e81f11f796b9b4bf63be2d8bba0743c", runtime_sha256 = "b5d59093f1133d508945d49126d8f22c16df895d856e133ace000d71703106d1" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "b586d04b4ce0fdf5b6794d3bc762261e404615ab4e50193968dd144b2c71e5b6", runtime_sha256 = "774384a5d15939e1abea029d67724849072e9b75c86f12804cdc46b23f7532b4" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "8528e0c91a92437d1370298bc5e669a0156b26d7067887470afd32d3fe291044", runtime_sha256 = "6fad69bb7d3cf818d98c9d75dddc789c3a0855d57ec9004cc9070d74663a2375" },
+]
+
+[[build]]
+path = "solc/0.8.19-o0"
+compiler = "0.8.19+commit.7dd6d404.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": \"bzzr1\", \"optimizer\": false, \"viaIR\": false}"
+reference_sha256 = "ebf55e9df8e222f4314581202e80648a327b110a5838006678bd782e46aafb40"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "f2b85b08cd9f3902bdcf7538d66d167288441c0695e49c09e660cb5dbea6887f", runtime_sha256 = "2639619478349b594806cccda5e4968189e99bd8a4d62cc5e92b870ff2b01335" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "adac6f1fb445eae373dff76ca73f080a790f341d52c2bda03ab3db32ca706ee2", runtime_sha256 = "cb80afe987263595d2256d98cbffb13202165ee4c7c63b05f447214ec8bbe7d2" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "e48e9ce1da59ba885092a31b45e28087e6d431a32938c0a465cb7a62031e15df", runtime_sha256 = "0e42f9ee7609729f77e914ca52d26643b75f7c2b3c5260c489e2680b32bfbba8" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "ba4a9d947e8a60bc3e82f81b8219f3caa2b9b88fa2b392160811b34e41fd9b9f", runtime_sha256 = "fa3c2eb9abffc0feff060222ca3b1917eb0e26a6b7e02737b6a586b547687a17" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "80cb551921f66deea8f67d99090f2a1497707d132e97fdccb40dd14fd5a63a79", runtime_sha256 = "30eebcb7de157220cce7d27e854a37c35abe80112ad5794c36e277f0fd8157c8" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "217df52a4d03a7c41da694dd986613c029e9f0ed1c6663a5b430a2a331da91ba", runtime_sha256 = "43cc968798cbb519c5ce847ad061f5e3ef5de641e9a225427a4a81f21a3199b9" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "ff14502d7088d2c886c4c822a95526890b234fc2028f27cd2f57980a81b0c4eb", runtime_sha256 = "1d2ed602fd806e32412e923ae5414a3a68f7c88f7d0b86cfbe0a15181438053f" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "3ddc7737eb1e9632017f8696f6a803446876132253f525632a5211d6fe9c4ae1", runtime_sha256 = "9621971e8e63fde50769cab4cca45f7a7dfa05c62b4beccec4a08e158f0bb2ae" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "cfd753ca582407df7327ce02e42f1ca63189b017f6802840aca3ec19a731cf30", runtime_sha256 = "18f25a6e122d12c4da1b6a7aa08930bd9455d6976925ddcd505438f4c2d41352" },
+]
+
+[[build]]
+path = "solc/0.8.19-o1"
+compiler = "0.8.19+commit.7dd6d404.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": \"none\", \"optimizer\": true, \"viaIR\": false}"
+reference_sha256 = "9cf35089a2c84d573d56ad5e1c09c5734615f9e5cb81c793f10fa48948174de8"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "9a21c3cebf09df1a4d47ef94ba9343073c95b9f25881fd994f2a8b93d0c3e47d", runtime_sha256 = "f7e4712494450cac0479239373c9a110950936615f20cc25e69cb14fcae3608a" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "768f30c08379de095b3c3645217e86e4d00ee070823669b6d1548b4896f2ad22", runtime_sha256 = "b214210cdc3328edbe0502f972c9234f015e431eb4b9fd04d90864e565f8c950" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "4107c93002d3b04996ce18fde5e489eb87fa32368aba64ae0733ed5c234fc989", runtime_sha256 = "bc13668ad536ed0fb6c810f97368cd90f82b7df136af534bd31e8cce8b5030e1" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "993bb6d7dabb165a8f973c94e99b599275e6935a8caa42810eec3bf88d51ede3", runtime_sha256 = "b61fd47f6f1eb82b8891564fe0b8a7eab4561cc3d5365bafac6d22183d071c0f" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "25f79f7935a07cfd417874bc589e82e6dff6a0df0f140aed645c49fca4eee38a", runtime_sha256 = "80feb9e9cdad67c6f668918e442c61de97024a9a588427a78ff8b4d43c54c8f3" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "fce0b71109a4efb1cc0948f56dd98e20b711bd0d1813bfc49fd3a4c2ff80ca38", runtime_sha256 = "f962cbc80f3291b6fc8a230660bd5a225c3e695596e65a168ac92eea86faeedd" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "b3f78858f20c0c0849a1069d82d359bf0cc8069f33849a9bbd1463b174c7dd9e", runtime_sha256 = "57465d25e7bd0c26c67c7b0150b172f1195c4e21ebe80250215776a0a0982327" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "127cecbb4cdfbebf52843ea51742a30560cbf2570086470a30b76272e75d8204", runtime_sha256 = "ea6a76b030b8dffe1197a42c1a1241e983816336457dcc02476134d1f7f64a89" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "00d538bd7b3766cf98437138ed663272954332c88d50839821c9972d20814a89", runtime_sha256 = "ba73d5d052b62d45857128b4ecd4a83ba219ce61a3d8c4eabb1e7d2dc6521d22" },
+]
+
+[[build]]
+path = "solc/0.8.37-ir-o0"
+compiler = "0.8.37+commit.f401782d.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": false, \"viaIR\": true}"
+reference_sha256 = "9f2e9566154b99c2c6476620546f165ea869dcd99aaf76e9d8164c3b22a0a7d2"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "c9f9f662ef3ce6c33cff02e88da49130d370f700b1cf69a3e0e81405b26d7ee1", runtime_sha256 = "1c4165d61865ef03f0c459cdf14a1017ce8cd7ed53edba47ca46dd5711f7a7c0" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "38cdd3da4dc1481278261da10849a14431366c9ed188676b87c17ca3a564ec99", runtime_sha256 = "b1c88b087bae4925e04fe95cc2e76f7fe6e5bfee7536b9eddc7e48003d9a7b6f" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "0fa6e00be992e5a143c95c5bf7882b23d28a9d04f5524b4fe1f8559683a0366d", runtime_sha256 = "cc700e5eccc58e9dc7e4118b31b9e451bd24b8ebbb1dd9f0a2a98ca03f362fea" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "14e80a42438f085124e451de99a32b8fed2c5b15c492c067ca31df0990a2a2be", runtime_sha256 = "c096d1f9cfb72b88e54ed766ce28468f7b34e002df459eab408b425b8d90024c" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "ec137e412daed084fabab3475fc3263571b81b831c735b008a045c6afd4c78c2", runtime_sha256 = "eb47b796ae6c65512ec6533cf370ddf98c7c961d0c4b1917c56ebcd704e6ea8a" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "11a5785c83642b45d8e588f8339fcc8af12433b1a5ace2579f2ba729874c7128", runtime_sha256 = "b2e435cf1f090a8c15d509e2987e2f16f08c4d8d7e46d40a10a799336d12e3d8" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "ef732b9e506c784deb6733addbf70d46edd6755434fdf50d219a8a43ccbbfb2a", runtime_sha256 = "5b512a9d1048c7956920828a7af8140b590f3d10437366b06f2628c3c1acebfe" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "be46b1ce66ebeb803d8e7d675386dcfbdb4b5a0d95485bd3ec1fd4d6d7ede902", runtime_sha256 = "4dcbe60c409aef5f1b732baab517379749eb45b4ee0967a4ce297bea69155bae" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "ea275e277b882bbb8ddbba55934a2d322c402437da124cdb5cd1d26481b323dc", runtime_sha256 = "4e544dd2db62e55efe936a416e37c6fbe0340b3d69b2d31de6015a4ad5867430" },
+]
+
+[[build]]
+path = "solc/0.8.37-ir-o1"
+compiler = "0.8.37+commit.f401782d.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": true, \"viaIR\": true}"
+reference_sha256 = "1c37a1b9f860ddd36f560ca1677baf82861c6bbe43e03d7c69fdffe35e50ffc6"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "ca7f13ab005b6cf5543e90117ca878f2f9bcf8b5d5383b03e6f95f30e18e2ca8", runtime_sha256 = "f962e3fd59435049a5bc29c76958aa8006671a8641a83d6e1cfb94451f2b1a36" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "cc266a6fd1ecc36fa25f419acf773aa1e9f567998b553a37bc68e4e1d7b50527", runtime_sha256 = "b91d1fe329dcb1ae4605775a3398b592f4a190c083b2d16a1a55e858aad2778f" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "d6ad7e8d6552cb79b95f582fc768db4d6d7d59fe04708313b71e871c0aedff11", runtime_sha256 = "3c090d7a669ed3cb0e5126c070362828dd2489961129c868636ca999de900796" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "93c51fe51604ebc775a96859ced5446c61330dc83e9100fb3c845d32401805de", runtime_sha256 = "2b2be4abc071c3ccbd07e23ccff04378d4ec47dfbb86b437116a61f249780095" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "a0e2f5fe83556589e60b75ddaff1055fb37cd972ebbe9a951e14de73c7057acd", runtime_sha256 = "58c23cbc11d02863ecc4eb07715a7598b02021a31dc9fc06ec44b6cbee4c0a1a" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "6edab54079329c3445d4d9c436cbbe4ff1fb2ade68bec96a9ccef5ef4d6ea85a", runtime_sha256 = "ef808d1bcda797d8a1b8a44cac8e63e240349fa15c4eda4cdd70884ee9e26d40" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "41f3bc351add29ade5dcd7a724664079d0813afa525f8dd36ff3e787513bcfca", runtime_sha256 = "4691e7b085d6e1a9553db2c8b17ce5f5d6a354f5432971c9fae0dddb0ada5653" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "e1481d93148abd35e49bb28f125eb074bbad0d81fecfb58365f1b32f1f9b6ea4", runtime_sha256 = "fa22d66f9c04cac6955d52657a9942c4c46787e7666d26ca0de5219d83fa6e63" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "7b4c1b06367ea69a2590e18296247b3fd5d40cfd9467f946c8c89a71c6ef89a0", runtime_sha256 = "71b49dd34a8d903390753963ffc48773e0e230bee2bb6ace0f39c26d71b3f924" },
+]
+
+[[build]]
+path = "solc/0.8.37-o0"
+compiler = "0.8.37+commit.f401782d.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": false, \"viaIR\": false}"
+reference_sha256 = "61edf1fc6186da53dc090ccb0a8330638dbe328b29bd6c37ea0901857f39f694"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "729841e6c3dbfaf2fc97c09065158c514a562ac86d8f46eda059c3bdb220194e", runtime_sha256 = "1549ddb83e1a84b37d56e3a4d99b93a10f19ed9a73be5a61f67cdd2e8df37d16" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "6da4464479627d5f8294402e78a2a69d8d214174745328491f4cb7f52bc96696", runtime_sha256 = "1e023dcf141e9b0c3a29e587daa15013934888006114e8af74822eda3daea776" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "9e89a2b6f3dbc5a7b836586787599ae68fd07c2c75528411560403a12c4da6d8", runtime_sha256 = "89323307133dfd486fcc9b39ccbfa6524cdad838a805a2b2ac0cce8b971890f3" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "3bc5c4d09ae2cdfdfe2890f482e915d5cde38ca157e6b09cd2bd9a75b9a46401", runtime_sha256 = "aa905da56fb212f776d0e456bd71abb54d9d61cb6d8cb4cecfe992f1616b7530" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "8e7e61de581ba8a24d1b0cc25d6c44144dfd3368fbc99763b1bc9e840985ecc2", runtime_sha256 = "633069417e62cd97d8a24fdf7cd01b7ff5c964c0011d246ee60227da8bb6f718" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "ccdaf5d9375a95a5fec61ad45146115f182c98539d9dc36736bfa42034f0b00b", runtime_sha256 = "0e2c678c73a23f96e5c6197416c142b07134329b5a7c3630fd2d73964894d8ef" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "e0ee3a2387671c83589f5de42e3c76db234b78660a0dd0696db811a48111e663", runtime_sha256 = "75088bb242c6dbd0e2edd989b9cf1f2e757981cbdd0addf90468ea8620c6bba7" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "00b45b679be4aeb2f727859c3d657ba485a5cd3b88953e69868773497b4f7869", runtime_sha256 = "d4969b65980c6d13c6214c62dbd5a36c729ddabce399717764b9beba172c3af0" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "109361dc8849e2a26e1776ec16a4369fc9f8c03358c32f3f5713d9b8b7059f66", runtime_sha256 = "4805a0159223e6698e936dd7bbc10c19aad2ed5b24e84f6c67c2144ab6cbb9d7" },
+]
+
+[[build]]
+path = "solc/0.8.37-o1"
+compiler = "0.8.37+commit.f401782d.Emscripten.clang"
+settings = "{\"appendCBOR\": true, \"bytecodeHash\": null, \"optimizer\": true, \"viaIR\": false}"
+reference_sha256 = "d99536056c5c18909b74b5d9382328c55619109b62b06c3fcc90df035feb1ca4"
+outputs = [
+    { contract = "AbiZoo", file = "AbiZoo.hex", sha256 = "357dbea8293032f5d7cc425bbae07dfa5c8184f3ec5b37b964643052a280d08d", runtime_sha256 = "96a89210b2f6fa2cd04b31e234765f88a84dad7236c1399445d1edf541b12fca" },
+    { contract = "CloneFactory", file = "CloneFactory.hex", sha256 = "55ae226164c53797c89d190c7731eaf5efa360482018dd38ac6327752a7fcb40", runtime_sha256 = "caf5a25268419604c2bdba91a8531020f5a729604acf1503a3cc57ec5ec87a7f" },
+    { contract = "Edge", file = "Edge.hex", sha256 = "10be2667517632d864ff820b164ae4ce078f7f64a5629202f955c2067376f280", runtime_sha256 = "df0074c348a7c03171c6115283f82a57afe536eb4747d1691d878f6e44bc8505" },
+    { contract = "Erc20", file = "Erc20.hex", sha256 = "11e9337b0c967444670771fda3edd0af3e1fd76de02915126a0c3fcfa0b1d9f8", runtime_sha256 = "fc44c02d45df040cc4d9bae1ec0c3f511c8ddf997cac4dc043e0d29f2dd1167e" },
+    { contract = "Errors", file = "Errors.hex", sha256 = "3925e06855ebf2a6be76738b7f45322b90bc8690ac1fb1d356058ba2828c3519", runtime_sha256 = "34a65e0b166e9527e4ae581a4a481f02d1d9e1ef8759e4f57edd0087d22005a0" },
+    { contract = "Multi", file = "Multi.hex", sha256 = "3b8c8b213411c8eb407c374fe2f41028c24ddfb68b04a7a33933f9374469272d", runtime_sha256 = "38582ffc5eb59dc1c97164e633454c3f25e043a5af78a39460467c7209caf766" },
+    { contract = "Nft", file = "Nft.hex", sha256 = "a5aa5fde9c0066c8dd2be8c5aa8b73ed9130940361b9128b86747545a9fb85fd", runtime_sha256 = "4f603edb1e39ee1f9782a458ffd8e5a1562555f7e6e7c78d86b9db5c6b2c177f" },
+    { contract = "Proxy", file = "Proxy.hex", sha256 = "a9183786e1d980fe68ee6b3fc276bfc9b5f164372a0149995bf847da7da9ad22", runtime_sha256 = "648577ce227d29d316eea0ab454b7ddb932dd5e96ecd492ccee0001a24f1f99e" },
+    { contract = "Vault", file = "Vault.hex", sha256 = "1a9bdf6d62106512f4653c5f383bc669895c6e8ffd878a4bcaee2e6e16a312e4", runtime_sha256 = "96fd8f61dca35b41b2cecd4d66e296a9e5ae1353d12f7f786b443c7d0a00476b" },
+]
+
+[[build]]
+path = "vyper/codesize"
+compiler = "vyper 0.4.3+commit.bff19ea2"
+settings = "{\"optimize\": \"codesize\"}"
+reference_sha256 = "aa4e86680c2d3546e9bdd4dda1eb0aad2a8c791726a3b35bebc5281ca5ae30e8"
+outputs = [
+    { contract = "Ledger", file = "Ledger.hex", sha256 = "4192d378623de80cb1701fed3421d0a0544527654d6f9aa0a92e1d84d29ba306", runtime_sha256 = "fb2ca0f2b888873f9fd68b3ae1ad825016148a29ca336426242ec640e80636e4" },
+]
+
+[[build]]
+path = "vyper/gas"
+compiler = "vyper 0.4.3+commit.bff19ea2"
+settings = "{\"optimize\": \"gas\"}"
+reference_sha256 = "45387648df6a2140a3470bfbd65c33a7827ab8f9fd826a87d47291be569ecf67"
+outputs = [
+    { contract = "Ledger", file = "Ledger.hex", sha256 = "980c98a1e623c9d2d2a76830ef8a11d274c41748e0b7f7de067f3c3057bef4e5", runtime_sha256 = "3fcbf9601aa06be9207b94dc29da2d381a920174274f76479e5baaef4062e119" },
+]
+
+[[fixture]]
+path = "eip1167/clone-push0.hex"
+sha256 = "4ddf3eeae61f6ef397197efbffae2aa91bdc56f47524989384e568e066d4ec3f"
+note = "authored from the EIP text; not compiled"
+
+[[fixture]]
+path = "eip1167/clone.hex"
+sha256 = "c4efeb72df465de0c61223e455b149da1ed6c2c4bfc819574d5f9aba7562b50f"
+note = "authored from the EIP text; not compiled"

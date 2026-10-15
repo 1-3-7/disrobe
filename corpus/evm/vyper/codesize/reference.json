@@ -1,0 +1,289 @@
+{
+ "compiler": "vyper 0.4.3+commit.bff19ea2",
+ "settings": {
+  "optimize": "codesize"
+ },
+ "contracts": {
+  "Ledger": {
+   "source": "Ledger.vy",
+   "creation": {
+    "file": "Ledger.hex",
+    "length": 1363,
+    "sha256": "7df4c5f01a68c73c9df9c72d70a12c2b6b34fec98b7ca2b94dcda39f122e3747"
+   },
+   "runtime": {
+    "length": 1277,
+    "sha256": "fb2ca0f2b888873f9fd68b3ae1ad825016148a29ca336426242ec640e80636e4"
+   },
+   "methodIdentifiers": {
+    "balanceOf(address)": "70a08231",
+    "combine(uint8,int128,bytes4)": "52404a33",
+    "deposit()": "d0e30db0",
+    "label()": "cb4774c4",
+    "owner()": "8da5cb5b",
+    "peek(address)": "acefafae",
+    "setFlag(bool,bytes)": "fb5a0f8c",
+    "setLabel(string)": "bf530969",
+    "total(uint256[])": "5188d7c7",
+    "totalSupply()": "18160ddd",
+    "transfer(address,uint256)": "a9059cbb",
+    "wide(uint16,uint64,uint128,int8,bytes32)": "c42dee84"
+   },
+   "constantGetters": [],
+   "requireMessages": [],
+   "abi": [
+    {
+     "name": "Transfer",
+     "inputs": [
+      {
+       "name": "sender",
+       "type": "address",
+       "indexed": true
+      },
+      {
+       "name": "receiver",
+       "type": "address",
+       "indexed": true
+      },
+      {
+       "name": "value",
+       "type": "uint256",
+       "indexed": false
+      }
+     ],
+     "anonymous": false,
+     "type": "event"
+    },
+    {
+     "name": "Flagged",
+     "inputs": [
+      {
+       "name": "who",
+       "type": "address",
+       "indexed": true
+      },
+      {
+       "name": "flag",
+       "type": "bool",
+       "indexed": false
+      }
+     ],
+     "anonymous": false,
+     "type": "event"
+    },
+    {
+     "stateMutability": "nonpayable",
+     "type": "function",
+     "name": "transfer",
+     "inputs": [
+      {
+       "name": "receiver",
+       "type": "address"
+      },
+      {
+       "name": "amount",
+       "type": "uint256"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "bool"
+      }
+     ]
+    },
+    {
+     "stateMutability": "payable",
+     "type": "function",
+     "name": "deposit",
+     "inputs": [],
+     "outputs": []
+    },
+    {
+     "stateMutability": "view",
+     "type": "function",
+     "name": "peek",
+     "inputs": [
+      {
+       "name": "who",
+       "type": "address"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "pure",
+     "type": "function",
+     "name": "combine",
+     "inputs": [
+      {
+       "name": "a",
+       "type": "uint8"
+      },
+      {
+       "name": "b",
+       "type": "int128"
+      },
+      {
+       "name": "c",
+       "type": "bytes4"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "int256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "nonpayable",
+     "type": "function",
+     "name": "setFlag",
+     "inputs": [
+      {
+       "name": "flag",
+       "type": "bool"
+      },
+      {
+       "name": "note",
+       "type": "bytes"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "pure",
+     "type": "function",
+     "name": "total",
+     "inputs": [
+      {
+       "name": "values",
+       "type": "uint256[]"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "nonpayable",
+     "type": "function",
+     "name": "setLabel",
+     "inputs": [
+      {
+       "name": "text",
+       "type": "string"
+      }
+     ],
+     "outputs": []
+    },
+    {
+     "stateMutability": "pure",
+     "type": "function",
+     "name": "wide",
+     "inputs": [
+      {
+       "name": "a",
+       "type": "uint16"
+      },
+      {
+       "name": "b",
+       "type": "uint64"
+      },
+      {
+       "name": "c",
+       "type": "uint128"
+      },
+      {
+       "name": "d",
+       "type": "int8"
+      },
+      {
+       "name": "e",
+       "type": "bytes32"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "view",
+     "type": "function",
+     "name": "balanceOf",
+     "inputs": [
+      {
+       "name": "arg0",
+       "type": "address"
+      }
+     ],
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "view",
+     "type": "function",
+     "name": "totalSupply",
+     "inputs": [],
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ]
+    },
+    {
+     "stateMutability": "view",
+     "type": "function",
+     "name": "owner",
+     "inputs": [],
+     "outputs": [
+      {
+       "name": "",
+       "type": "address"
+      }
+     ]
+    },
+    {
+     "stateMutability": "view",
+     "type": "function",
+     "name": "label",
+     "inputs": [],
+     "outputs": [
+      {
+       "name": "",
+       "type": "string"
+      }
+     ]
+    },
+    {
+     "stateMutability": "nonpayable",
+     "type": "constructor",
+     "inputs": [],
+     "outputs": []
+    }
+   ]
+  }
+ }
+}

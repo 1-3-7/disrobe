@@ -1,0 +1,274 @@
+{
+ "compiler": "0.4.26+commit.4563c3fc.Emscripten.clang",
+ "settings": {
+  "optimizer": true,
+  "viaIR": false,
+  "bytecodeHash": null,
+  "appendCBOR": true
+ },
+ "contracts": {
+  "Legacy": {
+   "source": "Legacy.sol",
+   "creation": {
+    "file": "Legacy.hex",
+    "length": 1984,
+    "sha256": "5ba936c5278d0da9a982f326f34d4181578e3a08c588a42ae75025e09ab32f36"
+   },
+   "runtime": {
+    "length": 1934,
+    "sha256": "6687969803976adbcdb21e2ac2edd8c4a473d4d7ed4fd2e00b53c18c0af504eb"
+   },
+   "methodIdentifiers": {
+    "balances(address)": "27e235e3",
+    "fund()": "b60d4288",
+    "greet(string)": "ead710c4",
+    "level()": "6fd5ae15",
+    "move(address,uint256)": "987ff31c",
+    "narrow(int16,bytes4)": "f84f9af7",
+    "owner()": "8da5cb5b",
+    "paused()": "5c975abb",
+    "setLevel(uint8)": "bd5546be",
+    "setPaused(bool)": "16c38b3c",
+    "size(bytes)": "1c5ee10c",
+    "sum(uint256[])": "0194db8e"
+   },
+   "constantGetters": [],
+   "requireMessages": [
+    "balance",
+    "owner",
+    "paused"
+   ],
+   "abi": [
+    {
+     "constant": true,
+     "inputs": [
+      {
+       "name": "xs",
+       "type": "uint256[]"
+      }
+     ],
+     "name": "sum",
+     "outputs": [
+      {
+       "name": "total",
+       "type": "uint256"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "constant": false,
+     "inputs": [
+      {
+       "name": "flag",
+       "type": "bool"
+      }
+     ],
+     "name": "setPaused",
+     "outputs": [],
+     "payable": false,
+     "stateMutability": "nonpayable",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [
+      {
+       "name": "data",
+       "type": "bytes"
+      }
+     ],
+     "name": "size",
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [
+      {
+       "name": "",
+       "type": "address"
+      }
+     ],
+     "name": "balances",
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint256"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [],
+     "name": "paused",
+     "outputs": [
+      {
+       "name": "",
+       "type": "bool"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [],
+     "name": "level",
+     "outputs": [
+      {
+       "name": "",
+       "type": "uint8"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [],
+     "name": "owner",
+     "outputs": [
+      {
+       "name": "",
+       "type": "address"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "constant": false,
+     "inputs": [
+      {
+       "name": "to",
+       "type": "address"
+      },
+      {
+       "name": "amount",
+       "type": "uint256"
+      }
+     ],
+     "name": "move",
+     "outputs": [
+      {
+       "name": "",
+       "type": "bool"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "nonpayable",
+     "type": "function"
+    },
+    {
+     "constant": false,
+     "inputs": [],
+     "name": "fund",
+     "outputs": [],
+     "payable": true,
+     "stateMutability": "payable",
+     "type": "function"
+    },
+    {
+     "constant": false,
+     "inputs": [
+      {
+       "name": "newLevel",
+       "type": "uint8"
+      }
+     ],
+     "name": "setLevel",
+     "outputs": [],
+     "payable": false,
+     "stateMutability": "nonpayable",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [
+      {
+       "name": "who",
+       "type": "string"
+      }
+     ],
+     "name": "greet",
+     "outputs": [
+      {
+       "name": "",
+       "type": "bytes32"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "constant": true,
+     "inputs": [
+      {
+       "name": "a",
+       "type": "int16"
+      },
+      {
+       "name": "b",
+       "type": "bytes4"
+      }
+     ],
+     "name": "narrow",
+     "outputs": [
+      {
+       "name": "",
+       "type": "int256"
+      }
+     ],
+     "payable": false,
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "inputs": [],
+     "payable": false,
+     "stateMutability": "nonpayable",
+     "type": "constructor"
+    },
+    {
+     "anonymous": false,
+     "inputs": [
+      {
+       "indexed": true,
+       "name": "from",
+       "type": "address"
+      },
+      {
+       "indexed": true,
+       "name": "to",
+       "type": "address"
+      },
+      {
+       "indexed": false,
+       "name": "amount",
+       "type": "uint256"
+      }
+     ],
+     "name": "Moved",
+     "type": "event"
+    }
+   ]
+  }
+ }
+}

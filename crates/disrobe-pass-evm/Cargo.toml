@@ -1,0 +1,28 @@
+[package]
+name = "disrobe-pass-evm"
+version.workspace = true
+description = "static EVM bytecode recovery: disassembly through Osaka, control-flow graph, solc creation/runtime split and metadata trailer, dispatcher selectors with payable/view/pure and argument types, proxy detection and pseudo-Solidity"
+readme.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+sha3 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[package.metadata.disrobe]
+level = 1

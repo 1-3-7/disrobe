@@ -26,6 +26,7 @@ members = [
     "crates/disrobe-plugin-host",
     "crates/disrobe-pass-beam",
     "crates/disrobe-pass-dotnet",
+    "crates/disrobe-pass-evm",
     "crates/disrobe-pass-go",
     "crates/disrobe-pass-js-deob",
     "crates/disrobe-pass-jvm",
@@ -186,6 +187,7 @@ disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.6", def
 disrobe-pass-as3 = { path = "crates/disrobe-pass-as3", version = "0.10.6" }
 disrobe-pass-beam = { path = "crates/disrobe-pass-beam", version = "0.10.6" }
 disrobe-pass-dotnet = { path = "crates/disrobe-pass-dotnet", version = "0.10.6" }
+disrobe-pass-evm = { path = "crates/disrobe-pass-evm", version = "0.10.6" }
 disrobe-pass-go = { path = "crates/disrobe-pass-go", version = "0.10.6" }
 disrobe-pass-js-deob = { path = "crates/disrobe-pass-js-deob", version = "0.10.6" }
 disrobe-pass-jvm = { path = "crates/disrobe-pass-jvm", version = "0.10.6" }

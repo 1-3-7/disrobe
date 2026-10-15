@@ -1,0 +1,271 @@
+{
+ "compiler": "0.6.12+commit.27d51765.Emscripten.clang",
+ "settings": {
+  "optimizer": false,
+  "viaIR": false,
+  "bytecodeHash": null,
+  "appendCBOR": true
+ },
+ "contracts": {
+  "Legacy": {
+   "source": "Legacy.sol",
+   "creation": {
+    "file": "Legacy.hex",
+    "length": 3027,
+    "sha256": "fd03874e7743aecdab647c75777095c30b8e6fc6fc9e33b52d6c69d76e3dadb9"
+   },
+   "runtime": {
+    "length": 2930,
+    "sha256": "3087dc6690cfbccfeb3d32ea415f713c64acfa4821951e642d5b6d2ed66b4ad0"
+   },
+   "methodIdentifiers": {
+    "balances(address)": "27e235e3",
+    "fund()": "b60d4288",
+    "greet(string)": "ead710c4",
+    "level()": "6fd5ae15",
+    "move(address,uint256)": "987ff31c",
+    "narrow(int16,bytes4)": "f84f9af7",
+    "owner()": "8da5cb5b",
+    "paused()": "5c975abb",
+    "setLevel(uint8)": "bd5546be",
+    "setPaused(bool)": "16c38b3c",
+    "size(bytes)": "1c5ee10c",
+    "sum(uint256[])": "0194db8e"
+   },
+   "constantGetters": [],
+   "requireMessages": [
+    "balance",
+    "owner",
+    "paused"
+   ],
+   "abi": [
+    {
+     "inputs": [],
+     "stateMutability": "nonpayable",
+     "type": "constructor"
+    },
+    {
+     "anonymous": false,
+     "inputs": [
+      {
+       "indexed": true,
+       "internalType": "address",
+       "name": "from",
+       "type": "address"
+      },
+      {
+       "indexed": true,
+       "internalType": "address",
+       "name": "to",
+       "type": "address"
+      },
+      {
+       "indexed": false,
+       "internalType": "uint256",
+       "name": "amount",
+       "type": "uint256"
+      }
+     ],
+     "name": "Moved",
+     "type": "event"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "address",
+       "name": "",
+       "type": "address"
+      }
+     ],
+     "name": "balances",
+     "outputs": [
+      {
+       "internalType": "uint256",
+       "name": "",
+       "type": "uint256"
+      }
+     ],
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "inputs": [],
+     "name": "fund",
+     "outputs": [],
+     "stateMutability": "payable",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "string",
+       "name": "who",
+       "type": "string"
+      }
+     ],
+     "name": "greet",
+     "outputs": [
+      {
+       "internalType": "bytes32",
+       "name": "",
+       "type": "bytes32"
+      }
+     ],
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "inputs": [],
+     "name": "level",
+     "outputs": [
+      {
+       "internalType": "uint8",
+       "name": "",
+       "type": "uint8"
+      }
+     ],
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "address",
+       "name": "to",
+       "type": "address"
+      },
+      {
+       "internalType": "uint256",
+       "name": "amount",
+       "type": "uint256"
+      }
+     ],
+     "name": "move",
+     "outputs": [
+      {
+       "internalType": "bool",
+       "name": "",
+       "type": "bool"
+      }
+     ],
+     "stateMutability": "nonpayable",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "int16",
+       "name": "a",
+       "type": "int16"
+      },
+      {
+       "internalType": "bytes4",
+       "name": "b",
+       "type": "bytes4"
+      }
+     ],
+     "name": "narrow",
+     "outputs": [
+      {
+       "internalType": "int256",
+       "name": "",
+       "type": "int256"
+      }
+     ],
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "inputs": [],
+     "name": "owner",
+     "outputs": [
+      {
+       "internalType": "address",
+       "name": "",
+       "type": "address"
+      }
+     ],
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "inputs": [],
+     "name": "paused",
+     "outputs": [
+      {
+       "internalType": "bool",
+       "name": "",
+       "type": "bool"
+      }
+     ],
+     "stateMutability": "view",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "uint8",
+       "name": "newLevel",
+       "type": "uint8"
+      }
+     ],
+     "name": "setLevel",
+     "outputs": [],
+     "stateMutability": "nonpayable",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "bool",
+       "name": "flag",
+       "type": "bool"
+      }
+     ],
+     "name": "setPaused",
+     "outputs": [],
+     "stateMutability": "nonpayable",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "bytes",
+       "name": "data",
+       "type": "bytes"
+      }
+     ],
+     "name": "size",
+     "outputs": [
+      {
+       "internalType": "uint256",
+       "name": "",
+       "type": "uint256"
+      }
+     ],
+     "stateMutability": "pure",
+     "type": "function"
+    },
+    {
+     "inputs": [
+      {
+       "internalType": "uint256[]",
+       "name": "xs",
+       "type": "uint256[]"
+      }
+     ],
+     "name": "sum",
+     "outputs": [
+      {
+       "internalType": "uint256",
+       "name": "total",
+       "type": "uint256"
+      }
+     ],
+     "stateMutability": "pure",
+     "type": "function"
+    }
+   ]
+  }
+ }
+}
