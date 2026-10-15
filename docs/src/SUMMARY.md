@@ -51,6 +51,7 @@
 - [SQLite databases](./languages/sqlite.md)
 - [Network captures](./languages/captures.md)
 - [Crash records](./languages/crashes.md)
+- [EVM bytecode](./languages/evm.md)
 
 # Reference
 
