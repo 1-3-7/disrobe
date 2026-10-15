@@ -9,6 +9,7 @@ pub mod dyld_cache;
 pub mod error;
 pub mod fairplay;
 pub mod ipa;
+pub mod keyed_archive;
 pub mod macho;
 pub mod native_bodies;
 pub mod objc;

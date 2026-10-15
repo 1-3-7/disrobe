@@ -25,6 +25,7 @@ disrobe swift xor-decrypt blob.bin --key 0x55 --out strings.json
 disrobe macho classdump universal.bin --out dump
 disrobe macho dump App.app/App
 disrobe macho fat universal.bin
+disrobe macho keyed-archive state.plist   # NSKeyedArchiver object graph
 disrobe macho dyldcache dyld_shared_cache_arm64e --out ./out/cache-dylibs
 disrobe macho dyldcache dyld_shared_cache_arm64e --image /usr/lib/libobjc.A.dylib
 ```
@@ -50,6 +51,12 @@ swift classdump: OK
   swift declarations: ./out/App-swift.swift
   wrote:        ./out/App-swift.json
 ```
+
+## Keyed archives
+
+`macho keyed-archive` decodes an `NSKeyedArchiver` archive, binary or XML, into the object graph it stores: `$top` keys resolved through `$objects`, `NSArray`, `NSSet` and `NSOrderedSet` (and their mutable forms) as lists, `NSDictionary` as key-value pairs in archive order, `NSString` from `NS.string` or UTF-8 `NS.bytes`, `NSData`, `NSDate` (seconds since 2001 and Unix time), `NSURL` with its base, `NSUUID`, `NSNull` and `$null` as nil, `NSValue` fields, and every other class as an object with its class chain and fields. An object reached again while it is being decoded is shown as a back-reference instead of recursing; shared objects are decoded at each place they appear. A UID past the object table is reported as missing. Depth (256) and node count (1,000,000) are bounded and named when reached.
+
+The grader in `crates/disrobe-pass-swift-objc/tests/keyed_archive_reference.rs` builds archives with CPython's `plistlib` (binary with `plistlib.UID`, XML with `CF$UID` dictionaries) following the documented `NSKeyedArchiver` layout: every class above, nested collections, a shared object, a two-object cycle and a self reference, and a dangling UID. The decoded graph must equal the graph the writer built; a renamed string and a rewired UID must fail the comparison, a 5,000-level chain must stop at the depth bound, and 600 corrupted archives must decode or give a typed error. These archives are authored to the format, not written by Foundation; Apple-specific classes beyond those listed decode as generic objects.
 
 ## Coverage and fidelity
 
