@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2389 bounds (count 229, other 1121, output 71, recursion 238, size 541, work 189).
+2412 bounds (count 230, other 1136, output 72, recursion 240, size 545, work 189).
 
-Exceeded: error 982, recorded 201, panic 0, delegated 50, silent 1097, unclassified 18, allocation 33, unused 8.
+Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -268,6 +268,7 @@ Exceeded: error 982, recorded 201, panic 0, delegated 50, silent 1097, unclassif
 | `disrobe-cli` | `MAX_PRINTED_RESIDUALS` | other | silent: `.take()` in `print_unprotect_report`; no action in `print_unprotect_report` | `usize` | `12` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_PROMPT_RETRIES` | other | silent: `return` in `read_answer` | `u32` | `3` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `4 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/electron.rs` |
+| `disrobe-cli` | `MAX_FILE_BYTES` | size | error: untyped `miette!` | `u64` | `2 * disrobe_pass_evm::MAX_CODE_BYTES as u64 + 64 * 1024` | `crates/disrobe-cli/src/cli/evm.rs` |
 | `disrobe-cli` | `MAX_INSTALL_LOG_ENTRIES` | count | silent: no action in `trim_install_log`; slice in `trim_install_log` | `usize` | `500` | `crates/disrobe-cli/src/cli/install/mod.rs` |
 | `disrobe-cli` | `MAX_GHIDRA_ARCHIVE_ENTRIES` | count | error: untyped `miette!` | `usize` | `200_000` | `crates/disrobe-cli/src/cli/install_deps.rs` |
 | `disrobe-cli` | `MAX_GHIDRA_DOWNLOAD_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/install_deps.rs` |
@@ -307,7 +308,7 @@ Exceeded: error 982, recorded 201, panic 0, delegated 50, silent 1097, unclassif
 | `disrobe-cli` | `MAX_DATABASE_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/sqlite.rs` |
 | `disrobe-cli` | `MAX_WAL_BYTES` | size | error: untyped `miette!` | `u64` | `1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/sqlite.rs` |
 | `disrobe-cli` | `MAX_DOCUMENT_OUTPUT_BYTES` | output | error: `Error::other()`; `StructuredDocumentError::OutputTooLong` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/structured_document.rs` |
-| `disrobe-cli` | `MAX_NAVIGATION_CALLS` | other | unclassified: stored in `calls` with no read found | `usize` | `32_768` | `crates/disrobe-cli/src/cli/taint.rs` |
+| `disrobe-cli` | `MAX_NAVIGATION_CALLS` | other | delegated: passed to `list` | `usize` | `32_768` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CANDIDATE_RECORDS` | count | unclassified: stored in `candidate_records` with no read found | `usize` | `65_536` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_FUNCTIONS` | other | error: `CycloneDxError::AllocationFailed`; `CycloneDxError::ArithmeticOverflow`; `OpenVexError::NoFindings`; 2 more | `usize` | `8_192` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_INSTRUCTIONS` | other | error: `OpenVexError::NoFindings`; untyped `miette!` | `usize` | `262_144` | `crates/disrobe-cli/src/cli/taint.rs` |
@@ -838,6 +839,28 @@ Exceeded: error 982, recorded 201, panic 0, delegated 50, silent 1097, unclassif
 | `disrobe-pass-dotnet` | `MAX_NAME_BYTES` | size | silent: `return` in `repaired` | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/unprotect/names.rs` |
 | `disrobe-pass-dotnet` | `MAX_PATCHES` | other | silent: `return` in `push` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
 | `disrobe-pass-dotnet` | `MAX_PATCH_BYTES` | size | silent: `return` in `push` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
+| `disrobe-pass-evm` | `CONTEXT_VALUE_LIMIT` | other | recorded: flag `complete`; flag `halted`; flag `max_stack_height`; 1 more | `u64` | `1 << 32` | `crates/disrobe-pass-evm/src/cfg.rs` |
+| `disrobe-pass-evm` | `STACK_LIMIT` | other | recorded: `stack_overflows`; flag `halted` | `usize` | `1024` | `crates/disrobe-pass-evm/src/cfg.rs` |
+| `disrobe-pass-evm` | `MAX_FUNCTION_TEXT` | other | recorded: flag `full` | `usize` | `256 * 1024` | `crates/disrobe-pass-evm/src/decompile.rs` |
+| `disrobe-pass-evm` | `MAX_NESTING` | recursion | silent: `continue` in `block` | `usize` | `48` | `crates/disrobe-pass-evm/src/decompile.rs` |
+| `disrobe-pass-evm` | `MAX_TOTAL_TEXT` | other | silent: `break` in `render` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-evm/src/decompile.rs` |
+| `disrobe-pass-evm` | `MAX_HEAD_WORDS` | other | silent: `return` in `classify_calldata` | `u64` | `4096` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_JUMPDEST_VISITS` | other | recorded: `Halt::LoopLimit` | `u16` | `256` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_KECCAK_BYTES` | size | silent: `return` in `hash` | `u64` | `4096` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_RECORDED_JUMPS` | other | silent: skipped in `record_jump` | `usize` | `1 << 16` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_SELECTOR_BUCKETS` | other | silent: `return` in `run` | `u16` | `256` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_SYMBOLIC_FORKS` | other | recorded: flag `complete` | `u16` | `2` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `STACK_LIMIT` | other | recorded: `Halt::StackOverflow` | `usize` | `1024` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_WEIGHT` | other | silent: `return` in `node` | `u32` | `384` | `crates/disrobe-pass-evm/src/expr.rs` |
+| `disrobe-pass-evm` | `MAX_EVIDENCE` | other | silent: skipped in `evidence` | `usize` | `4096` | `crates/disrobe-pass-evm/src/function.rs` |
+| `disrobe-pass-evm` | `MAX_CODE_BYTES` | size | error: `EvmError::TooLarge` | `usize` | `1 << 20` | `crates/disrobe-pass-evm/src/lib.rs` |
+| `disrobe-pass-evm` | `MAX_BYTES` | size | silent: `return` in `put` | `usize` | `1 << 16` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_CONST_ADDRESS` | other | silent: `return` in `locate` | `u64` | `1 << 20` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_COPY` | other | error: `EvmError::BadHex`; `EvmError::OddHex`; `EvmError::TooLarge` | `u64` | `4096` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_REGIONS` | other | silent: `return` in `region` | `usize` | `64` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_DEPTH` | recursion | silent: `return` in `item` | `usize` | `8` | `crates/disrobe-pass-evm/src/metadata.rs` |
+| `disrobe-pass-evm` | `MAX_ITEMS` | count | silent: `return` in `item` | `usize` | `256` | `crates/disrobe-pass-evm/src/metadata.rs` |
+| `disrobe-pass-evm` | `MAX_RENDER` | output | silent: `.truncate()` in `expr`; `while` condition in `expr`; no action in `expr` | `usize` | `600` | `crates/disrobe-pass-evm/src/render.rs` |
 | `disrobe-pass-go` | `FLAT_32_ADDRESS_LIMIT` | other | unused: no use in the crate | `u64` | `1 << 32` | `crates/disrobe-pass-go/src/binary.rs` |
 | `disrobe-pass-go` | `MD_WORD_FTAB_CAP` | other | unused: no use in the crate | `usize` | `18` | `crates/disrobe-pass-go/src/binary.rs` |
 | `disrobe-pass-go` | `MD_WORD_FUNCNAMETAB_CAP` | other | unused: no use in the crate | `usize` | `3` | `crates/disrobe-pass-go/src/binary.rs` |
@@ -2413,7 +2436,7 @@ Exceeded: error 982, recorded 201, panic 0, delegated 50, silent 1097, unclassif
 
 ## Silent stops
 
-1097 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1111 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2718,6 +2741,20 @@ Exceeded: error 982, recorded 201, panic 0, delegated 50, silent 1097, unclassif
 | `disrobe-pass-dotnet` | `MAX_NAME_BYTES` | `return` in `repaired` | `crates/disrobe-pass-dotnet/src/unprotect/names.rs` |
 | `disrobe-pass-dotnet` | `MAX_PATCHES` | `return` in `push` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
 | `disrobe-pass-dotnet` | `MAX_PATCH_BYTES` | `return` in `push` | `crates/disrobe-pass-dotnet/src/unprotect/neutralize.rs` |
+| `disrobe-pass-evm` | `MAX_NESTING` | `continue` in `block` | `crates/disrobe-pass-evm/src/decompile.rs` |
+| `disrobe-pass-evm` | `MAX_TOTAL_TEXT` | `break` in `render` | `crates/disrobe-pass-evm/src/decompile.rs` |
+| `disrobe-pass-evm` | `MAX_HEAD_WORDS` | `return` in `classify_calldata` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_KECCAK_BYTES` | `return` in `hash` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_RECORDED_JUMPS` | skipped in `record_jump` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_SELECTOR_BUCKETS` | `return` in `run` | `crates/disrobe-pass-evm/src/exec.rs` |
+| `disrobe-pass-evm` | `MAX_WEIGHT` | `return` in `node` | `crates/disrobe-pass-evm/src/expr.rs` |
+| `disrobe-pass-evm` | `MAX_EVIDENCE` | skipped in `evidence` | `crates/disrobe-pass-evm/src/function.rs` |
+| `disrobe-pass-evm` | `MAX_BYTES` | `return` in `put` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_CONST_ADDRESS` | `return` in `locate` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_REGIONS` | `return` in `region` | `crates/disrobe-pass-evm/src/memory.rs` |
+| `disrobe-pass-evm` | `MAX_DEPTH` | `return` in `item` | `crates/disrobe-pass-evm/src/metadata.rs` |
+| `disrobe-pass-evm` | `MAX_ITEMS` | `return` in `item` | `crates/disrobe-pass-evm/src/metadata.rs` |
+| `disrobe-pass-evm` | `MAX_RENDER` | `.truncate()` in `expr`; `while` condition in `expr`; no action in `expr` | `crates/disrobe-pass-evm/src/render.rs` |
 | `disrobe-pass-go` | `MAX_LISTED_FUNCS` | `.take()` in `push_defer_section`; `.take()` in `render_symbol_report`; no action in `push_defer_section`; 1 more | `crates/disrobe-pass-go/src/chain_detector.rs` |
 | `disrobe-pass-go` | `MAX_PCDATA_ENTRIES` | `return` in `read_func_defer_view` | `crates/disrobe-pass-go/src/defers.rs` |
 | `disrobe-pass-go` | `MAX_DECOMPRESSED_LEN` | `.take()` in `inflate_raw`; `return` in `decompress_zdebug`; fallback value in `inflate_raw` | `crates/disrobe-pass-go/src/dwarf.rs` |
