@@ -335,6 +335,9 @@ mod jvm_protector_peel;
 #[path = "../jvm_yguard_restore.rs"]
 mod jvm_yguard_restore;
 
+#[path = "../keyed_archive_cli.rs"]
+mod keyed_archive_cli;
+
 #[path = "../llm_agents_md.rs"]
 mod llm_agents_md;
 

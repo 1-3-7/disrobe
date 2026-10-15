@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use disrobe_pass_swift_objc::keyed_archive::{ArchivedValue, KeyedArchive, decode_keyed_archive};
 
 use disrobe_pass_swift_objc::{
     ContainerKind, DyldCacheFamily, DyldSharedCache, FatArchEntry, MachoKind, ObjcClassDump,
@@ -47,6 +48,17 @@ pub(crate) enum MachoCmd {
         )]
         emit: Vec<String>,
     },
+    #[command(
+        about = "decode an NSKeyedArchiver archive (binary or XML plist) into its object graph: arrays, sets, dictionaries, strings, data, dates, URLs, UUIDs and custom classes with their fields, with cycles shown as back-references"
+    )]
+    KeyedArchive {
+        #[arg(
+            help = "input keyed archive (.plist, .archive, NIB keyed data, NSUserDefaults blob)"
+        )]
+        input: PathBuf,
+        #[arg(long, help = "print the decoded graph as JSON")]
+        json: bool,
+    },
     #[command(about = "walk a Fat-Mach-O envelope & report each slice's CPU type, size, & offset")]
     Fat {
         #[arg(help = "input fat Mach-O binary")]
@@ -79,8 +91,112 @@ pub(crate) fn run(action: MachoCmd) -> miette::Result<()> {
     match action {
         MachoCmd::Dump { input, out } => dump(input, out),
         MachoCmd::Classdump { input, out, emit } => classdump(input, out, emit),
+        MachoCmd::KeyedArchive { input, json } => keyed_archive(&input, json),
         MachoCmd::Fat { input } => fat(input),
         MachoCmd::Dyldcache { input, out, images } => dyldcache(input, out, images),
+    }
+}
+
+const MAX_KEYED_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+
+fn keyed_archive(input: &Path, json: bool) -> miette::Result<()> {
+    let size: u64 = std::fs::metadata(input)
+        .map_err(|e| miette::miette!("DR-CLI-0419: cannot read {}: {e}", input.display()))?
+        .len();
+    if size > MAX_KEYED_ARCHIVE_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0419: {} is {size} bytes, above the {MAX_KEYED_ARCHIVE_BYTES}-byte limit",
+            input.display()
+        ));
+    }
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-CLI-0419: cannot read {}: {e}", input.display()))?;
+    let archive: KeyedArchive = decode_keyed_archive(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0419: {}: {e}", input.display()))?;
+    if json {
+        let rendered: String = serde_json::to_string_pretty(&archive)
+            .map_err(|e| miette::miette!("DR-CLI-0419: serialize: {e}"))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+    println!(
+        "{} archive, version {}, {} objects",
+        archive.archiver,
+        archive
+            .version
+            .map_or_else(|| "unknown".to_owned(), |version: i128| version.to_string()),
+        archive.objects
+    );
+    for (key, value) in &archive.top {
+        print_archived(key, value, 1);
+    }
+    for problem in &archive.problems {
+        println!("problem: {problem}");
+    }
+    Ok(())
+}
+
+fn print_archived(label: &str, value: &ArchivedValue, depth: usize) {
+    let indent: String = "  ".repeat(depth);
+    let line = |text: String| println!("{indent}{label}: {text}");
+    match value {
+        ArchivedValue::Null => line("nil".to_owned()),
+        ArchivedValue::Bool { value } => line(value.to_string()),
+        ArchivedValue::Integer { value } => line(value.to_string()),
+        ArchivedValue::Real { value } => line(value.to_string()),
+        ArchivedValue::String { value } => line(format!("{value:?}")),
+        ArchivedValue::Data { hex } => line(format!("<{} bytes> {hex}", hex.len() / 2)),
+        ArchivedValue::Date {
+            seconds_since_2001,
+            unix,
+        } => line(format!("date {seconds_since_2001} (unix {unix})")),
+        ArchivedValue::Uuid { value } => line(format!("UUID {value}")),
+        ArchivedValue::BackReference { uid } => line(format!("<back-reference to object {uid}>")),
+        ArchivedValue::Dangling { uid } => line(format!("<missing object {uid}>")),
+        ArchivedValue::Truncated => line("<truncated>".to_owned()),
+        ArchivedValue::Url { base, relative } => {
+            line("NSURL".to_owned());
+            if let Some(base) = base {
+                print_archived("base", base, depth + 1);
+            }
+            print_archived("relative", relative, depth + 1);
+        }
+        ArchivedValue::Array { class, items } | ArchivedValue::Set { class, items } => {
+            line(format!("{class} ({} items)", items.len()));
+            for (index, item) in items.iter().enumerate() {
+                print_archived(&format!("[{index}]"), item, depth + 1);
+            }
+        }
+        ArchivedValue::Dictionary { class, entries } => {
+            line(format!("{class} ({} entries)", entries.len()));
+            for (key, item) in entries {
+                let name: String = match key {
+                    ArchivedValue::String { value } => value.clone(),
+                    other => format!("{other:?}"),
+                };
+                print_archived(&name, item, depth + 1);
+            }
+        }
+        ArchivedValue::Value { class, fields } => {
+            line(class.clone());
+            for (name, item) in fields {
+                print_archived(name, item, depth + 1);
+            }
+        }
+        ArchivedValue::Object {
+            class,
+            superclasses,
+            fields,
+        } => {
+            line(if superclasses.is_empty() {
+                class.clone()
+            } else {
+                format!("{class} : {}", superclasses.join(" : "))
+            });
+            for (name, item) in fields {
+                print_archived(name, item, depth + 1);
+            }
+        }
     }
 }
 
