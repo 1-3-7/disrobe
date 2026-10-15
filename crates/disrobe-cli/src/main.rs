@@ -1799,7 +1799,6 @@ pub(crate) fn subcommand_names() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
-#[cfg(feature = "auto")]
 #[cfg(feature = "server")]
 fn mcp_options(roots: Vec<PathBuf>) -> miette::Result<disrobe_mcp::ServerOptions> {
     let program: PathBuf = std::env::current_exe()
@@ -1816,6 +1815,7 @@ fn mcp_options(roots: Vec<PathBuf>) -> miette::Result<disrobe_mcp::ServerOptions
     })
 }
 
+#[cfg(feature = "auto")]
 pub(crate) fn subcommand_paths() -> std::collections::BTreeSet<String> {
     let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for top in <Cli as clap::CommandFactory>::command().get_subcommands() {
