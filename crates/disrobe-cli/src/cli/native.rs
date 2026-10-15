@@ -809,7 +809,7 @@ fn decompile_native(
             let reason: &str = if abi == PseudoAbi::I386 {
                 "x86-32 recovery emits C only; Rust output is not produced for x86-32"
             } else {
-                "not in the pure-safe Rust-emittable class (struct return or a block memcpy/memset idiom)"
+                "Rust output refused: a struct returned through a hidden pointer, a rep movs or rep stos block move or fill, a SIMD vector value, or a loop-resume transfer (DISROBE_DEBUG=native names which)"
             };
             unrecovered.push(serde_json::json!({
                 "name": f.name, "address": f.address, "reason": reason
