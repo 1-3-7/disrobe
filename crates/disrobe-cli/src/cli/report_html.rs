@@ -1,8 +1,10 @@
 use std::fmt::Write as _;
 
 use base64::Engine as _;
+use disrobe_core::anti_analysis::AntiAnalysisReport;
 use disrobe_core::behavior::{self, BehaviorReport, Category, CategoryFinding};
-use disrobe_core::ioc;
+use disrobe_core::ioc::{self, Indicator};
+use disrobe_core::strings::ExtractedString;
 
 use super::report::{BatchReport, IndicatorSection, InputIdentity, SingleReport, tier_label};
 #[cfg(test)]
@@ -51,9 +53,24 @@ fn native_import_tokens(bytes: &[u8]) -> Vec<String> {
 }
 
 #[must_use]
-pub(crate) fn enrich_bytes(bytes: &[u8], path: &str) -> Enrichment {
+pub(crate) fn enrich(
+    bytes: &[u8],
+    path: &str,
+    strings: &[ExtractedString],
+    indicators: &[Indicator],
+    anti: &AntiAnalysisReport,
+) -> Enrichment {
     let imports: Vec<String> = native_import_tokens(bytes);
-    let behavior_report: BehaviorReport = behavior::analyze_with_uri(bytes, &imports, Some(path));
+    let behavior_report: BehaviorReport = behavior::analyze_inputs(
+        bytes.len(),
+        Some(path),
+        &behavior::BehaviorInputs {
+            imports: &imports,
+            strings,
+            indicators,
+            anti,
+        },
+    );
     Enrichment {
         behavior: Some(behavior_report),
     }

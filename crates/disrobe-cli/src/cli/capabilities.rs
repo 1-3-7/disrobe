@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use disrobe_capabilities::{CapabilitiesReport, CapabilityMatch, Evidence};
+use disrobe_core::strings::ExtractedString;
 use disrobe_ir::Envelope;
 use disrobe_ir::payload::DisasmPayload;
 use disrobe_pass_native::build_disasm_payload;
@@ -22,32 +23,38 @@ pub(crate) fn build_report(
     uri: &str,
     input: &Path,
 ) -> miette::Result<CapabilitiesReport> {
-    if let Ok(env) = Envelope::decode(bytes) {
-        let module: Module = disrobe_query::module_from_envelope(&env).map_err(|e| {
+    build_report_with_strings(bytes, uri, input, None)
+}
+
+pub(crate) fn build_report_with_strings(
+    bytes: &[u8],
+    uri: &str,
+    input: &Path,
+    window_strings: Option<&[ExtractedString]>,
+) -> miette::Result<CapabilitiesReport> {
+    let module: Module = if let Ok(env) = Envelope::decode(bytes) {
+        disrobe_query::module_from_envelope(&env).map_err(|e| {
             miette::miette!(
                 "DR-CLI-0841: {} is a .dr envelope but not a Disasm or Mir rung the capabilities engine can read: {e}",
                 input.display()
             )
+        })?
+    } else {
+        let spinner: StageSpinner = StageSpinner::start(uri, "disassembling for capabilities");
+        let payload: DisasmPayload = build_disasm_payload(bytes).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0842: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
+                input.display()
+            )
         })?;
-        return Ok(disrobe_capabilities::analyze_module(
-            &module,
-            bytes,
-            Some(uri),
-        ));
-    }
-    let spinner: StageSpinner = StageSpinner::start(uri, "disassembling for capabilities");
-    let payload: DisasmPayload = build_disasm_payload(bytes).map_err(|e| {
-        miette::miette!(
-            "DR-CLI-0842: {} is neither a Disasm- or Mir-rung .dr envelope nor a disassemblable native binary: {e}",
-            input.display()
-        )
-    })?;
-    spinner.finish(&format!("{} bytes analyzed", bytes.len()));
-    let module: Module = Module::from_disasm(&payload);
-    Ok(disrobe_capabilities::analyze_module(
-        &module,
-        bytes,
-        Some(uri),
+        spinner.finish(&format!("{} bytes analyzed", bytes.len()));
+        Module::from_owned_disasm(payload)
+    };
+    Ok(window_strings.map_or_else(
+        || disrobe_capabilities::analyze_module(&module, bytes, Some(uri)),
+        |strings: &[ExtractedString]| {
+            disrobe_capabilities::analyze_module_with_strings(&module, bytes, Some(uri), strings)
+        },
     ))
 }
 

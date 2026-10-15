@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use disrobe_core::interop::{ArtifactSchema, IndicatorAggregator, IndicatorBundle};
 #[cfg(feature = "auto")]
-use disrobe_core::ioc::{self, IocReport};
+use disrobe_core::ioc::IocReport;
 
 use crate::cli::output::OutputFormat;
 
@@ -22,11 +22,16 @@ const fn schema_label(schema: ArtifactSchema) -> &'static str {
 }
 
 #[cfg(feature = "auto")]
+#[cfg(test)]
 pub(crate) fn analyze_target(
     bytes: &[u8],
     uri: &str,
 ) -> Result<(IocReport, IndicatorBundle), String> {
-    let report: IocReport = ioc::report(bytes, Some(uri));
+    bundle_report(disrobe_core::ioc::report(bytes, Some(uri)))
+}
+
+#[cfg(feature = "auto")]
+pub(crate) fn bundle_report(report: IocReport) -> Result<(IocReport, IndicatorBundle), String> {
     let encoded: String = serde_json::to_string(&report)
         .map_err(|_| "the static indicator report could not be serialized".to_string())?;
     let mut aggregator: IndicatorAggregator = IndicatorAggregator::new();

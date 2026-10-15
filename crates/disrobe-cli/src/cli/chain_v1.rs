@@ -5,7 +5,8 @@ use std::time::Instant;
 
 use disrobe_core::anti_analysis::{
     AntiAnalysisFinding, AntiAnalysisReport, ChainEvidence, DefeatStatus,
-    Technique as AntiTechnique, scan_with_chain as scan_anti_analysis,
+    Technique as AntiTechnique, scan_with_chain as scan_anti_analysis, scan_with_strings,
+    string_scan_window,
 };
 use disrobe_core::chain::metadata_keys::{self, MetadataValueError, keys};
 use disrobe_core::chain::spec::PassToken;
@@ -16,6 +17,7 @@ use disrobe_core::chain::{
     OutputKind, PassRegistry, PassRunOutcome, RUN_FILE_NAME, RunClock, RunRecord,
 };
 use disrobe_core::pass::PassContext;
+use disrobe_core::strings::{self, ExtractedString, Options};
 use disrobe_core::time::WallClock;
 use disrobe_core::{
     Artifact, RECON_SCHEMA, ReconCategory, ReconConfig, Redactor, Rung, SCAN_SCHEMA,
@@ -28,6 +30,7 @@ use super::chain_materialization::ExtractedWriter;
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
 use super::progress_ui::ChainProgress;
+use super::report::AnalysedInput;
 
 #[derive(Debug)]
 struct ChainPassRunner<'p> {
@@ -384,6 +387,26 @@ fn render_anti_analysis(report: &AntiAnalysisReport) {
     }
 }
 
+struct InputScan {
+    strings: Option<Vec<ExtractedString>>,
+    anti: AntiAnalysisReport,
+}
+
+fn scan_input(bytes: &[u8], uri: &str, evidence: &ChainEvidence) -> InputScan {
+    if string_scan_window(bytes).len() < bytes.len() {
+        return InputScan {
+            strings: None,
+            anti: scan_anti_analysis(bytes, Some(uri), evidence),
+        };
+    }
+    let strings: Vec<ExtractedString> = strings::extract(bytes, Options::default());
+    let anti: AntiAnalysisReport = scan_with_strings(bytes, Some(uri), evidence, &strings);
+    InputScan {
+        strings: Some(strings),
+        anti,
+    }
+}
+
 fn delphi_report_for(bytes: &[u8]) -> Option<disrobe_pass_native::delphi::DelphiReport> {
     disrobe_pass_native::detect_delphi(bytes).then(|| disrobe_pass_native::delphi::analyze(bytes))
 }
@@ -705,11 +728,10 @@ pub(crate) fn run_with_disk(
     };
     progress.finish(&format!("{} pass(es) ran", progress.steps()));
     let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
-    let anti: AntiAnalysisReport = scan_anti_analysis(
-        &seed_for_scan,
-        Some(&input.display().to_string()),
-        &evidence,
-    );
+    let InputScan {
+        strings: input_strings,
+        anti,
+    } = scan_input(&seed_for_scan, &input.display().to_string(), &evidence);
     let delphi: Option<disrobe_pass_native::delphi::DelphiReport> =
         delphi_report_for(&seed_for_scan);
     let doc: ChainDocument = ChainDocument::from_plan(
@@ -819,7 +841,17 @@ pub(crate) fn run_with_disk(
     } else {
         None
     };
-    super::report::write_single_forensic(&doc, &report, &out_dir, known)?;
+    super::report::write_single_forensic(
+        &doc,
+        &report,
+        &out_dir,
+        known,
+        AnalysedInput {
+            bytes: &seed_for_scan,
+            strings: input_strings.as_deref(),
+            anti: &anti,
+        },
+    )?;
     let run_path_str: Option<String> = if options.timings {
         let clock: RunClock = RunClock {
             started,
@@ -1361,7 +1393,10 @@ pub(crate) fn run_chain_to_dir(
         )?
     };
     let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
-    let anti: AntiAnalysisReport = scan_anti_analysis(&seed_for_scan, Some(input_label), &evidence);
+    let InputScan {
+        strings: input_strings,
+        anti,
+    } = scan_input(&seed_for_scan, input_label, &evidence);
     let doc: ChainDocument = ChainDocument::from_plan(
         &plan,
         &spec,
@@ -1393,7 +1428,17 @@ pub(crate) fn run_chain_to_dir(
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
-    super::report::write_single_forensic(&doc, &report, out_dir, known)?;
+    super::report::write_single_forensic(
+        &doc,
+        &report,
+        out_dir,
+        known,
+        AnalysedInput {
+            bytes: &seed_for_scan,
+            strings: input_strings.as_deref(),
+            anti: &anti,
+        },
+    )?;
     if let Some(jobs) = timings {
         let clock: RunClock = RunClock {
             started,

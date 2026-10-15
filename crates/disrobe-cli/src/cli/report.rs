@@ -1,4 +1,5 @@
 #![cfg(feature = "auto")]
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::File;
@@ -7,10 +8,12 @@ use std::path::{Path, PathBuf};
 
 use disrobe_capabilities::CapabilitiesReport;
 use disrobe_core::Redactor;
+use disrobe_core::anti_analysis::{self, AntiAnalysisReport, ChainEvidence as AntiChainEvidence};
 use disrobe_core::chain::{ChainDocument, ChainRecoveryReport, NodeDoc, VerdictDoc};
 use disrobe_core::interop::IndicatorBundle;
-use disrobe_core::ioc::IocReport;
+use disrobe_core::ioc::{self, Indicator, IocReport};
 use disrobe_core::recovery::ConfidenceTier;
+use disrobe_core::strings::{self, ExtractedString, Options};
 use serde::Serialize;
 
 use super::batch::{self, BatchManifest, BatchOptions};
@@ -207,10 +210,17 @@ pub(crate) struct IndicatorSection {
     pub(crate) report: Option<IocReport>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AnalysedInput<'a> {
+    pub(crate) bytes: &'a [u8],
+    pub(crate) strings: Option<&'a [ExtractedString]>,
+    pub(crate) anti: &'a AntiAnalysisReport,
+}
+
 #[cfg(test)]
 pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
     match verified_analysis_input(input) {
-        Ok((path, bytes)) => capabilities_from_bytes(path, &bytes),
+        Ok((path, bytes)) => capabilities_from_bytes(path, &bytes, None),
         Err(reason) => unavailable_capabilities(reason),
     }
 }
@@ -218,30 +228,98 @@ pub(crate) fn capabilities_section(input: &InputIdentity) -> CapabilitySection {
 #[cfg(test)]
 pub(crate) fn indicators_section(input: &InputIdentity) -> IndicatorSection {
     match verified_analysis_input(input) {
-        Ok((path, bytes)) => indicators_from_bytes(path, &bytes),
+        Ok((path, bytes)) => indicators_from_report(ioc::report(&bytes, Some(path))),
         Err(reason) => unavailable_indicators(reason),
     }
 }
 
-fn analysis_sections(
-    input: &InputIdentity,
-) -> (
+type AnalysisSections = (
     CapabilitySection,
     IndicatorSection,
     super::report_html::Enrichment,
-) {
-    match verified_analysis_input(input) {
-        Ok((path, bytes)) => (
-            capabilities_from_bytes(path, &bytes),
-            indicators_from_bytes(path, &bytes),
-            super::report_html::enrich_bytes(&bytes, path),
-        ),
-        Err(reason) => (
-            unavailable_capabilities(reason.clone()),
-            unavailable_indicators(reason),
-            super::report_html::Enrichment::default(),
-        ),
+);
+
+fn analysis_sections(
+    input: &InputIdentity,
+    analysed: Option<AnalysedInput<'_>>,
+) -> AnalysisSections {
+    let Some(analysed) = analysed else {
+        return match verified_analysis_input(input) {
+            Ok((path, bytes)) => {
+                let strings: Vec<ExtractedString> = strings::extract(&bytes, Options::default());
+                let window: &[u8] = anti_analysis::string_scan_window(&bytes);
+                let anti: AntiAnalysisReport = anti_analysis::scan_with_strings(
+                    &bytes,
+                    Some(path),
+                    &AntiChainEvidence::default(),
+                    &window_strings(window, &bytes, &strings),
+                );
+                sections_from_analysis(
+                    path,
+                    AnalysedInput {
+                        bytes: &bytes,
+                        strings: Some(&strings),
+                        anti: &anti,
+                    },
+                )
+            }
+            Err(reason) => unavailable_sections(reason),
+        };
+    };
+    match analysed_target(input, analysed.bytes.len()) {
+        Ok(path) => sections_from_analysis(path, analysed),
+        Err(reason) => unavailable_sections(reason),
     }
+}
+
+fn window_strings<'s>(
+    window: &[u8],
+    whole: &[u8],
+    whole_strings: &'s [ExtractedString],
+) -> Cow<'s, [ExtractedString]> {
+    if window.len() == whole.len() {
+        Cow::Borrowed(whole_strings)
+    } else {
+        Cow::Owned(strings::extract(window, Options::default()))
+    }
+}
+
+fn sections_from_analysis(path: &str, analysed: AnalysedInput<'_>) -> AnalysisSections {
+    let bytes: &[u8] = analysed.bytes;
+    let strings: Cow<'_, [ExtractedString]> = analysed.strings.map_or_else(
+        || Cow::Owned(strings::extract(bytes, Options::default())),
+        Cow::Borrowed,
+    );
+    let capability_strings: Option<&[ExtractedString]> =
+        (disrobe_capabilities::file_string_window(bytes).len() == bytes.len()).then_some(&strings);
+    let capabilities: CapabilitySection = capabilities_from_bytes(path, bytes, capability_strings);
+    let indicators: Vec<Indicator> = ioc::extract(bytes);
+    let enrichment: super::report_html::Enrichment =
+        super::report_html::enrich(bytes, path, &strings, &indicators, analysed.anti);
+    let indicators: IndicatorSection = indicators_from_report(ioc::report_from_indicators(
+        bytes.len(),
+        Some(path),
+        indicators,
+    ));
+    (capabilities, indicators, enrichment)
+}
+
+fn unavailable_sections(reason: String) -> AnalysisSections {
+    (
+        unavailable_capabilities(reason.clone()),
+        unavailable_indicators(reason),
+        super::report_html::Enrichment::default(),
+    )
+}
+
+fn analysed_target(input: &InputIdentity, byte_len: usize) -> Result<&str, String> {
+    let Some(path) = input.path.as_deref() else {
+        return Err("the chain document records no analysis target path".to_string());
+    };
+    if byte_len as u64 > MAX_REPORT_ANALYSIS_INPUT_BYTES {
+        return Err(exceeds_analysis_limit(path));
+    }
+    Ok(path)
 }
 
 fn verified_analysis_input(input: &InputIdentity) -> Result<(&str, Vec<u8>), String> {
@@ -255,8 +333,17 @@ fn verified_analysis_input(input: &InputIdentity) -> Result<(&str, Vec<u8>), Str
     Ok((path, bytes))
 }
 
-fn capabilities_from_bytes(path: &str, bytes: &[u8]) -> CapabilitySection {
-    match super::capabilities::build_report(bytes, path, Path::new(path)) {
+fn capabilities_from_bytes(
+    path: &str,
+    bytes: &[u8],
+    window_strings: Option<&[ExtractedString]>,
+) -> CapabilitySection {
+    match super::capabilities::build_report_with_strings(
+        bytes,
+        path,
+        Path::new(path),
+        window_strings,
+    ) {
         Ok(report) => CapabilitySection {
             available: true,
             report: Some(report),
@@ -270,8 +357,8 @@ fn capabilities_from_bytes(path: &str, bytes: &[u8]) -> CapabilitySection {
     }
 }
 
-fn indicators_from_bytes(path: &str, bytes: &[u8]) -> IndicatorSection {
-    match super::indicators::analyze_target(bytes, path) {
+fn indicators_from_report(report: IocReport) -> IndicatorSection {
+    match super::indicators::bundle_report(report) {
         Ok((report, bundle)) => IndicatorSection {
             available: true,
             bundle: Some(bundle),
@@ -299,6 +386,12 @@ const fn unavailable_indicators(reason: String) -> IndicatorSection {
     }
 }
 
+fn exceeds_analysis_limit(path: &str) -> String {
+    format!(
+        "the analysis target `{path}` exceeds the {MAX_REPORT_ANALYSIS_INPUT_BYTES}-byte report analysis input limit"
+    )
+}
+
 fn read_analysis_input(path: &str) -> Result<Vec<u8>, String> {
     let file: File = File::open(path).map_err(|_| {
         format!("the analysis target `{path}` is not readable from this working directory")
@@ -312,9 +405,7 @@ fn read_analysis_input(path: &str) -> Result<Vec<u8>, String> {
         ));
     }
     if metadata.len() > MAX_REPORT_ANALYSIS_INPUT_BYTES {
-        return Err(format!(
-            "the analysis target `{path}` exceeds the {MAX_REPORT_ANALYSIS_INPUT_BYTES}-byte report analysis input limit"
-        ));
+        return Err(exceeds_analysis_limit(path));
     }
     let capacity: usize = usize::try_from(metadata.len()).map_err(|_| {
         format!("the analysis target `{path}` size cannot be represented in memory")
@@ -336,9 +427,7 @@ fn read_analysis_input(path: &str) -> Result<Vec<u8>, String> {
                 format!("the analysis target `{path}` is not readable from this working directory")
             })?;
             if read > 0 {
-                return Err(format!(
-                    "the analysis target `{path}` exceeds the {MAX_REPORT_ANALYSIS_INPUT_BYTES}-byte report analysis input limit"
-                ));
+                return Err(exceeds_analysis_limit(path));
             }
             break;
         }
@@ -879,8 +968,9 @@ pub(crate) fn build_forensic(
     doc: &ChainDocument,
     recovery: &ChainRecoveryReport,
     out_dir: &Path,
+    analysed: Option<AnalysedInput<'_>>,
 ) -> SingleReport {
-    build_single(doc, recovery, Some(out_dir), out_dir)
+    build_single(doc, recovery, Some(out_dir), out_dir, analysed)
 }
 
 pub(crate) fn write_single_forensic(
@@ -888,8 +978,9 @@ pub(crate) fn write_single_forensic(
     recovery: &ChainRecoveryReport,
     out_dir: &Path,
     known: Option<&BTreeSet<String>>,
+    analysed: AnalysedInput<'_>,
 ) -> miette::Result<()> {
-    let report: SingleReport = build_forensic(doc, recovery, out_dir);
+    let report: SingleReport = build_forensic(doc, recovery, out_dir, Some(analysed));
     let json: String = render_json_value(&report, known)?;
     let document: ReportDocument = ReportDocument::Single(Box::new(report));
     let sarif: String = render_forensic_sarif(&document, known)?;
@@ -901,6 +992,7 @@ fn build_single(
     recovery: &ChainRecoveryReport,
     source_dir: Option<&Path>,
     target: &Path,
+    analysed: Option<AnalysedInput<'_>>,
 ) -> SingleReport {
     let stage_nodes: Vec<Option<&NodeDoc>> = attribute_stages(doc, recovery);
     let mut all_artifacts: Vec<String> = Vec::new();
@@ -969,7 +1061,7 @@ fn build_single(
         CapabilitySection,
         IndicatorSection,
         super::report_html::Enrichment,
-    ) = analysis_sections(&input);
+    ) = analysis_sections(&input, analysed);
     SingleReport {
         kind: "single",
         schema: RECOVERY_REPORT_SCHEMA.to_string(),
@@ -1152,6 +1244,7 @@ fn resolve_document(
                 &recovery,
                 Some(target),
                 target,
+                None,
             ))));
         }
         let out_dir: PathBuf = derived_batch_dir(target, base);
@@ -1199,6 +1292,7 @@ fn resolve_document(
             &outcome.report,
             Some(&out_dir),
             target,
+            None,
         ))));
     }
     Err(miette::miette!(
@@ -2598,5 +2692,59 @@ mod tests {
         );
         let batch: PathBuf = derived_batch_dir(Path::new("corpus"), Some(&root));
         assert_eq!(batch, root.join("corpus-batch"));
+    }
+
+    const CONNECT_PE: &[u8] =
+        include_bytes!("../../../disrobe-capabilities/tests/fixtures/connect.exe");
+
+    fn sections_json(sections: &AnalysisSections) -> serde_json::Value {
+        serde_json::json!({
+            "capabilities": serde_json::to_value(&sections.0).expect("capabilities json"),
+            "indicators": serde_json::to_value(&sections.1).expect("indicators json"),
+            "behavior": serde_json::to_value(&sections.2.behavior).expect("behavior json"),
+        })
+    }
+
+    #[test]
+    fn auto_report_sections_reuse_the_scanned_bytes_and_match_a_fresh_read() {
+        let (_target, input): (ScratchDir, InputIdentity) =
+            indicator_input("shared-analysis", CONNECT_PE);
+        let fresh: AnalysisSections = analysis_sections(&input, None);
+        let strings: Vec<ExtractedString> = strings::extract(CONNECT_PE, Options::default());
+        let anti: AntiAnalysisReport = anti_analysis::scan_with_strings(
+            CONNECT_PE,
+            input.path.as_deref(),
+            &AntiChainEvidence::default(),
+            &strings,
+        );
+        let unreadable: InputIdentity = InputIdentity {
+            path: Some("no-such-dir/target.bin".to_string()),
+            ..input
+        };
+        let shared: AnalysisSections = analysis_sections(
+            &unreadable,
+            Some(AnalysedInput {
+                bytes: CONNECT_PE,
+                strings: Some(&strings),
+                anti: &anti,
+            }),
+        );
+        assert!(
+            fresh.0.available && fresh.1.available,
+            "{:?}",
+            fresh.0.reason
+        );
+        assert!(
+            shared.0.available && shared.1.available,
+            "{:?}",
+            shared.0.reason
+        );
+        let mut expected: serde_json::Value = sections_json(&fresh);
+        let mut actual: serde_json::Value = sections_json(&shared);
+        for value in [&mut expected, &mut actual] {
+            value["capabilities"]["report"]["uri"] = serde_json::Value::Null;
+            value["behavior"]["uri"] = serde_json::Value::Null;
+        }
+        assert_eq!(actual, expected);
     }
 }
