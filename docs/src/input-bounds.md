@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2336 bounds (count 225, other 1096, output 69, recursion 232, size 527, work 187).
+2344 bounds (count 226, other 1101, output 69, recursion 233, size 528, work 187).
 
-Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassified 18, allocation 33, unused 8.
+Exceeded: error 962, recorded 197, panic 0, delegated 49, silent 1077, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -207,6 +207,10 @@ Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassif
 | `disrobe-binfmt` | `DIRECTORY_LIMIT` | other | error: untyped error | `u32` | `16` | `crates/disrobe-binfmt/src/coverage/pe.rs` |
 | `disrobe-binfmt` | `MAX_DEBUG_DIRECTORY_ENTRIES` | count | error: `Error::Coverage` (DR-BINFMT-0072); untyped `format!` | `u64` | `4_096` | `crates/disrobe-binfmt/src/coverage/pe.rs` |
 | `disrobe-binfmt` | `MAX_U32_LEB_BYTES` | size | error: `Error::Coverage` (DR-BINFMT-0072); untyped `format!` | `usize` | `5` | `crates/disrobe-binfmt/src/coverage/wasm.rs` |
+| `disrobe-binfmt` | `MAX_FAT_SLICES` | other | silent: `return` in `fat_slices` | `u32` | `32` | `crates/disrobe-binfmt/src/electron.rs` |
+| `disrobe-binfmt` | `MAX_INTEGRITY_RESOURCE` | other | silent: slice in `pe_integrity` | `usize` | `1024 * 1024` | `crates/disrobe-binfmt/src/electron.rs` |
+| `disrobe-binfmt` | `MAX_RESOURCE_ENTRIES` | count | silent: `.take()` in `pe_integrity` | `usize` | `4096` | `crates/disrobe-binfmt/src/electron.rs` |
+| `disrobe-binfmt` | `MAX_WIRES` | other | silent: `.take()` in `fuse_wires` | `usize` | `32` | `crates/disrobe-binfmt/src/electron.rs` |
 | `disrobe-binfmt` | `MAX_DT_STRSZ` | other | silent: `return` in `parse_elf_dynamic` | `u64` | `0x100_0000` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
 | `disrobe-binfmt` | `MAX_DYNAMIC_ENTRIES` | count | silent: `return` in `parse_elf_dynamic` | `usize` | `0x10_0000` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
 | `disrobe-binfmt` | `MAX_DYNAMIC_STRING_OUTPUT` | output | silent: `return` in `resolve_bounded_string` | `usize` | `0x100_0000` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
@@ -260,6 +264,7 @@ Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassif
 | `disrobe-cli` | `MAX_BUNDLE_ASSEMBLIES` | other | error: untyped `miette!` | `usize` | `512` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_PRINTED_RESIDUALS` | other | silent: `.take()` in `print_unprotect_report`; no action in `print_unprotect_report` | `usize` | `12` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_PROMPT_RETRIES` | other | silent: `return` in `read_answer` | `u32` | `3` | `crates/disrobe-cli/src/cli/dotnet.rs` |
+| `disrobe-cli` | `MAX_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `4 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/electron.rs` |
 | `disrobe-cli` | `MAX_INSTALL_LOG_ENTRIES` | count | silent: no action in `trim_install_log`; slice in `trim_install_log` | `usize` | `500` | `crates/disrobe-cli/src/cli/install/mod.rs` |
 | `disrobe-cli` | `MAX_GHIDRA_ARCHIVE_ENTRIES` | count | error: untyped `miette!` | `usize` | `200_000` | `crates/disrobe-cli/src/cli/install_deps.rs` |
 | `disrobe-cli` | `MAX_GHIDRA_DOWNLOAD_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/install_deps.rs` |
@@ -688,6 +693,9 @@ Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassif
 | `disrobe-pass-dotnet` | `MAX_STRUCTURE_DEPTH` | recursion | error: `StructureError::new()` | `usize` | `128` | `crates/disrobe-pass-dotnet/src/devirt/structure.rs` |
 | `disrobe-pass-dotnet` | `MAX_NESTING` | recursion | silent: `return` in `helper_body` | `usize` | `8` | `crates/disrobe-pass-dotnet/src/display_class_lowering.rs` |
 | `disrobe-pass-dotnet` | `MAX_FIELD_RVA_BYTES` | size | silent: `continue` in `build` | `u32` | `512` | `crates/disrobe-pass-dotnet/src/field_rva.rs` |
+| `disrobe-pass-dotnet` | `MAX_ATTRIBUTE_ARRAY` | other | silent: `return` in `value` | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/interop.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAMED_ARGUMENTS` | other | silent: `return` in `decode_attribute` | `u16` | `256` | `crates/disrobe-pass-dotnet/src/interop.rs` |
+| `disrobe-pass-dotnet` | `MAX_NESTING` | recursion | silent: `break` in `build` | `usize` | `64` | `crates/disrobe-pass-dotnet/src/interop.rs` |
 | `disrobe-pass-dotnet` | `MAX_ARRAY_FIELD_BYTES` | size | silent: `continue` in `array_field_data` | `usize` | `1 << 20` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_CALL_SITES` | other | silent: `break` in `recover_bitmono_strings` | `usize` | `4096` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIPHERTEXT_BYTES` | size | silent: `return` in `decrypt_site` | `usize` | `1 << 16` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
@@ -2360,7 +2368,7 @@ Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassif
 
 ## Silent stops
 
-1070 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1077 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2406,6 +2414,10 @@ Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassif
 | `disrobe-binfmt` | `MAX_PATH_DEPTH` | `break` in `walk_squashfs` | `crates/disrobe-binfmt/src/containers/squashfs.rs` |
 | `disrobe-binfmt` | `MAX_WALK_FILES` | `break` in `walk_squashfs` | `crates/disrobe-binfmt/src/containers/squashfs.rs` |
 | `disrobe-binfmt` | `MAX_SECTION_NAME` | `return` in `section_name` | `crates/disrobe-binfmt/src/coverage/elf.rs` |
+| `disrobe-binfmt` | `MAX_FAT_SLICES` | `return` in `fat_slices` | `crates/disrobe-binfmt/src/electron.rs` |
+| `disrobe-binfmt` | `MAX_INTEGRITY_RESOURCE` | slice in `pe_integrity` | `crates/disrobe-binfmt/src/electron.rs` |
+| `disrobe-binfmt` | `MAX_RESOURCE_ENTRIES` | `.take()` in `pe_integrity` | `crates/disrobe-binfmt/src/electron.rs` |
+| `disrobe-binfmt` | `MAX_WIRES` | `.take()` in `fuse_wires` | `crates/disrobe-binfmt/src/electron.rs` |
 | `disrobe-binfmt` | `MAX_DT_STRSZ` | `return` in `parse_elf_dynamic` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
 | `disrobe-binfmt` | `MAX_DYNAMIC_ENTRIES` | `return` in `parse_elf_dynamic` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
 | `disrobe-binfmt` | `MAX_DYNAMIC_STRING_OUTPUT` | `return` in `resolve_bounded_string` | `crates/disrobe-binfmt/src/elf_dynamic.rs` |
@@ -2593,6 +2605,9 @@ Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassif
 | `disrobe-pass-dotnet` | `MAX_SAMPLES` | `return` in `append_input_case`; `return` in `append_input_values` | `crates/disrobe-pass-dotnet/src/devirt/oracle.rs` |
 | `disrobe-pass-dotnet` | `MAX_NESTING` | `return` in `helper_body` | `crates/disrobe-pass-dotnet/src/display_class_lowering.rs` |
 | `disrobe-pass-dotnet` | `MAX_FIELD_RVA_BYTES` | `continue` in `build` | `crates/disrobe-pass-dotnet/src/field_rva.rs` |
+| `disrobe-pass-dotnet` | `MAX_ATTRIBUTE_ARRAY` | `return` in `value` | `crates/disrobe-pass-dotnet/src/interop.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAMED_ARGUMENTS` | `return` in `decode_attribute` | `crates/disrobe-pass-dotnet/src/interop.rs` |
+| `disrobe-pass-dotnet` | `MAX_NESTING` | `break` in `build` | `crates/disrobe-pass-dotnet/src/interop.rs` |
 | `disrobe-pass-dotnet` | `MAX_ARRAY_FIELD_BYTES` | `continue` in `array_field_data` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_CALL_SITES` | `break` in `recover_bitmono_strings` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIPHERTEXT_BYTES` | `return` in `decrypt_site` | `crates/disrobe-pass-dotnet/src/peel/bitmono_strings.rs` |

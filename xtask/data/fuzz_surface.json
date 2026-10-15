@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1505,
+    "entry_points": 1510,
     "parse_shaped": 620,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 647,
     "named_by_a_suite_recording_seed_reach": 132,
-    "named_by_neither": 822
+    "named_by_neither": 827
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -22,7 +22,7 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 283,
+      "entry_points": 287,
       "parse_shaped": 192,
       "with_declared_coverage_guided_target": 65,
       "with_replay_proven_semantic_reach": 0,
@@ -126,6 +126,10 @@
         "disrobe-binfmt/src/containers/wim_image.rs::extract_wim_files",
         "disrobe-binfmt/src/containers/wim_lzx.rs::lzx_compress_chunk",
         "disrobe-binfmt/src/containers/xar.rs::file_data",
+        "disrobe-binfmt/src/electron.rs::check_archive",
+        "disrobe-binfmt/src/electron.rs::declared_integrity_from_plist",
+        "disrobe-binfmt/src/electron.rs::fuse_wires",
+        "disrobe-binfmt/src/electron.rs::inspect_executable",
         "disrobe-binfmt/src/external_wrap.rs::extract_via_tool",
         "disrobe-binfmt/src/external_wrap.rs::wrap_external_extract",
         "disrobe-binfmt/src/rewrite/mod.rs::emit_native_image",
@@ -380,7 +384,7 @@
     },
     {
       "crate": "disrobe-pass-dotnet",
-      "entry_points": 122,
+      "entry_points": 123,
       "parse_shaped": 29,
       "with_declared_coverage_guided_target": 9,
       "with_replay_proven_semantic_reach": 9,
@@ -396,6 +400,7 @@
         "disrobe-pass-dotnet/src/decompile.rs::decompile_assembly_detailed",
         "disrobe-pass-dotnet/src/devirt/cil_handler.rs::summarize_cil_handler",
         "disrobe-pass-dotnet/src/devirt/extract.rs::models_from_eazvm_image",
+        "disrobe-pass-dotnet/src/interop.rs::interop_report",
         "disrobe-pass-dotnet/src/peel/agile_net_bodies.rs::decrypt_body_dual_xor",
         "disrobe-pass-dotnet/src/peel/agile_net_bodies.rs::decrypt_body_pro_xtea",
         "disrobe-pass-dotnet/src/peel/agile_net_bodies.rs::decrypt_body_single_xor",
