@@ -16,7 +16,7 @@ const SLOTS: &[(&str, &str)] = &[
     ("edge_hello_world", "print('hello world')"),
     ("edge_recursive", "return n * n(n - 1)"),
     ("edge_class_decorator", "decorated = True"),
-    ("edge_async_fn", "await s(0)"),
+    ("edge_async_fn", "await asyncio.sleep(0)"),
     ("edge_generator", "yield i"),
     (
         "edge_lambda_in_listcomp",

@@ -63,6 +63,11 @@ fn obfuxtreme_real_v4_fixtures_recover_source() {
             "obfuxtreme slot {slot}: recovered source missing {needle:?}; got first 300 bytes: {:?}",
             &peel.recovered_source.chars().take(300).collect::<String>()
         );
+        assert!(
+            !peel.recovered_source.contains("_st_"),
+            "obfuxtreme slot {slot}: every flattened state machine must be put back in sequence:\n{}",
+            peel.recovered_source
+        );
     }
 }
 

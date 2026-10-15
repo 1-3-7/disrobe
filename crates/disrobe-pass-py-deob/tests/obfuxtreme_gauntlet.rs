@@ -54,6 +54,7 @@ fn obfuxtreme_real_v4_artifact_recovers_runnable_source() {
         "marshal-load",
         "decompile",
         "string-aes-decrypt",
+        "state-machine-unflatten",
     ] {
         assert!(
             peel.stages_applied.iter().any(|s: &String| s == stage),
@@ -78,6 +79,8 @@ fn obfuxtreme_real_v4_artifact_recovers_runnable_source() {
         "'world'",
         "'__main__'",
         "math.sqrt(144)",
+        "    def __init__(self, start):\n        self.value = start\n",
+        "def main():\n    print(greet('world'))\n",
     ] {
         assert!(
             src.contains(needle),

@@ -87,8 +87,8 @@ fn report_upgrade_counts() {
     );
     assert_eq!(
         manglify,
-        (0, MANGLIFY_SLOTS.len()),
-        "no manglify fixture is Full: folding constants leaves the run-time key search and its nested layers in place"
+        (MANGLIFY_SLOTS.len(), MANGLIFY_SLOTS.len()),
+        "every committed manglify fixture is Full: the Engine key search unlocks each payload"
     );
     assert_eq!(
         pyminifier,

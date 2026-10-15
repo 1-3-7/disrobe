@@ -147,6 +147,97 @@ if probe in PROBES:
         emit('probe-error', type(error).__name__, error)
 ";
 
+const ALPHA: &str = r"
+import ast, sys
+
+IDENTIFIERS = {
+    ('Name', 'id'), ('arg', 'arg'), ('FunctionDef', 'name'), ('AsyncFunctionDef', 'name'),
+    ('ClassDef', 'name'), ('keyword', 'arg'), ('MatchAs', 'name'), ('MatchStar', 'name'),
+    ('MatchMapping', 'rest'), ('Global', 'names'), ('Nonlocal', 'names'), ('ExceptHandler', 'name'),
+    ('TypeVar', 'name'), ('ParamSpec', 'name'), ('TypeVarTuple', 'name'),
+}
+
+JUMPS = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+class Differs(Exception):
+    pass
+
+def is_string_statement(stmt):
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)
+
+def dedent_else(stmts):
+    out = []
+    for stmt in stmts:
+        if isinstance(stmt, ast.If) and stmt.orelse and stmt.body and isinstance(stmt.body[-1], JUMPS):
+            tail = stmt.orelse
+            stmt.orelse = []
+            out.append(stmt)
+            out.extend(dedent_else(tail))
+        else:
+            out.append(stmt)
+    return out
+
+class Normalize(ast.NodeTransformer):
+    def generic_visit(self, node):
+        super().generic_visit(node)
+        for field in ('body', 'orelse', 'finalbody'):
+            stmts = getattr(node, field, None)
+            if isinstance(stmts, list) and all(isinstance(s, ast.stmt) for s in stmts):
+                setattr(node, field, dedent_else([s for s in stmts if not is_string_statement(s)]))
+        return node
+
+def bind(spaces, space, got, want, where):
+    forward, backward = spaces.setdefault(space, ({}, {}))
+    if forward.setdefault(got, want) != want or backward.setdefault(want, got) != got:
+        raise Differs(f'{where}: {got!r} cannot also stand for {want!r}')
+
+def walk(got, want, spaces, where):
+    if type(got) is not type(want):
+        raise Differs(f'{where}: {type(got).__name__} != {type(want).__name__}')
+    if isinstance(got, list):
+        if len(got) != len(want):
+            raise Differs(f'{where}: {len(got)} != {len(want)} items')
+        for index, pair in enumerate(zip(got, want)):
+            walk(pair[0], pair[1], spaces, f'{where}[{index}]')
+        return
+    if not isinstance(got, ast.AST):
+        if got != want:
+            raise Differs(f'{where}: {got!r} != {want!r}')
+        return
+    kind = type(got).__name__
+    if kind == 'alias':
+        if got.name != want.name:
+            raise Differs(f'{where}: imports {got.name!r} != {want.name!r}')
+        bind(spaces, 'name', got.asname or got.name.split('.')[0], want.asname or want.name.split('.')[0], where)
+        return
+    for field in got._fields:
+        mine, theirs = getattr(got, field, None), getattr(want, field, None)
+        if (kind, field) in IDENTIFIERS:
+            mine = mine if isinstance(mine, list) else [mine]
+            theirs = theirs if isinstance(theirs, list) else [theirs]
+            if len(mine) != len(theirs) or any((a is None) != (b is None) for a, b in zip(mine, theirs)):
+                raise Differs(f'{where}.{field}: {mine!r} != {theirs!r}')
+            for a, b in zip(mine, theirs):
+                if a is not None:
+                    bind(spaces, 'name', a, b, f'{where}.{field}')
+            continue
+        if kind == 'Attribute' and field == 'attr':
+            bind(spaces, 'attribute', mine, theirs, f'{where}.attr')
+            continue
+        walk(mine, theirs, spaces, f'{where}.{field}')
+
+got = Normalize().visit(ast.parse(open(sys.argv[1], encoding='utf-8').read()))
+want = Normalize().visit(ast.parse(open(sys.argv[2], encoding='utf-8').read()))
+spaces = {}
+try:
+    walk(got, want, spaces, 'module')
+except Differs as error:
+    print('differs', error)
+else:
+    renamed = sum(1 for forward, _ in spaces.values() for a, b in forward.items() if a != b)
+    print('alpha-equal', renamed)
+";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Original {
     EdgeCase(&'static str),
@@ -493,10 +584,15 @@ const OBFUXTREME_WALRUS: &str = "the capture fed ObfuXtreme a walrus program oth
 const OBFUXTREME_ATTRIBUTES: &str = "ObfuXtreme renamed the class attributes MAX and NAME to random v_ names but not the f-string reads of them, so its own output fails and the names cannot be mapped back";
 const OBFUXTREME_RENAMED: &str =
     "ObfuXtreme renamed variables to random v_ hex names and keeps no mapping in the file";
-const MANGLIFY_ENGINE: &str = "the Manglify Engine loader brute-forces a four-digit XOR key over nested hex layers at run time; the static peel stops at the first loader layer";
-const PYOBFUSCATOR_ALIASES: &str = "PyObfuscator keeps its builtin alias table and XOR string decoder after the outer exec layer is unwrapped";
+const MANGLIFY_WALRUS: &str = "the capture fed Manglify a walrus program other than the shared edge case (the recovered payload counts to three instead of reading input) and did not record it, so there is no authored original to compare";
+const PYOBFUSCATOR_RENAMED: &str = "PyObfuscator renamed every identifier, attribute names included, and keeps no mapping in the file";
+const PYOBFUSCATOR_PATTERNS: &str = "PyObfuscator rewrote the strings inside case patterns into decoder calls, which a pattern cannot hold, so its own output does not compile";
 const PATCHWORK_RENAMED: &str = "Patchwork renamed module identifiers to random I, l, O and 0 names and keeps no mapping in the file";
 const PYPI_EMPTY_CLASS_PATTERNS: &str = "python-obfuscator emitted empty class patterns (case :) for the 3.10 band, so its own output does not compile";
+const PYPI_RENAMED_COLLIDING: &str = "python-obfuscator renamed identifiers without a mapping and gave the match subject the name of one of its capture patterns";
+const PYPI_RENAMED_ANNOTATIONS: &str = "python-obfuscator renamed identifiers without a mapping, renaming TypeVars but not their uses in annotations";
+const PYOBFUSCATOR_RENAMED_LITERAL: &str = "PyObfuscator renamed every identifier, attribute names included, keeps no mapping, and writes the True the decorator assigns as the integer 1";
+const PYOBFUSCATOR_RENAMED_ANNOTATION: &str = "PyObfuscator renamed every identifier and keeps no mapping, and dropped the TypeVar annotation of the parameter";
 const PYPI_RENAMED: &str =
     "python-obfuscator renamed identifiers to random names and keeps no mapping in the file";
 const PYOBFUSCATE_COM_RENAMED: &str =
@@ -504,32 +600,25 @@ const PYOBFUSCATE_COM_RENAMED: &str =
 const PYMINIFIER_STRING_PREFIX: &str = "pyminifier 2.1 renamed the f and b string prefixes as identifiers, so its own output does not compile";
 const PYMINIFIER_RENAMED: &str = "pyminifier renamed identifiers to short generated names and keeps no mapping in the file; several renames also miss f-string fields, breaking the tool's own output";
 
+const RENAME_ONLY: [&str; 5] = [
+    OBFUXTREME_RENAMED,
+    PATCHWORK_RENAMED,
+    PYOBFUSCATE_COM_RENAMED,
+    PYOBFUSCATOR_RENAMED,
+    PYPI_RENAMED,
+];
+
 const RESIDUALS: &[(&str, &str)] = &[
-    ("manglify/edge-cases/real_async_fn.py", MANGLIFY_ENGINE),
-    ("manglify/edge-cases/real_hello_world.py", MANGLIFY_ENGINE),
-    (
-        "manglify/edge-cases/real_lambda_in_listcomp.py",
-        MANGLIFY_ENGINE,
-    ),
-    (
-        "manglify/edge-cases/real_typing_generic.py",
-        MANGLIFY_ENGINE,
-    ),
     (
         "manglify/edge-cases/real_walrus_operator.py",
-        MANGLIFY_ENGINE,
+        MANGLIFY_WALRUS,
     ),
-    ("manglify/real_edge_cases_3_8.py", MANGLIFY_ENGINE),
     (
         "kramer/edge-cases/real_walrus_operator_pre_compile.py",
         KRAMER_WALRUS,
     ),
     (
         "obfuxtreme/edge-cases/real_lambda_in_listcomp.py.fixture",
-        OBFUXTREME_RENAMED,
-    ),
-    (
-        "obfuxtreme/edge-cases/real_typing_generic.py.fixture",
         OBFUXTREME_RENAMED,
     ),
     (
@@ -553,43 +642,39 @@ const RESIDUALS: &[(&str, &str)] = &[
     ("pyobfuscate_com/real_sample.py", PYOBFUSCATE_COM_RENAMED),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_async_fn.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_class_decorator.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED_LITERAL,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_generator.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_lambda_in_listcomp.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_match_statement.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_PATTERNS,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_recursive.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_structural_pattern.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_PATTERNS,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_typing_generic.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED_ANNOTATION,
     ),
     (
         "pyobfuscator_mauricelambert/edge-cases/real_walrus_operator.py",
-        PYOBFUSCATOR_ALIASES,
-    ),
-    (
-        "pyobfuscator_mauricelambert/real_hello.py",
-        PYOBFUSCATOR_ALIASES,
+        PYOBFUSCATOR_RENAMED,
     ),
     ("pyminifier/edge-cases/real_async_fn.py", PYMINIFIER_RENAMED),
     (
@@ -648,10 +733,6 @@ const RESIDUALS: &[(&str, &str)] = &[
         PYMINIFIER_RENAMED,
     ),
     ("pyminifier/variants/obfuscate_gzip.py", PYMINIFIER_RENAMED),
-    (
-        "pyminifier/variants/obfuscate_import_methods.py",
-        PYMINIFIER_RENAMED,
-    ),
     ("pyminifier/variants/obfuscate_lzma.py", PYMINIFIER_RENAMED),
     (
         "pyminifier/variants/obfuscate_variables.py",
@@ -688,7 +769,7 @@ const RESIDUALS: &[(&str, &str)] = &[
     ),
     (
         "python_obfuscator_pypi/edge-cases/real_match_statement.py",
-        PYPI_RENAMED,
+        PYPI_RENAMED_COLLIDING,
     ),
     (
         "python_obfuscator_pypi/edge-cases/real_recursive.py",
@@ -700,7 +781,7 @@ const RESIDUALS: &[(&str, &str)] = &[
     ),
     (
         "python_obfuscator_pypi/edge-cases/real_typing_generic.py",
-        PYPI_RENAMED,
+        PYPI_RENAMED_ANNOTATIONS,
     ),
     (
         "python_obfuscator_pypi/edge-cases/real_walrus_operator.py",
@@ -710,7 +791,10 @@ const RESIDUALS: &[(&str, &str)] = &[
         "python_obfuscator_pypi/real_application.py",
         PYPI_EMPTY_CLASS_PATTERNS,
     ),
-    ("python_obfuscator_pypi/real_sample.py", PYPI_RENAMED),
+    (
+        "python_obfuscator_pypi/real_sample.py",
+        PYPI_RENAMED_ANNOTATIONS,
+    ),
 ];
 
 fn repo_root() -> PathBuf {
@@ -838,6 +922,33 @@ fn drive(python: &Path, original: Original, source: &str) -> Run {
         exit_code: output.exit_code,
         stdout: output.stdout_text().replace("\r\n", "\n"),
     }
+}
+
+fn alpha(python: &Path, recovered: &str, original: &str) -> String {
+    let scratch: ScratchDir = ScratchDir::create("disrobe_py_obf_alpha").expect("scratch dir");
+    let got: PathBuf = scratch.path().join("recovered.py");
+    let want: PathBuf = scratch.path().join("original.py");
+    let script: PathBuf = scratch.path().join("alpha.py");
+    std::fs::write(&got, recovered).expect("write recovery");
+    std::fs::write(&want, original).expect("write original");
+    std::fs::write(&script, ALPHA).expect("write alpha script");
+    let output: ToolOutput = tool_output(
+        CommandSpec::new(python, PYTHON_TIMEOUT)
+            .arg("-I")
+            .arg("-X")
+            .arg("utf8")
+            .arg(&script)
+            .arg(&got)
+            .arg(&want)
+            .current_dir(scratch.path().to_path_buf()),
+    )
+    .unwrap_or_else(|e| panic!("running the alpha comparison failed: {e}"));
+    assert!(
+        output.success,
+        "the alpha comparison must parse both programs: {}",
+        output.stderr_text()
+    );
+    output.stdout_text().trim().to_owned()
 }
 
 fn expected_runs(python: &Path, cases: &[&Case]) -> BTreeMap<Original, Run> {
@@ -1052,6 +1163,43 @@ fn patchwork_recoveries_reexecute_like_their_originals() {
 }
 
 #[test]
+fn rename_only_residuals_match_their_originals_up_to_names() {
+    let python: PathBuf = python();
+    let all: Vec<Case> = cases();
+    let mut graded: usize = 0;
+    let mut wrong: BTreeMap<&str, String> = BTreeMap::new();
+    for (fixture, reason) in RESIDUALS {
+        if !RENAME_ONLY.contains(reason) {
+            continue;
+        }
+        let case: &Case = all
+            .iter()
+            .find(|c: &&Case| c.fixture == *fixture)
+            .unwrap_or_else(|| panic!("{fixture} is not a strict case"));
+        let bytes: Vec<u8> = common::require_corpus_file(fixture);
+        let recovered: String = peel(&bytes)
+            .unwrap_or_else(|e| panic!("{fixture} no longer peels: {e}"))
+            .final_source;
+        let verdict: String = alpha(&python, &recovered, &case.original.source());
+        let renamed: Option<usize> = verdict
+            .strip_prefix("alpha-equal ")
+            .and_then(|count: &str| count.parse::<usize>().ok());
+        if renamed.is_none_or(|count: usize| count == 0) {
+            wrong.insert(fixture, verdict);
+        }
+        graded += 1;
+    }
+    assert!(
+        graded >= 20,
+        "only {graded} rename-only residuals were graded"
+    );
+    assert!(
+        wrong.is_empty(),
+        "a residual named as renamed-only must equal its original once identifiers are mapped one to one; rename its reason if the tool changed more than names: {wrong:#?}"
+    );
+}
+
+#[test]
 fn mutation_controls_turn_the_strict_grader_red() {
     let python: PathBuf = python();
     let original: Original = Original::EdgeCase("recursive");
@@ -1093,6 +1241,26 @@ fn mutation_controls_turn_the_strict_grader_red() {
         Some("exec"),
         "a recovery that still execs a payload must never run"
     );
+
+    assert_eq!(alpha(&python, &renamed, &clean), "alpha-equal 1");
+    assert_eq!(alpha(&python, &clean, &clean), "alpha-equal 0");
+    for (mutant, what) in [
+        (&junk_variable, "a leftover junk assignment"),
+        (&changed_literal, "a changed literal"),
+        (
+            &clean.replace("n - 1", "n - True"),
+            "an int turned into a bool",
+        ),
+        (
+            &clean.replace("return n *", "return fact *"),
+            "two names merged into one",
+        ),
+    ] {
+        assert!(
+            alpha(&python, mutant, &clean).starts_with("differs "),
+            "{what} must not count as a rename"
+        );
+    }
 }
 
 const REMAP_SUBJECT: &str = "corpus/python/obfuscators/clean/remap_subject.py";

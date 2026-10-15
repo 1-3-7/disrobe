@@ -7,22 +7,41 @@ use disrobe_pass_py_deob::obfuscators::{DetectReport, Obfuscator, PeelOutcome, Q
 
 const OBF: &str = "pyobfuscator_mauricelambert";
 
-const SLOTS: &[(&str, bool)] = &[
-    ("hello", true),
-    ("edge_recursive", true),
-    ("edge_class_decorator", true),
-    ("edge_async_fn", true),
-    ("edge_generator", true),
-    ("edge_lambda_in_listcomp", true),
-    ("edge_walrus_operator", true),
-    ("edge_match_statement", false),
-    ("edge_structural_pattern", false),
-    ("edge_typing_generic", true),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    Clean,
+    Renamed,
+    ToolOutputDoesNotParse,
+}
+
+const SLOTS: &[(&str, Expect)] = &[
+    ("hello", Expect::Clean),
+    ("edge_recursive", Expect::Renamed),
+    ("edge_class_decorator", Expect::Renamed),
+    ("edge_async_fn", Expect::Renamed),
+    ("edge_generator", Expect::Renamed),
+    ("edge_lambda_in_listcomp", Expect::Renamed),
+    ("edge_walrus_operator", Expect::Renamed),
+    ("edge_match_statement", Expect::ToolOutputDoesNotParse),
+    ("edge_structural_pattern", Expect::ToolOutputDoesNotParse),
+    ("edge_typing_generic", Expect::Renamed),
 ];
 
+const GZIP_STAGES: [&str; 2] = ["bytes-literal-extract", "gzip-decompress"];
+const FOLD_STAGES: [&str; 4] = [
+    "bytes-literal-extract",
+    "gzip-decompress",
+    "builtin-alias-fold",
+    "xor-string-fold",
+];
+
+fn parses(source: &str) -> bool {
+    ruff_python_parser::parse_module(source).is_ok()
+}
+
 #[test]
-fn mauricelambert_real_fixtures_peel_gzip_layer() {
-    for (slot, inner_layer_parses) in SLOTS {
+fn mauricelambert_real_fixtures_fold_the_alias_table_and_string_decoder() {
+    for (slot, expect) in SLOTS {
         let fixture: Vec<u8> = common::require_real_fixture(OBF, slot);
         let detect: DetectReport = PyObfuscatorMauricelambertPass.detect(&fixture);
         assert_eq!(detect.obfuscator, Obfuscator::PyObfuscatorMauricelambert);
@@ -33,41 +52,48 @@ fn mauricelambert_real_fixtures_peel_gzip_layer() {
         let peel: PeelOutcome = PyObfuscatorMauricelambertPass
             .peel(&fixture)
             .unwrap_or_else(|e| panic!("mauricelambert slot {slot} peel: {e:?}"));
-        assert_eq!(
-            peel.quality,
-            Quality::Partial,
-            "mauricelambert slot {slot}: gzip layer-peel is a Partial, got {:?}",
-            peel.quality
-        );
-        assert_eq!(
-            peel.stages_applied,
-            vec![
-                "bytes-literal-extract".to_owned(),
-                "gzip-decompress".to_owned()
-            ],
-            "mauricelambert slot {slot}: expected exactly the bytes-literal and gzip stages"
-        );
-        assert_eq!(
-            peel.diagnostics.get("inner_layer_len"),
-            Some(&peel.recovered_source.len().to_string()),
-            "mauricelambert slot {slot}: the reported inner layer length must match the emitted layer"
-        );
-        assert!(
-            peel.recovered_source.len() > 200,
-            "mauricelambert slot {slot}: gzip-decompressed inner layer should be substantial, got {} bytes",
-            peel.recovered_source.len()
-        );
-        if *inner_layer_parses {
-            assert!(
-                ruff_python_parser::parse(
-                    &peel.recovered_source,
-                    ruff_python_parser::ParseOptions::from(ruff_python_parser::Mode::Module)
-                )
-                .is_ok(),
-                "mauricelambert slot {slot}: the decompressed inner layer must parse as Python; \
-                 first 200: {:?}",
-                peel.recovered_source.chars().take(200).collect::<String>()
-            );
+        let source: &str = &peel.recovered_source;
+        match expect {
+            Expect::ToolOutputDoesNotParse => {
+                assert_eq!(peel.quality, Quality::Partial, "slot {slot}");
+                assert_eq!(peel.stages_applied, GZIP_STAGES, "slot {slot}");
+                assert!(
+                    !parses(source),
+                    "slot {slot}: the tool's own inner layer is not valid Python"
+                );
+                assert_eq!(
+                    peel.diagnostics.get("inner_layer_len"),
+                    Some(&source.len().to_string()),
+                    "slot {slot}: the reported inner layer length must match the emitted layer"
+                );
+            }
+            Expect::Clean | Expect::Renamed => {
+                assert_eq!(peel.stages_applied, FOLD_STAGES, "slot {slot}");
+                assert!(parses(source), "slot {slot}:\n{source}");
+                assert!(
+                    !source.contains("ArithmeticError")
+                        && !source.contains("bytes([")
+                        && !source.contains("getattr(")
+                        && !source.contains("chr("),
+                    "slot {slot}: the alias table, the XOR decoder, getattr lookups and chr \
+                     arithmetic must all be folded:\n{source}"
+                );
+                let quality: Quality = if *expect == Expect::Clean {
+                    Quality::Full
+                } else {
+                    Quality::Partial
+                };
+                assert_eq!(peel.quality, quality, "slot {slot}:\n{source}");
+            }
         }
     }
+}
+
+#[test]
+fn the_hello_capture_folds_to_its_one_call() {
+    let fixture: Vec<u8> = common::require_real_fixture(OBF, "hello");
+    let peel: PeelOutcome = PyObfuscatorMauricelambertPass
+        .peel(&fixture)
+        .expect("the hello capture peels");
+    assert_eq!(peel.recovered_source, "print('hello world')\n");
 }
