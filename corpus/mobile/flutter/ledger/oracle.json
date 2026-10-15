@@ -1,0 +1,280 @@
+{
+  "source": "audit_ledger.dart",
+  "application_library": "org-dartlang-fixture:///audit_ledger.dart",
+  "application_code": [
+    "AuditLedger.note",
+    "AuditLedger.post",
+    "AuditLedger.summarize",
+    "classifyBalance",
+    "ledgerDepth",
+    "main"
+  ],
+  "literals": [
+    {
+      "function": "main",
+      "source": "<Object>[]",
+      "rendered": "<Object>"
+    },
+    {
+      "function": "main",
+      "source": "'opening-balance'",
+      "rendered": "\"opening-balance\""
+    },
+    {
+      "function": "main",
+      "source": "19.95",
+      "rendered": "19.95"
+    },
+    {
+      "function": "main",
+      "source": "'freight-surcharge'",
+      "rendered": "\"freight-surcharge\""
+    },
+    {
+      "function": "main",
+      "source": "-273.15",
+      "rendered": "-273.15"
+    },
+    {
+      "function": "main",
+      "source": "'Zürich-office'",
+      "rendered": "\"Zürich-office\""
+    },
+    {
+      "function": "main",
+      "source": "1234.5678",
+      "rendered": "1234.5678"
+    },
+    {
+      "function": "main",
+      "source": "'Δ-adjustment'",
+      "rendered": "\"Δ-adjustment\""
+    },
+    {
+      "function": "main",
+      "source": "3.14159",
+      "rendered": "3.14159"
+    },
+    {
+      "function": "main",
+      "source": "9007199254740993",
+      "rendered": "9007199254740993"
+    },
+    {
+      "function": "main",
+      "source": "-81985529216486895",
+      "rendered": "-81985529216486895"
+    },
+    {
+      "function": "main",
+      "source": "4294967296",
+      "rendered": "4294967296"
+    },
+    {
+      "function": "main",
+      "source": "const <String>['north-vault', 'south-vault', 'east-vault']",
+      "rendered": "const <String>[\"north-vault\", \"south-vault\", \"east-vault\"]"
+    },
+    {
+      "function": "main",
+      "source": "#auditTrail",
+      "rendered": "Symbol(\"auditTrail\")"
+    },
+    {
+      "function": "main",
+      "source": "<void Function(String)>[]",
+      "rendered": "<void Function(String)>"
+    },
+    {
+      "function": "main",
+      "source": "<int Function(double)?>[]",
+      "rendered": "<int Function(double)?>"
+    },
+    {
+      "function": "main",
+      "source": "<String?>[]",
+      "rendered": "<String?>"
+    },
+    {
+      "function": "main",
+      "source": "<String, double>{}",
+      "rendered": "<String, double>"
+    },
+    {
+      "function": "classifyBalance",
+      "source": "'ledger-tier-platinum'",
+      "rendered": "\"ledger-tier-platinum\""
+    },
+    {
+      "function": "classifyBalance",
+      "source": "'ledger-tier-gold'",
+      "rendered": "\"ledger-tier-gold\""
+    },
+    {
+      "function": "classifyBalance",
+      "source": "'ledger-tier-standard'",
+      "rendered": "\"ledger-tier-standard\""
+    },
+    {
+      "function": "AuditLedger.summarize",
+      "source": "'postings:",
+      "rendered": "\"postings:\""
+    }
+  ],
+  "register_argument_calls": [
+    {
+      "function": "main",
+      "callee": "AuditLedger.post",
+      "arguments": [
+        "\"opening-balance\"",
+        "19.95"
+      ]
+    },
+    {
+      "function": "main",
+      "callee": "AuditLedger.note",
+      "arguments": [
+        "Symbol(\"auditTrail\")"
+      ]
+    },
+    {
+      "function": "main",
+      "callee": "AuditLedger.note",
+      "arguments": [
+        "const <String>[\"north-vault\", \"south-vault\", \"east-vault\"]"
+      ]
+    },
+    {
+      "function": "main",
+      "callee": "new AuditLedger",
+      "arguments": []
+    },
+    {
+      "function": "AuditLedger.summarize",
+      "callee": "_StringBase._interpolate",
+      "arguments": []
+    }
+  ],
+  "releases": [
+    {
+      "dart_version": "3.3.4",
+      "snapshot_compatibility_hash": "ee1eb666c76a5cb7746faf39d0b97547",
+      "calling_convention": "stack-arguments",
+      "artifact": "dart-3.3.4/audit_ledger_arm64.so",
+      "sha256": "e897e050bbeb01bf6602d295bd0e9354dd3c16a9dbc6e94179a30d01af415e1f",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
+      "instruction_sizes": "dart-3.3.4/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "7cd4f34c39ffc9d1106bd9304b724b379e9e38861ba229311c38d5c12b84a1f3",
+      "debugging_info": "dart-3.3.4/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "4eafe92239d5e8cd583417eb1245bdf69b22a93e09144adfcd914b1726ab866b"
+    },
+    {
+      "dart_version": "3.4.4",
+      "snapshot_compatibility_hash": "d20a1be77c3d3c41b2a5accaee1ce549",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.4.4/audit_ledger_arm64.so",
+      "sha256": "6a9407bff9cc194de5a3ab07680017ee198eef9ecb74b78a4b50f774acfccc71",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
+      "instruction_sizes": "dart-3.4.4/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "3b7402928a2816351f5bbc539954ea12bb4e0f130f8cf00531011b80af675639",
+      "debugging_info": "dart-3.4.4/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "714fdd210cb0f58b95dba1a2764da65dd84a95d738be554063948341a0c726fc"
+    },
+    {
+      "dart_version": "3.5.4",
+      "snapshot_compatibility_hash": "80a49c7111088100a233b2ae788e1f48",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.5.4/audit_ledger_arm64.so",
+      "sha256": "119e94e8d160e20d7d1737dbc0866ca6d9e9c681c0b63107d61ee261977b7b6e",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.5.4/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "ee80354c03e24766def66fb92add106613be6bfbe8519beed4116d6cc55ad491",
+      "debugging_info": "dart-3.5.4/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "df9dc11796a25289afde0dc1e3c4c2e152c575da9adddc3cf096bf3bfc3f8448"
+    },
+    {
+      "dart_version": "3.6.2",
+      "snapshot_compatibility_hash": "f956f595844a2f845a55707faaaa51e4",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.6.2/audit_ledger_arm64.so",
+      "sha256": "08abb34554225c11ebbdaf43a6da40b4b663df068e90f332867bf1d45fcba5df",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.6.2/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "b97914d96ca552e45d3066082eafd618e89959ff65712598cbc76d5096fa199c",
+      "debugging_info": "dart-3.6.2/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "d4865aef3245c63928b5fa38dacf28bca230701b30916f87df474baf9eb5691f"
+    },
+    {
+      "dart_version": "3.7.2",
+      "snapshot_compatibility_hash": "d91c0e6f35f0eb2e44124e8f42aa44a7",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.7.2/audit_ledger_arm64.so",
+      "sha256": "971059baa068b89b28fcffcd013ca76e1442bec02a30efc6981f14e71deb171c",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.7.2/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "db202793230282dc8adac55ba5ecf4b06a6b4e9cd9f5b965960a8f44160fb795",
+      "debugging_info": "dart-3.7.2/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "211fae9e8446a9e4a51ef44ef4e255ec1e6e2f75807544de9f21122ce8ce5fba"
+    },
+    {
+      "dart_version": "3.8.1",
+      "snapshot_compatibility_hash": "830f4f59e7969c70b595182826435c19",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.8.1/audit_ledger_arm64.so",
+      "sha256": "537481ae69d9a6c43aff3d69535cf89563ad0ec44a59aadaf891cc742194fd33",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.8.1/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "807e6c7e994e9f55ca8e1e5e699967844f3e88d75f8a946be1852fd5d15a95fe",
+      "debugging_info": "dart-3.8.1/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "087cdaff5c741a3f173f1a0ee6fb93d1f288ec7a32a4572668361e509d5951d3"
+    },
+    {
+      "dart_version": "3.9.2",
+      "snapshot_compatibility_hash": "97ff04a728735e6b6b098bdf983faaba",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.9.2/audit_ledger_arm64.so",
+      "sha256": "ad7d8abc8f0d1071f214606b3eedafa6e7c18080ae14db8585eb69c5ae870b22",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.9.2/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "93f9dbf6e0448768221bc2ddfb10be22aeda98bb8e2fa6456d432b6e67037df8",
+      "debugging_info": "dart-3.9.2/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "bf49a0ee6c9409ad96db13208169b117b29830387ee06049f43831acd93e6164"
+    },
+    {
+      "dart_version": "3.10.9",
+      "snapshot_compatibility_hash": "1ce86630892e2dca9a8543fdb8ed8e22",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.10.9/audit_ledger_arm64.so",
+      "sha256": "17d2276ec0e1d527b001b6c4f1aa3cf47eb029ec5573720f728b29d5e8ab71b3",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.10.9/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "e4d43d92aca715580219f94f18f1e81491d6cdaea57c441bdc4a5848593dd854",
+      "debugging_info": "dart-3.10.9/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "e7cfce195e53fabafe45c7e573f398b4679e79d2356fdbdbece82c3834529e3d"
+    },
+    {
+      "dart_version": "3.11.5",
+      "snapshot_compatibility_hash": "78da37fed6bf1489361a312568249f3f",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.11.5/audit_ledger_arm64.so",
+      "sha256": "e834cba13386a99fa7eaeb7fbbf9c023daacb05a28c3ee131cd1cb7373f90187",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.11.5/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "f6967f2cba63fc184d47d1346f93756684f44de99812209671e7498271fa2d3e",
+      "debugging_info": "dart-3.11.5/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "9b87150e31a0ec885c9de3621d4443b7a1d7f59824dd2b3d1fe2d3561a724e16"
+    },
+    {
+      "dart_version": "3.12.2",
+      "snapshot_compatibility_hash": "ace654289f5abc240509fc941453ebc5",
+      "calling_convention": "register-arguments",
+      "artifact": "dart-3.12.2/audit_ledger_arm64.so",
+      "sha256": "b6e1129512414371657c497ea77018c471658de44f89a82b75ccfde55dc7ee7e",
+      "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers",
+      "instruction_sizes": "dart-3.12.2/audit_ledger_arm64.sizes.json",
+      "instruction_sizes_sha256": "c1bbbf138b4359078097b057171eea526eaec0b6283232562cb3ba334e5ddad3",
+      "debugging_info": "dart-3.12.2/audit_ledger_arm64.symbols",
+      "debugging_info_sha256": "477b9ad195263d9ea5746e1696235ebc99bb9a9c8d6f7b0d347bdd4ded17224b"
+    }
+  ]
+}

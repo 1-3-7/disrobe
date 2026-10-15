@@ -22,13 +22,20 @@ mkdir -p "$OUT"
 
 "$GEN_SNAPSHOT" --deterministic --snapshot_kind=app-aot-elf \
   --elf="$OUT/receipt_validator_arm64.so" --print_cluster_information \
+  --print-instructions-sizes-to="$OUT/receipt_validator_arm64.sizes.json" \
   "$WORK/receipt_validator.aot.dill" 2> "$OUT/clusters.txt"
 
 "$GEN_SNAPSHOT" --deterministic --snapshot_kind=app-aot-elf \
   --elf="$OUT/receipt_validator_obfuscated_arm64.so" --print_cluster_information \
-  --dwarf-stack-traces --strip --save-debugging-info="$WORK/app.android-arm64.symbols" \
-  --obfuscate --save-obfuscation-map="$WORK/obfuscation_map.json" \
+  --dwarf-stack-traces --strip \
+  --save-debugging-info="$OUT/receipt_validator_obfuscated_arm64.symbols" \
+  --obfuscate \
+  --save-obfuscation-map="$OUT/receipt_validator_obfuscated_arm64.obfuscation_map.json" \
+  --print-instructions-sizes-to="$OUT/receipt_validator_obfuscated_arm64.sizes.json" \
   "$WORK/receipt_validator.aot.dill" 2> "$OUT/clusters_obfuscated.txt"
 
 sha256sum "$WORK/receipt_validator.aot.dill" "$OUT/receipt_validator_arm64.so" \
-  "$OUT/receipt_validator_obfuscated_arm64.so"
+  "$OUT/receipt_validator_obfuscated_arm64.so" "$OUT/receipt_validator_arm64.sizes.json" \
+  "$OUT/receipt_validator_obfuscated_arm64.sizes.json" \
+  "$OUT/receipt_validator_obfuscated_arm64.symbols" \
+  "$OUT/receipt_validator_obfuscated_arm64.obfuscation_map.json"

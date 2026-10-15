@@ -37,14 +37,24 @@
           "artifact": "dart-3.11.5/receipt_validator_arm64.so",
           "sha256": "135abe71ba547179210286c0a114eef4ed7bd818a4e02a4f28bcb1ee4d41a775",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers",
-          "cluster_report": "dart-3.11.5/clusters.txt"
+          "cluster_report": "dart-3.11.5/clusters.txt",
+          "instruction_sizes": "dart-3.11.5/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "9b9b54ed1448b0062d7c57f4d19e85f79a5dc6c2d850e92383479902434b76a3",
+          "debugging_info": "dart-3.11.5/receipt_validator_arm64.so",
+          "debugging_info_sha256": "135abe71ba547179210286c0a114eef4ed7bd818a4e02a4f28bcb1ee4d41a775"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.11.5/receipt_validator_obfuscated_arm64.so",
           "sha256": "8c6833a9bbef0d6a5905388feb5045ebbda4f2a845b7e7d597804215e08452ba",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers",
-          "cluster_report": "dart-3.11.5/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.11.5/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.11.5/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "b8d09eb60c43943398dba72fb091575e68dd7cb71f4fad41decd5f55b0e55672",
+          "debugging_info": "dart-3.11.5/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "f283aaec160d49e6c597bd87bf4bd94b079f07b72dbad272a22639afb6533b0f",
+          "obfuscation_map": "dart-3.11.5/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "40b919e60a4e521edd203173acdfb5b70cb86d7ed2dccddc3b9ab1b6c6dbc591"
         }
       ]
     },
@@ -61,14 +71,24 @@
           "artifact": "dart-3.10.9/receipt_validator_arm64.so",
           "sha256": "a387ecfbbe1746492331fa386dccae93874fc94af91a25200679c0b8810a1d13",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
-          "cluster_report": "dart-3.10.9/clusters.txt"
+          "cluster_report": "dart-3.10.9/clusters.txt",
+          "instruction_sizes": "dart-3.10.9/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "c8e2e64438917a95d47ddbfd2e4df43d441b15ed0f8e799f3a4c37441b73c2b3",
+          "debugging_info": "dart-3.10.9/receipt_validator_arm64.so",
+          "debugging_info_sha256": "a387ecfbbe1746492331fa386dccae93874fc94af91a25200679c0b8810a1d13"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.10.9/receipt_validator_obfuscated_arm64.so",
           "sha256": "db9e77e85ae63d9446c85aff0c3d0dda31823a2432021fdcc6adac23fc7543c3",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
-          "cluster_report": "dart-3.10.9/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.10.9/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.10.9/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "4c2ee201e7c5906e3baacae4fb3fc024afaa6669eec9a9ec4579b293d78fd2d9",
+          "debugging_info": "dart-3.10.9/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "f1fed7b3ce3f40187f637407a5788947a424092c52a3789179a2fd54fc80c63e",
+          "obfuscation_map": "dart-3.10.9/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "ecc33af2ca25ce305d8c650e5d36e8c9faf9c09754172ebc3155539c5767e438"
         }
       ]
     },
@@ -85,14 +105,24 @@
           "artifact": "dart-3.9.2/receipt_validator_arm64.so",
           "sha256": "772cfb4c1b2be3ed5d534efb03beb207fe0c507f227a532d812e8eb0bd2eb241",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
-          "cluster_report": "dart-3.9.2/clusters.txt"
+          "cluster_report": "dart-3.9.2/clusters.txt",
+          "instruction_sizes": "dart-3.9.2/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "e350b8a1fb0fa912992f8da425d951c8034b0364f76647e7bb58eee7d75b21d0",
+          "debugging_info": "dart-3.9.2/receipt_validator_arm64.so",
+          "debugging_info_sha256": "772cfb4c1b2be3ed5d534efb03beb207fe0c507f227a532d812e8eb0bd2eb241"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.9.2/receipt_validator_obfuscated_arm64.so",
           "sha256": "6344d5500bf0e11215b25b3eab3c9d52c562281151cae8f2481cd8f4c598286f",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers",
-          "cluster_report": "dart-3.9.2/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.9.2/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.9.2/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "5dd79babdf3aa95140e733a1358c809aff594ddf430c0c234822d0d08d9cff54",
+          "debugging_info": "dart-3.9.2/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "53e7888eccee1bee73712e24ac5589d1a28422ec068f8a8453a84d6eefd7ba8f",
+          "obfuscation_map": "dart-3.9.2/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "f5b4455bc2e6f329c74d4fb32d922713474121ff08fe1cea8811a90157853b0b"
         }
       ]
     },
@@ -109,14 +139,24 @@
           "artifact": "dart-3.8.1/receipt_validator_arm64.so",
           "sha256": "db7467d2750fe11fc903871e05c68a31b573f5454e4dff8c9c333b9b43168b91",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.8.1/clusters.txt"
+          "cluster_report": "dart-3.8.1/clusters.txt",
+          "instruction_sizes": "dart-3.8.1/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "0efaf2726ce32b51c2547239ad88b9c35dec084f3b7a742dab8a4b0f7b6c56cb",
+          "debugging_info": "dart-3.8.1/receipt_validator_arm64.so",
+          "debugging_info_sha256": "db7467d2750fe11fc903871e05c68a31b573f5454e4dff8c9c333b9b43168b91"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.8.1/receipt_validator_obfuscated_arm64.so",
           "sha256": "d5ffa1c0a613897114d99d86610b141df705c60323b8c2722b1fb4a6701d62bd",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.8.1/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.8.1/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.8.1/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "ab1cae98ec6f00259a610e2170afe5a96645bf9c142ddbeb24508ff34908e5fd",
+          "debugging_info": "dart-3.8.1/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "40309d822af31f6b42aad49c5c4131fc3df272715552cf06fb187810cf4b248a",
+          "obfuscation_map": "dart-3.8.1/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "e8e17523a75182b3defb9fc99287e8962eaa6d851c70fb000146c191f2e1c0e2"
         }
       ]
     },
@@ -133,14 +173,24 @@
           "artifact": "dart-3.7.2/receipt_validator_arm64.so",
           "sha256": "7116fca077c3449c714730e3557eaad7c87129ee123f04abcc21ba484e94cd44",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.7.2/clusters.txt"
+          "cluster_report": "dart-3.7.2/clusters.txt",
+          "instruction_sizes": "dart-3.7.2/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "7335fefc1275741e9e9ff67be26a73f684efd1b00cb0615f01040a910dacf433",
+          "debugging_info": "dart-3.7.2/receipt_validator_arm64.so",
+          "debugging_info_sha256": "7116fca077c3449c714730e3557eaad7c87129ee123f04abcc21ba484e94cd44"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.7.2/receipt_validator_obfuscated_arm64.so",
           "sha256": "c297ed93643555205cbb4cbdf844e3e3d28decdecbb7e1557cf6752cde105eda",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.7.2/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.7.2/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.7.2/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "0876847220b943c28c6d5ac482522e4ef07a0884e0ba4259d7d61b6b38b97e50",
+          "debugging_info": "dart-3.7.2/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "37fa22d06264651c87eff4680e12f018328ad0bbf206aef6d1607dc89eae9002",
+          "obfuscation_map": "dart-3.7.2/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "144890e53eac728806c85a729218c423061cff19cfc73e4e4c22e26aa8e5b86a"
         }
       ]
     },
@@ -157,14 +207,24 @@
           "artifact": "dart-3.6.2/receipt_validator_arm64.so",
           "sha256": "d2c08303d97ded35b1771dccaaa508cb1502ce305193cd0e86dacea712774c0c",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.6.2/clusters.txt"
+          "cluster_report": "dart-3.6.2/clusters.txt",
+          "instruction_sizes": "dart-3.6.2/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "60eed3cba771e6c2da4cbdb06b6058d5633e72afa381d3251d6792f7025d7aef",
+          "debugging_info": "dart-3.6.2/receipt_validator_arm64.so",
+          "debugging_info_sha256": "d2c08303d97ded35b1771dccaaa508cb1502ce305193cd0e86dacea712774c0c"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.6.2/receipt_validator_obfuscated_arm64.so",
           "sha256": "e9d0e425a7958d513e0c5335edc4ab5314d5b4c1e74d6a64e26722ab1b5d915b",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.6.2/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.6.2/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.6.2/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "666a065337a4e862454b22a6705113f28df48dfc8178d5f626ae6c163b32c269",
+          "debugging_info": "dart-3.6.2/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "acafd662b400a13aa5bdb96f8b122559937056cc461039e49d8ab735b90b17ed",
+          "obfuscation_map": "dart-3.6.2/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "224728b43ff0aa5781ec26abbd91611b23efd26a823fbfbb627c160c9c878b95"
         }
       ]
     },
@@ -181,14 +241,24 @@
           "artifact": "dart-3.5.4/receipt_validator_arm64.so",
           "sha256": "cb0233705335b08512fca36a83d731a5f34e918121b08045602ccf5a2212c969",
           "features": "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.5.4/clusters.txt"
+          "cluster_report": "dart-3.5.4/clusters.txt",
+          "instruction_sizes": "dart-3.5.4/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "211f94dd825f0390d5155e54ff4091cd66e9fbd0ba693e27f390d752a0864ce3",
+          "debugging_info": "dart-3.5.4/receipt_validator_arm64.so",
+          "debugging_info_sha256": "cb0233705335b08512fca36a83d731a5f34e918121b08045602ccf5a2212c969"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.5.4/receipt_validator_obfuscated_arm64.so",
           "sha256": "fc7861c6a1b404aa00ad047634268b4f5e6d9e47f76affaa22158e108bd6665f",
           "features": "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers",
-          "cluster_report": "dart-3.5.4/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.5.4/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.5.4/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "2c75985868ce6bd1b9fc61969ff0040da3aea68ba2b537b4c9249d7f1b3d7d1d",
+          "debugging_info": "dart-3.5.4/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "7b7bf9d5f99093617d36133397dafca7048844ebda283e1d5bd0a7fadc33ecca",
+          "obfuscation_map": "dart-3.5.4/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "e010c7182e6a476c4d93ff64636705646133e63c3a8bfadd4c8f6c4b6662cb72"
         }
       ]
     },
@@ -205,14 +275,24 @@
           "artifact": "dart-3.4.4/receipt_validator_arm64.so",
           "sha256": "74af4303ffb108f5aaab5af18b5a9c4d45ec3a2b8f596ba9e23903c20d713273",
           "features": "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
-          "cluster_report": "dart-3.4.4/clusters.txt"
+          "cluster_report": "dart-3.4.4/clusters.txt",
+          "instruction_sizes": "dart-3.4.4/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "5573d953f22ecb888342bc32546f48d988687f8f1ad2700ca3f126fecec16d37",
+          "debugging_info": "dart-3.4.4/receipt_validator_arm64.so",
+          "debugging_info_sha256": "74af4303ffb108f5aaab5af18b5a9c4d45ec3a2b8f596ba9e23903c20d713273"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.4.4/receipt_validator_obfuscated_arm64.so",
           "sha256": "9f87ded8804796ce08284d9095809f0bf08206feec2a2a4286d9b5e1483d8bc4",
           "features": "product no-code_comments dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
-          "cluster_report": "dart-3.4.4/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.4.4/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.4.4/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "8776546bcc241274c0f8dfe6f6c6b0a135c177b5002bee6d73c8b43aa14cb550",
+          "debugging_info": "dart-3.4.4/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "d79cc8f8eb409e198c2e441796d2db041e3e69177a586827b75b9a61d31d85df",
+          "obfuscation_map": "dart-3.4.4/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "fb9385f4664eddda632396f8345132ace898f4f6da760585ac7dc99448bb208b"
         }
       ]
     },
@@ -229,14 +309,24 @@
           "artifact": "dart-3.3.4/receipt_validator_arm64.so",
           "sha256": "4da8672f41eae5e939eb63c7a94e5adc79cd4d0ac428f75d98b1bed49cd1ac4d",
           "features": "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
-          "cluster_report": "dart-3.3.4/clusters.txt"
+          "cluster_report": "dart-3.3.4/clusters.txt",
+          "instruction_sizes": "dart-3.3.4/receipt_validator_arm64.sizes.json",
+          "instruction_sizes_sha256": "36af4f638202f7622811ddce46da0e4bba6bce072badba0ce03f3dd04dc2086a",
+          "debugging_info": "dart-3.3.4/receipt_validator_arm64.so",
+          "debugging_info_sha256": "4da8672f41eae5e939eb63c7a94e5adc79cd4d0ac428f75d98b1bed49cd1ac4d"
         },
         {
           "name": "obfuscated",
           "artifact": "dart-3.3.4/receipt_validator_obfuscated_arm64.so",
           "sha256": "65513d120f97fb0f9d274bac2f1212e78a99ea8689834e087b48638a3de6acf6",
           "features": "product no-code_comments dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety",
-          "cluster_report": "dart-3.3.4/clusters_obfuscated.txt"
+          "cluster_report": "dart-3.3.4/clusters_obfuscated.txt",
+          "instruction_sizes": "dart-3.3.4/receipt_validator_obfuscated_arm64.sizes.json",
+          "instruction_sizes_sha256": "20ff0ca1f5cdf92f9a66d5d7ccab87cecf5809585b4c0808106c2caaf8beb098",
+          "debugging_info": "dart-3.3.4/receipt_validator_obfuscated_arm64.symbols",
+          "debugging_info_sha256": "6277b076a139504b078c91191e1004b96e942234476f961c21218a909ed775a2",
+          "obfuscation_map": "dart-3.3.4/receipt_validator_obfuscated_arm64.obfuscation_map.json",
+          "obfuscation_map_sha256": "dbb012e5d18c9f06128ff1ae27182b2c6a725b3df740edb7ab537a0b2c7003ce"
         }
       ]
     }
