@@ -1349,6 +1349,12 @@ corpus/native/resources/src/app.manifest	-	-	-	-	-	-	-
 corpus/native/resources/src/payload.bin	-	-	-	-	-	-	-
 corpus/native/resources/src/resources.rc	-	-	-	-	-	-	-
 corpus/native/resources/src/stub.c	-	-	-	-	-	-	-
+corpus/native/verify/candidate_good.c	-	-	-	-	-	-	-
+corpus/native/verify/candidate_import.c	-	-	-	-	-	-	-
+corpus/native/verify/candidate_missed_side_effect.c	-	-	-	-	-	-	-
+corpus/native/verify/candidate_off_by_one.c	-	-	-	-	-	-	-
+corpus/native/verify/candidate_wrong_signedness.c	-	-	-	-	-	-	-
+corpus/native/verify/verify_original.c	-	-	-	-	-	-	-
 corpus/native/zig/hello.zig	-	-	-	-	-	-	-
 corpus/native/zig/hello.zig.elf	nativelang.classify	zig	native-format	medium	native.image-classify	native-format	low
 corpus/native/zig/provenance.toml	-	-	-	-	-	-	-
