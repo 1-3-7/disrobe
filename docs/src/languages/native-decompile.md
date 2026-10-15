@@ -8,13 +8,13 @@ For symbol recovery, disassembly, and identification see the [native guide](./na
 
 | Surface | Support |
 |---|---|
-| Architectures | x86-64 uses the shared IR pipeline; AArch64 uses object-context and NIR recovery; ARM32 (A32 and Thumb) and MIPS32 (big- and little-endian) use the p-code/NIR path |
-| Output formats | C or Rust for x86-64; pseudo-C for AArch64, ARM32, and MIPS32 |
+| Architectures | x86-64 and x86-32 use the shared IR pipeline; AArch64 uses object-context and NIR recovery; ARM32 (A32 and Thumb) and MIPS32 (big- and little-endian) use the p-code/NIR path |
+| Output formats | C or Rust for x86-64; C for x86-32; pseudo-C for AArch64, ARM32, and MIPS32 |
 | Call resolution | Whole-program for validated direct same-image calls in linked AArch64 ELF inputs whose sibling target resolves unambiguously; unresolved, indirect, external, and ambiguous calls abstain. Relocatable AArch64 objects fail before output. |
 | Switch dispatch | Dense switch recovered from the binary's own jump table |
 | Type recovery | x86-64 structs from fixed-offset access (`p->field_8`), arrays from scaled indexing (`a[i]`), unions from conflicting widths, integer width and signedness per frame slot |
 | API types | x86-64 resolved imports propagated backward into caller locals from a curated libc, kernel32, and ws2_32 prototype database, each tagged with `library!function` provenance |
-| Calling convention | x86-64 inferred per function, including `thiscall` and `vectorcall` |
+| Calling convention | x86-64 inferred per function, including `thiscall` and `vectorcall`; x86-32 cdecl, stdcall, fastcall, and thiscall inferred per function |
 | AArch64 scalar floating point | `h0` to `h31`, `s0` to `s31`, and `d0` to `d31`; IEEE binary16, binary32, and binary64 arithmetic, conversion, comparison, rounding, and loads or stores |
 | Vectorized loops | x86-64 SSE/AVX reduction and pointer-walk map kernels lowered back to the equivalent scalar loop |
 | Constant division | x86-64 magic-multiply division and modulo recovered as `/` and `%` in C output and as `wrapping_div` and `wrapping_rem` in Rust output; a divisor the range check cannot confirm keeps the multiply and shift |
@@ -54,6 +54,16 @@ In a linked executable or DLL, integer instructions with a RIP-relative memory o
 A function that passes the address of one of its own stack locals to a callee, such as `fill_pair(&p, value)` or a local array, recovers when the address lies inside the bytes the function allocates. The recovered frame then backs the whole allocation, so the bytes the callee writes are the bytes the recovered code reads afterwards. The address may be copied between registers, used as the base of loads and stores, and passed as a call argument, and it must be dead by the next branch or return. An address that is returned, stored as a value, used in arithmetic or kept live across a branch is refused. An address in the home area or among the incoming arguments is refused too, because a `va_list` walk from it reaches the caller's frame. A 16-byte or 32-byte vector store of a register zeroed by `xorps`, `xorpd`, `pxor` or their VEX forms recovers as a zero store to each 8-byte slot it covers.
 
 The MSVC `/GS` cookie is recognised from the load-config `SecurityCookie` address when the cookie is saved in a stack or frame-pointer slot before any branch and every reload of that slot is a check: `mov rcx,[slot]`, `xor rcx,rsp`, and a call to the checker. Each check on each exit path is dropped as plumbing. A saved cookie slot that is read anywhere else keeps the cookie load, which then refuses as a global read.
+
+### x86-32 calls, frames, and conventions
+
+32-bit x86 functions in linked PE and ELF images recover through the same pipeline as x86-64. Each function's calling convention is read from its own code. A function that reads ecx and edx before writing them is fastcall, one that reads only ecx and pops stack arguments is thiscall, one that pops its arguments with `ret N` and takes no register argument is stdcall with N/4 stack arguments, and the rest are cdecl with the stack slots up to the highest one they read. The recovered C uses `uint32_t` parameters and declares the convention with `__attribute__((stdcall))`, `fastcall`, or `thiscall`, so it has the original's ABI. A function that writes edx on every path to its returns returns `uint64_t` built from edx:eax; the others return `uint32_t`.
+
+The stack depth is tracked on every path from the entry. Pushes and pops anywhere in the body, `sub` and `add esp`, ebp frames (`mov ebp, esp`, `leave`, `mov esp, ebp`, `lea esp, [ebp-N]`), and an `and esp` realignment under an ebp frame are modelled, and every esp- and ebp-relative access is rebased to the entry stack pointer, so argument pushes, a pre-allocated outgoing area, and locals share one frame. Saves of ebx, esi, edi, and ebp are dropped when a pop, `leave`, or load restores them. A direct call to a function in the image passes the stack slots at the call. The callee's own `ret N` gives the bytes it pops, and the registers it writes decide which caller-saved registers survive the call and whether it returns edx:eax. `add`/`adc` and `sub`/`sbb` pairs, the one-operand `mul` and `imul` into edx:eax, and `shld`/`shrd` by a constant recover exactly.
+
+Position-independent code is resolved. `call $+5; pop reg` and calls to `__x86.get_pc_thunk.*` load the return address as a constant, and a load or store whose base register holds that constant after the `add` of the GOT offset is written as an absolute address at the image base, for GOTOFF accesses and GOT slots alike. The recovered C behaves like the original when the image is loaded at that base.
+
+Refused by name: x87 and MMX instructions (a `float` or `double` result returns in st(0)), a register argument other than ecx and edx (regparm, Borland register), calls and jumps through memory or a register (import-table calls, function pointers, switch tables), jumps out of the function (tail calls), recursive calls, callees whose code is not in the image, a stack depth that differs at a join, a realignment without a frame pointer, double shifts by cl, fs and gs accesses, C++ exception tables, and relocatable objects. Rust output is not produced for x86-32.
 
 ### AArch64 scalar floating point
 
@@ -99,6 +109,8 @@ Constant-division recovery is held to the same C bar. It is measured over diviso
 
 Microsoft x64 calls and frames are graded on self-authored MSVC `/O2` DLLs in `corpus/native/decompile/`. The recovered C of each graded function is compiled with clang and called beside the original function inside the loaded DLL on 1,000 seeded inputs. An original-against-original run of the same harness is the null control, and a mutation of each recovered body, such as dropping the stack arguments from a call or storing a home-area save at its entry displacement, must turn the grade red (`msvc_decompile_behaviour.rs`).
 
+x86-32 recovery is graded on self-authored C built with clang for PE and for ELF with `-fPIC`, gcc `-m32`, and MSVC x86 at three optimisation levels, an MSVC C++ class with thiscall members, and a hand-written gcc-style PIC shared object (`corpus/native/decompile32/`). The recovered C of each function is compiled with clang for i686 and called beside the original in a 32-bit process, with the DLL loaded at its preferred base and the ELF image mapped at its link address, on 1,000 generated inputs, comparing the result and every writable byte of the image and of a pointer arena. An original-against-original run is the null control, and adding one to the first returned value or stored field must turn the grade red (`x86_32_decompile_behaviour.rs`).
+
 ### Ghidra backend
 
 `--backend ghidra` runs Ghidra headlessly (install it with `disrobe install-deps ghidra`) and returns pseudo-C alongside the standardized emits.
@@ -115,4 +127,5 @@ Microsoft x64 calls and frames are graded on self-authored MSVC `/O2` DLLs in `c
 - Constant-division recovery starts from a magic multiply, so a divisor the compiler lowered to a plain shift stays a shift in the output.
 - A magic multiply-shift sequence whose divisor the range check cannot confirm, including a fixed-point scale, is left as a multiply and a shift rather than rewritten.
 - A constant division is left alone when a back edge targets the first instruction of the matched sequence or an earlier address, when another control transfer lands inside the sequence, or when the sequence writes to memory.
+- x86-32 calls through the import table, tail calls, recursive calls, switch tables, and x87 floating point are refused.
 - `--backend ghidra` runs the optional external decompiler on the input.
