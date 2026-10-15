@@ -3,6 +3,9 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use disrobe_pass_swift_objc::asset_catalog::{
+    AssetCatalog, CatalogFile, RenditionPayload, catalog_files, decode_asset_catalog,
+};
 use disrobe_pass_swift_objc::keyed_archive::{ArchivedValue, KeyedArchive, decode_keyed_archive};
 use disrobe_pass_swift_objc::nib_archive::{NibArchive, decode_nib_archive};
 
@@ -69,6 +72,21 @@ pub(crate) enum MachoCmd {
         #[arg(long, help = "print the decoded graph as JSON")]
         json: bool,
     },
+    #[command(
+        about = "decode a compiled asset catalog (Assets.car): header, key format, appearances, facets and every rendition with its key attributes, pixel format, compression, colour components or data UTI and digests; --extract writes the data sets and decodable images"
+    )]
+    Car {
+        #[arg(help = "input compiled Assets.car")]
+        input: PathBuf,
+        #[arg(long, help = "print the decoded catalog as JSON")]
+        json: bool,
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "write every data set and decodable image here"
+        )]
+        extract: Option<PathBuf>,
+    },
     #[command(about = "walk a Fat-Mach-O envelope & report each slice's CPU type, size, & offset")]
     Fat {
         #[arg(help = "input fat Mach-O binary")]
@@ -103,9 +121,107 @@ pub(crate) fn run(action: MachoCmd) -> miette::Result<()> {
         MachoCmd::Classdump { input, out, emit } => classdump(input, out, emit),
         MachoCmd::KeyedArchive { input, json } => keyed_archive(&input, json),
         MachoCmd::Nib { input, json } => nib(&input, json),
+        MachoCmd::Car {
+            input,
+            json,
+            extract,
+        } => car(&input, json, extract.as_deref()),
         MachoCmd::Fat { input } => fat(input),
         MachoCmd::Dyldcache { input, out, images } => dyldcache(input, out, images),
     }
+}
+
+const MAX_CAR_BYTES: u64 = 1024 * 1024 * 1024;
+
+fn car(input: &Path, json: bool, extract: Option<&Path>) -> miette::Result<()> {
+    let size: u64 = std::fs::metadata(input)
+        .map_err(|e| miette::miette!("DR-CLI-0993: cannot read {}: {e}", input.display()))?
+        .len();
+    if size > MAX_CAR_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0993: {} is {size} bytes, above the {MAX_CAR_BYTES}-byte limit",
+            input.display()
+        ));
+    }
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-CLI-0993: cannot read {}: {e}", input.display()))?;
+    let catalog: AssetCatalog = decode_asset_catalog(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0993: {}: {e}", input.display()))?;
+    if let Some(dir) = extract {
+        let files: Vec<CatalogFile> = catalog_files(&bytes, &catalog)
+            .map_err(|e| miette::miette!("DR-CLI-0993: {}: {e}", input.display()))?;
+        for file in &files {
+            let path: PathBuf = dir.join(&file.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    miette::miette!("DR-CLI-0993: cannot create {}: {e}", parent.display())
+                })?;
+            }
+            std::fs::write(&path, &file.bytes).map_err(|e| {
+                miette::miette!("DR-CLI-0993: cannot write {}: {e}", path.display())
+            })?;
+        }
+        eprintln!("wrote {} file(s) to {}", files.len(), dir.display());
+    }
+    if json {
+        let rendered: String = serde_json::to_string_pretty(&catalog)
+            .map_err(|e| miette::miette!("DR-CLI-0993: serialize: {e}"))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+    println!(
+        "asset catalog: CoreUI {}, storage {}, schema {}, {} renditions, {} facets",
+        catalog.header.core_ui_version,
+        catalog.header.storage_version,
+        catalog.header.schema_version,
+        catalog.renditions.len(),
+        catalog.facets.len()
+    );
+    println!("version: {}", catalog.header.version);
+    if let Some(metadata) = &catalog.metadata {
+        println!(
+            "platform: {} {}; tool: {}",
+            metadata.deployment_platform,
+            metadata.deployment_platform_version,
+            metadata.authoring_tool
+        );
+    }
+    println!("key format: {}", catalog.key_format.join(", "));
+    for rendition in &catalog.renditions {
+        let detail: String = match &rendition.payload {
+            RenditionPayload::Pixels {
+                compression,
+                length,
+                ..
+            } => format!(
+                "{} {}x{} {compression} {length} bytes",
+                rendition.pixel_format, rendition.width, rendition.height
+            ),
+            RenditionPayload::Color {
+                color_space_id,
+                components,
+            } => format!("colour space {color_space_id} {components:?}"),
+            RenditionPayload::Data { length, .. } => format!(
+                "data {} {length} bytes",
+                rendition.uti.as_deref().unwrap_or("?")
+            ),
+            RenditionPayload::MultisizeImageSet { sizes } => {
+                format!("multisize set of {}", sizes.len())
+            }
+            RenditionPayload::Other { name, length, .. } => format!("{name} {length} bytes"),
+            RenditionPayload::Empty => "empty".to_owned(),
+        };
+        println!(
+            "{} / {} [{} {}x {}] {}",
+            rendition.asset.as_deref().unwrap_or("?"),
+            rendition.name,
+            rendition.idiom.as_deref().unwrap_or("?"),
+            rendition.scale.unwrap_or(0),
+            rendition.appearance.as_deref().unwrap_or("any"),
+            detail
+        );
+    }
+    Ok(())
 }
 
 const MAX_NIB_BYTES: u64 = 256 * 1024 * 1024;
