@@ -119,17 +119,13 @@ pub struct JscramblerDetection {
 const HEAD_SCAN_BYTES: usize = 128 * 1024;
 const FREE_TIER_IDENT_DENSITY_FLOOR: usize = 5;
 pub(crate) const STATE_MACHINE_DENSITY_FLOOR: usize = 3;
-const STATE_MACHINE_DISPATCHER_PATTERN: &str =
-    r"for\s*\(\s*;\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*;?\s*\)\s*\{\s*switch\s*\(";
+fn state_machine_dispatcher_regex() -> &'static Regex {
+    regex!(r"for\s*\(\s*;\s*[A-Za-z_$][\w$]*\s*!==?\s*\d+\s*;?\s*\)\s*\{\s*switch\s*\(")
+}
 
 #[must_use]
 pub(crate) fn state_machine_dispatcher_count(text: &str) -> usize {
-    let Ok(re): core::result::Result<Regex, regex::Error> =
-        Regex::new(STATE_MACHINE_DISPATCHER_PATTERN)
-    else {
-        return 0;
-    };
-    re.find_iter(text).count()
+    state_machine_dispatcher_regex().find_iter(text).count()
 }
 
 #[must_use]

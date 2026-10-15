@@ -8,8 +8,9 @@ use super::limits::check_limit;
 use super::scan::{find_brace_close, find_paren_close, skip_trivia};
 use crate::error::Error;
 
-const REQUIRE_PATTERN: &str =
-    r#"(__webpack_require__|require)\s*\(\s*(?:(\d+)|["']([^"']+)["'])\s*\)"#;
+fn require_regex() -> &'static Regex {
+    regex!(r#"(__webpack_require__|require)\s*\(\s*(?:(\d+)|["']([^"']+)["'])\s*\)"#)
+}
 
 const WEBPACK_WRAPPER_PARAMS: &[&[&str]] = &[
     &["module"],
@@ -136,10 +137,7 @@ pub fn build_id_to_path_map(modules: &[ExtractedModule]) -> BTreeMap<String, Str
 
 #[must_use]
 pub fn rewrite_requires(source: &str, map: &BTreeMap<String, String>) -> String {
-    let Ok(re): Result<Regex, regex::Error> = Regex::new(REQUIRE_PATTERN) else {
-        return source.to_owned();
-    };
-    let result: String = re
+    let result: String = require_regex()
         .replace_all(source, |caps: &regex::Captures<'_>| {
             let fn_name: &str = caps
                 .get(1)
@@ -193,7 +191,7 @@ pub(super) fn rewrite_modules_with_limit(
                 })
             })?;
     let map: BTreeMap<String, String> = build_id_to_path_map(modules);
-    let re: Regex = Regex::new(REQUIRE_PATTERN)?;
+    let re: &Regex = require_regex();
     for module in modules {
         let previous: usize = module.source.len();
         if let Some(unwrapped) = unwrap_module_wrapper(&module.source) {
