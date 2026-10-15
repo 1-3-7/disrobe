@@ -322,6 +322,12 @@ corpus/dotnet/eazvm/virtualizer/Virtualizer.cs	-	-	-	-	-	-	-
 corpus/dotnet/eazvm/virtualizer/virtualizer.csproj	-	-	-	-	-	-	-
 corpus/dotnet/guards/Guards.cs	-	-	-	-	-	-	-
 corpus/dotnet/guards/Guards.dll	dotnet.classify	dotnet-pe-clr	interpreter-bytecode	high	-	-	-
+corpus/dotnet/interop/Interop.dll	dotnet.classify	dotnet-pe-clr	interpreter-bytecode	high	-	-	-
+corpus/dotnet/interop/reference.json	-	-	-	-	-	-	-
+corpus/dotnet/interop/reference/InteropDump.csproj	-	-	-	-	-	-	-
+corpus/dotnet/interop/reference/Program.cs	-	-	-	-	-	-	-
+corpus/dotnet/interop/src/Interop.cs	-	-	-	-	-	-	-
+corpus/dotnet/interop/src/Interop.csproj	-	-	-	-	-	-	-
 corpus/dotnet/koivm/KoiSample.clean.exe	dotnet.classify	dotnet-pe-clr	interpreter-bytecode	high	-	-	-
 corpus/dotnet/koivm/KoiSample.clean.il	-	-	-	-	-	-	-
 corpus/dotnet/koivm/KoiSample.cs	-	-	-	-	-	-	-
