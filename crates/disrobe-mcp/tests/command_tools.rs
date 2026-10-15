@@ -215,6 +215,7 @@ async fn list_commands_carries_the_read_only_allowlist() {
         "crash",
         "capture",
         "dotnet interop",
+        "evm decompile",
     ] {
         assert!(commands.contains(expected), "allowlist lacks {expected}");
     }
