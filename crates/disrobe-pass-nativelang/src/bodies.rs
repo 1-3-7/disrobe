@@ -553,6 +553,8 @@ const C_COMPILER_BUILTINS: &[&str] = &[
     "__clear_cache",
 ];
 
+const C_HOSTED_ENTRY_POINTS: &[&str] = &["main"];
+
 const C_TYPE_TOKENS: &[&str] = &[
     "_Bool",
     "__int128",
@@ -909,6 +911,7 @@ fn emitted_identifier(name: &str, address: u64, used: &mut BTreeSet<String>) -> 
     if repaired
         || C_KEYWORDS.contains(&candidate.as_str())
         || C_COMPILER_BUILTINS.contains(&candidate.as_str())
+        || C_HOSTED_ENTRY_POINTS.contains(&candidate.as_str())
         || used.contains(&candidate)
     {
         candidate = format!("{candidate}_{address:x}");
@@ -1165,6 +1168,15 @@ mod tests {
         let mut used: BTreeSet<String> = BTreeSet::new();
         assert_eq!(emitted_identifier("9lives", 0x30, &mut used), "f9lives_30");
         assert_eq!(emitted_identifier("while", 0x40, &mut used), "while_40");
+    }
+
+    #[test]
+    fn a_function_named_main_is_renamed_so_its_signature_stays_legal_c() {
+        let mut used: BTreeSet<String> = BTreeSet::new();
+        assert_eq!(
+            emitted_identifier("main", 0x0102_4d60, &mut used),
+            "main_1024d60"
+        );
     }
 
     #[test]
