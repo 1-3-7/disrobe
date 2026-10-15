@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2440 bounds (count 233, other 1152, output 72, recursion 241, size 551, work 191).
+2443 bounds (count 233, other 1154, output 72, recursion 241, size 552, work 191).
 
-Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassified 17, allocation 33, unused 8.
+Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1123, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -631,7 +631,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-as3` | `MAX_RUNTIME_SYMBOL_SCAN_BYTES` | size | silent: slice in `detect_with_symbol_scan_limit` | `usize` | `64 << 20` | `crates/disrobe-pass-as3/src/other_langs.rs` |
 | `disrobe-pass-as3` | `MAX_SHEBANG_LINE_BYTES` | size | silent: slice in `skip_line` | `usize` | `256` | `crates/disrobe-pass-as3/src/other_langs.rs` |
 | `disrobe-pass-as3` | `MAX_DECOMPRESSED_BODY` | other | error: `Error::SwfDecompress` (DR-AS3-0005); `Error::SwfTruncated` (DR-AS3-0003) | `u64` | `512 * 1024 * 1024` | `crates/disrobe-pass-as3/src/swf.rs` |
-| `disrobe-pass-as3` | `MAX_DECOMPRESS_PREALLOC` | other | delegated: passed to `.kv` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-as3/src/swf.rs` |
+| `disrobe-pass-as3` | `MAX_DECOMPRESS_PREALLOC` | other | delegated: passed to `dbg_kv` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-as3` | `MAX_LZMA_MEMLIMIT` | other | delegated: `Stream::new_lzma_decoder()?` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-as3` | `MAX_SPRITE_NESTING` | recursion | delegated: passed to `Self::accumulate_counts` | `usize` | `256` | `crates/disrobe-pass-as3/src/swf.rs` |
 | `disrobe-pass-as3` | `MAX_SWF_VERSION` | other | error: `Error::SwfUnsupportedVersion` (DR-AS3-0004) | `u8` | `40` | `crates/disrobe-pass-as3/src/swf.rs` |
@@ -917,7 +917,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-go` | `MAX_BACKSEARCH_CANDIDATES` | other | silent: `return` in `via_pclntab_backsearch` | `usize` | `4096` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_BUILDINFO_DEPS` | other | silent: skipped in `build_info_from_parts` | `usize` | `1 << 16` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_BUILDINFO_SETTINGS` | other | silent: skipped in `build_info_from_parts` | `usize` | `1 << 12` | `crates/disrobe-pass-go/src/moduledata.rs` |
-| `disrobe-pass-go` | `MAX_MODULENAME_LEN` | size | delegated: `.or()?`; passed to `.kv` | `usize` | `4096` | `crates/disrobe-pass-go/src/moduledata.rs` |
+| `disrobe-pass-go` | `MAX_MODULENAME_LEN` | size | delegated: `.or()?`; passed to `dbg_kv` | `usize` | `4096` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_PLAUSIBLE_SLICE_LEN` | size | silent: `return` in `validated_slice` | `u64` | `1 << 22` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_MODULEDATA_REFERENCES` | other | silent: `return` in `referenced_from_moduledata` | `usize` | `4096` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_MODULEDATA_SCAN_BYTES` | size | silent: `.min()` clamp in `referenced_from_moduledata` | `u64` | `1 << 24` | `crates/disrobe-pass-go/src/pclntab.rs` |
@@ -927,7 +927,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-go` | `MAX_FUNC_PREALLOC` | other | allocation: `.reserve()` in `func_table_go116`; `.reserve()` in `func_table_go118_plus`; `.reserve()` in `func_table_go12` | `usize` | `1 << 16` | `crates/disrobe-pass-go/src/symbols.rs` |
 | `disrobe-pass-go` | `MAX_GO_NAME_BYTES` | size | recorded: `record_package()` | `usize` | `4096` | `crates/disrobe-pass-go/src/symbols.rs` |
 | `disrobe-pass-go` | `MAX_PLAUSIBLE_FUNCS` | other | silent: `return` in `bounded_func_count` | `u64` | `16 * 1024 * 1024` | `crates/disrobe-pass-go/src/symbols.rs` |
-| `disrobe-pass-go` | `MAX_PLAUSIBLE_START_LINE` | other | delegated: passed to `.kv` | `i32` | `1 << 26` | `crates/disrobe-pass-go/src/symbols.rs` |
+| `disrobe-pass-go` | `MAX_PLAUSIBLE_START_LINE` | other | delegated: passed to `dbg_kv` | `i32` | `1 << 26` | `crates/disrobe-pass-go/src/symbols.rs` |
 | `disrobe-pass-go` | `DISAMBIG_CANDIDATE_BUDGET` | work | silent: `break` in `disambiguate_shape_args` | `usize` | `1 << 22` | `crates/disrobe-pass-go/src/types.rs` |
 | `disrobe-pass-go` | `ITABLINKS_WALK_CAP` | other | recorded: flag `truncated` | `usize` | `1 << 14` | `crates/disrobe-pass-go/src/types.rs` |
 | `disrobe-pass-go` | `MAX_FIELDS_PER_STRUCT` | other | silent: `return` in `read_struct_fields` | `u64` | `1 << 12` | `crates/disrobe-pass-go/src/types.rs` |
@@ -1512,13 +1512,13 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-native` | `EMULATED_IMAGE_EXPANSION_LIMIT` | other | recorded: flag `int3_gauntlet_cleared`; flag `left_image`; flag `returned` | `u64` | `4096` | `crates/disrobe-pass-native/src/packers/section_recovery.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | silent: `return` in `decode_elf_extents_with_budget`; `return` in `walk_block_chain` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_BRUTE_FORCE_OFFSETS` | other | silent: `.min()` clamp in `decode_image_with_budget`; `.min()` clamp in `decode_multiblock_with_budget`; `.min()` clamp in `locate_structural` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 88 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 88 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 90 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 90 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_L_INFO_SCAN` | other | silent: `.min()` clamp in `elf_first_block_offset` | `usize` | `64 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_RESYNC_OFFSETS` | other | silent: `while` condition in `decode_elf_extents_with_budget` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_STRUCTURAL_CHECKSUM_BYTES` | size | silent: `return` in `reserve` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_TAIL_SCAN` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 88 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 90 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_CANDIDATES` | other | silent: `break` in `locate_structural` | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_EXPANSION` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `u64` | `64` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_CARVED_PROTECTED_BYTES` | size | recorded: flag `blob_truncated` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/vmprotect_carve.rs` |
@@ -1544,6 +1544,8 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-native` | `ACYCLIC_JOIN_BLOCK_CAP` | other | silent: `return` in `acyclic_join_lowering_plan`; `return` in `join_plan_preserves_blocks` | `usize` | `256` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `FORWARD_JOIN_PLAN_CAP` | other | silent: `return` in `forward_join_lowering_candidates` | `usize` | `32` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `LOOP_EXIT_TAIL_ABSORPTION_BUDGET` | work | silent: `for` range in `absorb_private_exit_tails` | `usize` | `64` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_LABEL_BYTES` | size | silent: `.take()` in `sanitized_import_label` | `usize` | `128` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_SLOTS` | other | silent: `.take()` in `pe_import_slots` | `usize` | `65_536` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `MAX_LOCAL_NORETURN_BYTES` | size | silent: `return` in `local_noreturn_leaf_is_proven`; `return` in `outlined_noreturn_exit` | `usize` | `1024` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `MAX_LOCAL_NORETURN_CALLEES` | other | silent: `continue` in `object_transfer_facts`; skipped in `object_transfer_facts` | `usize` | `16` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `MAX_LOCAL_NORETURN_RELOCATIONS` | other | silent: `.take()` in `read`; `return` in `read` | `usize` | `4096` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
@@ -1577,6 +1579,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-native` | `MAX_INLINED_DEFINITIONS` | other | silent: `for` range in `inline_single_use_definitions` | `usize` | `128` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_LOOP_WEIGHT_DEPTH` | recursion | delegated: passed to `debug::dbg_line` | `u32` | `8` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_RECORDED_DECISIONS` | other | silent: `return` in `record` | `usize` | `128` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
+| `disrobe-pass-native` | `MAX_PUSHED_REGISTERS` | other | silent: `return` in `plan_push_frame` | `usize` | `16` | `crates/disrobe-pass-native/src/pseudo_c/stack_depth.rs` |
 | `disrobe-pass-native` | `MAX_REPORTED_SECTIONS` | other | silent: skipped in `runtime_decrypted_image` | `usize` | `96` | `crates/disrobe-pass-native/src/runtime_image.rs` |
 | `disrobe-pass-native` | `MAX_AUDITABLE_COMPRESSED_BYTES` | size | error: `Error::SignatureDb` (DR-NATIVE-0019) | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-native/src/rust_recovery.rs` |
 | `disrobe-pass-native` | `MAX_AUDITABLE_DECOMPRESSED_BYTES` | size | error: `Error::SignatureDb` (DR-NATIVE-0019) | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-native/src/rust_recovery.rs` |
@@ -2464,7 +2467,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 
 ## Silent stops
 
-1120 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1123 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3148,6 +3151,8 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-native` | `ACYCLIC_JOIN_BLOCK_CAP` | `return` in `acyclic_join_lowering_plan`; `return` in `join_plan_preserves_blocks` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `FORWARD_JOIN_PLAN_CAP` | `return` in `forward_join_lowering_candidates` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `LOOP_EXIT_TAIL_ABSORPTION_BUDGET` | `for` range in `absorb_private_exit_tails` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_LABEL_BYTES` | `.take()` in `sanitized_import_label` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
+| `disrobe-pass-native` | `MAX_IMPORT_SLOTS` | `.take()` in `pe_import_slots` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `MAX_LOCAL_NORETURN_BYTES` | `return` in `local_noreturn_leaf_is_proven`; `return` in `outlined_noreturn_exit` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `MAX_LOCAL_NORETURN_CALLEES` | `continue` in `object_transfer_facts`; skipped in `object_transfer_facts` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `MAX_LOCAL_NORETURN_RELOCATIONS` | `.take()` in `read`; `return` in `read` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
@@ -3174,6 +3179,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1120, unclassi
 | `disrobe-pass-native` | `MAX_VALUES` | `return` in `definitions` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
 | `disrobe-pass-native` | `MAX_INLINED_DEFINITIONS` | `for` range in `inline_single_use_definitions` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
 | `disrobe-pass-native` | `MAX_RECORDED_DECISIONS` | `return` in `record` | `crates/disrobe-pass-native/src/pseudo_c/spill.rs` |
+| `disrobe-pass-native` | `MAX_PUSHED_REGISTERS` | `return` in `plan_push_frame` | `crates/disrobe-pass-native/src/pseudo_c/stack_depth.rs` |
 | `disrobe-pass-native` | `MAX_REPORTED_SECTIONS` | skipped in `runtime_decrypted_image` | `crates/disrobe-pass-native/src/runtime_image.rs` |
 | `disrobe-pass-native` | `SCAN_LIMIT` | slice in `analyze`; slice in `dotnet_bundle_finding`; slice in `pkr_ce1a_finding`; 1 more | `crates/disrobe-pass-native/src/sig_engine.rs` |
 | `disrobe-pass-native` | `VERSION_TAIL_CAP` | slice in `dotted_after`; slice in `literal_tail` | `crates/disrobe-pass-native/src/sig_engine.rs` |
