@@ -403,7 +403,10 @@ fn authored_cores_read_the_same_under_readelf() {
                 )
             })
             .collect();
-        assert_eq!(listed, mappings, "{name}: readelf NT_FILE table");
+        assert_eq!(
+            listed, mappings,
+            "{name}: readelf NT_FILE table; readelf -n printed:\n{notes}"
+        );
         let headers: String = run("-l");
         let loads: usize = headers
             .lines()
