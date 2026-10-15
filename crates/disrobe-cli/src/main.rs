@@ -1428,6 +1428,31 @@ enum NativeCmd {
         neutralize: Option<native::NeutralizeMode>,
     },
     #[command(
+        name = "verify-function",
+        about = "run one function of a native binary and a candidate reimplementation side by side in the bounded x86 emulator over generated inputs and report the first input where they differ"
+    )]
+    VerifyFunction {
+        #[arg(help = "native binary that holds the original function")]
+        input: PathBuf,
+        #[arg(long, help = "function name or 0x-prefixed virtual address")]
+        function: String,
+        #[arg(long, help = "candidate C source, or a compiled .o or .obj object")]
+        candidate: PathBuf,
+        #[arg(
+            long,
+            help = "signature such as \"i32(i32,ptr)\"; defaults to the decompiler's recovered signature"
+        )]
+        signature: Option<String>,
+        #[arg(long, default_value_t = disrobe_pass_native::VERIFY_FUNCTION_DEFAULT_CASES, help = "number of generated cases")]
+        cases: u32,
+        #[arg(long, default_value_t = disrobe_pass_native::VERIFY_FUNCTION_DEFAULT_SEED, help = "seed for the generated cases")]
+        seed: u64,
+        #[arg(long, help = "C compiler for a source candidate (clang or gcc)")]
+        compiler: Option<PathBuf>,
+        #[arg(long, help = "print the report as JSON")]
+        json: bool,
+    },
+    #[command(
         about = "dump symbols, sections, segments, imports, & debug info from a native binary"
     )]
     Symbols {
@@ -2076,6 +2101,18 @@ fn main() -> miette::Result<()> {
                 no_devirt,
                 neutralize,
             } => native::decompile(input, out, emit, backend, format, !no_devirt, neutralize),
+            NativeCmd::VerifyFunction {
+                input,
+                function,
+                candidate,
+                signature,
+                cases,
+                seed,
+                compiler,
+                json,
+            } => native::verify_function(
+                input, function, candidate, signature, cases, seed, compiler, json,
+            ),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Identify { input, out } => native::identify(input, out),
             NativeCmd::Unpack { input, out, list } => native::unpack(input, out, list),

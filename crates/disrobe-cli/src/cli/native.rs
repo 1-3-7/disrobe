@@ -18,6 +18,230 @@ const GHIDRA_DECOMPILE_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_NATIVE_SBOM_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const NATIVE_SBOM_READ_CHUNK_BYTES: usize = 64 * 1024;
+const VERIFY_FUNCTION_MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const VERIFY_FUNCTION_COMPILER_TIMEOUT: Duration = Duration::from_mins(2);
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_function(
+    input: PathBuf,
+    function: String,
+    candidate: PathBuf,
+    signature: Option<String>,
+    cases: u32,
+    seed: u64,
+    compiler: Option<PathBuf>,
+    json: bool,
+) -> miette::Result<()> {
+    let original: Vec<u8> = read_verify_function_input(&input, "binary")?;
+    let candidate_extension: String = candidate
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut options: disrobe_pass_native::VerifyFunctionOptions =
+        disrobe_pass_native::VerifyFunctionOptions::new(function);
+    options.signature = signature;
+    options.cases = cases;
+    options.seed = seed;
+    let reports: Vec<(String, disrobe_pass_native::VerifyFunctionReport)> = if candidate_extension
+        == "c"
+    {
+        let compiler_path: PathBuf = compiler.unwrap_or_else(|| PathBuf::from("clang"));
+        let scratch: ScratchDir = ScratchDir::create("native-verify-function")
+            .map_err(|error| miette::miette!("DR-NATIVE-0230: create scratch: {error}"))?;
+        let mut compiled: Vec<(String, disrobe_pass_native::VerifyFunctionReport)> = Vec::new();
+        for optimization in ["-O0", "-O2"] {
+            let object_path: PathBuf = scratch
+                .path()
+                .join(format!("candidate-{}.o", &optimization[1..]));
+            compile_verify_candidate(
+                &compiler_path,
+                &candidate,
+                &object_path,
+                optimization,
+                &original,
+            )?;
+            let object: Vec<u8> = read_verify_function_input(&object_path, "candidate object")?;
+            let report: disrobe_pass_native::VerifyFunctionReport =
+                disrobe_pass_native::verify_function(&original, &object, &options).map_err(
+                    |error| miette::miette!("DR-NATIVE-0231: verify {optimization}: {error}"),
+                )?;
+            compiled.push((optimization.trim_start_matches('-').to_owned(), report));
+        }
+        compiled
+    } else if candidate_extension == "o" || candidate_extension == "obj" {
+        let object: Vec<u8> = read_verify_function_input(&candidate, "candidate object")?;
+        let report: disrobe_pass_native::VerifyFunctionReport =
+            disrobe_pass_native::verify_function(&original, &object, &options)
+                .map_err(|error| miette::miette!("DR-NATIVE-0232: verify candidate: {error}"))?;
+        vec![("prebuilt".to_owned(), report)]
+    } else {
+        return Err(miette::miette!(
+            "DR-NATIVE-0233: candidate must have a .c, .o or .obj extension"
+        ));
+    };
+    if json {
+        let document: serde_json::Value = serde_json::json!({
+            "schema": "disrobe.native.verify-function-command/v1",
+            "binary": input.display().to_string(),
+            "candidate": candidate.display().to_string(),
+            "variants": reports.iter().map(|(variant, report)| serde_json::json!({
+                "variant": variant,
+                "report": report,
+            })).collect::<Vec<serde_json::Value>>(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&document)
+                .map_err(|error| miette::miette!("DR-NATIVE-0234: serialize report: {error}"))?
+        );
+        return Ok(());
+    }
+    for (variant, report) in reports {
+        println!(
+            "native verify-function {} {} @ 0x{:x}: {} cases, verdict {}",
+            variant, report.function, report.address, report.cases, report.verdict
+        );
+        println!("  signature: {}", report.signature);
+        println!("  seed: {}  step cap: {}", report.seed, report.step_cap);
+        println!(
+            "  totals: {}",
+            report
+                .totals
+                .iter()
+                .map(|(label, count): (&String, &u32)| format!("{label}={count}"))
+                .collect::<Vec<String>>()
+                .join(", ")
+        );
+        for divergence in report.divergences {
+            println!(
+                "  case {} {:?}: {} [{}]",
+                divergence.case_index,
+                divergence.classification,
+                divergence.detail,
+                divergence.inputs.join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_verify_function_input(path: &Path, label: &str) -> miette::Result<Vec<u8>> {
+    let metadata: std::fs::Metadata = std::fs::metadata(path).map_err(|error| {
+        miette::miette!(
+            "DR-NATIVE-0235: cannot inspect {label} {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.len() > VERIFY_FUNCTION_MAX_INPUT_BYTES {
+        return Err(miette::miette!(
+            "DR-NATIVE-0236: {label} is {} bytes; limit is {}",
+            metadata.len(),
+            VERIFY_FUNCTION_MAX_INPUT_BYTES
+        ));
+    }
+    std::fs::read(path).map_err(|error| {
+        miette::miette!(
+            "DR-NATIVE-0237: cannot read {label} {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn compile_verify_candidate(
+    compiler: &Path,
+    source: &Path,
+    output: &Path,
+    optimization: &str,
+    original: &[u8],
+) -> miette::Result<()> {
+    let file: object::File<'_> = object::File::parse(original)
+        .map_err(|error| miette::miette!("DR-NATIVE-0238: parse original image: {error}"))?;
+    let target: &'static str = match (file.architecture(), file.format()) {
+        (
+            object::Architecture::X86_64 | object::Architecture::X86_64_X32,
+            object::BinaryFormat::Elf,
+        ) => "x86_64-unknown-linux-gnu",
+        (
+            object::Architecture::X86_64 | object::Architecture::X86_64_X32,
+            object::BinaryFormat::MachO,
+        ) => "x86_64-apple-darwin",
+        (
+            object::Architecture::X86_64 | object::Architecture::X86_64_X32,
+            object::BinaryFormat::Coff | object::BinaryFormat::Pe,
+        ) => "x86_64-pc-windows-msvc",
+        (object::Architecture::I386, object::BinaryFormat::Coff | object::BinaryFormat::Pe) => {
+            "i686-pc-windows-msvc"
+        }
+        (architecture, format) => {
+            return Err(miette::miette!(
+                "DR-NATIVE-0239: cannot compile candidate for {architecture:?} {format:?}"
+            ));
+        }
+    };
+    let compiler_name: String = compiler
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let target_argument: std::ffi::OsString = if compiler_name.contains("gcc") {
+        match (file.architecture(), file.format()) {
+            (
+                object::Architecture::X86_64 | object::Architecture::X86_64_X32,
+                object::BinaryFormat::Coff | object::BinaryFormat::Pe,
+            ) => "-m64".into(),
+            (object::Architecture::I386, object::BinaryFormat::Coff | object::BinaryFormat::Pe) => {
+                "-m32".into()
+            }
+            _ => {
+                return Err(miette::miette!(
+                    "DR-NATIVE-0243: gcc candidate compilation supports PE inputs; use clang for {target}"
+                ));
+            }
+        }
+    } else {
+        format!("--target={target}").into()
+    };
+    let args: Vec<std::ffi::OsString> = vec![
+        target_argument,
+        "-c".into(),
+        optimization.into(),
+        "-ffreestanding".into(),
+        "-fno-stack-protector".into(),
+        "-fno-pic".into(),
+        "-fno-builtin".into(),
+        source.as_os_str().to_owned(),
+        "-o".into(),
+        output.as_os_str().to_owned(),
+    ];
+    let captured: Option<disrobe_core::subprocess::CapturedOutput> =
+        disrobe_core::subprocess::run_captured(
+            compiler,
+            &args,
+            VERIFY_FUNCTION_COMPILER_TIMEOUT,
+            MAX_CAPTURE_OUTPUT,
+        )
+        .map_err(|error| {
+            miette::miette!(
+                "DR-NATIVE-0240: cannot start compiler {}: {error}",
+                compiler.display()
+            )
+        })?;
+    let Some(captured): Option<disrobe_core::subprocess::CapturedOutput> = captured else {
+        return Err(miette::miette!(
+            "DR-NATIVE-0241: compiler timed out after {} seconds",
+            VERIFY_FUNCTION_COMPILER_TIMEOUT.as_secs()
+        ));
+    };
+    if captured.exit_code != Some(0) {
+        return Err(miette::miette!(
+            "DR-NATIVE-0242: compiler exited {:?}: {}",
+            captured.exit_code,
+            String::from_utf8_lossy(&captured.stderr)
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(feature = "devirt")]
 const DEVIRT_FUNCTION_LIMIT: usize = 2048;
