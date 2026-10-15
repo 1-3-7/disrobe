@@ -7,6 +7,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::{GateHits, RuleGates, gate_slot};
+
 const TOKEN_DIGEST_BYTES: usize = 12;
 const PARTIAL_REVEAL_MIN_CHARS: usize = 16;
 const PARTIAL_REVEAL_CHARS: usize = 2;
@@ -297,7 +299,25 @@ struct RegexRule {
     code: &'static str,
     severity: Severity,
     pattern: &'static Regex,
+    gate: Option<usize>,
 }
+
+const SECRET_GATES: [(&str, &str); 11] = [
+    ("DR-SEC-ZHIPU", r"[0-9a-f]{32}\.[A-Za-z0-9]{16}"),
+    ("DR-SEC-CONFLUENT", r"(?i)confluent"),
+    ("DR-SEC-CONTENTFUL", r"(?i)contentful"),
+    ("DR-SEC-FASTLY", r"(?i)fastly"),
+    ("DR-SEC-JFROG", r"(?i)jfrog|artifactory|bintray|xray"),
+    ("DR-SEC-MESSAGEBIRD", r"(?i)message[_-]?bird"),
+    ("DR-SEC-OKTA", r"(?i)okta"),
+    ("DR-SEC-PLAID", r"(?i)plaid"),
+    ("DR-SEC-SUMOLOGIC", r"(?i)sumo"),
+    ("DR-SEC-TWITTER-APIKEY", r"(?i)twitter"),
+    ("DR-SEC-ZENDESK", r"(?i)zendesk"),
+];
+
+static SECRET_GATE_SET: LazyLock<RuleGates> =
+    LazyLock::new(|| RuleGates::from_table(&SECRET_GATES));
 
 struct PrefixRule {
     kind: SecretKind,
@@ -825,6 +845,7 @@ static REGEX_RULES: LazyLock<Vec<RegexRule>> = LazyLock::new(|| {
                     code,
                     severity,
                     pattern,
+                    gate: gate_slot(&SECRET_GATES, code),
                 }
             },
         )
@@ -1235,9 +1256,30 @@ pub fn scan_bytes_with_work(bytes: &[u8], uri: Option<&str>) -> (Vec<Finding>, E
     }
 
     let text: std::borrow::Cow<'_, str> = offset_preserving_text(bytes);
+    let hits: GateHits = SECRET_GATE_SET.hits(&text);
+    regex_findings(bytes, &text, &hits, uri, &mut claimed, &mut findings);
 
-    for rule in REGEX_RULES.iter() {
-        for m in rule.pattern.find_iter(&text) {
+    scan_pem_blocks(bytes, uri, &mut claimed, &mut findings);
+    scan_solana_keypair(&text, uri, &mut claimed, &mut findings);
+
+    let work: EntropyScanWork = scan_entropy(bytes, uri, &claimed, &mut findings);
+    findings.sort_by_key(|f: &Finding| f.offset);
+    (findings, work)
+}
+
+fn regex_findings(
+    bytes: &[u8],
+    text: &str,
+    hits: &GateHits,
+    uri: Option<&str>,
+    claimed: &mut Vec<(usize, usize)>,
+    findings: &mut Vec<Finding>,
+) {
+    for rule in REGEX_RULES
+        .iter()
+        .filter(|rule: &&RegexRule| hits.admits(rule.gate))
+    {
+        for m in rule.pattern.find_iter(text) {
             let matched: &str = m.as_str();
             if is_allowlisted(matched) || std::str::from_utf8(&bytes[m.range()]).is_err() {
                 continue;
@@ -1258,13 +1300,6 @@ pub fn scan_bytes_with_work(bytes: &[u8], uri: Option<&str>) -> (Vec<Finding>, E
             findings.push(finding);
         }
     }
-
-    scan_pem_blocks(bytes, uri, &mut claimed, &mut findings);
-    scan_solana_keypair(&text, uri, &mut claimed, &mut findings);
-
-    let work: EntropyScanWork = scan_entropy(bytes, uri, &claimed, &mut findings);
-    findings.sort_by_key(|f: &Finding| f.offset);
-    (findings, work)
 }
 
 const PEM_BEGIN: &[u8] = b"-----BEGIN ";
@@ -1558,6 +1593,7 @@ pub fn scan_report(bytes: &[u8], uri: Option<&str>) -> SecretScanReport {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{Finding, claim_overlaps, merge_claims, scan_bytes};
 
@@ -1643,5 +1679,164 @@ mod tests {
                 .iter()
                 .all(|rule: &super::RegexRule| !rule.pattern.as_str().is_empty())
         );
+    }
+
+    fn secret_gate_samples() -> Vec<(&'static str, String)> {
+        let assigned = |key: &str, value: String| -> String { format!("{key} = \"{value}\"") };
+        vec![
+            (
+                "DR-SEC-ZHIPU",
+                format!("{}.{}", "a".repeat(32), "B".repeat(16)),
+            ),
+            (
+                "DR-SEC-CONFLUENT",
+                assigned("confluent_key", "a".repeat(16)),
+            ),
+            (
+                "DR-SEC-CONTENTFUL",
+                assigned("contentful_token", "a".repeat(43)),
+            ),
+            ("DR-SEC-FASTLY", assigned("FASTLY_KEY", "a".repeat(32))),
+            ("DR-SEC-JFROG", assigned("artifactory_key", "a".repeat(64))),
+            (
+                "DR-SEC-MESSAGEBIRD",
+                assigned("message-bird_key", "a".repeat(25)),
+            ),
+            (
+                "DR-SEC-OKTA",
+                assigned("okta_token", format!("00{}", "a".repeat(40))),
+            ),
+            (
+                "DR-SEC-OKTA",
+                assigned("o\u{212a}ta_token", format!("00{}", "a".repeat(40))),
+            ),
+            (
+                "DR-SEC-PLAID",
+                assigned(
+                    "plaid_token",
+                    format!(
+                        "access-sandbox-{}-{}-{}-{}-{}",
+                        "a".repeat(8),
+                        "b".repeat(4),
+                        "c".repeat(4),
+                        "d".repeat(4),
+                        "e".repeat(12)
+                    ),
+                ),
+            ),
+            ("DR-SEC-SUMOLOGIC", assigned("sumo_key", "a".repeat(64))),
+            (
+                "DR-SEC-SUMOLOGIC",
+                assigned("\u{17f}umo_key", "a".repeat(64)),
+            ),
+            (
+                "DR-SEC-TWITTER-APIKEY",
+                assigned("twitter_api_key", "a".repeat(25)),
+            ),
+            ("DR-SEC-ZENDESK", assigned("zendesk_token", "a".repeat(40))),
+            ("DR-SEC-JFROG", assigned("jfrog_key", "a".repeat(73))),
+            ("DR-SEC-JFROG", assigned("bintray_key", "a".repeat(64))),
+            ("DR-SEC-JFROG", assigned("xray_key", "a".repeat(64))),
+            (
+                "DR-SEC-MESSAGEBIRD",
+                assigned("messagebird_key", "a".repeat(25)),
+            ),
+            (
+                "DR-SEC-MESSAGEBIRD",
+                assigned("message_bird_key", "a".repeat(25)),
+            ),
+        ]
+    }
+
+    fn secret_rule(code: &str) -> &'static super::RegexRule {
+        super::REGEX_RULES
+            .iter()
+            .find(|rule: &&super::RegexRule| rule.code == code)
+            .unwrap_or_else(|| panic!("{code} names no secret rule"))
+    }
+
+    #[test]
+    fn every_secret_gate_compiles_and_names_one_rule() {
+        assert!(super::SECRET_GATE_SET.compiled());
+        for (index, (code, _)) in super::SECRET_GATES.iter().enumerate() {
+            assert_eq!(super::gate_slot(&super::SECRET_GATES, code), Some(index));
+            assert_eq!(secret_rule(code).gate, Some(index), "{code}");
+        }
+        let gated: usize = super::REGEX_RULES
+            .iter()
+            .filter(|rule: &&super::RegexRule| rule.gate.is_some())
+            .count();
+        assert_eq!(gated, super::SECRET_GATES.len());
+    }
+
+    #[test]
+    fn every_secret_rule_match_passes_its_gate() {
+        let samples: Vec<(&'static str, String)> = secret_gate_samples();
+        for (code, sample) in &samples {
+            let rule: &super::RegexRule = secret_rule(code);
+            assert!(
+                rule.pattern.is_match(sample),
+                "{code} misses its sample {sample:?}"
+            );
+            assert!(
+                super::SECRET_GATE_SET.hits(sample).admits(rule.gate),
+                "{code} gate rejects a text its rule matches: {sample:?}"
+            );
+        }
+        let sampled: std::collections::BTreeSet<&str> = samples
+            .iter()
+            .map(|(code, _): &(&str, String)| *code)
+            .collect();
+        let gated: std::collections::BTreeSet<&str> = super::SECRET_GATES
+            .iter()
+            .map(|(code, _): &(&str, &str)| *code)
+            .collect();
+        assert_eq!(sampled, gated);
+    }
+
+    #[test]
+    fn gated_secret_regexes_match_the_ungated_scan() {
+        let samples: Vec<(&'static str, String)> = secret_gate_samples();
+        let mut inputs: Vec<Vec<u8>> = samples
+            .iter()
+            .map(|(_, sample): &(&str, String)| sample.clone().into_bytes())
+            .collect();
+        let mut mixed: Vec<u8> = Vec::new();
+        for (_, sample) in &samples {
+            mixed.extend_from_slice(sample.as_bytes());
+            mixed.extend_from_slice(b"\n\xff\xfe caf\xc3\xa9 \x00\n");
+        }
+        inputs.push(mixed);
+        inputs.push(b"plain prose without any credential \xc3\xa9\xff".to_vec());
+        for input in &inputs {
+            let text: std::borrow::Cow<'_, str> = super::offset_preserving_text(input);
+            let mut gated: Vec<Finding> = Vec::new();
+            super::regex_findings(
+                input,
+                &text,
+                &super::SECRET_GATE_SET.hits(&text),
+                None,
+                &mut Vec::new(),
+                &mut gated,
+            );
+            let mut ungated: Vec<Finding> = Vec::new();
+            super::regex_findings(
+                input,
+                &text,
+                &super::GateHits::admit_all(),
+                None,
+                &mut Vec::new(),
+                &mut ungated,
+            );
+            assert_eq!(gated, ungated, "{text:?}");
+        }
+        let mixed: &[u8] = inputs.get(inputs.len() - 2).expect("mixed input");
+        let codes: std::collections::BTreeSet<String> = scan_bytes(mixed, None)
+            .into_iter()
+            .map(|finding: Finding| finding.code)
+            .collect();
+        for (code, _) in &samples {
+            assert!(codes.contains(*code), "{code} not found in the mixed input");
+        }
     }
 }

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use lazy_regex::regex;
-use regex::{Regex, RegexBuilder};
+use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder, SetMatches};
 use serde::{Deserialize, Serialize};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "git-history"))]
@@ -173,12 +173,174 @@ impl std::fmt::Display for ReconError {
 
 impl std::error::Error for ReconError {}
 
+#[derive(Debug)]
+pub(crate) struct RuleGates {
+    set: Option<RegexSet>,
+}
+
+impl RuleGates {
+    pub(crate) fn new<'p>(patterns: impl IntoIterator<Item = &'p str>) -> Self {
+        let set: Option<RegexSet> = RegexSetBuilder::new(patterns)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .dfa_size_limit(REGEX_SIZE_LIMIT)
+            .build()
+            .ok();
+        Self { set }
+    }
+
+    pub(crate) fn from_table(table: &[(&str, &str)]) -> Self {
+        Self::new(table.iter().map(|&(_, gate): &(&str, &str)| gate))
+    }
+
+    pub(crate) fn hits(&self, text: &str) -> GateHits {
+        GateHits(self.set.as_ref().map(|set: &RegexSet| set.matches(text)))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn compiled(&self) -> bool {
+        self.set.is_some()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct GateHits(Option<SetMatches>);
+
+impl GateHits {
+    #[cfg(test)]
+    pub(crate) const fn admit_all() -> Self {
+        Self(None)
+    }
+
+    pub(crate) fn admits(&self, gate: Option<usize>) -> bool {
+        match (gate, &self.0) {
+            (Some(slot), Some(matches)) => matches.matched(slot),
+            (None, _) | (_, None) => true,
+        }
+    }
+}
+
+pub(crate) fn gate_slot(table: &[(&str, &str)], rule_id: &str) -> Option<usize> {
+    table
+        .iter()
+        .position(|&(gated, _): &(&str, &str)| gated == rule_id)
+}
+
 struct EndpointRule {
     rule_id: &'static str,
     category: ReconCategory,
     severity: Severity,
     pattern: &'static Regex,
+    gate: Option<usize>,
 }
+
+const ONION_RULE_ID: &str = "DR-RECON-ONION";
+
+const ENDPOINT_GATES: [(&str, &str); 56] = [
+    ("DR-RECON-FIREBASE", r"(?i)\.firebaseio\.com"),
+    ("DR-RECON-S3-BUCKET", r"(?i)amazonaws\.com"),
+    ("DR-RECON-GCS-BUCKET", r"(?i)storage\.googleapis\.com"),
+    ("DR-RECON-AZURE-BLOB", r"(?i)\.blob\.core\.windows\.net"),
+    ("DR-RECON-GCP-OAUTH", r"\.apps\.googleusercontent\.com"),
+    ("DR-RECON-GOOGLE-OAUTH-TOKEN", r"ya29\."),
+    (
+        "DR-RECON-SLACK-WEBHOOK",
+        r"https://hooks\.slack\.com/services/T",
+    ),
+    (
+        "DR-RECON-DISCORD-WEBHOOK",
+        r"discord(?:app)?\.com/api/webhooks/",
+    ),
+    (
+        "DR-RECON-TEAMS-WEBHOOK",
+        r"\.webhook\.office\.com/webhookb2/",
+    ),
+    ("DR-RECON-TELEGRAM-BOT", r":AA"),
+    ("DR-RECON-SENDGRID", r"SG\."),
+    ("DR-RECON-SHOPIFY-TOKEN", r"shp(?:at|ca|pa|ss)_"),
+    ("DR-RECON-NPM-TOKEN", r"npm_"),
+    ("DR-RECON-PYPI-TOKEN", r"pypi-AgEIcHlwaS5vcmc"),
+    ("DR-RECON-OPENAI-KEY", r"T3BlbkFJ"),
+    ("DR-RECON-ANTHROPIC-KEY", r"sk-ant-(?:api|admin)[0-9]{2}-"),
+    ("DR-RECON-ALGOLIA-ADMIN", r"(?i)algolia"),
+    ("DR-RECON-CLOUDINARY-URL", r"cloudinary://"),
+    ("DR-RECON-FACEBOOK-TOKEN", r"EAACEdEose0cBA"),
+    ("DR-RECON-MAILGUN", r"key-"),
+    ("DR-RECON-MAILCHIMP", r"[0-9a-f]{32}-us[0-9]"),
+    ("DR-RECON-SQUARE-ACCESS", r"sq0atp-"),
+    ("DR-RECON-SQUARE-OAUTH", r"sq0csp-"),
+    ("DR-RECON-PAYPAL-BRAINTREE", r"access_token\$production\$"),
+    ("DR-RECON-HEROKU", r"(?i)heroku"),
+    ("DR-RECON-AUTH-BEARER", r"(?i)bearer"),
+    ("DR-RECON-PASSWORD-IN-URL", r"://"),
+    (
+        "DR-RECON-API-ASSIGNMENT",
+        r"(?i)api[_-]?key|api[_-]?secret|client[_-]?secret|access[_-]?token|auth[_-]?token",
+    ),
+    ("DR-RECON-GITLAB-PAT", r"glpat-"),
+    ("DR-RECON-DIGITALOCEAN", r"(?:dop|doo|dor)_v1_"),
+    ("DR-RECON-NEWRELIC", r"NRAK-"),
+    ("DR-RECON-HUGGINGFACE", r"hf_"),
+    ("DR-RECON-SUPABASE", r"sb_(?:publishable|secret)_"),
+    ("DR-RECON-VERCEL", r"vc[apo]_"),
+    ("DR-RECON-LINEAR", r"lin_api_"),
+    ("DR-RECON-NOTION", r"secret_|ntn_"),
+    (
+        "DR-RECON-POSTMARK",
+        r"(?i)x-postmark-(?:server|account)-token",
+    ),
+    (
+        "DR-RECON-DATADOG",
+        r"(?i)dd[_-]?api[_-]?key|datadog[_-]?api[_-]?key",
+    ),
+    ("DR-RECON-ASANA", r"[0-9]/[0-9]{16}:"),
+    ("DR-RECON-CLERK-SECRET", r"sk_(?:test|live)_"),
+    ("DR-RECON-WEBSOCKET", r"(?i)wss?://"),
+    ("DR-RECON-MANIFEST-DEEPLINK", r"(?i)android:scheme"),
+    ("DR-RECON-MANIFEST-DEEPLINK-HOST", r"(?i)android:host"),
+    ("DR-RECON-MANIFEST-EXPORTED", r"(?i)android:exported"),
+    (
+        "DR-RECON-MANIFEST-PROVIDER-AUTHORITY",
+        r"(?i)android:authorities",
+    ),
+    ("DR-RECON-MANIFEST-PERMISSION", r"(?i)android\.permission\."),
+    (
+        "DR-RECON-C2-USER-AGENT",
+        r"(?i)Mozilla/[45]\.0|curl/[0-9]|python-requests/[0-9]|Go-http-client/[0-9]|axios/[0-9]|okhttp/[0-9]",
+    ),
+    ("DR-RECON-C2-NAMED-PIPE", r"(?i)\\\\\.\\pipe\\"),
+    ("DR-RECON-C2-MUTEX", r"(?i)(?:Global|Local)\\"),
+    (
+        "DR-RECON-C2-BEACON-PATH",
+        r"(?i)/(?:gate|panel|api|cmd|c2|task|bot|admin|login|submit|upload)\.php",
+    ),
+    (
+        "DR-RECON-C2-DEAD-DROP",
+        r"(?i)pastebin\.com/raw/|raw\.githubusercontent\.com/|cdn\.discordapp\.com/attachments/|telegra\.ph/|ghostbin\.[a-z]+/|transfer\.sh/",
+    ),
+    (
+        "DR-RECON-PERSIST-RUNKEY",
+        r"(?i)Microsoft\\Windows\\CurrentVersion\\Run",
+    ),
+    (
+        "DR-RECON-PERSIST-WINLOGON",
+        r"(?i)Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\",
+    ),
+    (
+        "DR-RECON-PERSIST-IFEO",
+        r"(?i)Image File Execution Options\\",
+    ),
+    (
+        "DR-RECON-PERSIST-LAUNCHAGENT",
+        r"(?i)Library/Launch(?:Agents|Daemons)|/etc/(?:cron|systemd/system|rc\.local)",
+    ),
+    (ONION_RULE_ID, r"(?i)\.onion"),
+];
+
+static ENDPOINT_GATE_SET: LazyLock<RuleGates> =
+    LazyLock::new(|| RuleGates::from_table(&ENDPOINT_GATES));
+
+static ONION_GATE: LazyLock<Option<usize>> =
+    LazyLock::new(|| gate_slot(&ENDPOINT_GATES, ONION_RULE_ID));
 
 type RuleSpec = (&'static str, ReconCategory, Severity, &'static Regex);
 
@@ -557,6 +719,7 @@ static ENDPOINT_RULES: LazyLock<Vec<EndpointRule>> = LazyLock::new(|| {
                 category,
                 severity,
                 pattern,
+                gate: gate_slot(&ENDPOINT_GATES, rule_id),
             },
         )
         .collect()
@@ -743,11 +906,15 @@ fn endpoint_calls(
 
 fn endpoint_rules(
     text: &str,
+    hits: &GateHits,
     lines: &LineIndex<'_>,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
-    for rule in ENDPOINT_RULES.iter() {
+    for rule in ENDPOINT_RULES
+        .iter()
+        .filter(|rule: &&EndpointRule| hits.admits(rule.gate))
+    {
         for m in rule.pattern.find_iter(text) {
             let offset: usize = m.start();
             let (line, column): (usize, usize) = lines.line_col(offset);
@@ -805,10 +972,14 @@ fn custom_rules(
 
 fn onion_findings(
     text: &str,
+    hits: &GateHits,
     lines: &LineIndex<'_>,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
+    if !hits.admits(*ONION_GATE) {
+        return;
+    }
     for m in ONION_RE.find_iter(text) {
         let offset: usize = m.start();
         let (line, column): (usize, usize) = lines.line_col(offset);
@@ -841,8 +1012,14 @@ fn secret_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<Reco
     }
 }
 
-fn ioc_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    for ind in ioc::extract(lines.bytes()) {
+fn ioc_findings(
+    lines: &LineIndex<'_>,
+    path: Option<&str>,
+    shared: &mut Option<Vec<ioc::Indicator>>,
+    out: &mut Vec<ReconFinding>,
+) {
+    let indicators: Vec<ioc::Indicator> = ioc::extract(lines.bytes());
+    for ind in &indicators {
         let category: ReconCategory = match ind.kind {
             IocKind::Url => ReconCategory::Url,
             IocKind::Domain => ReconCategory::Domain,
@@ -894,6 +1071,7 @@ fn ioc_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFi
             severity: severity.sarif_level().to_owned(),
         });
     }
+    *shared = Some(indicators);
 }
 
 const PERSISTENCE_NEEDLES: &[&str] = &[
@@ -1270,6 +1448,15 @@ pub fn scan_bytes(
     path: Option<&str>,
     config: &ReconConfig,
 ) -> (Vec<ReconFinding>, bool) {
+    scan_bytes_sharing(bytes, path, config, &mut None)
+}
+
+fn scan_bytes_sharing(
+    bytes: &[u8],
+    path: Option<&str>,
+    config: &ReconConfig,
+    indicators: &mut Option<Vec<ioc::Indicator>>,
+) -> (Vec<ReconFinding>, bool) {
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
     let valid_utf8: bool = matches!(text, std::borrow::Cow::Borrowed(_));
 
@@ -1278,11 +1465,12 @@ pub fn scan_bytes(
 
     let mut out: Vec<ReconFinding> = Vec::new();
     secret_findings(&lines, path, &mut out);
-    ioc_findings(&lines, path, &mut out);
-    endpoint_rules(&text, &lines, path, &mut out);
+    ioc_findings(&lines, path, indicators, &mut out);
+    let hits: GateHits = ENDPOINT_GATE_SET.hits(&text);
+    endpoint_rules(&text, &hits, &lines, path, &mut out);
     endpoint_paths(&text, &lines, path, &mut out);
     endpoint_calls(&text, &lines, path, &mut out);
-    onion_findings(&text, &lines, path, &mut out);
+    onion_findings(&text, &hits, &lines, path, &mut out);
     for (encoding, suffix) in [
         (StringEncoding::Utf16Le, WIDE_ENCODING_SUFFIX),
         (StringEncoding::Utf16Be, WIDE_BE_ENCODING_SUFFIX),
@@ -1290,8 +1478,9 @@ pub fn scan_bytes(
         for (run_start, run) in extract_wide_ascii_runs(bytes, encoding) {
             let first_new: usize = out.len();
             let run_lines: LineIndex<'_> = LineIndex::new(run.as_bytes());
-            endpoint_rules(&run, &run_lines, path, &mut out);
-            onion_findings(&run, &run_lines, path, &mut out);
+            let run_hits: GateHits = ENDPOINT_GATE_SET.hits(&run);
+            endpoint_rules(&run, &run_hits, &run_lines, path, &mut out);
+            onion_findings(&run, &run_hits, &run_lines, path, &mut out);
             anchor_wide_findings(&mut out, first_new, &lines, run_start, suffix);
         }
     }
@@ -1599,11 +1788,21 @@ impl Drop for ContainerDepth {
 }
 
 fn scan_blob(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> (Vec<ReconFinding>, bool) {
+    scan_blob_sharing(bytes, uri, config, &mut None)
+}
+
+fn scan_blob_sharing(
+    bytes: &[u8],
+    uri: Option<&str>,
+    config: &ReconConfig,
+    indicators: &mut Option<Vec<ioc::Indicator>>,
+) -> (Vec<ReconFinding>, bool) {
     let (_guard, depth): (ContainerDepth, usize) = ContainerDepth::enter();
     if depth == 1 {
         DECODED_REMAINING.with(|cell: &std::cell::Cell<u64>| cell.set(MAX_DECODED_TOTAL_BYTES));
     }
-    let (mut findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_bytes(bytes, uri, config);
+    let (mut findings, valid_utf8): (Vec<ReconFinding>, bool) =
+        scan_bytes_sharing(bytes, uri, config, indicators);
     findings.extend(base64_decode_findings(bytes, uri, config, 0));
     let mut codec_total: usize = 0;
     findings.extend(codec_cascade_findings(
@@ -1641,7 +1840,18 @@ fn scan_container(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> Vec<
 
 #[must_use]
 pub fn report_bytes(bytes: &[u8], uri: Option<&str>, config: &ReconConfig) -> ReconReport {
-    let (findings, valid_utf8): (Vec<ReconFinding>, bool) = scan_blob(bytes, uri, config);
+    report_bytes_sharing(bytes, uri, config, &mut None)
+}
+
+#[must_use]
+pub fn report_bytes_sharing(
+    bytes: &[u8],
+    uri: Option<&str>,
+    config: &ReconConfig,
+    indicators: &mut Option<Vec<ioc::Indicator>>,
+) -> ReconReport {
+    let (findings, valid_utf8): (Vec<ReconFinding>, bool) =
+        scan_blob_sharing(bytes, uri, config, indicators);
     let deduped: Vec<ReconFinding> = dedup(findings);
     ReconReport {
         schema: RECON_SCHEMA,
@@ -3184,5 +3394,433 @@ mod tests {
         assert_eq!(ENDPOINT_RULES.len(), 56);
         let statics: [&Regex; 4] = [*ONION_RE, *ENDPOINT_PATH_RE, *FETCH_CALL_RE, *GRAPHQL_RE];
         assert!(statics.iter().all(|re: &&Regex| !re.as_str().is_empty()));
+    }
+
+    #[test]
+    fn a_sharing_recon_scan_hands_back_the_top_level_indicators_only() {
+        use base64::Engine as _;
+        let nested: String = base64::engine::general_purpose::STANDARD
+            .encode("hidden layer reaches http://nested.example.org/beacon and 10.9.8.7");
+        let text: String = format!(
+            "visit https://example.com/login from 192.0.2.10 \u{e9} then decode {nested} \n"
+        );
+        let mut input: Vec<u8> = text.into_bytes();
+        input.extend_from_slice(b"\xff\xfe\x00 tail mail ops@example.net");
+        let config: ReconConfig = ReconConfig::default();
+        let mut shared: Option<Vec<ioc::Indicator>> = None;
+        let sharing: ReconReport = report_bytes_sharing(&input, None, &config, &mut shared);
+        let plain: ReconReport = report_bytes(&input, None, &config);
+        assert_eq!(
+            serde_json::to_value(&sharing).expect("sharing json"),
+            serde_json::to_value(&plain).expect("plain json")
+        );
+        assert!(
+            plain.findings.iter().any(|finding: &ReconFinding| finding
+                .path
+                .as_deref()
+                .is_some_and(|path: &str| path.contains("#b64@"))),
+            "the nested layer must be scanned for the test to prove only the top level is shared: {:?}",
+            plain.findings
+        );
+        assert_eq!(shared, Some(ioc::extract(&input)));
+    }
+
+    fn endpoint_gate_samples() -> Vec<(&'static str, String)> {
+        let uuid: String = format!(
+            "{}-{}-{}-{}-{}",
+            "a".repeat(8),
+            "b".repeat(4),
+            "c".repeat(4),
+            "d".repeat(4),
+            "e".repeat(12)
+        );
+        vec![
+            ("DR-RECON-FIREBASE", "demo.firebaseio.com".to_owned()),
+            ("DR-RECON-S3-BUCKET", "bucket.s3.amazonaws.com".to_owned()),
+            (
+                "DR-RECON-GCS-BUCKET",
+                "storage.googleapis.com/bucket".to_owned(),
+            ),
+            (
+                "DR-RECON-GCS-BUCKET",
+                "\u{17f}torage.googleapis.com/bucket".to_owned(),
+            ),
+            (
+                "DR-RECON-AZURE-BLOB",
+                "acct.blob.core.windows.net".to_owned(),
+            ),
+            (
+                "DR-RECON-GCP-OAUTH",
+                format!("123-{}.apps.googleusercontent.com", "a".repeat(32)),
+            ),
+            (
+                "DR-RECON-GOOGLE-OAUTH-TOKEN",
+                format!("ya29.{}", "a".repeat(20)),
+            ),
+            (
+                "DR-RECON-SLACK-WEBHOOK",
+                format!(
+                    "https://hooks.slack.com/services/T{}/B{}/{}",
+                    "a".repeat(8),
+                    "b".repeat(8),
+                    "c".repeat(20)
+                ),
+            ),
+            (
+                "DR-RECON-DISCORD-WEBHOOK",
+                format!(
+                    "https://discord.com/api/webhooks/{}/{}",
+                    "1".repeat(18),
+                    "a".repeat(60)
+                ),
+            ),
+            (
+                "DR-RECON-TEAMS-WEBHOOK",
+                format!(
+                    "https://org.webhook.office.com/webhookb2/{g}@{g}/IncomingWebhook/{h}/{g}",
+                    g = "a".repeat(36),
+                    h = "b".repeat(32)
+                ),
+            ),
+            (
+                "DR-RECON-TELEGRAM-BOT",
+                format!("12345678:AA{}", "a".repeat(32)),
+            ),
+            (
+                "DR-RECON-SENDGRID",
+                format!("SG.{}.{}", "a".repeat(22), "b".repeat(43)),
+            ),
+            (
+                "DR-RECON-SHOPIFY-TOKEN",
+                format!("shpat_{}", "a".repeat(32)),
+            ),
+            ("DR-RECON-NPM-TOKEN", format!("npm_{}", "a".repeat(36))),
+            (
+                "DR-RECON-PYPI-TOKEN",
+                format!("pypi-AgEIcHlwaS5vcmc{}", "a".repeat(50)),
+            ),
+            (
+                "DR-RECON-OPENAI-KEY",
+                format!("sk-{}T3BlbkFJ{}", "a".repeat(20), "b".repeat(20)),
+            ),
+            (
+                "DR-RECON-ANTHROPIC-KEY",
+                format!("sk-ant-api03-{}", "a".repeat(80)),
+            ),
+            (
+                "DR-RECON-ALGOLIA-ADMIN",
+                format!("algolia_admin_key = \"{}\"", "a".repeat(32)),
+            ),
+            (
+                "DR-RECON-CLOUDINARY-URL",
+                format!("cloudinary://{}:abc@cloud", "1".repeat(15)),
+            ),
+            (
+                "DR-RECON-FACEBOOK-TOKEN",
+                format!("EAACEdEose0cBA{}", "a".repeat(10)),
+            ),
+            ("DR-RECON-MAILGUN", format!("key-{}", "a".repeat(32))),
+            ("DR-RECON-MAILCHIMP", format!("{}-us1", "a".repeat(32))),
+            (
+                "DR-RECON-SQUARE-ACCESS",
+                format!("sq0atp-{}", "a".repeat(22)),
+            ),
+            (
+                "DR-RECON-SQUARE-OAUTH",
+                format!("sq0csp-{}", "a".repeat(43)),
+            ),
+            (
+                "DR-RECON-PAYPAL-BRAINTREE",
+                format!(
+                    "access_token$production${}${}",
+                    "a".repeat(16),
+                    "b".repeat(32)
+                ),
+            ),
+            ("DR-RECON-HEROKU", format!("heroku_api_key {uuid}")),
+            ("DR-RECON-AUTH-BEARER", format!("Bearer {}", "a".repeat(16))),
+            (
+                "DR-RECON-PASSWORD-IN-URL",
+                "ftp://user:pass@host".to_owned(),
+            ),
+            (
+                "DR-RECON-API-ASSIGNMENT",
+                format!("api_key = \"{}\"", "a".repeat(16)),
+            ),
+            ("DR-RECON-GITLAB-PAT", format!("glpat-{}", "a".repeat(20))),
+            (
+                "DR-RECON-DIGITALOCEAN",
+                format!("dop_v1_{}", "a".repeat(64)),
+            ),
+            ("DR-RECON-NEWRELIC", format!("NRAK-{}", "A".repeat(27))),
+            ("DR-RECON-HUGGINGFACE", format!("hf_{}", "a".repeat(34))),
+            ("DR-RECON-SUPABASE", format!("sb_secret_{}", "a".repeat(20))),
+            ("DR-RECON-VERCEL", format!("vca_{}", "a".repeat(24))),
+            ("DR-RECON-LINEAR", format!("lin_api_{}", "a".repeat(40))),
+            ("DR-RECON-NOTION", format!("ntn_{}", "a".repeat(43))),
+            (
+                "DR-RECON-POSTMARK",
+                format!("X-Postmark-Server-Token: {uuid}"),
+            ),
+            ("DR-RECON-DATADOG", format!("DD_API_KEY={}", "a".repeat(32))),
+            (
+                "DR-RECON-ASANA",
+                format!("1/{}:{}", "1".repeat(16), "a".repeat(32)),
+            ),
+            (
+                "DR-RECON-CLERK-SECRET",
+                format!("sk_test_{}", "a".repeat(40)),
+            ),
+            ("DR-RECON-WEBSOCKET", "wss://example.org/socket".to_owned()),
+            (
+                "DR-RECON-MANIFEST-DEEPLINK",
+                "android:scheme=\"myapp\"".to_owned(),
+            ),
+            (
+                "DR-RECON-MANIFEST-DEEPLINK-HOST",
+                "android:host=\"example.org\"".to_owned(),
+            ),
+            (
+                "DR-RECON-MANIFEST-EXPORTED",
+                "<activity android:name=\".Main\" android:exported=\"true\"".to_owned(),
+            ),
+            (
+                "DR-RECON-MANIFEST-PROVIDER-AUTHORITY",
+                "android:authorities=\"com.example.provider\"".to_owned(),
+            ),
+            (
+                "DR-RECON-MANIFEST-PERMISSION",
+                "android:name=\"android.permission.CAMERA\"".to_owned(),
+            ),
+            (
+                "DR-RECON-C2-USER-AGENT",
+                "Mozilla/5.0 (Windows NT 10.0)".to_owned(),
+            ),
+            ("DR-RECON-C2-NAMED-PIPE", r"\\.\pipe\demo_pipe".to_owned()),
+            ("DR-RECON-C2-MUTEX", r"Global\DemoMutex".to_owned()),
+            ("DR-RECON-C2-BEACON-PATH", "/gate.php".to_owned()),
+            ("DR-RECON-C2-DEAD-DROP", "pastebin.com/raw/abc".to_owned()),
+            (
+                "DR-RECON-PERSIST-RUNKEY",
+                r"Software\Microsoft\Windows\CurrentVersion\Run".to_owned(),
+            ),
+            (
+                "DR-RECON-PERSIST-RUNKEY",
+                "Micro\u{17f}oft\\Windows\\CurrentVer\u{17f}ion\\Run".to_owned(),
+            ),
+            (
+                "DR-RECON-PERSIST-WINLOGON",
+                r"Microsoft\Windows NT\CurrentVersion\Winlogon\Shell".to_owned(),
+            ),
+            (
+                "DR-RECON-PERSIST-IFEO",
+                r"Image File Execution Options\demo.exe".to_owned(),
+            ),
+            (
+                "DR-RECON-PERSIST-LAUNCHAGENT",
+                "Library/LaunchAgents/com.demo.plist".to_owned(),
+            ),
+            (ONION_RULE_ID, format!("{}.onion", "a".repeat(16))),
+            (
+                "DR-RECON-S3-BUCKET",
+                "s3.amazonaws.com/bucketname".to_owned(),
+            ),
+            (
+                "DR-RECON-GCS-BUCKET",
+                "bucket.storage.googleapis.com".to_owned(),
+            ),
+            (
+                "DR-RECON-DISCORD-WEBHOOK",
+                format!(
+                    "https://ptb.discordapp.com/api/webhooks/{}/{}",
+                    "1".repeat(18),
+                    "a".repeat(60)
+                ),
+            ),
+            (
+                "DR-RECON-ANTHROPIC-KEY",
+                format!("sk-ant-admin01-{}", "a".repeat(80)),
+            ),
+            (
+                "DR-RECON-SUPABASE",
+                format!("sb_publishable_{}", "a".repeat(20)),
+            ),
+            ("DR-RECON-NOTION", format!("secret_{}", "a".repeat(43))),
+            (
+                "DR-RECON-POSTMARK",
+                format!("x-postmark-account-token: {uuid}"),
+            ),
+            (
+                "DR-RECON-DATADOG",
+                format!("datadog_api_key={}", "a".repeat(32)),
+            ),
+            (
+                "DR-RECON-CLERK-SECRET",
+                format!("sk_live_{}", "a".repeat(40)),
+            ),
+            (
+                "DR-RECON-WEBSOCKET",
+                "ws://example.org:8080/socket".to_owned(),
+            ),
+            ("DR-RECON-C2-MUTEX", r"Local\DemoMutex".to_owned()),
+        ]
+        .into_iter()
+        .chain(["shpca_", "shppa_", "shpss_"].map(|prefix: &str| {
+            (
+                "DR-RECON-SHOPIFY-TOKEN",
+                format!("{prefix}{}", "a".repeat(32)),
+            )
+        }))
+        .chain(["doo_v1_", "dor_v1_"].map(|prefix: &str| {
+            (
+                "DR-RECON-DIGITALOCEAN",
+                format!("{prefix}{}", "a".repeat(64)),
+            )
+        }))
+        .chain(
+            ["vcp_", "vco_"]
+                .map(|prefix: &str| ("DR-RECON-VERCEL", format!("{prefix}{}", "a".repeat(24)))),
+        )
+        .chain(
+            ["api-secret", "client_secret", "access-token", "authtoken"].map(|key: &str| {
+                (
+                    "DR-RECON-API-ASSIGNMENT",
+                    format!("{key}: '{}'", "a".repeat(16)),
+                )
+            }),
+        )
+        .chain(
+            [
+                "Mozilla/4.0 (compatible)",
+                "curl/8.4.0",
+                "python-requests/2.31",
+                "Go-http-client/1.1",
+                "axios/1.6.0",
+                "okhttp/4.12.0",
+            ]
+            .map(|agent: &str| ("DR-RECON-C2-USER-AGENT", agent.to_owned())),
+        )
+        .chain(
+            [
+                "panel", "api", "cmd", "c2", "task", "bot", "admin", "login", "submit", "upload",
+            ]
+            .map(|page: &str| ("DR-RECON-C2-BEACON-PATH", format!("/{page}.php"))),
+        )
+        .chain(
+            [
+                "raw.githubusercontent.com/user/repo",
+                "cdn.discordapp.com/attachments/1/2/x.bin",
+                "telegra.ph/page",
+                "ghostbin.co/paste",
+                "transfer.sh/file",
+            ]
+            .map(|drop: &str| ("DR-RECON-C2-DEAD-DROP", drop.to_owned())),
+        )
+        .chain(
+            [
+                "Library/LaunchDaemons/com.demo.plist",
+                "/etc/crontab",
+                "/etc/cron.d/job",
+                "/etc/systemd/system/demo.service",
+                "/etc/rc.local",
+            ]
+            .map(|path: &str| ("DR-RECON-PERSIST-LAUNCHAGENT", path.to_owned())),
+        )
+        .collect()
+    }
+
+    fn endpoint_pattern(rule_id: &str) -> (&'static Regex, Option<usize>) {
+        if rule_id == ONION_RULE_ID {
+            return (&ONION_RE, *ONION_GATE);
+        }
+        let rule: &EndpointRule = ENDPOINT_RULES
+            .iter()
+            .find(|rule: &&EndpointRule| rule.rule_id == rule_id)
+            .unwrap_or_else(|| panic!("{rule_id} names no endpoint rule"));
+        (rule.pattern, rule.gate)
+    }
+
+    #[test]
+    fn every_endpoint_gate_compiles_and_names_one_rule() {
+        assert!(ENDPOINT_GATE_SET.compiled());
+        for (index, (rule_id, _)) in ENDPOINT_GATES.iter().enumerate() {
+            assert_eq!(gate_slot(&ENDPOINT_GATES, rule_id), Some(index));
+            let (_, gate): (&Regex, Option<usize>) = endpoint_pattern(rule_id);
+            assert_eq!(gate, Some(index), "{rule_id}");
+        }
+        let ungated: Vec<&str> = ENDPOINT_RULES
+            .iter()
+            .filter(|rule: &&EndpointRule| rule.gate.is_none())
+            .map(|rule: &EndpointRule| rule.rule_id)
+            .collect();
+        assert_eq!(ungated, ["DR-RECON-DISCORD-BOT"]);
+    }
+
+    #[test]
+    fn every_endpoint_rule_match_passes_its_gate() {
+        let samples: Vec<(&'static str, String)> = endpoint_gate_samples();
+        for (rule_id, sample) in &samples {
+            let (pattern, gate): (&Regex, Option<usize>) = endpoint_pattern(rule_id);
+            assert!(
+                pattern.is_match(sample),
+                "{rule_id} misses its sample {sample:?}"
+            );
+            assert!(
+                ENDPOINT_GATE_SET.hits(sample).admits(gate),
+                "{rule_id} gate rejects a text its rule matches: {sample:?}"
+            );
+        }
+        let sampled: BTreeSet<&str> = samples
+            .iter()
+            .map(|(rule_id, _): &(&str, String)| *rule_id)
+            .collect();
+        let gated: BTreeSet<&str> = ENDPOINT_GATES
+            .iter()
+            .map(|(rule_id, _): &(&str, &str)| *rule_id)
+            .collect();
+        assert_eq!(sampled, gated);
+    }
+
+    #[test]
+    fn gated_endpoint_scans_match_the_ungated_scan() {
+        let samples: Vec<(&'static str, String)> = endpoint_gate_samples();
+        let mut texts: Vec<String> = samples
+            .iter()
+            .map(|(_, sample): &(&str, String)| sample.clone())
+            .collect();
+        let mut mixed: Vec<u8> = Vec::new();
+        for (_, sample) in &samples {
+            mixed.extend_from_slice(sample.as_bytes());
+            mixed.extend_from_slice(b" \xff\xfe caf\xc3\xa9 \x00 ");
+        }
+        texts.push(String::from_utf8_lossy(&mixed).into_owned());
+        texts.push("no endpoint here, only prose and \u{fffd} bytes".to_owned());
+        for text in &texts {
+            let lines: LineIndex<'_> = LineIndex::new(text.as_bytes());
+            let mut gated: Vec<ReconFinding> = Vec::new();
+            let hits: GateHits = ENDPOINT_GATE_SET.hits(text);
+            endpoint_rules(text, &hits, &lines, None, &mut gated);
+            onion_findings(text, &hits, &lines, None, &mut gated);
+            let mut ungated: Vec<ReconFinding> = Vec::new();
+            endpoint_rules(text, &GateHits::admit_all(), &lines, None, &mut ungated);
+            onion_findings(text, &GateHits::admit_all(), &lines, None, &mut ungated);
+            assert_eq!(gated, ungated, "{text:?}");
+        }
+        let all: &String = texts.get(texts.len() - 2).expect("mixed text");
+        let lines: LineIndex<'_> = LineIndex::new(all.as_bytes());
+        let mut found: Vec<ReconFinding> = Vec::new();
+        let hits: GateHits = ENDPOINT_GATE_SET.hits(all);
+        endpoint_rules(all, &hits, &lines, None, &mut found);
+        onion_findings(all, &hits, &lines, None, &mut found);
+        let found_ids: BTreeSet<&str> = found
+            .iter()
+            .map(|finding: &ReconFinding| finding.rule_id.as_str())
+            .collect();
+        for (rule_id, _) in &samples {
+            assert!(
+                found_ids.contains(rule_id),
+                "{rule_id} not found in the mixed text"
+            );
+        }
     }
 }

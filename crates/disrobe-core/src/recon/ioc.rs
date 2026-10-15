@@ -4,6 +4,8 @@ use lazy_regex::regex;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use super::{GateHits, RuleGates};
+
 pub const IOC_SCHEMA: &str = "disrobe.ioc/v0";
 
 const MIN_BLOB_LEN: usize = 24;
@@ -173,6 +175,131 @@ pub struct IocReport {
 struct PatternRule {
     kind: IocKind,
     pattern: &'static Regex,
+    gate: Option<IocGate>,
+    ascii_classes: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IocGate {
+    WindowsPath,
+    UnixPath,
+    Email,
+    Domain,
+    Ipv4,
+    Ipv6,
+    Mac,
+    Uuid,
+    CreditCard,
+    HexBlob,
+}
+
+impl IocGate {
+    const ALL: [Self; 10] = [
+        Self::WindowsPath,
+        Self::UnixPath,
+        Self::Email,
+        Self::Domain,
+        Self::Ipv4,
+        Self::Ipv6,
+        Self::Mac,
+        Self::Uuid,
+        Self::CreditCard,
+        Self::HexBlob,
+    ];
+
+    const fn slot(self) -> usize {
+        self as usize
+    }
+
+    const fn pattern(self) -> &'static str {
+        match self {
+            Self::WindowsPath => r#"[A-Za-z]:\\[^\\/:*?"<>|\x00-\x1f\x7f ]"#,
+            Self::UnixPath => {
+                r"/(?:bin|etc|usr|var|tmp|opt|home|root|lib|lib64|sbin|proc|sys|dev|mnt|srv|Users|Library|System|Applications|private|Volumes)/"
+            }
+            Self::Email => r"(?i)[A-Za-z0-9._%+\-]@[A-Za-z0-9][A-Za-z0-9.\-]*\.[A-Za-z]{2}",
+            Self::Domain => {
+                r"(?i)[A-Za-z0-9]\.(?:com|net|org|info|biz|io|co|ru|cn|de|uk|gov|edu|mil|top|xyz|site|online|club|dev|app|sh|gg|tk|me|ly|to|cc|ws|su|onion|pw|link|live|tech)"
+            }
+            Self::Ipv4 => {
+                r"(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+            }
+            Self::Ipv6 => r"(?i)[0-9a-f]:[0-9a-f:]|::[0-9a-f]",
+            Self::Mac => r"(?i)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}",
+            Self::Uuid => r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            Self::CreditCard => r"\d(?:[ -]?\d){12}",
+            Self::HexBlob => r"(?i)(?:[0-9a-f]{2}){16}",
+        }
+    }
+}
+
+static IOC_GATE_SET: LazyLock<RuleGates> =
+    LazyLock::new(|| RuleGates::new(IocGate::ALL.map(IocGate::pattern)));
+
+const TWO_BYTE_SCALARS: usize = 0x800;
+
+static TWO_BYTE_WORD_CHARS: LazyLock<[bool; TWO_BYTE_SCALARS]> = LazyLock::new(|| {
+    std::array::from_fn(|scalar: usize| {
+        u32::try_from(scalar)
+            .ok()
+            .and_then(char::from_u32)
+            .is_some_and(matches_word_class)
+    })
+});
+
+fn matches_word_class(scalar: char) -> bool {
+    let mut buffer: [u8; 4] = [0; 4];
+    regex!(r"\A\w\z").is_match(scalar.encode_utf8(&mut buffer))
+}
+
+fn is_unicode_word_char(scalar: char) -> bool {
+    TWO_BYTE_WORD_CHARS
+        .get(scalar as usize)
+        .map_or_else(|| matches_word_class(scalar), |&word: &bool| word)
+}
+
+fn ascii_word_proxy(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.is_ascii() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut proxy: String = String::with_capacity(text.len());
+    for scalar in text.chars() {
+        if scalar.is_ascii() {
+            proxy.push(scalar);
+            continue;
+        }
+        let filler: char = if is_unicode_word_char(scalar) {
+            '_'
+        } else {
+            '\0'
+        };
+        proxy.extend(std::iter::repeat_n(filler, scalar.len_utf8()));
+    }
+    std::borrow::Cow::Owned(proxy)
+}
+
+struct ScanText<'t> {
+    text: &'t str,
+    hits: GateHits,
+    ascii: std::cell::OnceCell<std::borrow::Cow<'t, str>>,
+}
+
+impl<'t> ScanText<'t> {
+    fn new(text: &'t str) -> Self {
+        Self {
+            text,
+            hits: IOC_GATE_SET.hits(text),
+            ascii: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn admits(&self, gate: IocGate) -> bool {
+        self.hits.admits(Some(gate.slot()))
+    }
+
+    fn ascii_haystack(&self) -> &str {
+        self.ascii.get_or_init(|| ascii_word_proxy(self.text))
+    }
 }
 
 static URL_RE: LazyLock<&'static Regex> = LazyLock::new(|| {
@@ -259,46 +386,68 @@ static SIMPLE_RULES: LazyLock<Vec<PatternRule>> = LazyLock::new(|| {
         PatternRule {
             kind: IocKind::Url,
             pattern: *URL_RE,
+            gate: None,
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::RegistryKey,
             pattern: *REGISTRY_RE,
+            gate: None,
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::WindowsPath,
             pattern: *WINPATH_RE,
+            gate: Some(IocGate::WindowsPath),
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::Email,
             pattern: *EMAIL_RE,
+            gate: Some(IocGate::Email),
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::Ipv4,
             pattern: *IPV4_RE,
+            gate: Some(IocGate::Ipv4),
+            ascii_classes: true,
         },
         PatternRule {
             kind: IocKind::BitcoinAddress,
             pattern: *BTC_RE,
+            gate: None,
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::MoneroAddress,
             pattern: *XMR_RE,
+            gate: None,
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::LitecoinAddress,
             pattern: *LTC_RE,
+            gate: None,
+            ascii_classes: false,
         },
         PatternRule {
             kind: IocKind::MacAddress,
             pattern: *MAC_RE,
+            gate: Some(IocGate::Mac),
+            ascii_classes: true,
         },
         PatternRule {
             kind: IocKind::Uuid,
             pattern: *UUID_RE,
+            gate: Some(IocGate::Uuid),
+            ascii_classes: true,
         },
         PatternRule {
             kind: IocKind::PdbPath,
             pattern: *PDB_RE,
+            gate: None,
+            ascii_classes: false,
         },
     ]
 });
@@ -691,9 +840,23 @@ fn collect_validated(
     }
 }
 
-fn collect_simple(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
-    for rule in SIMPLE_RULES.iter() {
-        for m in rule.pattern.find_iter(text) {
+fn collect_simple(
+    scan: &ScanText<'_>,
+    encoding: Encoding,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+) {
+    let text: &str = scan.text;
+    for rule in SIMPLE_RULES
+        .iter()
+        .filter(|rule: &&PatternRule| rule.gate.is_none_or(|gate: IocGate| scan.admits(gate)))
+    {
+        let haystack: &str = if rule.ascii_classes {
+            scan.ascii_haystack()
+        } else {
+            text
+        };
+        for m in rule.pattern.find_iter(haystack) {
             if out.len() >= MAX_INDICATORS {
                 return;
             }
@@ -715,8 +878,16 @@ fn collect_simple(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut V
     }
 }
 
-fn collect_ipv6(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
-    for m in IPV6_RE.find_iter(text) {
+fn collect_ipv6(
+    scan: &ScanText<'_>,
+    encoding: Encoding,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+) {
+    if !scan.admits(IocGate::Ipv6) {
+        return;
+    }
+    for m in IPV6_RE.find_iter(scan.ascii_haystack()) {
         if out.len() >= MAX_INDICATORS {
             return;
         }
@@ -776,8 +947,16 @@ fn plausible_domain(text: &[u8], start: usize, end: usize) -> bool {
     true
 }
 
-fn collect_unix_paths(text: &str, encoding: Encoding, layer: &Layer<'_>, out: &mut Vec<Indicator>) {
-    for caps in UNIXPATH_RE.captures_iter(text) {
+fn collect_unix_paths(
+    scan: &ScanText<'_>,
+    encoding: Encoding,
+    layer: &Layer<'_>,
+    out: &mut Vec<Indicator>,
+) {
+    if !scan.admits(IocGate::UnixPath) {
+        return;
+    }
+    for caps in UNIXPATH_RE.captures_iter(scan.text) {
         if out.len() >= MAX_INDICATORS {
             return;
         }
@@ -815,14 +994,22 @@ fn span_encloses(spans: &[(usize, usize)], start: usize, end: usize, probes: &mu
 }
 
 fn collect_domains(
-    text: &str,
+    scan: &ScanText<'_>,
     encoding: Encoding,
     layer: &Layer<'_>,
     out: &mut Vec<Indicator>,
     work: &mut DomainScanWork,
 ) {
+    if !scan.admits(IocGate::Domain) {
+        return;
+    }
+    let text: &str = scan.text;
     let urls: Vec<(usize, usize)> = match_spans(&URL_RE, text);
-    let emails: Vec<(usize, usize)> = match_spans(&EMAIL_RE, text);
+    let emails: Vec<(usize, usize)> = if scan.admits(IocGate::Email) {
+        match_spans(&EMAIL_RE, text)
+    } else {
+        Vec::new()
+    };
     work.spans += (urls.len() + emails.len()) as u64;
     for m in DOMAIN_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
@@ -864,16 +1051,17 @@ fn collect_crypto_constants(bytes: &[u8], out: &mut Vec<Indicator>) {
 }
 
 fn scan_text_layer(
-    text: &str,
+    scan: &ScanText<'_>,
     encoding: Encoding,
     layer: &Layer<'_>,
     out: &mut Vec<Indicator>,
     work: &mut DomainScanWork,
 ) {
-    collect_simple(text, encoding, layer, out);
-    collect_ipv6(text, encoding, layer, out);
-    collect_unix_paths(text, encoding, layer, out);
-    collect_domains(text, encoding, layer, out, work);
+    let text: &str = scan.text;
+    collect_simple(scan, encoding, layer, out);
+    collect_ipv6(scan, encoding, layer, out);
+    collect_unix_paths(scan, encoding, layer, out);
+    collect_domains(scan, encoding, layer, out, work);
     collect_validated(
         &ETH_RE,
         IocKind::EthereumAddress,
@@ -892,15 +1080,17 @@ fn scan_text_layer(
         layer,
         out,
     );
-    collect_validated(
-        &CC_RE,
-        IocKind::CreditCard,
-        luhn_valid,
-        text,
-        encoding,
-        layer,
-        out,
-    );
+    if scan.admits(IocGate::CreditCard) {
+        collect_validated(
+            &CC_RE,
+            IocKind::CreditCard,
+            luhn_valid,
+            text,
+            encoding,
+            layer,
+            out,
+        );
+    }
     for m in CARGO_PATH_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             break;
@@ -918,11 +1108,12 @@ fn scan_text_layer(
 }
 
 fn decode_and_recurse(
-    text: &str,
+    scan: &ScanText<'_>,
     layer: &Layer<'_>,
     out: &mut Vec<Indicator>,
     work: &mut DomainScanWork,
 ) {
+    let text: &str = scan.text;
     for m in B64_BLOB_RE.find_iter(text) {
         if out.len() >= MAX_INDICATORS {
             return;
@@ -942,7 +1133,7 @@ fn decode_and_recurse(
         };
         if let Some(inner) = printable_utf8(&decoded) {
             scan_text_layer(
-                &inner,
+                &ScanText::new(&inner),
                 Encoding::Base64,
                 &Layer::within(LayerMap::Base64, m.start(), layer),
                 out,
@@ -950,7 +1141,10 @@ fn decode_and_recurse(
             );
         }
     }
-    for m in HEX_BLOB_RE.find_iter(text) {
+    let hex_blobs: Option<regex::Matches<'_, '_>> = scan
+        .admits(IocGate::HexBlob)
+        .then(|| HEX_BLOB_RE.find_iter(scan.ascii_haystack()));
+    for m in hex_blobs.into_iter().flatten() {
         if out.len() >= MAX_INDICATORS {
             return;
         }
@@ -963,7 +1157,7 @@ fn decode_and_recurse(
         };
         if let Some(inner) = printable_utf8(&decoded) {
             scan_text_layer(
-                &inner,
+                &ScanText::new(&inner),
                 Encoding::Hex,
                 &Layer::within(LayerMap::TwoBytesPerUnit, m.start(), layer),
                 out,
@@ -1019,7 +1213,7 @@ fn decode_codecs_and_recurse(
                 continue;
             };
             scan_text_layer(
-                &inner,
+                &ScanText::new(&inner),
                 Encoding::Codec,
                 &Layer::within(
                     LayerMap::Whole {
@@ -1189,8 +1383,9 @@ fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>, work: &mut DomainScanWork) 
                 continue;
             }
             let wide: Layer<'_> = Layer::within(LayerMap::TwoBytesPerUnit, start, &Layer::INPUT);
-            scan_text_layer(&run, endian.encoding(), &wide, out, work);
-            decode_and_recurse(&run, &wide, out, work);
+            let scan: ScanText<'_> = ScanText::new(&run);
+            scan_text_layer(&scan, endian.encoding(), &wide, out, work);
+            decode_and_recurse(&scan, &wide, out, work);
         }
     }
 }
@@ -1222,9 +1417,10 @@ pub fn extract_with_work(bytes: &[u8], extra_text: &[&str]) -> (Vec<Indicator>, 
         },
         std::borrow::Cow::Borrowed,
     );
-    scan_text_layer(&text, Encoding::Plain, &Layer::INPUT, &mut out, &mut work);
+    let scan: ScanText<'_> = ScanText::new(&text);
+    scan_text_layer(&scan, Encoding::Plain, &Layer::INPUT, &mut out, &mut work);
     collect_crypto_constants(bytes, &mut out);
-    decode_and_recurse(&text, &Layer::INPUT, &mut out, &mut work);
+    decode_and_recurse(&scan, &Layer::INPUT, &mut out, &mut work);
     scan_wide(bytes, &mut out, &mut work);
     for (idx, extra) in extra_text.iter().enumerate() {
         if out.len() >= MAX_INDICATORS {
@@ -1235,8 +1431,9 @@ pub fn extract_with_work(bytes: &[u8], extra_text: &[&str]) -> (Vec<Indicator>, 
             base: bytes.len().saturating_add(idx),
             parent: None,
         };
-        scan_text_layer(extra, Encoding::Plain, &synthetic, &mut out, &mut work);
-        decode_and_recurse(extra, &synthetic, &mut out, &mut work);
+        let scan: ScanText<'_> = ScanText::new(extra);
+        scan_text_layer(&scan, Encoding::Plain, &synthetic, &mut out, &mut work);
+        decode_and_recurse(&scan, &synthetic, &mut out, &mut work);
     }
     (dedup_and_sort(out), work)
 }
@@ -1807,5 +2004,284 @@ mod tests {
             *HEX_BLOB_RE,
         ];
         assert!(statics.iter().all(|re: &&Regex| !re.as_str().is_empty()));
+    }
+
+    fn gated_pattern(gate: IocGate) -> &'static Regex {
+        match gate {
+            IocGate::WindowsPath => &WINPATH_RE,
+            IocGate::UnixPath => &UNIXPATH_RE,
+            IocGate::Email => &EMAIL_RE,
+            IocGate::Domain => &DOMAIN_RE,
+            IocGate::Ipv4 => &IPV4_RE,
+            IocGate::Ipv6 => &IPV6_RE,
+            IocGate::Mac => &MAC_RE,
+            IocGate::Uuid => &UUID_RE,
+            IocGate::CreditCard => &CC_RE,
+            IocGate::HexBlob => &HEX_BLOB_RE,
+        }
+    }
+
+    fn alternation_after<'p>(pattern: &'p str, marker: &str) -> Vec<&'p str> {
+        let start: usize = pattern.find(marker).map_or_else(
+            || panic!("{marker} not in {pattern}"),
+            |at: usize| at + marker.len(),
+        );
+        let end: usize = pattern[start..].find(')').map_or_else(
+            || panic!("unclosed group after {marker}"),
+            |at: usize| start + at,
+        );
+        pattern[start..end].split('|').collect()
+    }
+
+    fn ioc_gate_samples() -> Vec<(IocGate, String)> {
+        let unix: &str = UNIXPATH_RE.as_str();
+        let directories: Vec<&str> = alternation_after(unix, "((?:/(?:")
+            .into_iter()
+            .chain(alternation_after(unix, ")|/(?:"))
+            .collect();
+        assert_eq!(directories.len(), 22, "{directories:?}");
+        let tlds: Vec<&str> = alternation_after(DOMAIN_RE.as_str(), "){1,8}(?:");
+        assert_eq!(tlds.len(), 35, "{tlds:?}");
+        let derived = directories
+            .into_iter()
+            .map(|directory: &str| (IocGate::UnixPath, format!(" /{directory}/x")))
+            .chain(
+                tlds.into_iter()
+                    .map(|tld: &str| (IocGate::Domain, format!("host.{tld}"))),
+            );
+        derived
+            .chain(vec![
+                (IocGate::WindowsPath, r"C:\Windows\System32".to_owned()),
+                (IocGate::UnixPath, "run /etc/passwd now".to_owned()),
+                (IocGate::Email, "user@example.org".to_owned()),
+                (IocGate::Email, "u\u{17f}er@mail.example.org".to_owned()),
+                (IocGate::Domain, "visit example.com today".to_owned()),
+                (IocGate::Ipv4, "192.168.1.1".to_owned()),
+                (IocGate::Ipv6, "2001:db8::1".to_owned()),
+                (IocGate::Mac, "00:11:22:33:44:55".to_owned()),
+                (
+                    IocGate::Uuid,
+                    "123e4567-e89b-12d3-a456-426614174000".to_owned(),
+                ),
+                (IocGate::CreditCard, "4111 1111 1111 1111".to_owned()),
+                (IocGate::HexBlob, "0f".repeat(16)),
+            ])
+            .collect()
+    }
+
+    #[test]
+    fn every_ioc_gate_compiles_in_slot_order() {
+        assert!(IOC_GATE_SET.compiled());
+        for (index, gate) in IocGate::ALL.into_iter().enumerate() {
+            assert_eq!(gate.slot(), index, "{gate:?}");
+        }
+        let gates: Vec<(IocKind, Option<IocGate>)> = SIMPLE_RULES
+            .iter()
+            .map(|rule: &PatternRule| (rule.kind, rule.gate))
+            .collect();
+        assert_eq!(
+            gates,
+            [
+                (IocKind::Url, None),
+                (IocKind::RegistryKey, None),
+                (IocKind::WindowsPath, Some(IocGate::WindowsPath)),
+                (IocKind::Email, Some(IocGate::Email)),
+                (IocKind::Ipv4, Some(IocGate::Ipv4)),
+                (IocKind::BitcoinAddress, None),
+                (IocKind::MoneroAddress, None),
+                (IocKind::LitecoinAddress, None),
+                (IocKind::MacAddress, Some(IocGate::Mac)),
+                (IocKind::Uuid, Some(IocGate::Uuid)),
+                (IocKind::PdbPath, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_ioc_rule_match_passes_its_gate() {
+        let samples: Vec<(IocGate, String)> = ioc_gate_samples();
+        for (gate, sample) in &samples {
+            assert!(
+                gated_pattern(*gate).is_match(sample),
+                "{gate:?} misses its sample {sample:?}"
+            );
+            assert!(
+                ScanText::new(sample).admits(*gate),
+                "{gate:?} gate rejects a text its rule matches: {sample:?}"
+            );
+        }
+        for gate in IocGate::ALL {
+            assert!(
+                samples
+                    .iter()
+                    .any(|(sampled, _): &(IocGate, String)| *sampled == gate),
+                "{gate:?} has no sample"
+            );
+        }
+    }
+
+    fn non_ascii_neighbour_texts() -> Vec<String> {
+        let indicators: [String; 5] = [
+            "1.2.3.4".to_owned(),
+            "2001:db8::1".to_owned(),
+            "00:11:22:33:44:55".to_owned(),
+            "123e4567-e89b-12d3-a456-426614174000".to_owned(),
+            "0f".repeat(16),
+        ];
+        let neighbours: [char; 7] = [
+            '\u{e9}',
+            '\u{416}',
+            '\u{fffd}',
+            '\u{a0}',
+            '\u{2163}',
+            '\u{4e2d}',
+            '\u{1f600}',
+        ];
+        let mut texts: Vec<String> = Vec::new();
+        for indicator in &indicators {
+            for neighbour in neighbours {
+                texts.push(format!("{neighbour}{indicator}"));
+                texts.push(format!("{indicator}{neighbour}"));
+                texts.push(format!("{neighbour}{indicator}{neighbour}"));
+                texts.push(format!("{neighbour} {indicator} {neighbour}{indicator}"));
+            }
+        }
+        texts
+    }
+
+    fn uses_only_ascii_classes(pattern: &str) -> bool {
+        let mut chars: std::iter::Peekable<std::str::Chars<'_>> = pattern.chars().peekable();
+        while let Some(current) = chars.next() {
+            match current {
+                '\\' => {
+                    if !matches!(chars.next(), Some('b' | '.')) {
+                        return false;
+                    }
+                }
+                '.' => return false,
+                '[' if chars.peek() == Some(&'^') => return false,
+                _ => {}
+            }
+        }
+        let folds_beyond_ascii = |window: &[char]| -> bool {
+            let lower: Vec<char> = window.iter().map(char::to_ascii_lowercase).collect();
+            match lower.as_slice() {
+                &[from, '-', to] => ['k', 's']
+                    .iter()
+                    .any(|letter: &char| (from..=to).contains(letter)),
+                _ => false,
+            }
+        };
+        let letters: Vec<char> = pattern.chars().collect();
+        let case_folded: bool = pattern.contains("(?i");
+        pattern.is_ascii()
+            && !(case_folded
+                && (letters.windows(3).any(folds_beyond_ascii)
+                    || letters
+                        .iter()
+                        .any(|letter: &char| matches!(letter, 'k' | 'K' | 's' | 'S'))))
+    }
+
+    #[test]
+    fn ascii_haystack_rules_read_only_ascii_classes() {
+        let rules: [&Regex; 5] = [*IPV4_RE, *IPV6_RE, *MAC_RE, *UUID_RE, *HEX_BLOB_RE];
+        for rule in rules {
+            assert!(uses_only_ascii_classes(rule.as_str()), "{}", rule.as_str());
+        }
+        let flagged: Vec<IocKind> = SIMPLE_RULES
+            .iter()
+            .filter(|rule: &&PatternRule| rule.ascii_classes)
+            .map(|rule: &PatternRule| rule.kind)
+            .collect();
+        assert_eq!(flagged, [IocKind::Ipv4, IocKind::MacAddress, IocKind::Uuid]);
+        for text in non_ascii_neighbour_texts() {
+            let proxy: std::borrow::Cow<'_, str> = ascii_word_proxy(&text);
+            assert!(proxy.is_ascii());
+            assert_eq!(proxy.len(), text.len());
+            for rule in rules {
+                let original: Vec<(usize, usize)> = match_spans(rule, &text);
+                assert_eq!(
+                    match_spans(rule, &proxy),
+                    original,
+                    "{text:?} {}",
+                    rule.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gated_ioc_layers_match_the_ungated_scan() {
+        let samples: Vec<(IocGate, String)> = ioc_gate_samples();
+        let mut texts: Vec<String> = samples
+            .iter()
+            .map(|(_, sample): &(IocGate, String)| sample.clone())
+            .collect();
+        let mut mixed: String = String::new();
+        for (_, sample) in &samples {
+            mixed.push_str(sample);
+            mixed.push_str(" \0\0 caf\u{e9} https://example.net/a ");
+            mixed.push_str(&B64_STANDARD.encode(format!("see {sample} inside")));
+            mixed.push(' ');
+        }
+        let mixed_kinds: Vec<IocKind> = extract(mixed.as_bytes())
+            .into_iter()
+            .map(|indicator: Indicator| indicator.kind)
+            .collect();
+        texts.push(mixed);
+        texts.push("prose without indicators \0 \u{e9}".to_owned());
+        texts.push("fetch http://10.1.2.3/x and mail ops@10.1.2.3".to_owned());
+        texts.extend(non_ascii_neighbour_texts());
+        for text in &texts {
+            let mut gated: Vec<Indicator> = Vec::new();
+            let mut gated_work: DomainScanWork = DomainScanWork::default();
+            let scan: ScanText<'_> = ScanText::new(text);
+            scan_text_layer(
+                &scan,
+                Encoding::Plain,
+                &Layer::INPUT,
+                &mut gated,
+                &mut gated_work,
+            );
+            decode_and_recurse(&scan, &Layer::INPUT, &mut gated, &mut gated_work);
+            let mut ungated: Vec<Indicator> = Vec::new();
+            let mut ungated_work: DomainScanWork = DomainScanWork::default();
+            let reference: ScanText<'_> = ScanText {
+                text,
+                hits: GateHits::admit_all(),
+                ascii: std::cell::OnceCell::from(std::borrow::Cow::Borrowed(text.as_str())),
+            };
+            scan_text_layer(
+                &reference,
+                Encoding::Plain,
+                &Layer::INPUT,
+                &mut ungated,
+                &mut ungated_work,
+            );
+            decode_and_recurse(&reference, &Layer::INPUT, &mut ungated, &mut ungated_work);
+            assert_eq!(gated, ungated, "{text:?}");
+            assert_eq!(gated_work.candidates, ungated_work.candidates, "{text:?}");
+            assert_eq!(
+                gated_work.containment_probes, ungated_work.containment_probes,
+                "{text:?}"
+            );
+            assert!(gated_work.spans <= ungated_work.spans, "{text:?}");
+        }
+        for kind in [
+            IocKind::WindowsPath,
+            IocKind::UnixPath,
+            IocKind::Email,
+            IocKind::Domain,
+            IocKind::Ipv4,
+            IocKind::Ipv6,
+            IocKind::MacAddress,
+            IocKind::Uuid,
+            IocKind::CreditCard,
+        ] {
+            assert!(
+                mixed_kinds.contains(&kind),
+                "{kind:?} not extracted: {mixed_kinds:?}"
+            );
+        }
     }
 }
