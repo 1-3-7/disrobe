@@ -1,2 +1,10 @@
 title = "Linux kernel core dumps of authored crashing programs"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
 provenance = "linux/src/ is hand-authored for this corpus. The binaries, kernel-written core files and gdb's view of each core are produced only on a GitHub-hosted Ubuntu runner by .github/workflows/real-tool-fixtures.yml recipe linux-cores; gdb's thread, backtrace and register output is the reference for disrobe crash. Nothing here is run on the development host."
+
+[runner]
+files = "linux/runner/{segv,abort,threads,stack}.{core.gz,elf,gdb.txt.gz}, build-record.json, tool.env"
+produced_by = "real-tool-fixtures.yml recipe linux-cores, run 38688975066 on ubuntu-24.04 (kernel 6.17.0-1022-azure, gcc 13.3.0, gdb 15.1)"
+stored = "each core and gdb transcript gzip-compressed (level 9, mtime 0); build-record.json holds the sha256 of every uncompressed output"
+reference = "gdb -batch: info threads, thread apply all bt, info registers, info sharedlibrary"
+graded_by = "crates/disrobe-dataforensics/tests/linux_core_reference.rs"

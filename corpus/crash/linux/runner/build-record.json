@@ -1,0 +1,65 @@
+{
+  "files": {
+    "files/abort.core": "20a7e2fb6b475dd08aa429e1edd88a1d9d0254c0f761a39e54c03d696f848cab",
+    "files/abort.elf": "a5838a36785f8085eaf4f4f2f64a0b23e9b8b4c604b7777155a8c4de27829ce8",
+    "files/abort.gdb.txt": "9c4849a8addd68bc2a954b7be9b4d8ada7f5c73dc471bfa0af8137b35cebbcb7",
+    "files/segv.core": "dc1d497ef0199d1eb91436eab269162b58515ad8246616d74e8da1176c3f7719",
+    "files/segv.elf": "6c7a5814a16ed4a8c1cd3c7aa9e3e369c74d2b27857887ba9080d46cd36a014f",
+    "files/segv.gdb.txt": "e2e3c7994100fa6d9a132709fb4dd9692fb58e4ce5318ae965430b83e77be376",
+    "files/stack.core": "29afd8ada08ec815f58909321007e726f18eb2105c13014e3947c878f1ef64e8",
+    "files/stack.elf": "e2c7622f273bd2cce2cd3a5bf5773047827e9a78aeb4b4bd522d27c5e9d19268",
+    "files/stack.gdb.txt": "29cb8b7b67c5ae3409ec5c85952881f61534f43be278387054c9c64e57025d06",
+    "files/threads.core": "acd1cc613c67913f8537acb1340ae69cdb8587753d2f40a0916e0c2f60a9c452",
+    "files/threads.elf": "d6609a33b8a28f2b2836236e013c8e2197f216a614be691608065f541c272d10",
+    "files/threads.gdb.txt": "f4f1a32535895ea3ea3348fb1fdec30e6f22eabe969d2e8c778ebfaaaf80b16a"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "gcc -O0 -g -pthread -fno-omit-frame-pointer -o segv corpus/crash/linux/src/segv.c; ./segv",
+      "input": "corpus/crash/linux/src/segv.c",
+      "input_sha256": "d37a2aea50007802f15d08b2602ec9867402b8186a45793257826f17e78409b1",
+      "output": "files/segv.core",
+      "output_bytes": 454656,
+      "output_sha256": "dc1d497ef0199d1eb91436eab269162b58515ad8246616d74e8da1176c3f7719"
+    },
+    {
+      "behaviour": "same",
+      "command": "gcc -O0 -g -pthread -fno-omit-frame-pointer -o abort corpus/crash/linux/src/abort.c; ./abort",
+      "input": "corpus/crash/linux/src/abort.c",
+      "input_sha256": "efcddad2c6ab7f2eb6ada418ab296093f7fde5547700efb4a8bece9dc07661ab",
+      "output": "files/abort.core",
+      "output_bytes": 454656,
+      "output_sha256": "20a7e2fb6b475dd08aa429e1edd88a1d9d0254c0f761a39e54c03d696f848cab"
+    },
+    {
+      "behaviour": "same",
+      "command": "gcc -O0 -g -pthread -fno-omit-frame-pointer -o threads corpus/crash/linux/src/threads.c; ./threads",
+      "input": "corpus/crash/linux/src/threads.c",
+      "input_sha256": "2fe4f36221cc73b02dcb7b7df2b0d2bef94d63a5154bafe769f7b94044cdefda",
+      "output": "files/threads.core",
+      "output_bytes": 50790400,
+      "output_sha256": "acd1cc613c67913f8537acb1340ae69cdb8587753d2f40a0916e0c2f60a9c452"
+    },
+    {
+      "behaviour": "same",
+      "command": "gcc -O0 -g -pthread -fno-omit-frame-pointer -o stack corpus/crash/linux/src/stack.c; ./stack",
+      "input": "corpus/crash/linux/src/stack.c",
+      "input_sha256": "360b0eded283ba5aa63fcf4edcbc52cf62d603734935a1292ff2ef30f48bef2b",
+      "output": "files/stack.core",
+      "output_bytes": 17092608,
+      "output_sha256": "29afd8ada08ec815f58909321007e726f18eb2105c13014e3947c878f1ef64e8"
+    }
+  ],
+  "recipe": "linux-cores",
+  "repository_commit": "d0d19f673fe2af953c1c5ef67609fcbba55f9ece",
+  "runner_image": "ubuntu24 20261004.327.1",
+  "tool": {
+    "commit": "6.17.0-1022-azure",
+    "name": "Linux kernel core dumps",
+    "runtime": "GNU gdb (Ubuntu 15.1-1ubuntu1~24.04.1) 15.1",
+    "tree": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "url": "https://www.kernel.org"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/38688975066"
+}
