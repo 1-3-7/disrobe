@@ -83,3 +83,36 @@ fn detects_bare_phar_stub_when_only_halt() {
     let detection = detect_php(b"<?php __HALT_COMPILER(); ?>");
     assert_eq!(detection.kind, PhpKind::PharStub);
 }
+
+fn native_image_with(marker: &[u8]) -> Vec<u8> {
+    let mut image: Vec<u8> = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00".to_vec();
+    image.resize(0x4000, 0);
+    image.extend_from_slice(marker);
+    image.extend_from_slice(&[0x00, 0x48, 0x8B, 0x05, 0x00, 0x00]);
+    image
+}
+
+#[test]
+fn php_tags_inside_a_native_image_do_not_claim_it() {
+    for marker in [
+        b"<?=".as_slice(),
+        b"x<?php echo".as_slice(),
+        b"__HALT_COMPILER();".as_slice(),
+        b"__HALT_COMPILER();\x00GBMB".as_slice(),
+    ] {
+        let detection = detect_php(&native_image_with(marker));
+        assert_eq!(
+            detection.kind,
+            PhpKind::Unknown,
+            "{:?} inside a PE image",
+            String::from_utf8_lossy(marker)
+        );
+    }
+}
+
+#[test]
+fn echo_tag_inside_an_html_template_is_still_source() {
+    let detection = detect_php(b"<html><body><h1><?= $title ?></h1></body></html>\n");
+    assert_eq!(detection.kind, PhpKind::Source);
+    assert_eq!(detection.open_tag_offset, Some(16));
+}

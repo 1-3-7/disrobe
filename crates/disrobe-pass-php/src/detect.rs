@@ -34,12 +34,14 @@ const HALT: &[u8] = b"__HALT_COMPILER();";
 const PHAR_SIG_HEAD: &[u8] = b"GBMB";
 const BCG_MAGIC_A: &[u8; 3] = b"BCG";
 const BCG_MAGIC_B: &[u8; 3] = b"BC\x01";
+const TEXT_WINDOW: usize = 64 * 1024;
 
 #[must_use]
 pub fn detect(bytes: &[u8]) -> PhpDetection {
     let open_php: Option<usize> = memmem::find(bytes, PHP_OPEN);
     let open_short: Option<usize> = memmem::find(bytes, SHORT_OPEN);
-    let halt: Option<usize> = memmem::find(bytes, HALT);
+    let halt: Option<usize> =
+        memmem::find(bytes, HALT).filter(|at: &usize| text_before(bytes, *at));
     let has_halt: bool = halt.is_some();
 
     if bytes.len() >= 3
@@ -71,7 +73,9 @@ pub fn detect(bytes: &[u8]) -> PhpDetection {
         };
     }
 
-    if let Some(offset) = open_php {
+    if let Some(offset) =
+        open_php.filter(|at: &usize| opens_file(bytes, *at) || text_before(bytes, *at))
+    {
         let confidence: PhpConfidence = if opens_file(bytes, offset) {
             PhpConfidence::Definite
         } else {
@@ -91,7 +95,9 @@ pub fn detect(bytes: &[u8]) -> PhpDetection {
                 .get(offset + 2)
                 .is_some_and(|b: &u8| b.is_ascii_whitespace())
     });
-    if let Some(offset) = leading_short.or_else(|| memmem::find(bytes, ECHO_OPEN)) {
+    if let Some(offset) = leading_short
+        .or_else(|| memmem::find(bytes, ECHO_OPEN).filter(|at: &usize| text_before(bytes, *at)))
+    {
         return PhpDetection {
             kind: PhpKind::Source,
             confidence: PhpConfidence::Medium,
@@ -106,6 +112,13 @@ pub fn detect(bytes: &[u8]) -> PhpDetection {
         open_tag_offset: None,
         has_halt_compiler: false,
     }
+}
+
+fn text_before(bytes: &[u8], offset: usize) -> bool {
+    let end: usize = offset.min(bytes.len());
+    let head: &[u8] = &bytes[..end.min(TEXT_WINDOW)];
+    let near: &[u8] = &bytes[end.saturating_sub(TEXT_WINDOW)..end];
+    memchr::memchr(0, head).is_none() && memchr::memchr(0, near).is_none()
 }
 
 fn opens_file(bytes: &[u8], offset: usize) -> bool {
