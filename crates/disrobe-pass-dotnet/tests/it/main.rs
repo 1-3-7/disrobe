@@ -177,6 +177,7 @@ mod param_indirection;
 mod pe_parse_resilience;
 #[path = "../property_and_typeof_rendering.rs"]
 mod property_and_typeof_rendering;
+#[cfg(windows)]
 #[path = "../protector_reexec_strict.rs"]
 mod protector_reexec_strict;
 #[path = "../real_baseline.rs"]
