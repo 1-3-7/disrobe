@@ -137,14 +137,14 @@ impl TokenNamer for CallOrderNamer {
                 returns_value: true,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             }),
             0x0A00_0003 => Some(CallInfo {
                 arg_count: 2,
                 returns_value: true,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             }),
             _ => None,
         }

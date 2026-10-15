@@ -254,6 +254,21 @@ fn collect_type_parameters(body: &str) -> BTreeSet<String> {
     out
 }
 
+fn attribute_type_parameters(body: &str) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    let marker: &str = "GetCustomAttribute<";
+    let mut rest: &str = body;
+    while let Some(position) = rest.find(marker) {
+        let after: &str = &rest[position + marker.len()..];
+        let candidate: &str = after.split('>').next().unwrap_or("").trim();
+        if looks_like_type_parameter(candidate) {
+            out.insert(candidate.to_owned());
+        }
+        rest = &after[after.find('>').map_or(after.len(), |end: usize| end + 1)..];
+    }
+    out
+}
+
 fn host_source(id: usize, body: &str) -> Option<String> {
     if is_unlowered_compiler_construct_refusal(body) {
         return None;
@@ -330,6 +345,12 @@ fn host_source(id: usize, body: &str) -> Option<String> {
                 .join(", ")
         )
     };
+    let constraints: String = attribute_type_parameters(&rewritten)
+        .intersection(&type_params)
+        .fold(String::new(), |mut rendered: String, parameter: &String| {
+            write!(rendered, " where {parameter} : System.Attribute").expect("write to String");
+            rendered
+        });
     let tail: &str = match (has_yield, has_await, returns_value) {
         (false, true | false, true) => "\n        return default;",
         _ => "",
@@ -337,7 +358,7 @@ fn host_source(id: usize, body: &str) -> Option<String> {
     let stubs: String = unknown_type_stubs(&format!("{extra_decls}\n{rewritten}"));
     let (bases, iface_members): (String, String) = value_task_source_impl(&rewritten);
     Some(format!(
-        "{stubs}public class __Mover{id}{generics}{bases}\n{{\n{field_decls}\n    public dynamic __builder = null;\n{iface_members}    {head}\n    {{\n{extra_decls}\n{rewritten}{tail}\n    }}\n}}\n"
+        "{stubs}public class __Mover{id}{generics}{bases}{constraints}\n{{\n{field_decls}\n    public dynamic __builder = null;\n{iface_members}    {head}\n    {{\n{extra_decls}\n{rewritten}{tail}\n    }}\n}}\n"
     ))
 }
 
@@ -827,6 +848,21 @@ fn named_refusals_match_the_pinned_state_machine_set() {
         observed,
         expected_unlowered_compiler_construct_refusals(),
         "the pinned unlowered compiler-construct refusal set changed"
+    );
+}
+
+#[test]
+fn compiler_host_preserves_attribute_generic_constraints() {
+    let body: &str = concat!(
+        "private void MoveNext()\n",
+        "{\n",
+        "    System.Reflection.CustomAttributeExtensions.GetCustomAttribute<TAttr>(null);\n",
+        "}\n"
+    );
+    let source: String = host_source(0, body).expect("compiler host");
+    assert!(
+        source.contains("class __Mover0<TAttr> where TAttr : System.Attribute"),
+        "the compiler host must preserve the constraint required by GetCustomAttribute<T>:\n{source}"
     );
 }
 

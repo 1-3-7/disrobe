@@ -2194,6 +2194,7 @@ const EDGECASES_TYPES: &[(&str, bool)] = &[
 
 const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "AnimalBase",
+    "AsyncDisposableScope",
     "Cat",
     "CollectionPlayground",
     "ConditionalCompilation",
@@ -2201,6 +2202,7 @@ const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "DeconstructPlayground",
     "DisposableScope",
     "Dog",
+    "EventSource",
     "ExceptionPlayground",
     "ExpressionPlayground",
     "FixedBufferHolder",
@@ -2685,17 +2687,15 @@ const GRADED_TYPE_COUNT: usize = 29;
 const GRADED_MEMBER_TOTAL: usize = 123;
 
 const IL_RESIDUAL: &[&str] = &[
+    "AsyncDisposableScope.DisposeAsync",
     "DeconstructPlayground.Use",
+    "EventSource.add_Pulse",
+    "EventSource.remove_Pulse",
     "JsonLite.Escape",
     "TargetTypedNewPlayground.Build",
 ];
 
-const NAMED_REFUSALS: &[&str] = &[
-    "Constructs.SumAsync",
-    "AsyncDisposableScope.DisposeAsync",
-    "EventSource.add_Pulse",
-    "EventSource.remove_Pulse",
-];
+const NAMED_REFUSALS: &[&str] = &[];
 
 const REFERENCE_LIMITED: &[&str] = &[];
 

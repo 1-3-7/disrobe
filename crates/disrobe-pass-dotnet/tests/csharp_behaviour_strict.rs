@@ -330,6 +330,38 @@ fn every_fixture_recovers_to_identical_behaviour() {
 }
 
 #[test]
+fn managed_byref_calls_recover_without_argument_mode_refusal() {
+    let (reference, recovered): (BTreeMap<String, String>, BTreeMap<String, String>) =
+        reference_and_recovery();
+    let mut candidate: BTreeMap<String, String> = original_sources();
+    for name in ["CapturedTernaryAnd", "LocalFunctionByRef"] {
+        let source: String = recovered
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} is recovered"));
+        assert!(
+            !source.contains("__unresolved_managed_byref_argument_mode"),
+            "{name} must resolve managed byref argument modes from callee metadata:\n{source}"
+        );
+        candidate.insert(name.to_owned(), source);
+    }
+    let scratch: ScratchDir =
+        ScratchDir::create("disrobe_dotnet_managed_byref_behaviour").expect("create scratch");
+    let (_, sections): (PathBuf, BTreeMap<String, String>) = build_and_run(
+        scratch.path(),
+        &candidate,
+        "the recovered managed-byref behaviour fixtures with authored peers",
+    );
+    for name in ["CapturedTernaryAnd", "LocalFunctionByRef"] {
+        assert_eq!(
+            sections.get(name),
+            reference.get(name),
+            "the recovered {name} must re-execute exactly like its authored original"
+        );
+    }
+}
+
+#[test]
 fn a_recovery_with_one_changed_operator_is_caught() {
     let (reference, mut recovered): (BTreeMap<String, String>, BTreeMap<String, String>) =
         reference_and_recovery();
