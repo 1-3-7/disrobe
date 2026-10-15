@@ -172,8 +172,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 32] = [
     },
     FigureBudget {
         path: "docs/src/languages/go.md",
-        figures: 1,
-        digest: "075810309917240f",
+        figures: 2,
+        digest: "4d1ce29de5f022bf",
     },
     FigureBudget {
         path: "docs/src/languages/javascript.md",
