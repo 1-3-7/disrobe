@@ -209,6 +209,15 @@ fn depths(insns: &[DisasmInsn]) -> Option<BTreeMap<u64, i64>> {
     )
 }
 
+fn leaves_the_stack_alone(insn: &DisasmInsn) -> bool {
+    !writes_stack_pointer(insn)
+        && !super::stack_depth_changing_mnemonic(&insn.mnemonic)
+        && !insn
+            .operands
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|token: &str| token == "rsp")
+}
+
 fn epilogue_instruction(insn: &DisasmInsn) -> bool {
     matches!(
         insn.mnemonic.as_str(),
@@ -251,6 +260,9 @@ pub(super) fn plan_push_frame(insns: &[DisasmInsn], abi: Abi) -> Option<PushFram
             prologue_end = position + 1;
             continue;
         }
+        if allocation == 0 && pushed.is_empty() && leaves_the_stack_alone(insn) {
+            continue;
+        }
         break;
     }
     if pushed.is_empty() && allocation == 0 {
@@ -275,6 +287,9 @@ pub(super) fn plan_push_frame(insns: &[DisasmInsn], abi: Abi) -> Option<PushFram
             if at == body_depth && insn.mnemonic == "push" {
                 return None;
             }
+            continue;
+        }
+        if at == 0 && leaves_the_stack_alone(insn) {
             continue;
         }
         if !epilogue_instruction(insn) {

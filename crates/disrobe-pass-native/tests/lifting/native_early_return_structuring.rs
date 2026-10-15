@@ -982,12 +982,35 @@ fn recover_shape(object: &[u8], shape: &ExitShape, abi: PseudoAbi) -> RecoverOut
     }))
 }
 
+enum RecoveryObject {
+    Compiled,
+    Given(Vec<u8>),
+}
+
 fn grade_row(
     shape: &'static ExitShape,
     compiler: &CompilerId,
     opt: &'static str,
     abi: AbiTarget,
     floor_graded: bool,
+) -> ExitRow {
+    grade_row_from(
+        shape,
+        compiler,
+        opt,
+        abi,
+        floor_graded,
+        RecoveryObject::Compiled,
+    )
+}
+
+fn grade_row_from(
+    shape: &'static ExitShape,
+    compiler: &CompilerId,
+    opt: &'static str,
+    abi: AbiTarget,
+    floor_graded: bool,
+    recovery_object: RecoveryObject,
 ) -> ExitRow {
     let mut row: ExitRow = ExitRow {
         shape: shape.tag,
@@ -1038,19 +1061,22 @@ fn grade_row(
         recovery_flags.push("-fcf-protection=none");
     }
     recovery_flags.push("-c");
-    let object_for_recovery: Vec<u8> = match compile_x86_object_reasoned(
-        compiler.bin,
-        abi.as_pseudo(),
-        opt,
-        &recovery_flags,
-        &source,
-        &recovery_out,
-    ) {
-        CompileOutcome::Object(bytes) => bytes,
-        CompileOutcome::Rejected(reason) => {
-            row.verdict = Verdict::NotGraded(format!("x86 recovery compile: {reason}"));
-            return row;
-        }
+    let object_for_recovery: Vec<u8> = match recovery_object {
+        RecoveryObject::Given(bytes) => bytes,
+        RecoveryObject::Compiled => match compile_x86_object_reasoned(
+            compiler.bin,
+            abi.as_pseudo(),
+            opt,
+            &recovery_flags,
+            &source,
+            &recovery_out,
+        ) {
+            CompileOutcome::Object(bytes) => bytes,
+            CompileOutcome::Rejected(reason) => {
+                row.verdict = Verdict::NotGraded(format!("x86 recovery compile: {reason}"));
+                return row;
+            }
+        },
     };
 
     let recovered: Box<RecoveredShape> =
@@ -2027,4 +2053,57 @@ fn each_declared_exit_shape_outside_the_recovered_class_names_its_precondition()
         unnamed.is_empty(),
         "these shapes now recover, so they belong in the graded matrix rather than in the named-abstention record: {unnamed:#?}"
     );
+}
+
+#[test]
+fn a_shrink_wrapped_sibling_tail_call_in_an_elf_object_recovers_and_recompiles_equivalent() {
+    let compiler: CompilerId = available_x86_compilers()
+        .into_iter()
+        .find(|compiler: &CompilerId| compiler.bin == "clang")
+        .expect("clang compiles the ELF sibling-tail fixture");
+    let source: String = format!(
+        "#define DISROBE_EARLY_RETURN_ABI __attribute__((ms_abi))\n{SIBLING_TAIL_IN_MULTI_RETURN}"
+    );
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir("disrobe-sibling-tail-elf");
+    let out: PathBuf = scratch.path().join("sibling_tail_elf.o");
+    let object: Vec<u8> = match compile_object_reasoned(
+        compiler.bin,
+        "-O3",
+        &[
+            "--target=x86_64-unknown-linux-gnu",
+            "-fno-stack-protector",
+            "-c",
+        ],
+        &source,
+        &out,
+    ) {
+        CompileOutcome::Object(bytes) => bytes,
+        CompileOutcome::Rejected(reason) => {
+            panic!("the ELF sibling-tail fixture must compile: {reason}")
+        }
+    };
+    let file: object::File<'_> = object::File::parse(object.as_slice()).expect("an ELF object");
+    assert_eq!(file.format(), object::BinaryFormat::Elf);
+    let RecoverOutcome::Ok(recovered) =
+        recover_shape(&object, &SIBLING_TAIL_AFTER_EPILOGUE, PseudoAbi::MsX64)
+    else {
+        panic!(
+            "a relocated tail jump made after a shrink-wrapped epilogue restores the entry stack must recover as a call"
+        );
+    };
+    assert!(
+        recovered.tu.contains("rec_er_sib_h("),
+        "the relocated tail jump must be reached as a call: {}",
+        recovered.tu
+    );
+    let row: ExitRow = grade_row_from(
+        &SIBLING_TAIL_AFTER_EPILOGUE,
+        &compiler,
+        "-O3",
+        AbiTarget::MsX64,
+        true,
+        RecoveryObject::Given(object),
+    );
+    assert!(matches!(row.verdict, Verdict::Equivalent), "{row:?}");
+    assert!(row.teeth_confirmed, "{row:?}");
 }
