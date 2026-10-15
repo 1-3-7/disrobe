@@ -72,6 +72,8 @@ pub struct NibConnection {
     pub source_class: Option<String>,
     pub destination: Option<u32>,
     pub destination_class: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collected_classes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -82,6 +84,8 @@ pub struct NibArchive {
     pub objects: Vec<NibObject>,
     pub connections: Vec<NibConnection>,
     pub custom_classes: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub swift_class_names: BTreeMap<String, String>,
     pub strings: Vec<String>,
     pub trailing_bytes: usize,
 }
@@ -279,6 +283,12 @@ pub fn decode_nib_archive(bytes: &[u8]) -> Result<NibArchive> {
         coder_version: header.coder_version,
         connections: connections(&objects, &strings),
         custom_classes: custom_classes(&objects, &strings),
+        swift_class_names: custom_classes(&objects, &strings)
+            .into_iter()
+            .filter_map(|name: String| {
+                swift_runtime_class_name(&name).map(|readable: String| (name, readable))
+            })
+            .collect(),
         strings: strings
             .values()
             .cloned()
@@ -523,6 +533,11 @@ fn connections(objects: &[NibObject], strings: &BTreeMap<usize, String>) -> Vec<
         let destination: Option<u32> = ["UIDestination", "NSDestination"]
             .into_iter()
             .find_map(|key: &str| reference(object, key));
+        let collected_classes: Vec<String> = if kind == "outlet-collection" {
+            collection_classes(objects, strings, destination)
+        } else {
+            Vec::new()
+        };
         found.push(NibConnection {
             kind: kind.to_owned(),
             label,
@@ -530,10 +545,66 @@ fn connections(objects: &[NibObject], strings: &BTreeMap<usize, String>) -> Vec<
             source_class: class_of(objects, strings, source),
             destination,
             destination_class: class_of(objects, strings, destination),
+            collected_classes,
         });
     }
     found.sort();
     found
+}
+
+fn collection_classes(
+    objects: &[NibObject],
+    strings: &BTreeMap<usize, String>,
+    index: Option<u32>,
+) -> Vec<String> {
+    let Some(array) = index
+        .and_then(|index: u32| usize::try_from(index).ok())
+        .and_then(|index: usize| objects.get(index))
+        .filter(|object: &&NibObject| {
+            matches!(object.class.as_str(), "NSArray" | "NSMutableArray")
+        })
+    else {
+        return Vec::new();
+    };
+    array
+        .entries
+        .iter()
+        .filter(|entry: &&NibEntry| entry.key == "UINibEncoderEmptyKey")
+        .filter_map(|entry: &NibEntry| match entry.value {
+            NibValue::Object { index } => class_of(objects, strings, Some(index)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn swift_runtime_class_name(name: &str) -> Option<String> {
+    let body: &str = name.strip_prefix("_Tt")?;
+    let depth: usize = body.bytes().take_while(|byte: &u8| *byte == b'C').count();
+    if depth == 0 {
+        return None;
+    }
+    let mut rest: &str = &body[depth..];
+    let mut parts: Vec<&str> = Vec::with_capacity(depth + 1);
+    if let Some(after) = rest.strip_prefix('s') {
+        parts.push("Swift");
+        rest = after;
+    }
+    while !rest.is_empty() {
+        let digits: usize = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let length: usize = rest.get(..digits)?.parse().ok()?;
+        let identifier: &str = rest.get(digits..digits.checked_add(length)?)?;
+        if length == 0
+            || !identifier
+                .bytes()
+                .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return None;
+        }
+        parts.push(identifier);
+        rest = &rest[digits + length..];
+    }
+    (parts.len() == depth + 1).then(|| parts.join("."))
 }
 
 fn custom_classes(objects: &[NibObject], strings: &BTreeMap<usize, String>) -> Vec<String> {
