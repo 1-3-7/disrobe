@@ -31,30 +31,34 @@ const MAX_SECTIONS: usize = 256;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyFunctionError {
-    #[error("cannot parse {side} object: {message}")]
+    #[error("DR-NATIVE-0250: cannot parse {side} object: {message}")]
     Object { side: &'static str, message: String },
-    #[error("unsupported architecture {0:?}; verify-function supports x86 and x86-64")]
+    #[error(
+        "DR-NATIVE-0251: unsupported architecture {0:?}; verify-function supports x86 and x86-64"
+    )]
     Architecture(Architecture),
-    #[error("function selector `{0}` did not resolve to executable code")]
+    #[error("DR-NATIVE-0252: function selector `{0}` did not resolve to executable code")]
     FunctionNotFound(String),
-    #[error("candidate object does not define function `{0}`")]
+    #[error("DR-NATIVE-0253: candidate object does not define function `{0}`")]
     CandidateFunctionNotFound(String),
-    #[error("invalid signature `{signature}`: {message}")]
+    #[error("DR-NATIVE-0254: invalid signature `{signature}`: {message}")]
     Signature { signature: String, message: String },
-    #[error("candidate references external symbol `{0}`")]
+    #[error("DR-NATIVE-0255: candidate references external symbol `{0}`")]
     ExternalSymbol(String),
-    #[error("unsupported candidate relocation {kind:?} ({size} bits) for `{target}`")]
+    #[error(
+        "DR-NATIVE-0256: unsupported candidate relocation {kind:?} ({size} bits) for `{target}`"
+    )]
     Relocation {
         kind: RelocationKind,
         size: u8,
         target: String,
     },
-    #[error("verification limit refused: {0}")]
+    #[error("DR-NATIVE-0257: verification limit refused: {0}")]
     Limit(String),
-    #[error("emulator image setup failed: {0}")]
+    #[error("DR-NATIVE-0258: emulator image setup failed: {0}")]
     Emulator(String),
     #[error(
-        "the decompiler could not recover a default signature for `{function}`: {message}; pass --signature"
+        "DR-NATIVE-0259: the decompiler could not recover a default signature for `{function}`: {message}; pass --signature"
     )]
     SignatureRecovery { function: String, message: String },
 }
