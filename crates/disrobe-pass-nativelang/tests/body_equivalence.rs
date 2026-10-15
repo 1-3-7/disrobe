@@ -1863,8 +1863,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim 2.0.8",
         origin: Origin::Corpus(NIM_ELF),
         functions: 185,
-        recovered: 84,
-        rust: 84,
+        recovered: 88,
+        rust: 83,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1873,8 +1873,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_arc.exe"),
         functions: 559,
-        recovered: 179,
-        rust: 173,
+        recovered: 243,
+        rust: 207,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1883,8 +1883,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_orc.exe"),
         functions: 583,
-        recovered: 186,
-        rust: 180,
+        recovered: 251,
+        rust: 214,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1893,8 +1893,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_refc.exe"),
         functions: 620,
-        recovered: 205,
-        rust: 196,
+        recovered: 274,
+        rust: 232,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1903,8 +1903,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_boehm.exe"),
         functions: 255,
-        recovered: 52,
-        rust: 52,
+        recovered: 87,
+        rust: 67,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1913,8 +1913,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_markAndSweep.exe"),
         functions: 600,
-        recovered: 200,
-        rust: 194,
+        recovered: 263,
+        rust: 228,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1923,8 +1923,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_go.exe"),
         functions: 528,
-        recovered: 172,
-        rust: 166,
+        recovered: 256,
+        rust: 206,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1933,8 +1933,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "nim (mingw-w64 gcc 13.2.0 backend)",
         origin: Origin::CrateFixture("nim_mm/mm_none.exe"),
         functions: 539,
-        recovered: 175,
-        rust: 169,
+        recovered: 237,
+        rust: 202,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1943,8 +1943,8 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "zig 0.13.0",
         origin: Origin::Corpus(ZIG_ELF),
         functions: 1356,
-        recovered: 331,
-        rust: 327,
+        recovered: 378,
+        rust: 369,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1963,14 +1963,15 @@ static MODE_RATES: [ModeRate; 11] = [
         toolchain: "crystal (version not recorded in the artifact)",
         origin: Origin::Corpus(CRYSTAL_PE),
         functions: 438,
-        recovered: 38,
-        rust: 38,
+        recovered: 62,
+        rust: 59,
         analysis: OnceLock::new(),
     },
 ];
 
 #[test]
 fn the_body_recovery_rate_is_recorded_per_language_and_build_mode() {
+    let mut moved: Vec<String> = Vec::new();
     for rate in &MODE_RATES {
         let bodies: &disrobe_pass_nativelang::BodyRecovery = &analyze_origin(rate.origin).bodies;
         println!(
@@ -1984,22 +1985,21 @@ fn the_body_recovery_rate_is_recorded_per_language_and_build_mode() {
             bodies.rust_bodies,
             bodies.function_count
         );
-        assert_eq!(
-            bodies.function_count, rate.functions,
-            "{} [{}]: the carved function count moved",
-            rate.language, rate.build
-        );
-        assert_eq!(
-            bodies.recovered, rate.recovered,
-            "{} [{}]: the recovered pseudo-C body count moved",
-            rate.language, rate.build
-        );
-        assert_eq!(
-            bodies.rust_bodies, rate.rust,
-            "{} [{}]: the emitted pseudo-Rust body count moved",
-            rate.language, rate.build
-        );
+        let measured: (u32, u32, u32) =
+            (bodies.function_count, bodies.recovered, bodies.rust_bodies);
+        let pinned: (u32, u32, u32) = (rate.functions, rate.recovered, rate.rust);
+        if measured != pinned {
+            moved.push(format!(
+                "{} [{}]: (functions, pseudo-C, pseudo-Rust) measured {measured:?}, pinned {pinned:?}",
+                rate.language, rate.build
+            ));
+        }
     }
+    assert!(
+        moved.is_empty(),
+        "body recovery counts moved:\n{}",
+        moved.join("\n")
+    );
     for language in ["nim", "zig"] {
         let modes: usize = MODE_RATES
             .iter()
