@@ -104,3 +104,52 @@ fn disrobe_capture_reports_the_tls_name_and_writes_decoded_http_bodies() {
         "<html><body>hello from the reference capture</body></html>"
     );
 }
+
+#[test]
+fn disrobe_crash_places_the_fault_and_threads_in_their_modules() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("crash-cli");
+    let script: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../disrobe-dataforensics/tests/support/make_cores.py");
+    let status: std::process::ExitStatus = std::process::Command::new(reference_python())
+        .arg(&script)
+        .arg(scratch.path())
+        .status()
+        .expect("run the core writer");
+    assert!(status.success());
+    let truth: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(scratch.path().join("truth.json")).expect("truth"))
+            .expect("truth JSON");
+    let core: PathBuf = scratch.path().join("x86_64.core");
+    let core: &str = core.to_str().expect("utf8 path");
+    let run: common::Run = run_disrobe(&["--json", "crash", core]);
+    assert_eq!(run.code, 0, "disrobe crash failed: {}", run.stderr);
+    let report: serde_json::Value = serde_json::from_str(&run.stdout).expect("JSON report");
+    let expected: &serde_json::Value = &truth["x86_64"];
+    assert_eq!(report["fault"]["name"], "SIGSEGV");
+    assert_eq!(
+        report["fault"]["instruction_location"],
+        expected["fault"]["instruction_location"]
+    );
+    assert_eq!(
+        report["threads"][1]["location"],
+        expected["threads"][1]["location"]
+    );
+    assert_eq!(
+        report["modules"][1]["build_id"],
+        expected["modules"][1]["build_id"]
+    );
+
+    let text: common::Run = run_disrobe(&["crash", core, "--registers"]);
+    assert_eq!(text.code, 0, "disrobe crash failed: {}", text.stderr);
+    assert!(
+        text.stdout.contains("SIGSEGV (0xb) SEGV_MAPERR"),
+        "{}",
+        text.stdout
+    );
+    assert!(text.stdout.contains("crashme+0x1149"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains("rip=0x555555555149"),
+        "{}",
+        text.stdout
+    );
+}

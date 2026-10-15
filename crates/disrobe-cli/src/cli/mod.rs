@@ -31,6 +31,8 @@ pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod config_merge;
 pub(crate) mod context;
+#[cfg(feature = "data")]
+pub(crate) mod crash;
 #[cfg(feature = "native")]
 pub(crate) mod cyclonedx;
 #[cfg(feature = "auto")]

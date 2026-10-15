@@ -48,6 +48,7 @@
 - [Containers and archives](./languages/containers.md)
 - [SQLite databases](./languages/sqlite.md)
 - [Network captures](./languages/captures.md)
+- [Crash records](./languages/crashes.md)
 
 # Reference
 

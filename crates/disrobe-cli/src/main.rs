@@ -768,6 +768,16 @@ enum Cmd {
         )]
         extract: Option<PathBuf>,
     },
+    #[cfg(feature = "data")]
+    #[command(
+        about = "triage a Linux ELF core or a minidump: the fault, every thread with registers and module offsets, mapped modules with build IDs or PDB identities, and return-address candidates scanned from each stack"
+    )]
+    Crash {
+        #[arg(value_name = "RECORD")]
+        path: PathBuf,
+        #[arg(long, help = "print every thread's registers")]
+        registers: bool,
+    },
     #[cfg(feature = "plugin")]
     #[command(
         about = "signed WebAssembly component plugin sandbox: run, verify, list (fuel/wall-deadline/memory-capped, deny-all-imports)"
@@ -2093,6 +2103,8 @@ fn main() -> miette::Result<()> {
         ),
         #[cfg(feature = "data")]
         Cmd::Capture { path, extract } => cli::capture::run(path, extract, fmt),
+        #[cfg(feature = "data")]
+        Cmd::Crash { path, registers } => cli::crash::run(path, registers, fmt),
         #[cfg(feature = "plugin")]
         Cmd::Plugin { action } => plugin::run(action),
         #[cfg(feature = "go")]
