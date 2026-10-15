@@ -201,7 +201,21 @@ async fn list_commands_carries_the_read_only_allowlist() {
                 .join(" ")
         })
         .collect();
-    for expected in ["strings", "identify", "auto", "native symbols", "py deob"] {
+    for expected in [
+        "strings",
+        "identify",
+        "auto",
+        "native symbols",
+        "py deob",
+        "flutter identity",
+        "macho nib",
+        "macho keyed-archive",
+        "resources",
+        "electron",
+        "crash",
+        "capture",
+        "dotnet interop",
+    ] {
         assert!(commands.contains(expected), "allowlist lacks {expected}");
     }
     for denied in [
@@ -356,6 +370,31 @@ async fn run_command_resolves_relative_inputs_and_redirects_outputs_into_the_run
         .to_string();
     assert_eq!(argv.last().copied(), Some(staged.as_str()), "{argv:?}");
     assert!(!session.root.path().join("..").join("elsewhere").exists());
+}
+
+#[tokio::test]
+async fn run_command_redirects_resource_extraction_into_the_run_directory() {
+    let session: Session = session().await;
+    let pe: PathBuf = corpus_dir().join("native/resources/resources.exe");
+    let run: Value = call(
+        &session.client,
+        "run_command",
+        json!({"command": ["resources"], "args": [pe.display().to_string(), "--extract", "../escaped"]}),
+    )
+    .await;
+    assert_eq!(run["success"], Value::Bool(true), "{run}");
+    let run_dir: PathBuf = PathBuf::from(run["run_dir"].as_str().unwrap());
+    let payload: Vec<u8> = std::fs::read(run_dir.join("RCDATA-PAYLOAD-1033.pe")).expect("payload");
+    let source: Vec<u8> =
+        std::fs::read(corpus_dir().join("native/resources/src/payload.bin")).expect("source");
+    assert_eq!(payload, source);
+    assert!(!session.root.path().join("..").join("escaped").exists());
+    assert!(
+        run["json"]["entries"]
+            .as_array()
+            .is_some_and(|entries: &Vec<Value>| !entries.is_empty()),
+        "{run}"
+    );
 }
 
 #[tokio::test]
