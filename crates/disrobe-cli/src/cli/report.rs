@@ -215,6 +215,7 @@ pub(crate) struct AnalysedInput<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) strings: Option<&'a [ExtractedString]>,
     pub(crate) anti: &'a AntiAnalysisReport,
+    pub(crate) indicators: Option<&'a [Indicator]>,
 }
 
 #[cfg(test)]
@@ -260,6 +261,7 @@ fn analysis_sections(
                         bytes: &bytes,
                         strings: Some(&strings),
                         anti: &anti,
+                        indicators: None,
                     },
                 )
             }
@@ -293,13 +295,15 @@ fn sections_from_analysis(path: &str, analysed: AnalysedInput<'_>) -> AnalysisSe
     let capability_strings: Option<&[ExtractedString]> =
         (disrobe_capabilities::file_string_window(bytes).len() == bytes.len()).then_some(&strings);
     let capabilities: CapabilitySection = capabilities_from_bytes(path, bytes, capability_strings);
-    let indicators: Vec<Indicator> = ioc::extract(bytes);
+    let indicators: Cow<'_, [Indicator]> = analysed
+        .indicators
+        .map_or_else(|| Cow::Owned(ioc::extract(bytes)), Cow::Borrowed);
     let enrichment: super::report_html::Enrichment =
         super::report_html::enrich(bytes, path, &strings, &indicators, analysed.anti);
     let indicators: IndicatorSection = indicators_from_report(ioc::report_from_indicators(
         bytes.len(),
         Some(path),
-        indicators,
+        indicators.into_owned(),
     ));
     (capabilities, indicators, enrichment)
 }
@@ -979,12 +983,13 @@ pub(crate) fn write_single_forensic(
     out_dir: &Path,
     known: Option<&BTreeSet<String>>,
     analysed: AnalysedInput<'_>,
-) -> miette::Result<()> {
+) -> miette::Result<ReportDocument> {
     let report: SingleReport = build_forensic(doc, recovery, out_dir, Some(analysed));
     let json: String = render_json_value(&report, known)?;
     let document: ReportDocument = ReportDocument::Single(Box::new(report));
     let sarif: String = render_forensic_sarif(&document, known)?;
-    write_forensic_bytes(out_dir, json, sarif)
+    write_forensic_bytes(out_dir, json, sarif)?;
+    Ok(document)
 }
 
 fn build_single(
@@ -1287,13 +1292,11 @@ fn resolve_document(
                 timings: None,
             },
         )?;
-        return Ok(ReportDocument::Single(Box::new(build_single(
-            &outcome.doc,
-            &outcome.report,
-            Some(&out_dir),
-            target,
-            None,
-        ))));
+        let mut document: ReportDocument = outcome.forensic;
+        if let ReportDocument::Single(report) = &mut document {
+            report.reproduction = reproduction_for(target, &report.evidence);
+        }
+        return Ok(document);
     }
     Err(miette::miette!(
         "DR-CLI-0350: report target does not exist: {}",
@@ -2727,6 +2730,7 @@ mod tests {
                 bytes: CONNECT_PE,
                 strings: Some(&strings),
                 anti: &anti,
+                indicators: None,
             }),
         );
         assert!(
@@ -2739,12 +2743,53 @@ mod tests {
             "{:?}",
             shared.0.reason
         );
+        let chain_indicators: Vec<Indicator> = ioc::extract(CONNECT_PE);
+        assert!(!chain_indicators.is_empty());
+        let handed: AnalysisSections = analysis_sections(
+            &unreadable,
+            Some(AnalysedInput {
+                bytes: CONNECT_PE,
+                strings: Some(&strings),
+                anti: &anti,
+                indicators: Some(&chain_indicators),
+            }),
+        );
         let mut expected: serde_json::Value = sections_json(&fresh);
         let mut actual: serde_json::Value = sections_json(&shared);
-        for value in [&mut expected, &mut actual] {
+        let mut reused: serde_json::Value = sections_json(&handed);
+        for value in [&mut expected, &mut actual, &mut reused] {
             value["capabilities"]["report"]["uri"] = serde_json::Value::Null;
             value["behavior"]["uri"] = serde_json::Value::Null;
         }
         assert_eq!(actual, expected);
+        assert_eq!(reused, expected);
+    }
+
+    #[test]
+    fn a_raw_input_report_reuses_its_forensic_analysis_and_matches_a_fresh_build() {
+        let scratch: ScratchDir = tmp_dir("report-once");
+        let target: PathBuf = scratch.path().join("connect.exe");
+        std::fs::write(&target, CONNECT_PE).expect("write target");
+        let base: PathBuf = scratch.path().join("runs");
+        let reused: ReportDocument =
+            resolve_document(&target, Some(&base), false).expect("report on the raw input");
+        let out_dir: PathBuf = derived_out_dir(&target, Some(&base));
+        let doc: ChainDocument = read_chain_doc(&out_dir).expect("chain.json");
+        let recovery: ChainRecoveryReport = read_recovery(&out_dir).expect("recovery.json");
+        let fresh: ReportDocument = ReportDocument::Single(Box::new(build_single(
+            &doc,
+            &recovery,
+            Some(&out_dir),
+            &target,
+            None,
+        )));
+        let ReportDocument::Single(single) = &reused else {
+            panic!("a raw input yields a single report");
+        };
+        assert!(single.capabilities.available && single.indicators.available);
+        assert_eq!(
+            render_json_document(&reused, None).expect("reused json"),
+            render_json_document(&fresh, None).expect("fresh json")
+        );
     }
 }

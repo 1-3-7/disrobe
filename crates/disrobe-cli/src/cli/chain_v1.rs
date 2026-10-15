@@ -1,4 +1,5 @@
 #![cfg(feature = "auto")]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -16,6 +17,7 @@ use disrobe_core::chain::{
     ChildArtifact, ChildHandle, ChildMaterialization, DetectorPick, ExtractedArtifact, Node,
     OutputKind, PassRegistry, PassRunOutcome, RUN_FILE_NAME, RunClock, RunRecord,
 };
+use disrobe_core::ioc::Indicator;
 use disrobe_core::pass::PassContext;
 use disrobe_core::strings::{self, ExtractedString, Options};
 use disrobe_core::time::WallClock;
@@ -30,16 +32,44 @@ use super::chain_materialization::ExtractedWriter;
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
 use super::progress_ui::ChainProgress;
-use super::report::AnalysedInput;
+use super::report::{AnalysedInput, ReportDocument};
 
 #[derive(Debug)]
 struct ChainPassRunner<'p> {
     progress: &'p ChainProgress,
+    shared_indicators: RefCell<Option<SharedIndicators>>,
+}
+
+#[derive(Debug)]
+struct SharedIndicators {
+    input_hash: [u8; 32],
+    indicators: Vec<Indicator>,
 }
 
 impl<'p> ChainPassRunner<'p> {
     const fn new(progress: &'p ChainProgress) -> Self {
-        Self { progress }
+        Self {
+            progress,
+            shared_indicators: RefCell::new(None),
+        }
+    }
+
+    fn keep_indicators(&self, input_hash: [u8; 32], indicators: Vec<Indicator>) {
+        let mut slot: std::cell::RefMut<'_, Option<SharedIndicators>> =
+            self.shared_indicators.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(SharedIndicators {
+                input_hash,
+                indicators,
+            });
+        }
+    }
+
+    fn indicators_for(&self, input_hash: [u8; 32]) -> Option<Vec<Indicator>> {
+        self.shared_indicators
+            .take()
+            .filter(|shared: &SharedIndicators| shared.input_hash == input_hash)
+            .map(|shared: SharedIndicators| shared.indicators)
     }
 }
 
@@ -98,9 +128,25 @@ impl PassRunner for ChainPassRunner<'_> {
         config: &ChainConfig,
         path_hint: Option<&str>,
     ) -> Result<PassRunOutcome, String> {
+        self.run_returning_input(pick, bytes, config, path_hint).0
+    }
+
+    fn run_returning_input(
+        &self,
+        pick: &DetectorPick,
+        bytes: Vec<u8>,
+        config: &ChainConfig,
+        path_hint: Option<&str>,
+    ) -> (Result<PassRunOutcome, String>, Option<Vec<u8>>) {
+        self.progress.step(pick.verdict.pass_id);
+        let hash: [u8; 32] = blake3_hash(&bytes);
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, hash);
         let what: String = format!("pass `{}`", pick.verdict.pass_id);
-        crate::cli::isolate::isolate(&what, || self.run_pass(pick, bytes, config, path_hint))
-            .and_then(|outcome: Result<PassRunOutcome, String>| outcome)
+        let outcome: Result<PassRunOutcome, String> = crate::cli::isolate::isolate(&what, || {
+            self.run_pass(pick, &artifact, config, path_hint)
+        })
+        .and_then(|outcome: Result<PassRunOutcome, String>| outcome);
+        (outcome, Some(artifact.envelope))
     }
 }
 
@@ -108,13 +154,10 @@ impl ChainPassRunner<'_> {
     fn run_pass(
         &self,
         pick: &DetectorPick,
-        bytes: Vec<u8>,
+        artifact: &Artifact,
         config: &ChainConfig,
         path_hint: Option<&str>,
     ) -> Result<PassRunOutcome, String> {
-        self.progress.step(pick.verdict.pass_id);
-        let hash: [u8; 32] = blake3_hash(&bytes);
-        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, hash);
         let started: Instant = Instant::now();
         let context: PassContext<'_> = PassContext {
             path_hint,
@@ -122,30 +165,34 @@ impl ChainPassRunner<'_> {
         };
         let out_artifact: Artifact = pick
             .pass
-            .run_with_context(&artifact, context)
+            .run_with_context(artifact, context)
             .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
         let initial_kind: OutputKind = pick.pass.output_kind(&out_artifact);
         let mut metadata: BTreeMap<String, String> = pick
             .pass
-            .chain_metadata(&artifact)
+            .chain_metadata(artifact)
             .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
         let refusals: Vec<String> = pick
             .pass
-            .chain_refusals(&artifact)
+            .chain_refusals(artifact)
             .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
         insert_refusal_metadata(&mut metadata, &refusals)?;
         let (kind, children): (OutputKind, Vec<Vec<u8>>) = if initial_kind.is_mixed() {
+            let mut indicators: Option<Vec<Indicator>> = None;
             let extracted: Vec<ChildArtifact> = pick
                 .pass
-                .extract_children_with_context(&artifact, context)
+                .extract_children_sharing_indicators(artifact, context, &mut indicators)
                 .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
+            if let Some(indicators) = indicators {
+                self.keep_indicators(artifact.root_hash, indicators);
+            }
             extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata)
                 .map_err(|error: MetadataValueError| error.to_string())?;
             OutputKind::mixed_from_children(extracted)
         } else {
             if pick.verdict.pass_id == "wasm.deob"
                 && out_artifact.rung == Rung::Surface
-                && let Ok(extracted) = pick.pass.extract_children_with_context(&artifact, context)
+                && let Ok(extracted) = pick.pass.extract_children_with_context(artifact, context)
             {
                 extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata)
                     .map_err(|error: MetadataValueError| error.to_string())?;
@@ -681,11 +728,10 @@ pub(crate) fn run_with_disk(
     let mut streamed: Vec<String> = Vec::new();
     let mut extracted_writer: Option<ExtractedWriter> =
         stream_out_dir.as_deref().map(ExtractedWriter::new);
-    let seed_for_scan: Vec<u8> = bytes.clone();
     let mut sidecar_redaction: Option<SidecarRedaction> =
-        SidecarRedaction::for_run(&seed_for_scan, redact, write_to_disk);
+        SidecarRedaction::for_run(&bytes, redact, write_to_disk);
     let mut stream_error: Option<miette::Report> = None;
-    let plan: ChainPlan = {
+    let (plan, seed): (ChainPlan, Option<Vec<u8>>) = {
         let mut sink = |art: &ExtractedArtifact, siblings: &[ChildHandle]| {
             if stream_error.is_some() {
                 return;
@@ -698,7 +744,7 @@ pub(crate) fn run_with_disk(
                 }
             }
         };
-        driver.run_with_sink(bytes, &spec, Some(input.display().to_string()), &mut sink)
+        driver.run_returning_seed(bytes, &spec, Some(input.display().to_string()), &mut sink)
     };
     if let Some(error) = stream_error {
         return Err(error);
@@ -709,19 +755,20 @@ pub(crate) fn run_with_disk(
     if let Some(redaction) = sidecar_redaction.as_mut() {
         redaction.observe_all(&plan.extracted);
     }
+    let seed: Vec<u8> = seed.ok_or_else(|| {
+        miette::miette!(
+            "DR-CLI-0292: chain cannot read input {}: the chain run did not hand the input back",
+            input.display()
+        )
+    })?;
     let known: Option<&BTreeSet<String>> = known_secrets(redact, sidecar_redaction.as_ref());
     let supplemental_output: Option<SupplementalOutput> = if write_to_disk {
-        let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
-            &plan,
-            &seed_for_scan,
-            &input,
-            engine_symbol_map,
-            backend_export,
-        )?;
+        let flutter_output: Option<SupplementalOutput> =
+            prepare_flutter_symbol_export(&plan, &seed, &input, engine_symbol_map, backend_export)?;
         if flutter_output.is_some() {
             flutter_output
         } else {
-            prepare_dalvik_symbol_export(&plan, &seed_for_scan, &input, backend_export)?
+            prepare_dalvik_symbol_export(&plan, &seed, &input, backend_export)?
         }
     } else {
         None
@@ -731,9 +778,9 @@ pub(crate) fn run_with_disk(
     let InputScan {
         strings: input_strings,
         anti,
-    } = scan_input(&seed_for_scan, &input.display().to_string(), &evidence);
-    let delphi: Option<disrobe_pass_native::delphi::DelphiReport> =
-        delphi_report_for(&seed_for_scan);
+    } = scan_input(&seed, &input.display().to_string(), &evidence);
+    let input_indicators: Option<Vec<Indicator>> = runner.indicators_for(plan.root().input_blake3);
+    let delphi: Option<disrobe_pass_native::delphi::DelphiReport> = delphi_report_for(&seed);
     let doc: ChainDocument = ChainDocument::from_plan(
         &plan,
         &spec,
@@ -747,7 +794,7 @@ pub(crate) fn run_with_disk(
         env!("CARGO_PKG_VERSION"),
         Some(input.display().to_string()),
     );
-    let py_guidance: Option<String> = maybe_py_deob_guidance(&spec_raw, &plan, &seed_for_scan);
+    let py_guidance: Option<String> = maybe_py_deob_guidance(&spec_raw, &plan, &seed);
     let display_anti: AntiAnalysisReport = redacted_copy(&anti, known)?;
     let display_delphi: Option<disrobe_pass_native::delphi::DelphiReport> = delphi
         .as_ref()
@@ -841,15 +888,16 @@ pub(crate) fn run_with_disk(
     } else {
         None
     };
-    super::report::write_single_forensic(
+    let _: ReportDocument = super::report::write_single_forensic(
         &doc,
         &report,
         &out_dir,
         known,
         AnalysedInput {
-            bytes: &seed_for_scan,
+            bytes: &seed,
             strings: input_strings.as_deref(),
             anti: &anti,
+            indicators: input_indicators.as_deref(),
         },
     )?;
     let run_path_str: Option<String> = if options.timings {
@@ -1308,6 +1356,7 @@ pub(crate) struct ChainOutcome {
     pub(crate) report: ChainRecoveryReport,
     pub(crate) anti: AntiAnalysisReport,
     pub(crate) supplemental_outputs: Vec<String>,
+    pub(crate) forensic: ReportDocument,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1367,36 +1416,33 @@ pub(crate) fn run_chain_to_dir(
     }
     .chain_config(false);
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
-    let seed_for_scan: Vec<u8> = bytes.clone();
-    let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
+    let mut noop = |_: &ExtractedArtifact, _: &[ChildHandle]| {};
+    let (plan, seed): (ChainPlan, Option<Vec<u8>>) =
+        driver.run_returning_seed(bytes, &spec, Some(input_label.to_string()), &mut noop);
+    let seed: Vec<u8> = seed.ok_or_else(|| {
+        miette::miette!(
+            "DR-CLI-0292: chain cannot read input {input_label}: the chain run did not hand the input back"
+        )
+    })?;
     let mut sidecar_redaction: Option<SidecarRedaction> =
-        SidecarRedaction::for_run(&seed_for_scan, redact, true);
+        SidecarRedaction::for_run(&seed, redact, true);
     if let Some(redaction) = sidecar_redaction.as_mut() {
         redaction.observe_all(&plan.extracted);
     }
     let known: Option<&BTreeSet<String>> = known_secrets(redact, sidecar_redaction.as_ref());
-    let flutter_output: Option<SupplementalOutput> = prepare_flutter_symbol_export(
-        &plan,
-        &seed_for_scan,
-        Path::new(input_label),
-        None,
-        backend_export,
-    )?;
+    let flutter_output: Option<SupplementalOutput> =
+        prepare_flutter_symbol_export(&plan, &seed, Path::new(input_label), None, backend_export)?;
     let supplemental_output: Option<SupplementalOutput> = if flutter_output.is_some() {
         flutter_output
     } else {
-        prepare_dalvik_symbol_export(
-            &plan,
-            &seed_for_scan,
-            Path::new(input_label),
-            backend_export,
-        )?
+        prepare_dalvik_symbol_export(&plan, &seed, Path::new(input_label), backend_export)?
     };
     let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
     let InputScan {
         strings: input_strings,
         anti,
-    } = scan_input(&seed_for_scan, input_label, &evidence);
+    } = scan_input(&seed, input_label, &evidence);
+    let input_indicators: Option<Vec<Indicator>> = runner.indicators_for(plan.root().input_blake3);
     let doc: ChainDocument = ChainDocument::from_plan(
         &plan,
         &spec,
@@ -1428,15 +1474,16 @@ pub(crate) fn run_chain_to_dir(
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
-    super::report::write_single_forensic(
+    let forensic: ReportDocument = super::report::write_single_forensic(
         &doc,
         &report,
         out_dir,
         known,
         AnalysedInput {
-            bytes: &seed_for_scan,
+            bytes: &seed,
             strings: input_strings.as_deref(),
             anti: &anti,
+            indicators: input_indicators.as_deref(),
         },
     )?;
     if let Some(jobs) = timings {
@@ -1463,6 +1510,7 @@ pub(crate) fn run_chain_to_dir(
         report,
         anti,
         supplemental_outputs,
+        forensic,
     })
 }
 
@@ -1819,6 +1867,142 @@ mod tests {
             .run(&pick, b"probe".to_vec(), &config, None)
             .expect("probe pass runs");
         OBSERVED_AUTHORIZATION.load(Ordering::SeqCst)
+    }
+
+    #[derive(Debug)]
+    struct PanickingProbePass;
+
+    impl Pass for PanickingProbePass {
+        fn id(&self) -> PassId {
+            "test.panicking-probe"
+        }
+
+        fn detector(&self) -> &'static dyn Detector {
+            &AUTHORIZATION_PROBE_DETECTOR
+        }
+
+        fn output_kind(&self, _output: &Artifact) -> OutputKind {
+            OutputKind::Bytes {
+                format_tag: "test.probe",
+                family: "test",
+            }
+        }
+
+        fn run(&self, _artifact: &Artifact) -> CoreResult<Artifact> {
+            panic!("the probe pass panics")
+        }
+    }
+
+    static PANICKING_PROBE_PASS: PanickingProbePass = PanickingProbePass;
+
+    #[test]
+    fn the_runner_hands_its_input_back_even_when_the_pass_panics() {
+        let progress: ChainProgress = ChainProgress::noop();
+        let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
+        let config: ChainConfig = options_asserting(false).chain_config(false);
+        let passes: [(&'static dyn Pass, bool); 2] = [
+            (&AUTHORIZATION_PROBE_PASS, true),
+            (&PANICKING_PROBE_PASS, false),
+        ];
+        for (pass, succeeds) in passes {
+            let pick: DetectorPick = DetectorPick {
+                pass,
+                verdict: DetectVerdict::new(
+                    pass.id(),
+                    "test.probe",
+                    "test",
+                    1.0,
+                    1,
+                    Vec::new(),
+                    String::new(),
+                ),
+            };
+            let (outcome, returned): (Result<PassRunOutcome, String>, Option<Vec<u8>>) =
+                runner.run_returning_input(&pick, b"probe input".to_vec(), &config, None);
+            assert_eq!(
+                returned.as_deref(),
+                Some(&b"probe input"[..]),
+                "{}",
+                pass.id()
+            );
+            match outcome {
+                Ok(_) => assert!(succeeds, "{} should have panicked", pass.id()),
+                Err(message) => {
+                    assert!(!succeeds, "{}: {message}", pass.id());
+                    assert!(
+                        message.starts_with(crate::cli::isolate::PANIC_CODE),
+                        "{message}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_runner_keeps_the_indicators_the_image_pass_shares_for_its_input() {
+        const CONNECT_PE: &[u8] =
+            include_bytes!("../../../disrobe-capabilities/tests/fixtures/connect.exe");
+        let progress: ChainProgress = ChainProgress::noop();
+        let config: ChainConfig = options_asserting(false).chain_config(false);
+        let pick: DetectorPick = DetectorPick {
+            pass: &disrobe_pass_native::chain_detector::NATIVE_IMAGE_PASS,
+            verdict: DetectVerdict::new(
+                disrobe_pass_native::chain_detector::IMAGE_PASS_ID,
+                "pe",
+                "native-format",
+                0.1,
+                1,
+                Vec::new(),
+                String::new(),
+            ),
+        };
+        let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
+        let (outcome, returned): (Result<PassRunOutcome, String>, Option<Vec<u8>>) =
+            runner.run_returning_input(&pick, CONNECT_PE.to_vec(), &config, None);
+        assert!(outcome.is_ok(), "{:?}", outcome.err());
+        assert_eq!(returned.as_deref(), Some(CONNECT_PE));
+        let expected: Vec<Indicator> = disrobe_core::ioc::extract(CONNECT_PE);
+        assert!(!expected.is_empty());
+        assert_eq!(
+            runner.indicators_for(blake3_hash(CONNECT_PE)),
+            Some(expected)
+        );
+        assert_eq!(runner.indicators_for(blake3_hash(CONNECT_PE)), None);
+        let other: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
+        let _: (Result<PassRunOutcome, String>, Option<Vec<u8>>) =
+            other.run_returning_input(&pick, CONNECT_PE.to_vec(), &config, None);
+        assert_eq!(other.indicators_for(blake3_hash(b"another input")), None);
+    }
+
+    #[test]
+    fn indicators_a_child_shared_are_never_handed_to_the_seed() {
+        const CHILD_PE: &[u8] =
+            include_bytes!("../../../disrobe-capabilities/tests/fixtures/connect.exe");
+        let seed: Vec<u8> = [
+            b"PK\x03\x04container around a pe member ".as_slice(),
+            CHILD_PE,
+        ]
+        .concat();
+        let progress: ChainProgress = ChainProgress::noop();
+        let config: ChainConfig = options_asserting(false).chain_config(false);
+        let pick: DetectorPick = DetectorPick {
+            pass: &disrobe_pass_native::chain_detector::NATIVE_IMAGE_PASS,
+            verdict: DetectVerdict::new(
+                disrobe_pass_native::chain_detector::IMAGE_PASS_ID,
+                "pe",
+                "native-format",
+                0.1,
+                1,
+                Vec::new(),
+                String::new(),
+            ),
+        };
+        let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
+        let (outcome, _): (Result<PassRunOutcome, String>, Option<Vec<u8>>) =
+            runner.run_returning_input(&pick, CHILD_PE.to_vec(), &config, None);
+        assert!(outcome.is_ok(), "{:?}", outcome.err());
+        assert_eq!(runner.indicators_for(blake3_hash(&seed)), None);
+        assert_eq!(runner.indicators_for(blake3_hash(CHILD_PE)), None);
     }
 
     #[test]

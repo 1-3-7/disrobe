@@ -285,6 +285,7 @@ fn manifest_entry(path: &Path, relative: &Path, stem: &str, opts: &BatchOptions)
             report,
             anti,
             supplemental_outputs,
+            forensic: _,
         }) => ManifestEntry {
             input: path.display().to_string(),
             relative: rel_display,
