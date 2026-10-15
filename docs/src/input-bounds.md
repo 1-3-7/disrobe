@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2427 bounds (count 233, other 1144, output 72, recursion 241, size 548, work 189).
+2429 bounds (count 233, other 1145, output 72, recursion 241, size 549, work 189).
 
-Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1115, unclassified 17, allocation 33, unused 8.
+Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -919,6 +919,8 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1115, unclassif
 | `disrobe-pass-go` | `MAX_BUILDINFO_SETTINGS` | other | silent: skipped in `build_info_from_parts` | `usize` | `1 << 12` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_MODULENAME_LEN` | size | delegated: `.or()?`; passed to `.kv` | `usize` | `4096` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_PLAUSIBLE_SLICE_LEN` | size | silent: `return` in `validated_slice` | `u64` | `1 << 22` | `crates/disrobe-pass-go/src/moduledata.rs` |
+| `disrobe-pass-go` | `MAX_MODULEDATA_REFERENCES` | other | silent: `return` in `referenced_from_moduledata` | `usize` | `4096` | `crates/disrobe-pass-go/src/pclntab.rs` |
+| `disrobe-pass-go` | `MAX_MODULEDATA_SCAN_BYTES` | size | silent: `.min()` clamp in `referenced_from_moduledata` | `u64` | `1 << 24` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_PCLNTAB_CANDIDATES` | other | silent: `while` condition in `collect_needles_in_section` | `usize` | `16` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_PLAUSIBLE_SIG_FUNCS` | other | silent: `return` in `validate_header_structure` | `u64` | `16 * 1024 * 1024` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_FILETAB_ENTRY_LEN` | size | silent: `return` in `is_source_file`; fallback value in `read_filetab_name`; skipped in `collect_filetab_blob` | `usize` | `4096` | `crates/disrobe-pass-go/src/symbols.rs` |
@@ -1297,7 +1299,7 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1115, unclassif
 | `disrobe-pass-mobile` | `MAX_VALUE_NODES` | count | silent: `?` on a checked operation in `node_budget` | `usize` | `48` | `crates/disrobe-pass-mobile/src/flutter/call_args.rs` |
 | `disrobe-pass-mobile` | `CLUSTER_TAG_SCAN_LIMIT` | other | silent: `.min()` clamp in `scan_cid_tags` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/cluster.rs` |
 | `disrobe-pass-mobile` | `MAX_CODE_TABLE_ENTRIES` | count | error: `Error::DartCodeTableUnavailable` (DR-MOB-0048) | `usize` | `1 << 22` | `crates/disrobe-pass-mobile/src/flutter/code_table.rs` |
-| `disrobe-pass-mobile` | `HARD_CLUSTER_LIMIT` | other | error: `DartPoolUnresolvedReason::ClusterBodyUnmodelled`; `DartPoolUnresolvedReason::DeclaredNameMissing`; `DartPoolUnresolvedReason::ImmediateMissing`; 18 more | `usize` | `4096` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
+| `disrobe-pass-mobile` | `HARD_CLUSTER_LIMIT` | other | error: `Error::DartGraphConfiguredLimitExceeded` (DR-MOB-0044); `Error::DartGraphLimitExceeded` (DR-MOB-0035); `Error::FlutterEngineSymbolMapDuplicateAddress` (DR-MOB-0055); 2 more | `usize` | `4096` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_OBJECT_LIMIT` | other | error: `DartPoolUnresolvedReason::ObjectOutOfRange`; `DartPoolUnresolvedReason::TypeArgumentsMalformed`; `DartPoolUnresolvedReason::TypeFlagsMissing`; 2 more | `usize` | `2_000_000` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_REFERENCE_LIMIT` | other | error: `DartPoolUnresolvedReason::Cyclic`; `DartPoolUnresolvedReason::DeclaredNameMissing`; `DartPoolUnresolvedReason::ObjectOutOfRange`; 7 more | `usize` | `16_000_000` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_STRING_CODE_UNIT_LIMIT` | other | error: `Error::DartGraphConfiguredLimitExceeded` (DR-MOB-0044); `Error::DartGraphLimitExceeded` (DR-MOB-0035) | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
@@ -2451,7 +2453,7 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1115, unclassif
 
 ## Silent stops
 
-1115 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1117 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2812,6 +2814,8 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1115, unclassif
 | `disrobe-pass-go` | `MAX_BUILDINFO_DEPS` | skipped in `build_info_from_parts` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_BUILDINFO_SETTINGS` | skipped in `build_info_from_parts` | `crates/disrobe-pass-go/src/moduledata.rs` |
 | `disrobe-pass-go` | `MAX_PLAUSIBLE_SLICE_LEN` | `return` in `validated_slice` | `crates/disrobe-pass-go/src/moduledata.rs` |
+| `disrobe-pass-go` | `MAX_MODULEDATA_REFERENCES` | `return` in `referenced_from_moduledata` | `crates/disrobe-pass-go/src/pclntab.rs` |
+| `disrobe-pass-go` | `MAX_MODULEDATA_SCAN_BYTES` | `.min()` clamp in `referenced_from_moduledata` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_PCLNTAB_CANDIDATES` | `while` condition in `collect_needles_in_section` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_PLAUSIBLE_SIG_FUNCS` | `return` in `validate_header_structure` | `crates/disrobe-pass-go/src/pclntab.rs` |
 | `disrobe-pass-go` | `MAX_FILETAB_ENTRY_LEN` | `return` in `is_source_file`; fallback value in `read_filetab_name`; skipped in `collect_filetab_blob` | `crates/disrobe-pass-go/src/symbols.rs` |
