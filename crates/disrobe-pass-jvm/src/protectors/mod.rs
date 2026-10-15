@@ -116,8 +116,15 @@ pub fn recover_via_embedded_stub(
     if let Some(located) = locate_char_array_decrypt(cf) {
         let mut via_stub: usize = 0;
         let call_site_operands: BTreeSet<u16> = stub_call_site_operands(cf, &located);
+        let string_operands: BTreeMap<u16, BTreeSet<u16>> = string_operands_by_utf8(cf);
         for (idx, original) in cf.collect_strings() {
-            if report.strings_recovered.contains_key(&idx) || !call_site_operands.contains(&idx) {
+            let Some(operands): Option<&BTreeSet<u16>> = string_operands.get(&idx) else {
+                continue;
+            };
+            if report.strings_recovered.contains_key(&idx)
+                || operands.is_empty()
+                || !operands.is_subset(&call_site_operands)
+            {
                 continue;
             }
             if let Some(plain) = decrypt_constant(&located.stub, &original)
@@ -173,19 +180,6 @@ fn stub_call_site_operands(
         return operands;
     };
     let stub_ref: String = format!("{owner}.{}:{}", located.name, located.descriptor);
-    let string_utf8: BTreeMap<u16, u16> = cf
-        .constant_pool
-        .iter()
-        .enumerate()
-        .filter_map(
-            |(index, entry): (usize, &crate::classfile::ConstantPoolEntry)| match entry {
-                crate::classfile::ConstantPoolEntry::String { utf8_index } => {
-                    Some((u16::try_from(index).ok()?, *utf8_index))
-                }
-                _ => None,
-            },
-        )
-        .collect();
     for method in &cf.methods {
         for attr in &method.attributes {
             if cf.utf8_at(attr.name_index).ok() != Some("Code") {
@@ -214,21 +208,40 @@ fn stub_call_site_operands(
                 };
                 pending = match (insn.opcode, pending) {
                     (0x12 | 0x13, _) => pool_index
-                        .and_then(|cp: u16| string_utf8.get(&cp).copied())
-                        .map(|utf8_index: u16| (utf8_index, false)),
-                    (0xB6, Some((utf8_index, false)))
+                        .filter(|cp: &u16| {
+                            matches!(
+                                cf.constant_pool.get(usize::from(*cp)),
+                                Some(crate::classfile::ConstantPoolEntry::String { .. })
+                            )
+                        })
+                        .map(|cp: u16| (cp, false)),
+                    (0xB6, Some((string_index, false)))
                         if calls("java/lang/String.toCharArray:()[C") =>
                     {
-                        Some((utf8_index, true))
+                        Some((string_index, true))
                     }
-                    (0xB8, Some((utf8_index, true))) if calls(&stub_ref) => {
-                        operands.insert(utf8_index);
+                    (0xB8, Some((string_index, true))) if calls(&stub_ref) => {
+                        operands.insert(string_index);
                         None
                     }
                     _ => None,
                 };
             }
         }
+    }
+    operands
+}
+
+fn string_operands_by_utf8(cf: &crate::classfile::ClassFile) -> BTreeMap<u16, BTreeSet<u16>> {
+    let mut operands: BTreeMap<u16, BTreeSet<u16>> = BTreeMap::new();
+    for (index, entry) in cf.constant_pool.iter().enumerate() {
+        let crate::classfile::ConstantPoolEntry::String { utf8_index } = entry else {
+            continue;
+        };
+        let Ok(index): Result<u16, _> = u16::try_from(index) else {
+            continue;
+        };
+        operands.entry(*utf8_index).or_default().insert(index);
     }
     operands
 }
@@ -620,7 +633,94 @@ pub fn peel_and_decompile(cf: &crate::classfile::ClassFile) -> Option<PeeledClas
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::classfile::{ClassFile, ConstantPoolEntry};
+    use crate::classfile::{Attribute, ClassFile, ConstantPoolEntry, MethodInfo};
+
+    fn code_attr(name_index: u16, max_stack: u16, max_locals: u16, code: &[u8]) -> Attribute {
+        let mut info: Vec<u8> = Vec::new();
+        info.extend_from_slice(&max_stack.to_be_bytes());
+        info.extend_from_slice(&max_locals.to_be_bytes());
+        info.extend_from_slice(&(code.len() as u32).to_be_bytes());
+        info.extend_from_slice(code);
+        info.extend_from_slice(&0_u16.to_be_bytes());
+        info.extend_from_slice(&0_u16.to_be_bytes());
+        Attribute { name_index, info }
+    }
+
+    fn shared_string_stub_class() -> ClassFile {
+        let decrypt_code: [u8; 2] = [0x2A, 0xB0];
+        let caller_code: [u8; 12] = [
+            0x13, 0x00, 0x07, 0xB6, 0x00, 0x0E, 0xB8, 0x00, 0x12, 0x57, 0x00, 0xB1,
+        ];
+        ClassFile {
+            minor_version: 0,
+            major_version: 52,
+            constant_pool: vec![
+                ConstantPoolEntry::Placeholder,
+                ConstantPoolEntry::Utf8("App".to_owned()),
+                ConstantPoolEntry::Class { name_index: 1 },
+                ConstantPoolEntry::Utf8("Code".to_owned()),
+                ConstantPoolEntry::Utf8("run".to_owned()),
+                ConstantPoolEntry::Utf8("()V".to_owned()),
+                ConstantPoolEntry::Utf8("shared".to_owned()),
+                ConstantPoolEntry::String { utf8_index: 6 },
+                ConstantPoolEntry::String { utf8_index: 6 },
+                ConstantPoolEntry::Utf8("java/lang/String".to_owned()),
+                ConstantPoolEntry::Class { name_index: 9 },
+                ConstantPoolEntry::Utf8("toCharArray".to_owned()),
+                ConstantPoolEntry::Utf8("()[C".to_owned()),
+                ConstantPoolEntry::NameAndType {
+                    name_index: 11,
+                    descriptor_index: 12,
+                },
+                ConstantPoolEntry::Methodref {
+                    class_index: 10,
+                    name_and_type_index: 13,
+                },
+                ConstantPoolEntry::Utf8("decrypt".to_owned()),
+                ConstantPoolEntry::Utf8("([C)[C".to_owned()),
+                ConstantPoolEntry::NameAndType {
+                    name_index: 15,
+                    descriptor_index: 16,
+                },
+                ConstantPoolEntry::Methodref {
+                    class_index: 2,
+                    name_and_type_index: 17,
+                },
+            ],
+            access_flags: 0,
+            this_class: 2,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: vec![
+                MethodInfo {
+                    access_flags: 0x0008,
+                    name_index: 15,
+                    descriptor_index: 16,
+                    attributes: vec![code_attr(3, 1, 1, &decrypt_code)],
+                },
+                MethodInfo {
+                    access_flags: 0x0008,
+                    name_index: 4,
+                    descriptor_index: 5,
+                    attributes: vec![code_attr(3, 1, 0, &caller_code)],
+                },
+            ],
+            attributes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stub_calls_track_string_constant_operands_not_shared_utf8() {
+        let cf: ClassFile = shared_string_stub_class();
+        let located: crate::stub_emulator::LocatedDecryptStub =
+            crate::stub_emulator::locate_char_array_decrypt(&cf).expect("decrypt stub");
+        assert_eq!(stub_call_site_operands(&cf, &located), BTreeSet::from([7]));
+        assert_eq!(
+            string_operands_by_utf8(&cf).get(&6),
+            Some(&BTreeSet::from([7, 8]))
+        );
+    }
 
     #[test]
     fn a_recovered_string_never_rewrites_a_shared_utf8() {
