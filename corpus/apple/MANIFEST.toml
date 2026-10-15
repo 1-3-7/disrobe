@@ -1,3 +1,9 @@
 title = "Apple build-tool fixtures: asset catalog, compiled NIBs and a Foundation keyed archive"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
 provenance = "src/ is hand-authored for this corpus (make_assets.py writes the asset catalog from deterministic stdlib PNGs). The compiled outputs are produced only on a GitHub-hosted macOS runner by .github/workflows/real-tool-fixtures.yml recipe apple-formats (xcrun actool, xcrun ibtool, swift archive.swift); assetutil --info and the Foundation XML form of the archive are recorded beside them as references. Nothing compiled here is run on the development host."
+
+[runner]
+files = "runner/Assets.car, runner/Assets.car.assetutil.json, runner/Controls.nib, runner/Settings.nib, runner/graph.archive, runner/graph.archive.xml, build-record.json, tool.env"
+produced_by = "real-tool-fixtures.yml recipe apple-formats, run 38688977800 on macos-15 (Xcode 16.4 16F6, macOS 15.7.9, iOS SDK 18.5) from the sources at d0d19f673"
+reference = "xcrun assetutil --info for the asset catalog; the Foundation XML form of the keyed archive; the authored xib and swift sources for the NIBs and the archive"
+graded_by = "crates/disrobe-pass-swift-objc/tests/asset_catalog_reference.rs (asset catalog)"
