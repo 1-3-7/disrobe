@@ -10,7 +10,10 @@ use disrobe_pass_dotnet::model::{
     AssemblyModel, FieldConstant, FieldModel, MethodModel, Resolver, TypeModel,
 };
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
-use disrobe_pass_dotnet::structurize::{StructuredMethod, csharp_escape_identifier, field_name};
+use disrobe_pass_dotnet::structurize::{
+    StructuredMethod, csharp_escape_identifier, field_name,
+    is_unresolved_managed_byref_argument_refusal,
+};
 use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 const NAMESPACE: &str = "Sample";
@@ -743,6 +746,9 @@ const FIELD_ACCESS_MASK: u16 = 0x0007;
 const FIELD_STATIC: u16 = 0x0010;
 const FIELD_INIT_ONLY: u16 = 0x0020;
 const FIELD_LITERAL: u16 = 0x0040;
+const METHOD_ABSTRACT: u16 = 0x0400;
+const METHOD_SPECIAL_NAME: u16 = 0x0800;
+const TYPE_ABSTRACT: u32 = 0x0080;
 
 const ELEMENT_TYPE_BOOLEAN: u8 = 0x02;
 const ELEMENT_TYPE_CHAR: u8 = 0x03;
@@ -772,11 +778,12 @@ struct AutoProperty {
 struct TypeMembers {
     fields: Vec<String>,
     properties: Vec<AutoProperty>,
+    bodyless_methods: Vec<String>,
 }
 
 impl TypeMembers {
     const fn is_empty(&self) -> bool {
-        self.fields.is_empty() && self.properties.is_empty()
+        self.fields.is_empty() && self.properties.is_empty() && self.bodyless_methods.is_empty()
     }
 
     fn accessor_names(&self) -> BTreeSet<&str> {
@@ -795,6 +802,7 @@ impl TypeMembers {
                     .iter()
                     .map(|property: &AutoProperty| property.declaration.clone()),
             )
+            .chain(self.bodyless_methods.iter().cloned())
             .collect::<Vec<String>>()
             .join("\n")
     }
@@ -876,6 +884,21 @@ fn type_members(bytes: &[u8], target: Target, methods: &[UserMethod]) -> TypeMem
             accessors,
         });
     }
+    for method in &ty.methods {
+        if method.rva != 0
+            || method.flags & METHOD_ABSTRACT == 0
+            || method.flags & METHOD_SPECIAL_NAME != 0
+            || recovered.contains(method.name.as_str())
+        {
+            continue;
+        }
+        let signature: String = resolver.resolve_type_tokens(&method.csharp_signature());
+        let declaration: String = signature.split_once(' ').map_or_else(
+            || format!("abstract {signature}"),
+            |(visibility, tail)| format!("{visibility} abstract {tail}"),
+        );
+        members.bodyless_methods.push(format!("    {declaration};"));
+    }
     members
 }
 
@@ -909,6 +932,10 @@ fn is_value_type_model(ty: &TypeModel) -> bool {
 
 fn is_value_type(bytes: &[u8], target: Target) -> bool {
     target_type_model(bytes, target).is_some_and(|ty: TypeModel| is_value_type_model(&ty))
+}
+
+fn is_abstract_type(bytes: &[u8], target: Target) -> bool {
+    target_type_model(bytes, target).is_some_and(|ty: TypeModel| ty.flags & TYPE_ABSTRACT != 0)
 }
 
 fn constructor_policy_for_type(ty: &TypeModel) -> ConstructorPolicy {
@@ -1185,6 +1212,8 @@ fn whole_type_source(
         "public static class"
     } else if is_value_type(bytes, target) {
         "public struct"
+    } else if is_abstract_type(bytes, target) {
+        "public abstract class"
     } else {
         "public class"
     };
@@ -1464,6 +1493,7 @@ struct Outcome {
     reference_limited: Vec<String>,
     branching: Vec<String>,
     divergence: Vec<String>,
+    named_refusals: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1598,6 +1628,7 @@ fn run_target(target: Target) -> Outcome {
             reference_limited: Vec::new(),
             branching: Vec::new(),
             divergence: Vec::new(),
+            named_refusals: Vec::new(),
         };
     }
     assert!(
@@ -1605,6 +1636,11 @@ fn run_target(target: Target) -> Outcome {
         "expected recovered user methods for {}",
         target.type_name
     );
+    let named_refusals: Vec<String> = methods
+        .iter()
+        .filter(|method: &&UserMethod| is_unresolved_managed_byref_argument_refusal(&method.source))
+        .map(|method: &UserMethod| qualify(target, &method.name))
+        .collect();
 
     let purpose: String = format!("disrobe_whole_type_il_oracle_{}", target.type_name);
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -1670,6 +1706,7 @@ fn run_target(target: Target) -> Outcome {
         reference_limited,
         branching,
         divergence,
+        named_refusals,
     }
 }
 
@@ -1801,6 +1838,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
             reference_limited: Vec::new(),
             branching: Vec::new(),
             divergence: Vec::new(),
+            named_refusals: Vec::new(),
         };
     };
 
@@ -1859,6 +1897,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
         reference_limited: Vec::new(),
         branching,
         divergence,
+        named_refusals: Vec::new(),
     }
 }
 
@@ -1912,6 +1951,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
             reference_limited: Vec::new(),
             branching: Vec::new(),
             divergence: Vec::new(),
+            named_refusals: Vec::new(),
         };
     };
     let full_name: String = format!("{NAMESPACE}.{}", target.class_type);
@@ -1926,6 +1966,11 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
         "expected recovered user methods for {}",
         target.class_type
     );
+    let named_refusals: Vec<String> = methods
+        .iter()
+        .filter(|method: &&UserMethod| is_unresolved_managed_byref_argument_refusal(&method.source))
+        .map(|method: &UserMethod| format!("{}.{}", target.class_type, method.name))
+        .collect();
 
     let purpose: String = format!("disrobe_whole_type_il_oracle_recmeth_{}", target.class_type);
     let scratch: disrobe_core::scratch::ScratchDir =
@@ -1981,6 +2026,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
         reference_limited,
         branching,
         divergence,
+        named_refusals,
     }
 }
 
@@ -2147,7 +2193,7 @@ const EDGECASES_TYPES: &[(&str, bool)] = &[
 ];
 
 const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
-    "AsyncDisposableScope",
+    "AnimalBase",
     "Cat",
     "CollectionPlayground",
     "ConditionalCompilation",
@@ -2155,12 +2201,14 @@ const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "DeconstructPlayground",
     "DisposableScope",
     "Dog",
-    "EventSource",
+    "ExceptionPlayground",
+    "ExpressionPlayground",
     "FixedBufferHolder",
     "JsonLite",
     "Money",
     "PackedHeader",
     "Pipeline",
+    "SpanPlayground",
     "StaticFinalizationKit",
     "TargetTypedNewPlayground",
     "TraceableAttribute",
@@ -2172,6 +2220,7 @@ fn states_refusal(methods: &[UserMethod]) -> bool {
         m.source
             .contains(disrobe_pass_dotnet::iterator_reverse::UNRECONSTRUCTED_STATE_MACHINE_MARKER)
             || is_unlowered_compiler_construct_refusal(&m.source)
+            || is_unresolved_managed_byref_argument_refusal(&m.source)
     })
 }
 
@@ -2182,7 +2231,7 @@ fn unlowered_compiler_construct_marker_inside_string_data_does_not_state_refusal
         source: concat!(
             "private void MoveNext()\n",
             "{\n",
-            "    string note = \"disrobe: compiler-generated construct not lowered\";\n",
+            "    string note = \"disrobe: compiler-generated construct not lowered and __unresolved_managed_byref_argument_mode\";\n",
             "}\n"
         )
         .to_owned(),
@@ -2208,6 +2257,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     let mut refused: Vec<&str> = Vec::new();
     let mut constructor_refused: Vec<&str> = Vec::new();
     let mut residual: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut roslyn_failures: Vec<(&str, String)> = Vec::new();
     for (type_name, is_static) in EDGECASES_TYPES {
         let target: Target = Target {
             dll: EDGECASES_DLL,
@@ -2247,12 +2297,15 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
             }
             continue;
         }
-        let first: String = errors
+        let first_error: String = errors
             .first()
-            .and_then(|line: &String| error_code(line))
+            .cloned()
+            .unwrap_or_else(|| "no Roslyn diagnostic".to_owned());
+        let code: String = error_code(&first_error)
             .unwrap_or("no diagnostic")
             .to_owned();
-        residual.entry(first).or_default().push(type_name);
+        roslyn_failures.push((type_name, first_error));
+        residual.entry(code).or_default().push(type_name);
     }
     eprintln!(
         "EDGECASES WHOLE-TYPE RECOMPILE: {}/{} types whose recovered source csc accepts standalone",
@@ -2266,6 +2319,9 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     eprintln!(
         "  withheld because metadata requires one recovered value-type constructor: {constructor_refused:?}"
     );
+    for (type_name, first_error) in &roslyn_failures {
+        eprintln!("  first-error {type_name}: {first_error}");
+    }
     for (code, types) in &residual {
         eprintln!("  first-error {code}: {types:?}");
     }
@@ -2629,12 +2685,16 @@ const GRADED_TYPE_COUNT: usize = 29;
 const GRADED_MEMBER_TOTAL: usize = 123;
 
 const IL_RESIDUAL: &[&str] = &[
-    "AsyncDisposableScope.DisposeAsync",
     "DeconstructPlayground.Use",
-    "EventSource.add_Pulse",
-    "EventSource.remove_Pulse",
     "JsonLite.Escape",
     "TargetTypedNewPlayground.Build",
+];
+
+const NAMED_REFUSALS: &[&str] = &[
+    "Constructs.SumAsync",
+    "AsyncDisposableScope.DisposeAsync",
+    "EventSource.add_Pulse",
+    "EventSource.remove_Pulse",
 ];
 
 const REFERENCE_LIMITED: &[&str] = &[];
@@ -3090,6 +3150,7 @@ fn metadata_constant_literals_escape_utf16_edge_cases() {
 #[test]
 fn whole_type_recompiles_to_equivalent_il() {
     let outcomes: Vec<Outcome> = run_oracle().unwrap_or_else(|error: String| panic!("{error}"));
+    let mut named_refusals: Vec<String> = Vec::new();
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
@@ -3110,6 +3171,7 @@ fn whole_type_recompiles_to_equivalent_il() {
         reference_limited.extend(outcome.reference_limited.iter().cloned());
         branching.extend(outcome.branching.iter().cloned());
         divergence.extend(outcome.divergence.iter().cloned());
+        named_refusals.extend(outcome.named_refusals.iter().cloned());
     }
     let matched: usize = equivalent.len();
     let compared: usize = matched + mismatched.len() + missing.len() + reference_limited.len();
@@ -3154,6 +3216,10 @@ fn whole_type_recompiles_to_equivalent_il() {
     eprintln!(
         "  members reference-limited: {} {reference_limited:?}",
         reference_limited.len()
+    );
+    eprintln!(
+        "  members with named byref-mode refusals: {} {named_refusals:?}",
+        named_refusals.len()
     );
     for outcome in &outcomes {
         eprintln!(
@@ -3215,7 +3281,9 @@ fn whole_type_recompiles_to_equivalent_il() {
     assert_input_space_is_accounted_for(&equivalent, &mismatched, &missing, &reference_limited);
     let unpinned: Vec<&String> = mismatched
         .iter()
-        .filter(|name: &&String| !IL_RESIDUAL.contains(&name.as_str()))
+        .filter(|name: &&String| {
+            !IL_RESIDUAL.contains(&name.as_str()) && !NAMED_REFUSALS.contains(&name.as_str())
+        })
         .collect();
     assert!(
         unpinned.is_empty(),
@@ -3232,6 +3300,11 @@ fn whole_type_recompiles_to_equivalent_il() {
         "these methods now match and must leave the pinned residual, which only ever shrinks: {recovered:?}"
     );
     assert_eq!(
+        sorted(&named_refusals),
+        owned(NAMED_REFUSALS),
+        "the exact set of methods carrying a named byref-mode refusal is pinned so a mismatch cannot be mislabeled as a refusal"
+    );
+    assert_eq!(
         compared,
         matched + mismatched.len() + missing.len() + reference_limited.len(),
         "the graded population must partition into equivalent, mismatched, missing and \
@@ -3241,9 +3314,10 @@ fn whole_type_recompiles_to_equivalent_il() {
         matched,
         GRADED_MEMBER_TOTAL
             .saturating_sub(IL_RESIDUAL.len())
+            .saturating_sub(NAMED_REFUSALS.len())
             .saturating_sub(REFERENCE_LIMITED.len())
             .saturating_sub(NOT_RECOMPILED.len()),
-        "the numerator is the pinned denominator minus the three pinned exclusion sets, so it is \
+        "the numerator is the pinned denominator minus the four pinned exclusion sets, so it is \
          a ratchet rather than a floor: it cannot fall without one of those sets growing, and it \
          cannot rise without one of them shrinking in the same change"
     );
