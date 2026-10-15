@@ -47,8 +47,47 @@ const PROBE_SOURCE: &str = r#"public class AnonymousTypeProbe {
 }
 "#;
 
+const INITIALIZER_PROBE_SOURCE: &str = r"import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+
+public class AnonymousInitializerProbe {
+    static Runnable counter(int seed) {
+        return new Runnable() {
+            private int value = seed;
+
+            public void run() {
+                value++;
+            }
+        };
+    }
+
+    static Iterator<Integer> iterator(List<Integer> values) {
+        return new Iterator<Integer>() {
+            final Iterator<Integer> outer = values.iterator();
+            Iterator<Integer> inner = Collections.emptyIterator();
+
+            public boolean hasNext() {
+                return inner.hasNext() || outer.hasNext();
+            }
+
+            public Integer next() {
+                return outer.next();
+            }
+        };
+    }
+}
+";
+
 const EDGECASES_DEX: &[u8] = include_bytes!("../../../../corpus/jvm/dex/EdgeCases.dex");
-const EDGECASES_METHOD_TOTAL: usize = 215;
+const EDGECASES_DIRECT_METHOD_REGION_TOTAL: usize = 194;
+const EDGECASES_PREVIOUSLY_RENDERED_NESTED_METHOD_REGION_TOTAL: usize = 21;
+const EDGECASES_NEWLY_RENDERED_NESTED_METHOD_REGION_TOTAL: usize = 10;
+const EDGECASES_NESTED_METHOD_REGION_TOTAL: usize =
+    EDGECASES_PREVIOUSLY_RENDERED_NESTED_METHOD_REGION_TOTAL
+        + EDGECASES_NEWLY_RENDERED_NESTED_METHOD_REGION_TOTAL;
+const EDGECASES_METHOD_REGION_TOTAL: usize =
+    EDGECASES_DIRECT_METHOD_REGION_TOTAL + EDGECASES_NESTED_METHOD_REGION_TOTAL;
 const ANONYMOUS_METHOD_TOTAL: usize = 23;
 const ANONYMOUS_DECLARATION_TOTAL: usize = 28;
 const AFFECTED_METHODS: [&str; ANONYMOUS_METHOD_TOTAL] = [
@@ -98,8 +137,8 @@ const NEWLY_CLEAN: [&str; 20] = [
     "squares(int)",
     "totalArea(List)",
 ];
-const BASELINE_CLEAN: usize = 166;
-const CANDIDATE_CLEAN: usize = 186;
+const BASELINE_CLEAN_METHOD_REGION_TOTAL: usize = 177;
+const CANDIDATE_CLEAN_METHOD_REGION_TOTAL: usize = 197;
 const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
 const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 const JAVAC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -179,6 +218,26 @@ fn successful_anonymous_inlines_use_the_interface_or_superclass_for_local_declar
     );
     assert!(!source.contains("AnonymousTypeProbe$_1 var0;"), "{source}");
     assert!(!source.contains("AnonymousTypeProbe$_2 var0;"), "{source}");
+}
+
+#[test]
+fn anonymous_inlines_keep_constructor_established_field_state() {
+    let (_scratch, classes): (ScratchDir, BTreeMap<String, ClassFile>) = compiled_java(
+        "anonymous_inner_initializers",
+        "AnonymousInitializerProbe",
+        INITIALIZER_PROBE_SOURCE,
+    );
+    let main: &ClassFile = classes
+        .get("AnonymousInitializerProbe.class")
+        .expect("main initializer probe class");
+    let source: String = decompile_class_with_inners(main, &classes).source;
+
+    assert!(source.contains("this.value = arg0;"), "{source}");
+    assert!(source.contains("this.outer = arg0.iterator();"), "{source}");
+    assert!(
+        source.contains("this.inner = java.util.Collections.emptyIterator();"),
+        "{source}"
+    );
 }
 
 #[test]
@@ -475,6 +534,37 @@ fn method_line_ranges(source: &str) -> Vec<(String, usize, usize)> {
     ranges
 }
 
+fn type_line_ranges(source: &str) -> Vec<(String, usize, usize)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut ranges: Vec<(String, usize, usize)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed: &str = line.trim();
+        if !trimmed.contains('{')
+            || !["class ", "interface ", "enum ", "record ", "@interface "]
+                .iter()
+                .any(|keyword: &&str| trimmed.contains(keyword))
+        {
+            continue;
+        }
+        let mut depth: i32 =
+            trimmed.matches('{').count() as i32 - trimmed.matches('}').count() as i32;
+        let mut end: usize = index + 1;
+        while end < lines.len() && depth > 0 {
+            depth += lines[end].matches('{').count() as i32;
+            depth -= lines[end].matches('}').count() as i32;
+            end += 1;
+        }
+        let signature: String = trimmed
+            .split_once('{')
+            .map_or(trimmed, |(signature, _body): (&str, &str)| {
+                signature.trim_end()
+            })
+            .to_owned();
+        ranges.push((signature, index + 1, end + 1));
+    }
+    ranges
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NormalizedDeclaration {
     identity: String,
@@ -604,41 +694,120 @@ fn baseline_source(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScoredRegion {
+    identity: String,
     source: String,
     label: String,
     start: usize,
     end: usize,
+    refusal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct JavacDiagnostic {
     source: String,
     line: usize,
-    code: String,
+    message: String,
 }
 
 #[derive(Debug)]
 struct RegionScore {
     clean: usize,
-    emitted: usize,
+    total: usize,
+    nested: usize,
     clean_regions: BTreeSet<String>,
     regions: BTreeMap<String, ScoredRegion>,
+    diagnostics: BTreeMap<String, Vec<JavacDiagnostic>>,
+    unassigned_diagnostics: Vec<JavacDiagnostic>,
 }
 
 fn scored_regions(sources: &BTreeMap<String, String>) -> Vec<ScoredRegion> {
-    sources
-        .iter()
-        .flat_map(|(source_name, source): (&String, &String)| {
-            method_line_ranges(source).into_iter().map(
-                move |(label, start, end): (String, usize, usize)| ScoredRegion {
-                    source: source_name.clone(),
-                    label,
-                    start,
-                    end,
-                },
+    let mut regions: Vec<ScoredRegion> = Vec::new();
+    for (source_name, source) in sources {
+        let type_ranges: Vec<(String, usize, usize)> = type_line_ranges(source);
+        let lines: Vec<&str> = source.lines().collect();
+        for (label, start, end) in method_line_ranges(source) {
+            let mut owners: Vec<&(String, usize, usize)> = type_ranges
+                .iter()
+                .filter(|(_label, type_start, type_end): &&(String, usize, usize)| {
+                    *type_start <= start && *type_end >= end
+                })
+                .collect();
+            owners.sort_by_key(|(_label, type_start, type_end): &&(String, usize, usize)| {
+                (*type_start, std::cmp::Reverse(*type_end))
+            });
+            let owner: String = owners.iter().fold(source_name.clone(), |mut path, owner| {
+                path.push('/');
+                path.push_str(&owner.0);
+                path
+            });
+            let refusal: Option<String> = lines
+                [start.saturating_sub(1)..end.saturating_sub(1).min(lines.len())]
+                .iter()
+                .find_map(|line: &&str| {
+                    line.trim()
+                        .strip_prefix("// <decompile: not recovered: ")?
+                        .strip_suffix('>')
+                        .map(str::to_owned)
+                });
+            regions.push(ScoredRegion {
+                identity: owner,
+                source: source_name.clone(),
+                label,
+                start,
+                end,
+                refusal,
+            });
+        }
+    }
+    regions.sort_by(|left: &ScoredRegion, right: &ScoredRegion| {
+        (
+            &left.source,
+            left.start,
+            std::cmp::Reverse(left.end),
+            &left.label,
+        )
+            .cmp(&(
+                &right.source,
+                right.start,
+                std::cmp::Reverse(right.end),
+                &right.label,
+            ))
+    });
+    let mut sibling_ordinals: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for index in 0..regions.len() {
+        let (before, current_and_after): (&mut [ScoredRegion], &mut [ScoredRegion]) =
+            regions.split_at_mut(index);
+        let current: &mut ScoredRegion = &mut current_and_after[0];
+        let parent_identity: String = before
+            .iter()
+            .filter(|parent: &&ScoredRegion| {
+                parent.source == current.source
+                    && parent.start < current.start
+                    && parent.end >= current.end
+            })
+            .max_by(|left: &&ScoredRegion, right: &&ScoredRegion| {
+                (left.start, std::cmp::Reverse(left.end))
+                    .cmp(&(right.start, std::cmp::Reverse(right.end)))
+            })
+            .map_or_else(
+                || current.identity.clone(),
+                |parent: &ScoredRegion| parent.identity.clone(),
+            );
+        let signature: String = current
+            .label
+            .split_once('{')
+            .map_or(
+                current.label.as_str(),
+                |(signature, _body): (&str, &str)| signature.trim_end(),
             )
-        })
-        .collect()
+            .to_owned();
+        let ordinal: &mut usize = sibling_ordinals
+            .entry((parent_identity.clone(), signature.clone()))
+            .or_default();
+        *ordinal += 1;
+        current.identity = format!("{parent_identity}/{signature}#{ordinal}");
+    }
+    regions
 }
 
 fn source_name_matches(source: &str, diagnostic_source: &str) -> bool {
@@ -664,15 +833,10 @@ fn parse_javac_diagnostics(output: &str) -> Vec<JavacDiagnostic> {
         let message: &str = after_line
             .split_once(':')
             .map_or(after_line, |(_column, message): (&str, &str)| message);
-        let code: String = message
-            .split_once(':')
-            .map_or(message, |(code, _detail): (&str, &str)| code)
-            .trim()
-            .to_owned();
         diagnostics.push(JavacDiagnostic {
             source: format!("{}.java", before.trim()),
             line: line_number,
-            code,
+            message: message.trim().to_owned(),
         });
     }
     diagnostics.sort();
@@ -732,6 +896,21 @@ fn score_recovered_sources(
     scratch_name: &str,
 ) -> RegionScore {
     let regions: Vec<ScoredRegion> = scored_regions(sources);
+    let nested: usize = regions
+        .iter()
+        .enumerate()
+        .filter(|(index, region): &(usize, &ScoredRegion)| {
+            regions
+                .iter()
+                .enumerate()
+                .any(|(outer_index, outer): (usize, &ScoredRegion)| {
+                    outer_index != *index
+                        && outer.source == region.source
+                        && outer.start < region.start
+                        && outer.end >= region.end
+                })
+        })
+        .count();
     let output: disrobe_core::subprocess::CapturedOutput =
         javac_output(javac, sources, false, scratch_name);
     let combined: String = format!(
@@ -752,7 +931,7 @@ fn score_recovered_sources(
         diagnostics.iter().all(|diagnostic: &JavacDiagnostic| {
             !["expected", "illegal.start", "premature.eof"]
                 .iter()
-                .any(|fragment: &&str| diagnostic.code.contains(fragment))
+                .any(|fragment: &&str| diagnostic.message.contains(fragment))
         }),
         "source-region isolation would be required: {diagnostics:#?}"
     );
@@ -774,37 +953,78 @@ fn score_recovered_sources(
         "javac did not reach attribution:\n{probe_combined}"
     );
 
-    let mut failed: BTreeSet<usize> = BTreeSet::new();
+    let mut failed: BTreeSet<String> = BTreeSet::new();
+    let mut region_diagnostics: BTreeMap<String, Vec<JavacDiagnostic>> = BTreeMap::new();
+    let mut unassigned_diagnostics: Vec<JavacDiagnostic> = Vec::new();
     for diagnostic in &diagnostics {
-        if let Some((index, _region)) = regions
+        if let Some(region) = regions
             .iter()
-            .enumerate()
-            .filter(|(_index, region): &(usize, &ScoredRegion)| {
+            .filter(|region: &&ScoredRegion| {
                 source_name_matches(&region.source, &diagnostic.source)
                     && diagnostic.line >= region.start
                     && diagnostic.line < region.end
             })
-            .max_by_key(|(_index, region): &(usize, &ScoredRegion)| region.start)
+            .max_by_key(|region: &&ScoredRegion| (region.start, std::cmp::Reverse(region.end)))
         {
-            failed.insert(index);
+            failed.insert(region.identity.clone());
+            region_diagnostics
+                .entry(region.identity.clone())
+                .or_default()
+                .push(diagnostic.clone());
+        } else {
+            unassigned_diagnostics.push(diagnostic.clone());
         }
     }
     let region_map: BTreeMap<String, ScoredRegion> = regions
         .iter()
-        .enumerate()
-        .map(|(index, region): (usize, &ScoredRegion)| (format!("{index}"), region.clone()))
+        .map(|region: &ScoredRegion| (region.identity.clone(), region.clone()))
         .collect();
     let clean_regions: BTreeSet<String> = regions
         .iter()
-        .enumerate()
-        .filter(|(index, _region): &(usize, &ScoredRegion)| !failed.contains(index))
-        .map(|(index, _region): (usize, &ScoredRegion)| format!("{index}"))
+        .filter(|region: &&ScoredRegion| !failed.contains(&region.identity))
+        .map(|region: &ScoredRegion| region.identity.clone())
         .collect();
     RegionScore {
         clean: clean_regions.len(),
-        emitted: regions.len(),
+        total: regions.len(),
+        nested,
         clean_regions,
         regions: region_map,
+        diagnostics: region_diagnostics,
+        unassigned_diagnostics,
+    }
+}
+
+fn audit_region_score(name: &str, score: &RegionScore) {
+    if std::env::var_os("DISROBE_JVM_REGION_AUDIT").is_none() {
+        return;
+    }
+    eprintln!("JVM region audit: {name}");
+    for (identity, region) in &score.regions {
+        let state: &str = if score.clean_regions.contains(identity) {
+            "clean"
+        } else {
+            "dirty"
+        };
+        eprintln!(
+            "{state}\t{identity}\t{}:{}-{}",
+            region.source, region.start, region.end
+        );
+        if let Some(refusal) = &region.refusal {
+            eprintln!("refusal\t{refusal}");
+        }
+        for diagnostic in score.diagnostics.get(identity).into_iter().flatten() {
+            eprintln!(
+                "diagnostic\t{}:{}\t{}",
+                diagnostic.source, diagnostic.line, diagnostic.message
+            );
+        }
+    }
+    for diagnostic in &score.unassigned_diagnostics {
+        eprintln!(
+            "unassigned diagnostic\t{}:{}\t{}",
+            diagnostic.source, diagnostic.line, diagnostic.message
+        );
     }
 }
 
@@ -886,10 +1106,82 @@ fn edgecases_anonymous_declarations_produce_the_exact_javac_method_region_gain()
         &recovered.sources,
         "anonymous_inner_declaration_candidate_scorer",
     );
-    assert_eq!(baseline_score.emitted, EDGECASES_METHOD_TOTAL);
-    assert_eq!(candidate_score.emitted, EDGECASES_METHOD_TOTAL);
-    assert_eq!(baseline_score.clean, BASELINE_CLEAN);
-    assert_eq!(candidate_score.clean, CANDIDATE_CLEAN);
+    audit_region_score("declaration baseline", &baseline_score);
+    audit_region_score("candidate", &candidate_score);
+    assert_eq!(baseline_score.total, EDGECASES_METHOD_REGION_TOTAL);
+    assert_eq!(candidate_score.total, EDGECASES_METHOD_REGION_TOTAL);
+    assert_eq!(
+        baseline_score.total - baseline_score.nested,
+        EDGECASES_DIRECT_METHOD_REGION_TOTAL
+    );
+    assert_eq!(
+        candidate_score.total - candidate_score.nested,
+        EDGECASES_DIRECT_METHOD_REGION_TOTAL
+    );
+    assert_eq!(baseline_score.nested, EDGECASES_NESTED_METHOD_REGION_TOTAL);
+    assert_eq!(candidate_score.nested, EDGECASES_NESTED_METHOD_REGION_TOTAL);
+    assert_eq!(baseline_score.clean, BASELINE_CLEAN_METHOD_REGION_TOTAL);
+    assert_eq!(candidate_score.clean, CANDIDATE_CLEAN_METHOD_REGION_TOTAL);
+    for score in [&baseline_score, &candidate_score] {
+        let newly_exposed: Vec<(&String, &ScoredRegion)> = score
+            .regions
+            .iter()
+            .filter(|(_identity, region): &(&String, &ScoredRegion)| {
+                region
+                    .label
+                    .starts_with("private Object[] $record$getFieldsAsObjects()")
+                    || region
+                        .label
+                        .starts_with("private boolean $record$equals(Object arg0)")
+                    || region.label.starts_with("public String label()")
+            })
+            .collect();
+        assert_eq!(
+            newly_exposed.len(),
+            EDGECASES_NEWLY_RENDERED_NESTED_METHOD_REGION_TOTAL
+        );
+        for (identity, region) in newly_exposed {
+            assert!(score.clean_regions.contains(identity), "{identity}");
+            assert!(!score.diagnostics.contains_key(identity), "{identity}");
+            let expected_refusal: Option<&str> = region
+                .label
+                .starts_with("private boolean $record$equals(Object arg0)")
+                .then_some("desugared record equality body is not source-compatible");
+            assert_eq!(region.refusal.as_deref(), expected_refusal, "{identity}");
+        }
+        let restored_record_methods: usize = score
+            .regions
+            .values()
+            .filter(|region: &&ScoredRegion| {
+                region.refusal.as_deref() == Some("nested body calls an omitted anonymous helper")
+            })
+            .count();
+        assert_eq!(restored_record_methods, 6);
+        let inner_sum: (&String, &ScoredRegion) = score
+            .regions
+            .iter()
+            .find(|(identity, _region): &(&String, &ScoredRegion)| {
+                identity.contains(
+                    "/public static class Outer/public class Inner/public int sum(int arg0)#",
+                )
+            })
+            .expect("Outer.Inner.sum region");
+        assert!(score.clean_regions.contains(inner_sum.0));
+        assert_eq!(inner_sum.1.refusal, None);
+        let vector_equals: (&String, &ScoredRegion) = score
+            .regions
+            .iter()
+            .find(|(identity, _region): &(&String, &ScoredRegion)| {
+                identity
+                    .contains("/public static class Vector2D/public boolean equals(Object arg0)#")
+            })
+            .expect("Vector2D.equals region");
+        assert!(score.clean_regions.contains(vector_equals.0));
+        assert_eq!(
+            vector_equals.1.refusal.as_deref(),
+            Some("nested Object.equals body is not source-compatible")
+        );
+    }
     assert!(
         baseline_score
             .clean_regions

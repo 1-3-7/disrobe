@@ -14,58 +14,13 @@ const PUBLISHED_RECOMPILE_BAR: &str = "per-method";
 const PUBLISHED_EXECUTION_BAR: &str = "per-method, execution-verified";
 
 const PER_METHOD_TOTAL: usize = 131;
-const EXECUTION_EQUIVALENT_FLOOR: usize = 121;
+const EXECUTION_EQUIVALENT_FLOOR: usize = 130;
 
 const OBSERVATION_TIMEOUT_MS: u64 = 5_000;
 
-const STUB_BLOCKED: &[(&str, &str)] = &[
-    (
-        "describeShape",
-        "reads Circle.area / Square.area / Triangle.area, which the single-unit recovery emits as \
-         signature stubs returning 0.0",
-    ),
-    (
-        "totalArea",
-        "sums Shape::area over stub implementations, so the observation measures the stub, not the \
-         method body",
-    ),
-    (
-        "runWorker",
-        "calls CounterWorker.call, a stub returning null, so the unboxing throws and the catch \
-         reports -1",
-    ),
-    (
-        "callInner",
-        "calls Outer.makeInner, a stub returning null, so Inner.sum throws instead of adding",
-    ),
-    (
-        "centerOfMass",
-        "builds a Vector2D whose stub toString returns null, so no observable value survives",
-    ),
-];
+const STUB_BLOCKED: &[(&str, &str)] = &[];
 
-const BEHAVIOUR_DIVERGENT: &[(&str, &str)] = &[
-    (
-        "dispatchByType",
-        "drops the leading if (o == null) return \"null\" guard and emits no case null arm, so a \
-         null input throws NullPointerException out of the switch",
-    ),
-    (
-        "nestedAnon",
-        "the inlined anonymous Runnable declares private int local without the captured seed \
-         initializer, so the counter accumulates from 0 rather than from the argument",
-    ),
-    (
-        "closureCaptureLoop",
-        "the inlined anonymous Iterator loses the inner = Collections.emptyIterator() field \
-         initializer, so hasNext dereferences null",
-    ),
-    (
-        "lambda$closureCaptureLoop$1",
-        "same lost inner field initializer as closureCaptureLoop, reached through the flattening \
-         iterator body",
-    ),
-];
+const BEHAVIOUR_DIVERGENT: &[(&str, &str)] = &[];
 
 const NOT_DRIVEN: &[(&str, &str)] = &[(
     "main",

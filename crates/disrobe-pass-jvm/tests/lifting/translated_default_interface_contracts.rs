@@ -7,6 +7,7 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{BackendPreference, android_decompile_dex};
 
 const EDGECASES_DEX: &[u8] = include_bytes!("../../../../corpus/jvm/dex/EdgeCases.dex");
+const EDGECASES_RENDERED_LABEL_METHOD_TOTAL: usize = 5;
 const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
 const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
 
@@ -70,7 +71,7 @@ fn translated_d8_sources_have_no_public_path_or_default_contract_defects() {
     );
     assert_eq!(
         edgecases.matches(" String label(").count(),
-        1,
+        EDGECASES_RENDERED_LABEL_METHOD_TOTAL,
         "{edgecases}"
     );
 

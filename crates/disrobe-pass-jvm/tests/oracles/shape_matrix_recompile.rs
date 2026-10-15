@@ -124,6 +124,37 @@ const TYPE_SWITCH: Shape = Shape {
     ),
 };
 
+const NULL_GUARDED_TYPE_SWITCH: Shape = Shape {
+    probe: (
+        "NullGuardedTypeSwitchProbe.java",
+        r#"public class NullGuardedTypeSwitchProbe {
+    public static String describe(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        return switch (value) {
+            case Integer number -> "int:" + number;
+            case String text -> "str:" + text;
+            default -> "other";
+        };
+    }
+}
+"#,
+    ),
+    driver: (
+        "NullGuardedTypeSwitchDriver.java",
+        r#"public class NullGuardedTypeSwitchDriver {
+    public static void main(String[] args) {
+        System.out.print(NullGuardedTypeSwitchProbe.describe(null));
+        System.out.print("," + NullGuardedTypeSwitchProbe.describe(4));
+        System.out.print("," + NullGuardedTypeSwitchProbe.describe("xy"));
+        System.out.print("," + NullGuardedTypeSwitchProbe.describe(2L));
+    }
+}
+"#,
+    ),
+};
+
 const LOOP_HEADER: Shape = Shape {
     probe: (
         "LoopHeaderProbe.java",
@@ -863,6 +894,21 @@ fn a_type_switch_expression_from_javac_recompiles() {
     assert!(
         !recovered.decompiled.source.contains(UNRESOLVED_INDY),
         "the typeSwitch bootstrap is lowered to a pattern switch:\n{}",
+        recovered.decompiled.source
+    );
+}
+
+#[test]
+fn a_null_guard_before_a_type_switch_remains_observable() {
+    let recovered: Recovery = assert_recovered(
+        Compiler::Javac,
+        "null_guarded_type_switch_javac",
+        &NULL_GUARDED_TYPE_SWITCH,
+        "null,int:4,str:xy,other",
+    );
+    assert!(
+        recovered.decompiled.source.contains("if (arg0 == null)"),
+        "the dominating null guard must remain ahead of the recovered pattern switch:\n{}",
         recovered.decompiled.source
     );
 }
