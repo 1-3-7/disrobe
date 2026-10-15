@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2366 bounds (count 229, other 1109, output 70, recursion 236, size 533, work 189).
+2380 bounds (count 229, other 1114, output 71, recursion 238, size 539, work 189).
 
-Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassified 18, allocation 33, unused 8.
+Exceeded: error 981, recorded 201, panic 0, delegated 50, silent 1089, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -250,6 +250,8 @@ Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassif
 | `disrobe-cfg` | `MAX_FLOW_NODES` | count | error: `CfgError::TooManyNodes`; `FlowError::NodeCountExceedsCapacity` | `usize` | `(u32::MAX - 1) as usize` | `crates/disrobe-cfg/src/flow.rs` |
 | `disrobe-cfg` | `RETURN_TAIL_NODE_CAP` | other | silent: `return` in `private_return_tail` | `usize` | `64` | `crates/disrobe-cfg/src/lib.rs` |
 | `disrobe-cfg` | `MAX_RECONVERGENCE_CLONES` | other | silent: `.min()` clamp in `tight_for_reconvergence` | `usize` | `64` | `crates/disrobe-cfg/src/reconverge.rs` |
+| `disrobe-cli` | `MAX_CONFIG_BYTES` | size | error: untyped `miette!` | `u64` | `64 * 1024 * 1024` | `crates/disrobe-cli/src/cli/agent.rs` |
+| `disrobe-cli` | `MAX_JSON_DEPTH` | recursion | error: `.error()` | `usize` | `512` | `crates/disrobe-cli/src/cli/agent.rs` |
 | `disrobe-cli` | `RESOURCE_PREVIEW_LIMIT` | other | silent: `.min()` clamp in `render_resources` | `usize` | `50` | `crates/disrobe-cli/src/cli/apk.rs` |
 | `disrobe-cli` | `MAX_EVIDENCE_SHOWN` | other | silent: `.take()` in `push_anti_analysis_evidence_lines`; `.take()` in `render_text`; no action in `push_anti_analysis_evidence_lines`; 1 more | `usize` | `6` | `crates/disrobe-cli/src/cli/behavior.rs` |
 | `disrobe-cli` | `MAX_CAPTURE_BYTES` | size | error: untyped `miette!` | `u64` | `2 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/capture.rs` |
@@ -305,12 +307,12 @@ Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassif
 | `disrobe-cli` | `MAX_DOCUMENT_OUTPUT_BYTES` | output | error: `Error::other()`; `StructuredDocumentError::OutputTooLong` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/structured_document.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CALLS` | other | unclassified: stored in `calls` with no read found | `usize` | `32_768` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CANDIDATE_RECORDS` | count | unclassified: stored in `candidate_records` with no read found | `usize` | `65_536` | `crates/disrobe-cli/src/cli/taint.rs` |
-| `disrobe-cli` | `MAX_NAVIGATION_FUNCTIONS` | other | error: `CycloneDxError::AllocationFailed`; `CycloneDxError::ArithmeticOverflow`; `OpenVexError::NoFindings`; 1 more | `usize` | `8_192` | `crates/disrobe-cli/src/cli/taint.rs` |
+| `disrobe-cli` | `MAX_NAVIGATION_FUNCTIONS` | other | error: `CycloneDxError::AllocationFailed`; `CycloneDxError::ArithmeticOverflow`; `OpenVexError::NoFindings`; 2 more | `usize` | `8_192` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_INSTRUCTIONS` | other | error: `OpenVexError::NoFindings`; untyped `miette!` | `usize` | `262_144` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_RETAINED_BYTES` | size | unclassified: stored in `retained_bytes` with no read found | `usize` | `64 * 1024 * 1024` | `crates/disrobe-cli/src/cli/taint.rs` |
-| `disrobe-cli` | `MAX_ANALYSIS_DEPTH` | recursion | error: `OpenVexError::NoFindings`; untyped `miette!` | `usize` | `128` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
-| `disrobe-cli` | `MAX_ANALYSIS_NODES` | count | error: `OpenVexError::NoFindings`; untyped `miette!` | `usize` | `50_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
-| `disrobe-cli` | `MAX_ANALYSIS_STEPS` | work | error: `OpenVexError::NoFindings`; untyped `miette!` | `usize` | `2_000_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
+| `disrobe-cli` | `MAX_ANALYSIS_DEPTH` | recursion | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `128` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
+| `disrobe-cli` | `MAX_ANALYSIS_NODES` | count | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `50_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
+| `disrobe-cli` | `MAX_ANALYSIS_STEPS` | work | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `2_000_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
 | `disrobe-cli` | `MAX_VULNMATCH_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
 | `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | other | silent: slice in `scan_with_chain` | `usize` | `96 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `CODE_SCAN_BUDGET` | work | recorded: flag `budget` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
@@ -502,6 +504,17 @@ Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassif
 | `disrobe-mba` | `MAX_COUNTEREXAMPLE_SLOTS` | count | silent: `return` in `expand_counterexample` | `usize` | `1024` | `crates/disrobe-mba/src/verify.rs` |
 | `disrobe-mba` | `MAX_INPUT_BITS` | other | recorded: `OpaqueVerdict::OutOfBudget` | `usize` | `512` | `crates/disrobe-mba/src/verify.rs` |
 | `disrobe-mba` | `POLY_NODE_BUDGET` | work | recorded: `AbstainReason::SolverBudget`; `CffAbstain::Budget`; `JumpTableAbstain::SolverBudget` | `usize` | `4096` | `crates/disrobe-mba/src/verify.rs` |
+| `disrobe-mcp` | `MAX_ARGS` | other | error: untyped `format!` | `usize` | `256` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_ARG_BYTES` | size | error: untyped `format!` | `usize` | `4096` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_CAPTURE_BYTES` | size | delegated: `.capture_limits()?` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_COMMAND_WORDS` | other | error: untyped `format!` | `usize` | `4` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_FILTER_BYTES` | size | error: untyped `format!` | `usize` | `256` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_HASHED_FILE_BYTES` | size | recorded: flag `sha256` | `u64` | `64 * 1024 * 1024` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_LISTED_OUTPUTS` | output | silent: `return` in `list_outputs` | `usize` | `1000` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_LISTING_DEPTH` | recursion | silent: `return` in `list_outputs` | `usize` | `16` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_POSSIBLE_VALUES` | other | silent: `.take()` in `catalog_arg` | `usize` | `64` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_RUN_DIR_ATTEMPTS` | other | error: untyped `format!` | `u64` | `64` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_TIMEOUT_SECS` | other | error: untyped `format!` | `u64` | `1800` | `crates/disrobe-mcp/src/command.rs` |
 | `disrobe-mcp` | `MAX_CHAIN_DEPTH` | recursion | error: untyped `format!` | `u8` | `64` | `crates/disrobe-mcp/src/lib.rs` |
 | `disrobe-mcp` | `MAX_COVERAGE_REGIONS` | other | recorded: flag `regions_truncated` | `usize` | `512` | `crates/disrobe-mcp/src/lib.rs` |
 | `disrobe-mcp` | `MAX_IMPORTS` | other | error: untyped `format!` | `usize` | `4096` | `crates/disrobe-mcp/src/lib.rs` |
@@ -536,6 +549,7 @@ Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassif
 | `disrobe-mcp` | `MAX_NOTES_FILE_BYTES` | size | error: untyped `format!` | `u64` | `8 * 1024 * 1024` | `crates/disrobe-mcp/src/notes.rs` |
 | `disrobe-mcp` | `MAX_NOTE_RECORDS` | count | error: untyped `format!` | `usize` | `16_384` | `crates/disrobe-mcp/src/notes.rs` |
 | `disrobe-mcp` | `MAX_NOTE_TEXT_BYTES` | size | error: untyped `format!` | `usize` | `8192` | `crates/disrobe-mcp/src/notes.rs` |
+| `disrobe-mcp` | `MAX_PROMPT_ARGUMENT_BYTES` | size | error: untyped `format!` | `usize` | `4096` | `crates/disrobe-mcp/src/prompts.rs` |
 | `disrobe-mcp` | `MAX_CACHED_BYTES` | size | silent: `while` condition in `insert` | `usize` | `1024 * 1024 * 1024` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_CACHED_TARGETS` | other | error: untyped `format!` | `usize` | `8` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_CALL_PATH_DEPTH` | recursion | error: untyped `format!` | `u8` | `32` | `crates/disrobe-mcp/src/target.rs` |
@@ -2390,7 +2404,7 @@ Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassif
 
 ## Silent stops
 
-1086 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1089 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2578,6 +2592,9 @@ Exceeded: error 972, recorded 200, panic 0, delegated 49, silent 1086, unclassif
 | `disrobe-mba` | `MAX_ENUM_VARS` | `return` in `enumeration_domain` | `crates/disrobe-mba/src/symexec/solver_cert.rs` |
 | `disrobe-mba` | `MAX_ENUM_VAR_BITS` | `return` in `enumeration_domain` | `crates/disrobe-mba/src/symexec/solver_cert.rs` |
 | `disrobe-mba` | `MAX_COUNTEREXAMPLE_SLOTS` | `return` in `expand_counterexample` | `crates/disrobe-mba/src/verify.rs` |
+| `disrobe-mcp` | `MAX_LISTED_OUTPUTS` | `return` in `list_outputs` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_LISTING_DEPTH` | `return` in `list_outputs` | `crates/disrobe-mcp/src/command.rs` |
+| `disrobe-mcp` | `MAX_POSSIBLE_VALUES` | `.take()` in `catalog_arg` | `crates/disrobe-mcp/src/command.rs` |
 | `disrobe-mcp` | `MAX_AMBIGUOUS_CANDIDATES` | `.take()` in `call_outcome_out` | `crates/disrobe-mcp/src/navigation.rs` |
 | `disrobe-mcp` | `MAX_CACHED_BYTES` | `while` condition in `insert` | `crates/disrobe-mcp/src/target.rs` |
 | `disrobe-mcp` | `MAX_DECOMPILE_CALLEES` | `break` in `decompile_function` | `crates/disrobe-mcp/src/target.rs` |

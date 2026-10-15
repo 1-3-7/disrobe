@@ -82,6 +82,7 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 - [GitHub Action](https://1-3-7.github.io/disrobe/latest/integrations/github-action.html): disrobe ships a composite GitHub Action that downloads the matching release binary, runs the selected command against one path, validates the emitted SARIF, and uploads that report to GitHub code scanning.
 - [pre-commit hook](https://1-3-7.github.io/disrobe/latest/integrations/pre-commit.html): The pre-commit hook scans staged files and rejects a commit when a configured detector identifies a packed or protected artifact.
 - [MCP server](https://1-3-7.github.io/disrobe/latest/integrations/mcp.html): disrobe ships a Model Context Protocol server so MCP clients can drive deobfuscation and decompilation directly as tools.
+- [Agent setup](https://1-3-7.github.io/disrobe/latest/integrations/agents.html): disrobe agent setup registers the MCP server with coding agents by editing each agent's user-level configuration file, and installs an investigation skill where the agent reads skills from a directory.
 - [Editor plugins](https://1-3-7.github.io/disrobe/latest/integrations/editor-plugins.html): The editors/ directory contains plugins for VS Code, IDA Pro, Ghidra, and Binary Ninja.
 
 ## Project
