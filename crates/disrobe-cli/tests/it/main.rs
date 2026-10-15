@@ -417,6 +417,9 @@ mod native_unbind_report;
 #[path = "../native_unpack_chain_notice.rs"]
 mod native_unpack_chain_notice;
 
+#[path = "../native_x86_32_decompile.rs"]
+mod native_x86_32_decompile;
+
 #[path = "../nib_cli.rs"]
 mod nib_cli;
 
