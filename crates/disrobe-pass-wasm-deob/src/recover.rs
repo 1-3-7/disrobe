@@ -201,7 +201,11 @@ fn surface_decrypted_literals(wasm: &[u8], report: &mut RecoveryReport) -> Resul
     if stubs.is_empty() {
         return Ok(());
     }
-    let unwrap: crate::obfuscators::UnwrapReport = run_decrypt_sandbox(wasm, &stubs)?;
+    #[cfg(feature = "sandbox")]
+    let unwrap: crate::obfuscators::UnwrapReport =
+        crate::obfuscators::unwrap_decryption(wasm, &stubs)?;
+    #[cfg(not(feature = "sandbox"))]
+    let unwrap: crate::obfuscators::UnwrapReport = sandbox_unavailable(&stubs);
     for segment in unwrap.segments {
         report.wasmixer_decrypted_literals.push(DecryptedLiteral {
             stub_function: segment.fn_index,
@@ -244,20 +248,9 @@ fn lower_hex(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(feature = "sandbox")]
-fn run_decrypt_sandbox(
-    wasm: &[u8],
-    stubs: &[crate::obfuscators::StubInfo],
-) -> Result<crate::obfuscators::UnwrapReport> {
-    crate::obfuscators::unwrap_decryption(wasm, stubs)
-}
-
 #[cfg(not(feature = "sandbox"))]
-fn run_decrypt_sandbox(
-    _wasm: &[u8],
-    stubs: &[crate::obfuscators::StubInfo],
-) -> Result<crate::obfuscators::UnwrapReport> {
-    Ok(crate::obfuscators::UnwrapReport {
+fn sandbox_unavailable(stubs: &[crate::obfuscators::StubInfo]) -> crate::obfuscators::UnwrapReport {
+    crate::obfuscators::UnwrapReport {
         segments: Vec::new(),
         unresolved: stubs
             .iter()
@@ -268,7 +261,7 @@ fn run_decrypt_sandbox(
                 },
             )
             .collect(),
-    })
+    }
 }
 
 pub(crate) fn parse_walrus_module(wasm: &[u8], config: &ModuleConfig) -> Result<Module> {
