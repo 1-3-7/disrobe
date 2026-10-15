@@ -1,0 +1,703 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+toolchain = "clang version 19.1.7; Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35229 for x64; apple-codesign 0.29.0"
+note = "self-authored exploit-mitigation matrix: each fixture is one build of our own C or Objective-C source with chosen hardening flags; the expected verdicts are what the build asked for, confirmed by llvm-readobj, llvm-objdump, llvm-nm and rcodesign print-signature-info before this manifest is written; no fixture is ever executed"
+
+[provenance]
+build = "python -I build.py --llvm <LLVM 19.1.7 bin> --msvc <MSVC 14.44.35207 root> --kits <Windows Kits 10 root> --rcodesign <rcodesign 0.29.0>; every command runs in an empty scratch directory holding copies of src/, with INCLUDE and LIB naming the MSVC and Windows SDK 10.0.26100.0 directories for the target architecture"
+cross_check = "python checksec_cross.py with pwntools 4.14.1 compares ELF.checksec with every present, partial and absent ELF verdict: 62 of 62 agree; the stack-canary verdict of the stub shared object differs by definition, because pwntools counts the __stack_chk_fail definition inside the stub and this report counts imports"
+stubs = "the ELF fixtures link against a stub libc.so.6 and the Mach-O fixtures against stub libSystem.B.dylib and libobjc.A.dylib, all built from src/ in the same scratch directory, so every import is a real dynamic import the fixtures never resolve at run time"
+
+[[fixture]]
+name = "elf-x86_64-full"
+path = "elf-x86_64-full"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_prog.c", "src/fortify_shim.h", "src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-linux-gnu -O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 elf_libc_stub.c -o libc-x86_64-linux-gnu.so.6",
+    "clang --target=x86_64-linux-gnu -O2 -fno-asynchronous-unwind-tables -Wno-builtin-requires-header -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fcf-protection=full -fPIE -nostdlib -fuse-ld=lld -Wl,--hash-style=gnu -pie -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2 -Wl,-z,relro,-z,now -Wl,-z,noexecstack elf_prog.c libc-x86_64-linux-gnu.so.6 -o elf-x86_64-full",
+]
+sha256 = "cbecf04a21e3ff64f27589b720daa574949647cfbf0e3a17513a857309219c2f"
+description = "every ELF mitigation on: stack protector, PIE, full RELRO, FORTIFY_SOURCE=2, non-executable stack, IBT and SHSTK"
+fortified = 2
+fortifiable = 3
+
+[fixture.expect]
+fortify = "present"
+ibt = "present"
+nx = "present"
+pie = "present"
+relro = "present"
+rpath = "absent"
+runpath = "absent"
+shstk = "present"
+stack-canary = "present"
+symbols = "present"
+
+[[fixture]]
+name = "elf-x86_64-none"
+path = "elf-x86_64-none"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_prog.c", "src/fortify_shim.h", "src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-linux-gnu -O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 elf_libc_stub.c -o libc-x86_64-linux-gnu.so.6",
+    "clang --target=x86_64-linux-gnu -O2 -fno-asynchronous-unwind-tables -Wno-builtin-requires-header -fno-stack-protector -U_FORTIFY_SOURCE -fcf-protection=none -fno-pic -nostdlib -fuse-ld=lld -Wl,--hash-style=gnu -no-pie -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2 -Wl,-z,norelro,-z,lazy -Wl,-z,execstack -Wl,--disable-new-dtags,-rpath,/opt/hardening/lib -Wl,--strip-all elf_prog.c libc-x86_64-linux-gnu.so.6 -o elf-x86_64-none",
+]
+sha256 = "113f4175d2721fa72ea6f911e82e99f3c46800fca07558db118b7e54d64625bc"
+description = "every ELF mitigation off, a DT_RPATH, and the symbol table stripped"
+fortified = 0
+fortifiable = 3
+
+[fixture.expect]
+fortify = "absent"
+ibt = "absent"
+nx = "absent"
+pie = "absent"
+relro = "absent"
+rpath = "present"
+runpath = "absent"
+shstk = "absent"
+stack-canary = "absent"
+symbols = "absent"
+
+[fixture.reference]
+rpath = "/opt/hardening/lib"
+
+[[fixture]]
+name = "elf-x86_64-partial"
+path = "elf-x86_64-partial"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_prog.c", "src/fortify_shim.h", "src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-linux-gnu -O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 elf_libc_stub.c -o libc-x86_64-linux-gnu.so.6",
+    "clang --target=x86_64-linux-gnu -O2 -fno-asynchronous-unwind-tables -Wno-builtin-requires-header -fstack-protector-strong -U_FORTIFY_SOURCE -fcf-protection=branch -fPIE -nostdlib -fuse-ld=lld -Wl,--hash-style=gnu -pie -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2 -Wl,-z,relro,-z,lazy -Wl,-z,noexecstack -Wl,--enable-new-dtags,-rpath,/opt/hardening/lib -Wl,--strip-all elf_prog.c libc-x86_64-linux-gnu.so.6 -o elf-x86_64-partial",
+]
+sha256 = "9b371eaeedaaeaa5e264a7996cd8c542fc79a3f1f87d0205c680d33f9faaac18"
+description = "partial RELRO (lazy binding), IBT without SHSTK, a DT_RUNPATH, stripped"
+fortified = 0
+fortifiable = 3
+
+[fixture.expect]
+fortify = "absent"
+ibt = "present"
+nx = "present"
+pie = "present"
+relro = "partial"
+rpath = "absent"
+runpath = "present"
+shstk = "absent"
+stack-canary = "present"
+symbols = "absent"
+
+[fixture.reference]
+runpath = "/opt/hardening/lib"
+
+[[fixture]]
+name = "elf-x86_64-static-pie"
+path = "elf-x86_64-static-pie"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_prog.c", "src/fortify_shim.h", "src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-linux-gnu -O2 -fno-asynchronous-unwind-tables -Wno-builtin-requires-header -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fcf-protection=return -fPIE -ffreestanding -fno-builtin -nostdlib -fuse-ld=lld -Wl,--hash-style=gnu -static-pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack elf_prog.c elf_libc_stub.c -o elf-x86_64-static-pie",
+]
+sha256 = "2e8742fee58bb11f589289dc5f6fa041fee09ff79f8520073602bf768a2716e4"
+description = "static PIE: ET_DYN with DF_1_PIE and no PT_INTERP, SHSTK without IBT, libc linked in"
+
+[fixture.expect]
+fortify = "undetermined"
+ibt = "absent"
+nx = "present"
+pie = "present"
+relro = "present"
+rpath = "absent"
+runpath = "absent"
+shstk = "present"
+stack-canary = "present"
+symbols = "present"
+
+[[fixture]]
+name = "elf-x86_64-dso.so"
+path = "elf-x86_64-dso.so"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-linux-gnu -O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector -fcf-protection=none -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 -Wl,-z,relro,-z,now elf_libc_stub.c -o elf-x86_64-dso.so",
+]
+sha256 = "ec04e540c7789a5d8463d777cb5ec2f33e113edb5383784e242ada90e87b7aad"
+description = "the stub libc.so.6 the other ELF fixtures link against: a shared object that defines __stack_chk_fail and the fortified entry points and imports nothing"
+fortified = 0
+fortifiable = 0
+
+[fixture.expect]
+fortify = "not-applicable"
+ibt = "absent"
+nx = "present"
+pie = "not-applicable"
+relro = "present"
+rpath = "absent"
+runpath = "absent"
+shstk = "absent"
+stack-canary = "absent"
+symbols = "present"
+
+[[fixture]]
+name = "elf-aarch64-full"
+path = "elf-aarch64-full"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_prog.c", "src/fortify_shim.h", "src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=aarch64-linux-gnu -O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 elf_libc_stub.c -o libc-aarch64-linux-gnu.so.6",
+    "clang --target=aarch64-linux-gnu -O2 -fno-asynchronous-unwind-tables -Wno-builtin-requires-header -fstack-protector-strong -D_FORTIFY_SOURCE=2 -mbranch-protection=standard -fPIE -nostdlib -fuse-ld=lld -Wl,--hash-style=gnu -pie -Wl,--dynamic-linker=/lib/ld-linux-aarch64.so.1 -Wl,-z,relro,-z,now -Wl,-z,noexecstack elf_prog.c libc-aarch64-linux-gnu.so.6 -o elf-aarch64-full",
+]
+sha256 = "7fdec65ab48586925af6236324147967f34c10e5cfc0288d01c379c4214d05d4"
+description = "AArch64 with stack protector (global __stack_chk_guard), PIE, full RELRO, FORTIFY_SOURCE=2, BTI and PAC"
+fortified = 2
+fortifiable = 3
+
+[fixture.expect]
+bti = "present"
+fortify = "present"
+nx = "present"
+pac = "present"
+pie = "present"
+relro = "present"
+rpath = "absent"
+runpath = "absent"
+stack-canary = "present"
+symbols = "present"
+
+[[fixture]]
+name = "elf-aarch64-none"
+path = "elf-aarch64-none"
+format = "elf"
+provenance = "self-authored"
+source = ["src/elf_prog.c", "src/fortify_shim.h", "src/elf_libc_stub.c"]
+toolchain = "clang 19.1.7, ld.lld 19.1.7"
+commands = [
+    "clang --target=aarch64-linux-gnu -O2 -fPIC -ffreestanding -fno-builtin -fno-stack-protector -shared -nostdlib -fuse-ld=lld -Wl,-soname,libc.so.6 elf_libc_stub.c -o libc-aarch64-linux-gnu.so.6",
+    "clang --target=aarch64-linux-gnu -O2 -fno-asynchronous-unwind-tables -Wno-builtin-requires-header -fno-stack-protector -U_FORTIFY_SOURCE -mbranch-protection=none -fno-pic -nostdlib -fuse-ld=lld -Wl,--hash-style=gnu -no-pie -Wl,--dynamic-linker=/lib/ld-linux-aarch64.so.1 -Wl,-z,norelro,-z,lazy -Wl,-z,execstack -Wl,--enable-new-dtags,-rpath,/opt/hardening/lib -Wl,--strip-all elf_prog.c libc-aarch64-linux-gnu.so.6 -o elf-aarch64-none",
+]
+sha256 = "68ce00f92b289c6f8cdd6901a65fb94a5adfccb0fe3d23155a359783f27ec139"
+description = "AArch64 with every mitigation off and a DT_RUNPATH, stripped"
+fortified = 0
+fortifiable = 3
+
+[fixture.expect]
+bti = "absent"
+fortify = "absent"
+nx = "absent"
+pac = "absent"
+pie = "absent"
+relro = "absent"
+rpath = "absent"
+runpath = "present"
+stack-canary = "absent"
+symbols = "absent"
+
+[fixture.reference]
+runpath = "/opt/hardening/lib"
+
+[[fixture]]
+name = "pe-x64-msvc-full.exe"
+path = "pe-x64-msvc-full.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "MSVC 19.44.35229 (cl, link 14.44.35229), Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "cl /nologo /O2 /guard:cf /MD /GS /Brepro /c pe_crt.c /Fope-x64-msvc-full.obj",
+    "link /nologo /Brepro /INCREMENTAL:NO /MACHINE:X64 /OUT:pe-x64-msvc-full.exe pe-x64-msvc-full.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /CETCOMPAT /guard:cf",
+]
+sha256 = "e4398e79de47c65738b45b76a919def7ca09662a3405c667771d7553284969b4"
+description = "MSVC x64 with /GS, /guard:cf, /DYNAMICBASE, /HIGHENTROPYVA, /NXCOMPAT and /CETCOMPAT"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "present"
+cfg = "present"
+dynamic-base = "present"
+force-integrity = "absent"
+gs = "present"
+high-entropy-va = "present"
+no-seh = "absent"
+nx-compat = "present"
+safe-seh = "not-applicable"
+xfg = "absent"
+
+[fixture.reference]
+guard_flags = "0x17500"
+security_cookie = "0x140003040"
+
+[[fixture]]
+name = "pe-x64-msvc-xfg.exe"
+path = "pe-x64-msvc-xfg.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "MSVC 19.44.35229 (cl, link 14.44.35229), Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "cl /nologo /O2 /guard:xfg /MD /GS /Brepro /c pe_crt.c /Fope-x64-msvc-xfg.obj",
+    "link /nologo /Brepro /INCREMENTAL:NO /MACHINE:X64 /OUT:pe-x64-msvc-xfg.exe pe-x64-msvc-xfg.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /CETCOMPAT:NO /guard:xfg",
+]
+sha256 = "d5f6eafb294c0bd35ed822c0e4dc4cfd3ba9a9cffbcb169cda669c7060824722"
+description = "MSVC x64 with /guard:xfg (XFG on top of CFG)"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "present"
+dynamic-base = "present"
+force-integrity = "absent"
+gs = "present"
+high-entropy-va = "present"
+no-seh = "absent"
+nx-compat = "present"
+safe-seh = "not-applicable"
+xfg = "present"
+
+[fixture.reference]
+guard_flags = "0x803500"
+security_cookie = "0x140003040"
+
+[[fixture]]
+name = "pe-x64-msvc-off.exe"
+path = "pe-x64-msvc-off.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "MSVC 19.44.35229 (cl, link 14.44.35229), Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "cl /nologo /O2 /MD /GS- /Brepro /c pe_crt.c /Fope-x64-msvc-off.obj",
+    "link /nologo /Brepro /INCREMENTAL:NO /MACHINE:X64 /OUT:pe-x64-msvc-off.exe pe-x64-msvc-off.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE:NO /HIGHENTROPYVA:NO /NXCOMPAT:NO /CETCOMPAT:NO /guard:no",
+]
+sha256 = "86773f87c7f293aeadd8f0e2918ff5b6dc89616f22665efe62f37526fabe302a"
+description = "MSVC x64 with /GS- and every linker mitigation off; the CRT objects still register a security cookie"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "absent"
+dynamic-base = "absent"
+force-integrity = "absent"
+gs = "present"
+high-entropy-va = "absent"
+no-seh = "absent"
+nx-compat = "absent"
+safe-seh = "not-applicable"
+xfg = "absent"
+
+[fixture.reference]
+guard_flags = "0x100"
+security_cookie = "0x140003040"
+
+[[fixture]]
+name = "pe-x86-msvc-full.exe"
+path = "pe-x86-msvc-full.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "MSVC 19.44.35229 (cl, link 14.44.35229), Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "cl /nologo /O2 /guard:cf /MD /GS /Brepro /c pe_crt.c /Fope-x86-msvc-full.obj",
+    "link /nologo /Brepro /INCREMENTAL:NO /MACHINE:X86 /OUT:pe-x86-msvc-full.exe pe-x86-msvc-full.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /CETCOMPAT /SAFESEH /guard:cf",
+]
+sha256 = "140584539ce9703a3920a3ed811a04b1583cc8cd00885571e44055af8fc8198f"
+description = "MSVC x86 with /SAFESEH, /GS, /guard:cf, /DYNAMICBASE, /NXCOMPAT and /CETCOMPAT"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "present"
+cfg = "present"
+dynamic-base = "present"
+force-integrity = "absent"
+gs = "present"
+high-entropy-va = "not-applicable"
+no-seh = "absent"
+nx-compat = "present"
+safe-seh = "present"
+xfg = "absent"
+
+[fixture.reference]
+guard_flags = "0x17500"
+se_handler_count = "1"
+security_cookie = "0x403040"
+
+[[fixture]]
+name = "pe-x86-msvc-off.exe"
+path = "pe-x86-msvc-off.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "MSVC 19.44.35229 (cl, link 14.44.35229), Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "cl /nologo /O2 /MD /GS- /Brepro /c pe_crt.c /Fope-x86-msvc-off.obj",
+    "link /nologo /Brepro /INCREMENTAL:NO /MACHINE:X86 /OUT:pe-x86-msvc-off.exe pe-x86-msvc-off.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE:NO /NXCOMPAT:NO /CETCOMPAT:NO /SAFESEH:NO /guard:no",
+]
+sha256 = "77e12275ae4ee21ae2350f837ead0054af7f74ee62236ca81137555a3564278b"
+description = "MSVC x86 with /SAFESEH:NO, /GS- and every linker mitigation off"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "absent"
+dynamic-base = "absent"
+force-integrity = "absent"
+gs = "present"
+high-entropy-va = "not-applicable"
+no-seh = "absent"
+nx-compat = "absent"
+safe-seh = "absent"
+xfg = "absent"
+
+[fixture.reference]
+guard_flags = "0x100"
+se_handler_count = "0"
+security_cookie = "0x403040"
+
+[[fixture]]
+name = "pe-x64-clang-integrity.exe"
+path = "pe-x64-clang-integrity.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "clang-cl 19.1.7, lld-link 19.1.7, Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "clang-cl /nologo /O2 /guard:cf /MD /GS /Brepro --target=x86_64-pc-windows-msvc /c pe_crt.c /Fope-x64-clang-integrity.obj",
+    "lld-link /nologo /Brepro /INCREMENTAL:NO /OUT:pe-x64-clang-integrity.exe pe-x64-clang-integrity.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /CETCOMPAT /guard:cf /INTEGRITYCHECK /APPCONTAINER",
+]
+sha256 = "b8d4b72357c69bfad2c4af8ffb1b85d3a9b19b416644ee52af517247beef2407"
+description = "clang-cl and lld-link x64 with /INTEGRITYCHECK, /APPCONTAINER, /guard:cf and /cetcompat"
+
+[fixture.expect]
+appcontainer = "present"
+authenticode = "absent"
+cet-shadow-stack = "present"
+cfg = "present"
+dynamic-base = "present"
+force-integrity = "present"
+gs = "present"
+high-entropy-va = "present"
+no-seh = "absent"
+nx-compat = "present"
+safe-seh = "not-applicable"
+xfg = "absent"
+
+[fixture.reference]
+guard_flags = "0x10500"
+security_cookie = "0x140003040"
+
+[[fixture]]
+name = "pe-x64-clang-nocrt.exe"
+path = "pe-x64-clang-nocrt.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_nocrt.c"]
+toolchain = "clang-cl 19.1.7, lld-link 19.1.7, Windows SDK 10.0.26100.0"
+commands = [
+    "clang-cl /nologo /O2 /Zl /GS- /Brepro --target=x86_64-pc-windows-msvc /c pe_nocrt.c /Fope-x64-clang-nocrt.obj",
+    "lld-link /nologo /Brepro /INCREMENTAL:NO /OUT:pe-x64-clang-nocrt.exe pe-x64-clang-nocrt.obj /SUBSYSTEM:CONSOLE /ENTRY:entry /NODEFAULTLIB kernel32.lib /DYNAMICBASE /HIGHENTROPYVA:NO /NXCOMPAT /CETCOMPAT:NO /guard:no",
+]
+sha256 = "8998df49ec83ba1736b58ab1df70f4ed6390954b3044d793cf385d45b3e66e0a"
+description = "clang-cl and lld-link x64 without a C runtime: no load configuration, so no security cookie and no CFG"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "absent"
+dynamic-base = "present"
+force-integrity = "absent"
+gs = "absent"
+high-entropy-va = "absent"
+no-seh = "absent"
+nx-compat = "present"
+safe-seh = "not-applicable"
+xfg = "absent"
+
+[[fixture]]
+name = "pe-x86-clang-safeseh.exe"
+path = "pe-x86-clang-safeseh.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_crt.c"]
+toolchain = "clang-cl 19.1.7, lld-link 19.1.7, Windows SDK 10.0.26100.0, dynamic CRT import libraries (/MD)"
+commands = [
+    "clang-cl /nologo /O2 /guard:cf /MD /GS /Brepro --target=i686-pc-windows-msvc /c pe_crt.c /Fope-x86-clang-safeseh.obj",
+    "lld-link /nologo /Brepro /INCREMENTAL:NO /OUT:pe-x86-clang-safeseh.exe pe-x86-clang-safeseh.obj /SUBSYSTEM:CONSOLE /DYNAMICBASE /NXCOMPAT /CETCOMPAT:NO /SAFESEH /guard:cf",
+]
+sha256 = "093615629207361f7a9c2258876b15d440e0f5ed62f93f60bca501e58e29e51e"
+description = "clang-cl and lld-link x86 with /safeseh, /GS and /guard:cf against the dynamic CRT"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "present"
+dynamic-base = "present"
+force-integrity = "absent"
+gs = "present"
+high-entropy-va = "not-applicable"
+no-seh = "absent"
+nx-compat = "present"
+safe-seh = "present"
+xfg = "absent"
+
+[fixture.reference]
+guard_flags = "0x10500"
+se_handler_count = "1"
+security_cookie = "0x403040"
+
+[[fixture]]
+name = "pe-x86-msvc-noseh.exe"
+path = "pe-x86-msvc-noseh.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_nocrt.c"]
+toolchain = "MSVC 19.44.35229 (cl, link 14.44.35229), Windows SDK 10.0.26100.0"
+commands = [
+    "cl /nologo /O2 /Zl /GS- /Brepro /c pe_nocrt.c /Fope-x86-msvc-noseh.obj",
+    "link /nologo /Brepro /INCREMENTAL:NO /MACHINE:X86 /OUT:pe-x86-msvc-noseh.exe pe-x86-msvc-noseh.obj /SUBSYSTEM:CONSOLE /ENTRY:entry /NODEFAULTLIB kernel32.lib /DYNAMICBASE /NXCOMPAT /CETCOMPAT:NO /SAFESEH /guard:no",
+]
+sha256 = "6ebacb40187111ff1701585868ccdc62d5dcc881906f7eec646ff528dba390ab"
+description = "MSVC x86 without a C runtime, linked with /SAFESEH: no object registers an exception handler, so link.exe sets NO_SEH instead of writing a handler table"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "absent"
+dynamic-base = "present"
+force-integrity = "absent"
+gs = "absent"
+high-entropy-va = "not-applicable"
+no-seh = "present"
+nx-compat = "present"
+safe-seh = "not-applicable"
+xfg = "absent"
+
+[[fixture]]
+name = "pe-x86-clang-nocrt.exe"
+path = "pe-x86-clang-nocrt.exe"
+format = "pe"
+provenance = "self-authored"
+source = ["src/pe_nocrt.c"]
+toolchain = "clang-cl 19.1.7, lld-link 19.1.7, Windows SDK 10.0.26100.0"
+commands = [
+    "clang-cl /nologo /O2 /Zl /GS- /Brepro --target=i686-pc-windows-msvc /c pe_nocrt.c /Fope-x86-clang-nocrt.obj",
+    "lld-link /nologo /Brepro /INCREMENTAL:NO /OUT:pe-x86-clang-nocrt.exe pe-x86-clang-nocrt.obj /SUBSYSTEM:CONSOLE /ENTRY:entry /NODEFAULTLIB kernel32.lib /DYNAMICBASE:NO /NXCOMPAT:NO /CETCOMPAT:NO /SAFESEH:NO /guard:no",
+]
+sha256 = "4c6dbe895dab91ad70cad52352136ab85e77432ffaa981e215f88d8b3c9e7bf2"
+description = "clang-cl and lld-link x86 without a C runtime and without /safeseh"
+
+[fixture.expect]
+appcontainer = "absent"
+authenticode = "absent"
+cet-shadow-stack = "absent"
+cfg = "absent"
+dynamic-base = "absent"
+force-integrity = "absent"
+gs = "absent"
+high-entropy-va = "not-applicable"
+no-seh = "absent"
+nx-compat = "absent"
+safe-seh = "absent"
+xfg = "absent"
+
+[[fixture]]
+name = "macho-x86_64-full"
+path = "macho-x86_64-full"
+format = "macho"
+provenance = "self-authored"
+source = ["src/macho_prog.c", "src/macho_helper.c", "src/macho_libsystem_stub.c"]
+toolchain = "clang 19.1.7, ld64.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libSystem.B.dylib macho_libsystem_stub.c -o libSystem.B.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -fstack-protector-strong -nostdlib -fuse-ld=lld -Wl,-pie -Wl,-adhoc_codesign macho_prog.c macho_helper.c libSystem.B.dylib -o macho-x86_64-full",
+]
+sha256 = "d4b01cdb989a944444547bd0d4dca8c8def7c54fbae4261675b61f9f62de19fd"
+description = "Mach-O x86-64 with stack protector, PIE and the linker's ad-hoc code signature"
+
+[fixture.expect]
+arc = "not-applicable"
+code-signature = "present"
+encrypted = "absent"
+hardened-runtime = "absent"
+nx-heap = "absent"
+nx-stack = "present"
+pie = "present"
+restrict = "absent"
+stack-canary = "present"
+
+[[fixture]]
+name = "macho-x86_64-none"
+path = "macho-x86_64-none"
+format = "macho"
+provenance = "self-authored"
+source = ["src/macho_prog.c", "src/macho_helper.c", "src/macho_libsystem_stub.c"]
+toolchain = "clang 19.1.7, ld64.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libSystem.B.dylib macho_libsystem_stub.c -o libSystem.B.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -fno-stack-protector -nostdlib -fuse-ld=lld -Wl,-no_pie -Wl,-no_adhoc_codesign macho_prog.c macho_helper.c libSystem.B.dylib -o macho-x86_64-none",
+]
+sha256 = "dcbd19b7cfb2f5729be52ddd427ff5e1072de186f5762799d0b215af1f67df41"
+description = "Mach-O x86-64 without stack protector, PIE or code signature"
+
+[fixture.expect]
+arc = "not-applicable"
+code-signature = "absent"
+encrypted = "absent"
+hardened-runtime = "absent"
+nx-heap = "absent"
+nx-stack = "present"
+pie = "absent"
+restrict = "absent"
+stack-canary = "absent"
+
+[[fixture]]
+name = "macho-x86_64-execflags"
+path = "macho-x86_64-execflags"
+format = "macho"
+provenance = "self-authored"
+source = ["src/macho_prog.c", "src/macho_helper.c", "src/macho_libsystem_stub.c"]
+toolchain = "clang 19.1.7, ld64.lld 19.1.7"
+commands = [
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libSystem.B.dylib macho_libsystem_stub.c -o libSystem.B.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -fno-stack-protector -nostdlib -fuse-ld=lld -Wl,-no_pie -Wl,-no_adhoc_codesign macho_prog.c macho_helper.c libSystem.B.dylib -o macho-x86_64-execflags.linked",
+    "patch: macho-x86_64-execflags.linked -> macho-x86_64-execflags: mach_header_64.flags |= MH_ALLOW_STACK_EXECUTION (0x20000) | MH_NO_HEAP_EXECUTION (0x1000000)",
+]
+sha256 = "954d71739cc7ac1906226d324e7585398a7582369a5b618de00208ce7889da8d"
+description = "macho-x86_64-none with MH_ALLOW_STACK_EXECUTION and MH_NO_HEAP_EXECUTION set in the header (ld64.lld has no flag for either)"
+
+[fixture.expect]
+arc = "not-applicable"
+code-signature = "absent"
+encrypted = "absent"
+hardened-runtime = "absent"
+nx-heap = "present"
+nx-stack = "absent"
+pie = "absent"
+restrict = "absent"
+stack-canary = "absent"
+
+[[fixture]]
+name = "macho-x86_64-objc-arc"
+path = "macho-x86_64-objc-arc"
+format = "macho"
+provenance = "self-authored"
+source = ["src/macho_objc.m", "src/macho_libobjc_stub.c", "src/macho_helper.c", "src/macho_libsystem_stub.c"]
+toolchain = "clang 19.1.7, ld64.lld 19.1.7, rcodesign 0.29.0"
+commands = [
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libSystem.B.dylib macho_libsystem_stub.c -o libSystem.B.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libobjc.A.dylib macho_libobjc_stub.c -o libobjc.A.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -fstack-protector-strong -fobjc-arc -Wno-objc-root-class -nostdlib -fuse-ld=lld -Wl,-pie -Wl,-no_adhoc_codesign -Wl,-encryptable -Wl,-sectcreate,__RESTRICT,__restrict,restrict.empty -x objective-c macho_objc.m -x none macho_helper.c libSystem.B.dylib libobjc.A.dylib -o macho-x86_64-objc-arc.linked",
+    "rcodesign sign --binary-identifier org.disrobe.hardening.macho-x86_64-objc-arc --code-signature-flags runtime macho-x86_64-objc-arc.linked macho-x86_64-objc-arc",
+]
+sha256 = "5a739cd3e392660d39dd5434332c9dbe20418fe9c41e72ced306ab0a42774e90"
+description = "Objective-C under ARC with a __RESTRICT segment, an LC_ENCRYPTION_INFO_64 with cryptid 0, and an ad-hoc signature carrying the hardened-runtime flag"
+
+[fixture.expect]
+arc = "present"
+code-signature = "present"
+encrypted = "absent"
+hardened-runtime = "present"
+nx-heap = "absent"
+nx-stack = "present"
+pie = "present"
+restrict = "present"
+stack-canary = "present"
+
+[fixture.reference]
+cryptid = "0"
+
+[[fixture]]
+name = "macho-x86_64-objc-mrr-encrypted"
+path = "macho-x86_64-objc-mrr-encrypted"
+format = "macho"
+provenance = "self-authored"
+source = ["src/macho_objc.m", "src/macho_libobjc_stub.c", "src/macho_helper.c", "src/macho_libsystem_stub.c"]
+toolchain = "clang 19.1.7, ld64.lld 19.1.7, rcodesign 0.29.0"
+commands = [
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libSystem.B.dylib macho_libsystem_stub.c -o libSystem.B.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libobjc.A.dylib macho_libobjc_stub.c -o libobjc.A.dylib",
+    "clang --target=x86_64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -fno-stack-protector -fno-objc-arc -Wno-objc-root-class -nostdlib -fuse-ld=lld -Wl,-pie -Wl,-no_adhoc_codesign -Wl,-encryptable -x objective-c macho_objc.m -x none macho_helper.c libSystem.B.dylib libobjc.A.dylib -o macho-x86_64-objc-mrr-encrypted.linked",
+    "patch: macho-x86_64-objc-mrr-encrypted.linked -> macho-x86_64-objc-mrr-encrypted.encrypted: LC_ENCRYPTION_INFO_64.cryptid = 1",
+    "rcodesign sign --binary-identifier org.disrobe.hardening.macho-x86_64-objc-mrr-encrypted macho-x86_64-objc-mrr-encrypted.encrypted macho-x86_64-objc-mrr-encrypted",
+]
+sha256 = "943cb72a415b1ab8e61d937405156065437bdf41054af5c2f2510040a470f837"
+description = "Objective-C under manual reference counting with cryptid set to 1 before an ad-hoc signature without the hardened-runtime flag"
+
+[fixture.expect]
+arc = "absent"
+code-signature = "present"
+encrypted = "present"
+hardened-runtime = "absent"
+nx-heap = "absent"
+nx-stack = "present"
+pie = "present"
+restrict = "absent"
+stack-canary = "absent"
+
+[fixture.reference]
+cryptid = "1"
+
+[[fixture]]
+name = "macho-arm64-full"
+path = "macho-arm64-full"
+format = "macho"
+provenance = "self-authored"
+source = ["src/macho_prog.c", "src/macho_helper.c", "src/macho_libsystem_stub.c"]
+toolchain = "clang 19.1.7, ld64.lld 19.1.7"
+commands = [
+    "clang --target=arm64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -nostdlib -fuse-ld=lld -shared -Wl,-install_name,/usr/lib/libSystem.B.dylib macho_libsystem_stub.c -o libSystem.B.dylib",
+    "clang --target=arm64-apple-macos11 -isysroot sdk -O2 -fno-asynchronous-unwind-tables -fstack-protector-strong -nostdlib -fuse-ld=lld -Wl,-pie -Wl,-adhoc_codesign macho_prog.c macho_helper.c libSystem.B.dylib -o macho-arm64-full",
+]
+sha256 = "504b0a6276b08559384c9c8e95c0b8e0d8d707aed9be5695baa2df5ae22042e7"
+description = "Mach-O arm64 with stack protector, PIE and the linker's default ad-hoc signature"
+
+[fixture.expect]
+arc = "not-applicable"
+code-signature = "present"
+encrypted = "absent"
+hardened-runtime = "absent"
+nx-heap = "absent"
+nx-stack = "present"
+pie = "present"
+restrict = "absent"
+stack-canary = "present"
+
+[[reference]]
+name = "valid_untrusted.exe"
+path = "crates/disrobe-pass-native/tests/fixtures/authenticode/valid_untrusted.exe"
+format = "pe"
+sha256 = "456c165e99d6532090fa3d149c23c64a0c042652b443d921f41c30185c57864c"
+description = "an Authenticode-signed PE from the authenticode corpus (WIN_CERTIFICATE revision 2.0, PKCS#7 SignedData)"
+
+[reference.expect]
+authenticode = "present"
+
+[[reference]]
+name = "unsigned.exe"
+path = "crates/disrobe-pass-native/tests/fixtures/authenticode/unsigned.exe"
+format = "pe"
+sha256 = "37d55b50d63cc0005e0ec2b3070e4d16019f8358ac48c54b4f8e71fc114ee70a"
+description = "the same program before signing"
+
+[reference.expect]
+authenticode = "absent"

@@ -40,6 +40,9 @@ pub mod tracking_allocator;
 #[path = "../formats/main.rs"]
 mod formats;
 
+#[path = "../hardening.rs"]
+mod hardening;
+
 #[path = "../hostile/main.rs"]
 mod hostile;
 

@@ -281,6 +281,14 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         drive: |ctx: &Ctx<'_>| from_result(format::detect(ctx.bytes)),
     },
     Entry {
+        path: "hardening::analyze",
+        cheap: true,
+        drive: |ctx: &Ctx<'_>| match hardening::analyze(ctx.bytes) {
+            Ok(_) => Verdict::Ok,
+            Err(error) => Verdict::Failed(error.to_string()),
+        },
+    },
+    Entry {
         path: "identify::detect",
         cheap: false,
         drive: |ctx: &Ctx<'_>| {
