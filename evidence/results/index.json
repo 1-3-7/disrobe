@@ -603,7 +603,7 @@
       "floor": 48.9,
       "floor_holds": true,
       "id": "taint-juliet-cwe78",
-      "measured": "48.90%",
+      "measured": "95.70%",
       "oracle_strength": "strong",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-taint --test graded_corpus juliet_cwe78_command_injection_precision_recall_o2 -- --exact --nocapture, with the pinned Juliet corpus cache populated. CI does not provision it, so tests/optional.toml lists the binary and a run without it writes a not-measured record instead of passing."

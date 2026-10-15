@@ -3,7 +3,7 @@
 - id: `taint-juliet-cwe78`
 - ecosystem: taint
 - claim: Disrobe detects 93 of 190 labeled command-injection flows in the NIST SARD Juliet v1.3 char/system C corpus with gcc 16.2.0 -O2, with zero false positives.
-- measured: 48.90%
+- measured: 95.70%
 - oracle strength: strong
 - CI-attested: no [local]
 - evidence basis: NIST SARD Juliet Test Suite for C/C++ v1.3 (2017-10-01), CWE-78 char/system C files. The grader reads manifest.xml flaw locations and Flow Variant headers. Each group contributes one verdict for its bad-labeled call chain and one for its good-labeled chain.

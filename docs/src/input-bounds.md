@@ -17,7 +17,7 @@ The scan does not resolve types or trait dispatch, so an outcome names the const
 
 2466 bounds (count 235, other 1166, output 70, recursion 246, size 556, work 193).
 
-Exceeded: error 1010, recorded 208, panic 0, delegated 52, silent 1137, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1010, recorded 209, panic 0, delegated 51, silent 1137, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -357,20 +357,20 @@ Exceeded: error 1010, recorded 208, panic 0, delegated 52, silent 1137, unclassi
 | `disrobe-core` | `MAX_CODEC_DECODED_TOTAL` | other | silent: `break` in `codec_cascade_findings`; `return` in `codec_peel_token` | `usize` | `16 << 20` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_CODEC_DEPTH` | recursion | silent: `return` in `codec_cascade_findings` | `u8` | `3` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_CODEC_RUN` | other | silent: `return` in `codec_output_advances`; `return` in `codec_peel_token` | `usize` | `1 << 20` | `crates/disrobe-core/src/recon/mod.rs` |
-| `disrobe-core` | `MAX_CONTAINER_DEPTH` | recursion | silent: skipped in `scan_blob` | `usize` | `8` | `crates/disrobe-core/src/recon/mod.rs` |
+| `disrobe-core` | `MAX_CONTAINER_DEPTH` | recursion | silent: skipped in `scan_blob_sharing` | `usize` | `8` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_DECODED_TOTAL_BYTES` | size | delegated: passed to `.set` | `u64` | `1 << 30` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_FILE_BYTES` | size | silent: `.take()` in `read_scan_file`; `return` in `read_scan_file` | `u64` | `64 << 20` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_TREE_FILES` | count | silent: `break` in `walk_with_limit` | `usize` | `200_000` | `crates/disrobe-core/src/recon/mod.rs` |
-| `disrobe-core` | `MAX_WIDE_RUNS` | other | silent: `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push_wide_run`; 2 more | `usize` | `1 << 16` | `crates/disrobe-core/src/recon/mod.rs` |
+| `disrobe-core` | `MAX_WIDE_RUNS` | other | silent: `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push`; 2 more | `usize` | `1 << 16` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_ZIP_ENTRIES` | count | silent: `.min()` clamp in `scan_zip_bytes`; `break` in `scan_tar_bytes` | `usize` | `50_000` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_ZIP_ENTRY_BYTES` | size | delegated: passed to `.set` | `u64` | `64 << 20` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_ZIP_TOTAL_BYTES` | size | delegated: passed to `.set` | `u64` | `1 << 30` | `crates/disrobe-core/src/recon/mod.rs` |
-| `disrobe-core` | `REGEX_SIZE_LIMIT` | size | delegated: `.dfa_size_limit()?`; `.size_limit()?` | `usize` | `16 << 20` | `crates/disrobe-core/src/recon/mod.rs` |
+| `disrobe-core` | `REGEX_SIZE_LIMIT` | size | recorded: `Severity::Warning` | `usize` | `16 << 20` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_SERIALIZED_DEPTH` | recursion | error: `RedactionError::DepthLimit` | `usize` | `64` | `crates/disrobe-core/src/recon/redact.rs` |
 | `disrobe-core` | `MAX_SERIALIZED_NODES` | count | error: `RedactionError::NodeLimit` | `usize` | `1_048_576` | `crates/disrobe-core/src/recon/redact.rs` |
 | `disrobe-core` | `MAX_SERIALIZED_STRING_BYTES` | size | error: `RedactionError::StringBytesLimit` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-core/src/recon/redact.rs` |
-| `disrobe-core` | `MAX_RUNS` | other | silent: `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push_wide_run`; 2 more | `usize` | `4096` | `crates/disrobe-core/src/recon/string_emu.rs` |
-| `disrobe-core` | `MAX_RUN_BYTES` | size | silent: `continue` in `unit_runs_wide`; no action in `collect_narrow_runs`; slice in `text_runs` | `usize` | `64 << 10` | `crates/disrobe-core/src/recon/string_emu.rs` |
+| `disrobe-core` | `MAX_RUNS` | other | silent: `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push`; 2 more | `usize` | `4096` | `crates/disrobe-core/src/recon/string_emu.rs` |
+| `disrobe-core` | `MAX_RUN_BYTES` | size | silent: no action in `collect_narrow_runs`; no action in `runs`; slice in `text_runs` | `usize` | `64 << 10` | `crates/disrobe-core/src/recon/string_emu.rs` |
 | `disrobe-core` | `MAX_DECODE_RECURSE_LEN` | recursion | silent: `continue` in `recover_base64`; `continue` in `recover_codec` | `usize` | `1 << 16` | `crates/disrobe-core/src/strings.rs` |
 | `disrobe-core` | `MAX_PE_SECTIONS` | other | silent: `return` in `pe_header_is_valid` | `usize` | `96` | `crates/disrobe-core/src/structural.rs` |
 | `disrobe-core` | `ZIP_SEARCH_BUDGET` | work | silent: `while` condition in `find_eocd` | `usize` | `ZIP_MAX_COMMENT + ZIP_EOCD_FIXED_LEN + 4` | `crates/disrobe-core/src/structural.rs` |
@@ -2596,13 +2596,13 @@ Exceeded: error 1010, recorded 208, panic 0, delegated 52, silent 1137, unclassi
 | `disrobe-core` | `MAX_CODEC_DECODED_TOTAL` | `break` in `codec_cascade_findings`; `return` in `codec_peel_token` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_CODEC_DEPTH` | `return` in `codec_cascade_findings` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_CODEC_RUN` | `return` in `codec_output_advances`; `return` in `codec_peel_token` | `crates/disrobe-core/src/recon/mod.rs` |
-| `disrobe-core` | `MAX_CONTAINER_DEPTH` | skipped in `scan_blob` | `crates/disrobe-core/src/recon/mod.rs` |
+| `disrobe-core` | `MAX_CONTAINER_DEPTH` | skipped in `scan_blob_sharing` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_FILE_BYTES` | `.take()` in `read_scan_file`; `return` in `read_scan_file` | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_TREE_FILES` | `break` in `walk_with_limit` | `crates/disrobe-core/src/recon/mod.rs` |
-| `disrobe-core` | `MAX_WIDE_RUNS` | `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push_wide_run`; 2 more | `crates/disrobe-core/src/recon/mod.rs` |
+| `disrobe-core` | `MAX_WIDE_RUNS` | `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push`; 2 more | `crates/disrobe-core/src/recon/mod.rs` |
 | `disrobe-core` | `MAX_ZIP_ENTRIES` | `.min()` clamp in `scan_zip_bytes`; `break` in `scan_tar_bytes` | `crates/disrobe-core/src/recon/mod.rs` |
-| `disrobe-core` | `MAX_RUNS` | `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push_wide_run`; 2 more | `crates/disrobe-core/src/recon/string_emu.rs` |
-| `disrobe-core` | `MAX_RUN_BYTES` | `continue` in `unit_runs_wide`; no action in `collect_narrow_runs`; slice in `text_runs` | `crates/disrobe-core/src/recon/string_emu.rs` |
+| `disrobe-core` | `MAX_RUNS` | `break` in `merge_runs`; `return` in `push_narrow_run`; `return` in `push`; 2 more | `crates/disrobe-core/src/recon/string_emu.rs` |
+| `disrobe-core` | `MAX_RUN_BYTES` | no action in `collect_narrow_runs`; no action in `runs`; slice in `text_runs` | `crates/disrobe-core/src/recon/string_emu.rs` |
 | `disrobe-core` | `MAX_DECODE_RECURSE_LEN` | `continue` in `recover_base64`; `continue` in `recover_codec` | `crates/disrobe-core/src/strings.rs` |
 | `disrobe-core` | `MAX_PE_SECTIONS` | `return` in `pe_header_is_valid` | `crates/disrobe-core/src/structural.rs` |
 | `disrobe-core` | `ZIP_SEARCH_BUDGET` | `while` condition in `find_eocd` | `crates/disrobe-core/src/structural.rs` |
