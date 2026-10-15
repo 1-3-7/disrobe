@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use clap::{Subcommand, ValueEnum};
 
 use disrobe_core::default_cache_dir;
-use disrobe_pass_mobile::flutter::has_dart_aot_snapshot;
+use disrobe_pass_mobile::flutter::{
+    FlutterContainer, FlutterIdentityReport, FlutterLibrary, FlutterLibraryRole, flutter_identity,
+    has_dart_aot_snapshot,
+};
 use disrobe_pass_mobile::{
     AotLiftReport, Arm64Disassembly, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL,
     DART_VM_DATA_SYMBOL, DART_VM_INSTR_SYMBOL, DartAotDecompile, DartGraphObfuscationHint,
@@ -27,6 +30,7 @@ use disrobe_pass_native::{
 use super::backend_export::{BackendExportTarget, SupplementalOutput};
 use super::emit::{EmitKind, EmitSpec};
 use super::globals;
+use super::output::{self, OutputFormat};
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum FlutterCmd {
@@ -156,6 +160,15 @@ pub(crate) enum FlutterCmd {
         #[arg(long, value_enum, default_value_t = ObfuscationNames::Auto)]
         names: ObfuscationNames,
     },
+    #[command(
+        about = "identify a Flutter build from an APK, AAB, IPA or a single app or engine library: the Dart snapshot hash and the Dart SDK release it belongs to, the engine's Dart version and revision with the Flutter release that pins it, and each library's ABI, SHA-256, build ID and snapshot features"
+    )]
+    Identity {
+        #[arg(
+            help = "input APK, AAB, IPA, zip, libapp.so, libflutter.so, App.framework or Flutter.framework binary"
+        )]
+        input: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -197,8 +210,9 @@ impl ObfuscationNames {
     }
 }
 
-pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
+pub(crate) fn run(action: FlutterCmd, fmt: OutputFormat) -> miette::Result<()> {
     match action {
+        FlutterCmd::Identity { input } => identity(&input, fmt),
         FlutterCmd::Dump {
             input,
             out,
@@ -922,6 +936,115 @@ fn write_inventory_report(
     }
     println!("  wrote:        {}", out_path.display());
     Ok(())
+}
+
+const IDENTITY_INPUT_MAX: u64 = 4 * 1024 * 1024 * 1024;
+
+fn identity(input: &Path, fmt: OutputFormat) -> miette::Result<()> {
+    let size: u64 = std::fs::metadata(input)
+        .map_err(|e| miette::miette!("DR-CLI-0779: cannot read {}: {e}", input.display()))?
+        .len();
+    if size > IDENTITY_INPUT_MAX {
+        return Err(miette::miette!(
+            "DR-CLI-0779: {} is {size} bytes, above the {IDENTITY_INPUT_MAX}-byte limit",
+            input.display()
+        ));
+    }
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-CLI-0779: cannot read {}: {e}", input.display()))?;
+    let report: FlutterIdentityReport = flutter_identity(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0779: {}: {e}", input.display()))?;
+    output::emit(fmt, &report, || render_identity(&report))
+}
+
+fn render_identity(report: &FlutterIdentityReport) {
+    let container: &str = match report.container {
+        FlutterContainer::Apk => "APK",
+        FlutterContainer::Aab => "Android App Bundle",
+        FlutterContainer::Ipa => "IPA",
+        FlutterContainer::Archive => "zip archive",
+        FlutterContainer::Library => "library",
+    };
+    println!(
+        "{container}, {} bytes, sha256 {}",
+        report.size, report.sha256
+    );
+    if !report.flutter_detected {
+        println!("no Flutter app snapshot or engine found");
+    }
+    if let Some(hash) = &report.snapshot_hash {
+        println!("snapshot hash     {hash}");
+    }
+    if !report.dart_sdk_releases.is_empty() {
+        let versions: Vec<&str> = report
+            .dart_sdk_releases
+            .iter()
+            .map(|release| release.dart_version.as_str())
+            .collect();
+        println!("Dart SDK          {}", versions.join(", "));
+    }
+    if let Some(version) = &report.dart_version {
+        println!("engine Dart       {version}");
+    }
+    if let Some(revision) = &report.engine_revision {
+        println!("engine revision   {revision}");
+    }
+    if report.flutter_releases.is_empty() {
+        if !report.flutter_releases_with_dart.is_empty() {
+            println!(
+                "Flutter           one of {} (releases shipping that Dart SDK)",
+                report.flutter_releases_with_dart.join(", ")
+            );
+        }
+    } else {
+        let versions: Vec<&str> = report
+            .flutter_releases
+            .iter()
+            .map(|release| release.flutter_version.as_str())
+            .collect();
+        println!("Flutter           {}", versions.join(", "));
+    }
+    for library in &report.libraries {
+        render_library(library);
+    }
+    for finding in &report.findings {
+        println!("note: {finding}");
+    }
+}
+
+fn render_library(library: &FlutterLibrary) {
+    let role: &str = match library.role {
+        FlutterLibraryRole::App => "app",
+        FlutterLibraryRole::Engine => "engine",
+    };
+    let path: &str = if library.path.is_empty() {
+        "input"
+    } else {
+        &library.path
+    };
+    println!(
+        "{role:<6} {path} [{}] {} bytes sha256 {}",
+        library.abi.as_deref().unwrap_or("?"),
+        library.size,
+        library.sha256
+    );
+    if let Some(id) = &library.build_id {
+        println!("       build id {id}");
+    }
+    for stamp in &library.snapshots {
+        println!(
+            "       {} {} {}",
+            stamp.symbol.as_deref().unwrap_or("scanned header"),
+            stamp.snapshot_hash,
+            stamp.features.join(" ")
+        );
+    }
+    for version in &library.dart_versions {
+        println!(
+            "       Dart {} ({}) built {} for {}",
+            version.version, version.channel, version.built, version.target
+        );
+    }
 }
 
 #[cfg(test)]

@@ -2190,7 +2190,7 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "as3")]
         Cmd::As3 { action } => as3::run(action),
         #[cfg(feature = "flutter")]
-        Cmd::Flutter { action } => flutter::run(action),
+        Cmd::Flutter { action } => flutter::run(action, fmt),
         #[cfg(feature = "mobile")]
         Cmd::Mobile { action } => mobile::run(action, eff.redact),
         Cmd::Envelope { action } => {

@@ -281,6 +281,9 @@ mod flutter_decompile_aot;
 #[path = "../flutter_engine_fallback_identity.rs"]
 mod flutter_engine_fallback_identity;
 
+#[path = "../flutter_identity_cli.rs"]
+mod flutter_identity_cli;
+
 #[path = "../flutter_symbol_export.rs"]
 mod flutter_symbol_export;
 
