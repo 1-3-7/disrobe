@@ -1,6 +1,6 @@
-title = "Apple build-tool fixtures: asset catalog, compiled NIBs and a Foundation keyed archive"
+title = "Apple build-tool fixtures: asset catalog, compiled NIBs, a Foundation keyed archive and a Swift and Objective-C dylib"
 license = "self-authored (disrobe regression fixture, freely redistributable)"
-provenance = "src/ is hand-authored for this corpus (make_assets.py writes the asset catalog from deterministic stdlib PNGs). The compiled outputs are produced only on a GitHub-hosted macOS runner by .github/workflows/real-tool-fixtures.yml recipe apple-formats (xcrun actool, xcrun ibtool, swift archive.swift); assetutil --info and the Foundation XML form of the archive are recorded beside them as references. Nothing compiled here is run on the development host."
+provenance = "src/ is hand-authored for this corpus (make_assets.py writes the asset catalog from deterministic stdlib PNGs). The compiled outputs are produced only on a GitHub-hosted macOS runner by .github/workflows/real-tool-fixtures.yml recipe apple-formats (xcrun actool, xcrun ibtool, swift archive.swift, and clang plus swiftc for src/classes into an arm64 iOS dylib with nm, otool and swift-demangle references); assetutil --info and the Foundation XML form of the archive are recorded beside them as references. Nothing compiled here is run on the development host."
 
 [runner]
 files = "runner/Assets.car, runner/Assets.car.assetutil.json, runner/Controls.nib, runner/Settings.nib, runner/graph.archive, runner/graph.archive.xml, build-record.json, tool.env"

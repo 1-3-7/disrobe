@@ -49,3 +49,21 @@ if swift "$REPO/$input" "$OUT/files" && test -s "$OUT/files/graph.archive"; then
 else
   printf '%s\t%s\t%s\t%s\n' - "$input" "$command" tool-failed >> "$OUT/outputs.tsv"
 fi
+
+classes="$REPO/corpus/apple/src/classes"
+build="$RUNNER_TEMP/classes"
+mkdir -p "$build"
+command="clang -target arm64-apple-ios15.0 -fobjc-arc -c Legacy.m; swiftc -target arm64-apple-ios15.0 -emit-library -module-name Fixture Views.swift Legacy.o -o Fixture.dylib"
+if xcrun -sdk iphoneos clang -target arm64-apple-ios15.0 -fobjc-arc -O1 -c "$classes/Legacy.m" -o "$build/Legacy.o" \
+  && xcrun -sdk iphoneos swiftc -target arm64-apple-ios15.0 -O -emit-library -module-name Fixture \
+    "$classes/Views.swift" "$build/Legacy.o" -o "$OUT/files/Fixture.dylib" \
+  && test -s "$OUT/files/Fixture.dylib"; then
+  xcrun nm -m "$OUT/files/Fixture.dylib" > "$OUT/files/Fixture.dylib.nm.txt"
+  xcrun nm -n -U "$OUT/files/Fixture.dylib" > "$OUT/files/Fixture.dylib.nm-defined.txt"
+  xcrun otool -ov "$OUT/files/Fixture.dylib" > "$OUT/files/Fixture.dylib.otool-ov.txt"
+  xcrun otool -l "$OUT/files/Fixture.dylib" > "$OUT/files/Fixture.dylib.otool-l.txt"
+  xcrun swift-demangle --compact < "$OUT/files/Fixture.dylib.nm.txt" > "$OUT/files/Fixture.dylib.nm-demangled.txt"
+  printf '%s\t%s\t%s\t%s\n' files/Fixture.dylib corpus/apple/src/classes "$command" same >> "$OUT/outputs.tsv"
+else
+  printf '%s\t%s\t%s\t%s\n' - corpus/apple/src/classes "$command" tool-failed >> "$OUT/outputs.tsv"
+fi
