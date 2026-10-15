@@ -12,7 +12,10 @@ use crate::obfuscator::prometheus_vm_ast::{
     AssignTarget, BinOp, Block, Expr, ExprKind, LocalId, Parser, Span, Stat, StatKind, TableField,
     UnOp, Var,
 };
-use crate::obfuscator::string_decode::{decode_base85_variant, discover_base85_alphabets};
+use crate::obfuscator::string_decode::{
+    apply_segment_reversals, decode_base85_variant, discover_base85_alphabets,
+    parse_constarray_rotation, read_lua_quoted,
+};
 
 const MAX_DISPATCH_DEPTH: u32 = 96;
 const MAX_FUNCTION_BLOCKS: usize = 1 << 14;
@@ -1165,12 +1168,17 @@ fn last_target_value(stats: &[Stat], target: LocalId) -> Option<&Expr> {
     nth_last_target_value(stats, target, 0)
 }
 
-fn is_exit_shape(rhs: &Expr, substitutions: &BTreeMap<u64, String>) -> bool {
+fn is_exit_shape(
+    rhs: &Expr,
+    substitutions: &BTreeMap<u64, String>,
+    encrypted_resolvers: &BTreeMap<LocalId, EncryptedPoolResolver>,
+) -> bool {
     matches!(
         &rhs.kind,
         ExprKind::Index(_, key)
             if matches!(key.kind, ExprKind::Str)
                 || substitutions.contains_key(&span_key(key.span))
+                || is_bounded_encrypted_pool_key(key, encrypted_resolvers)
     )
 }
 
@@ -1330,6 +1338,7 @@ fn is_exact_unpack_alias(
     expression: &Expr,
     source: &str,
     substitutions: &BTreeMap<u64, String>,
+    encrypted_resolvers: &BTreeMap<LocalId, EncryptedPoolResolver>,
 ) -> bool {
     let ExprKind::Binary(BinOp::Or, unpack, fallback) = &unwrap_paren(expression).kind else {
         return false;
@@ -1339,13 +1348,41 @@ fn is_exact_unpack_alias(
     };
     is_global_named(unpack, source, "unpack")
         && is_global_named(table, source, "table")
-        && is_unpack_key(key, source, substitutions)
+        && (is_unpack_key(key, source, substitutions)
+            || is_bounded_encrypted_pool_key(key, encrypted_resolvers))
+}
+
+fn is_bounded_encrypted_pool_key(
+    expression: &Expr,
+    resolvers: &BTreeMap<LocalId, EncryptedPoolResolver>,
+) -> bool {
+    let ExprKind::Call { base, args } = &unwrap_paren(expression).kind else {
+        return false;
+    };
+    let ExprKind::Var(Var::Local(resolver)) = &unwrap_paren(base).kind else {
+        return false;
+    };
+    let Some(resolver): Option<&EncryptedPoolResolver> = resolvers.get(resolver) else {
+        return false;
+    };
+    let [argument]: &[Expr] = args.as_slice() else {
+        return false;
+    };
+    let Some(argument): Option<f64> = static_number_value(argument) else {
+        return false;
+    };
+    let one_based: f64 = argument + resolver.offset;
+    one_based.is_finite()
+        && one_based.fract() == 0.0
+        && one_based >= 1.0
+        && one_based <= resolver.pool_len as f64
 }
 
 fn find_return_local(
     dispatch_root: &Block,
     pos_local: LocalId,
     substitutions: &BTreeMap<u64, String>,
+    encrypted_resolvers: &BTreeMap<LocalId, EncryptedPoolResolver>,
     numbers: &StaticNumberEvaluator,
     post_dispatch: Option<LocalId>,
 ) -> Result<LocalId> {
@@ -1357,7 +1394,7 @@ fn find_return_local(
         let Some(pos_rhs) = last_target_value(&leaf.stats, pos_local) else {
             continue;
         };
-        if !is_exit_shape(pos_rhs, substitutions) {
+        if !is_exit_shape(pos_rhs, substitutions, encrypted_resolvers) {
             continue;
         }
         exit_leaves_seen += 1;
@@ -1582,6 +1619,7 @@ fn terminal_transfer<'a>(
     pos_local: LocalId,
     return_local: LocalId,
     substitutions: &BTreeMap<u64, String>,
+    encrypted_resolvers: &BTreeMap<LocalId, EncryptedPoolResolver>,
     numbers: &StaticNumberEvaluator,
 ) -> Result<(Transfer<'a>, LeafPlan)> {
     if contains_local_decl_in_current_function(leaf) {
@@ -1658,7 +1696,7 @@ fn terminal_transfer<'a>(
                 },
             ))
         }
-        _ if is_exit_shape(rhs, substitutions) => {
+        _ if is_exit_shape(rhs, substitutions, encrypted_resolvers) => {
             let return_span: Option<Span> =
                 nth_last_target_stmt(&leaf.stats, return_local, 0).map(|(s, _): (Span, &Expr)| s);
             Ok((
@@ -1712,6 +1750,7 @@ struct GlobalStats {
     next_box: u32,
     boxes_bound: usize,
     multret_packs: usize,
+    ambiguous_multret_fallbacks: usize,
 }
 
 #[derive(Debug)]
@@ -1722,6 +1761,8 @@ pub struct VmifyRecovery {
     pub functions_recovered: usize,
     pub functions_total: usize,
     pub unreached_structural_leaves: usize,
+    pub ambiguous_multret_fallbacks: usize,
+    pub used_supplemental_encrypted_pool: bool,
     pub fully_recovered: bool,
 }
 
@@ -1738,6 +1779,7 @@ struct Ctx<'a> {
     upvalue_bindings: BTreeMap<LocalId, Span>,
     environment_locals: BTreeSet<LocalId>,
     unpack_local: Option<LocalId>,
+    encrypted_resolvers: BTreeMap<LocalId, EncryptedPoolResolver>,
     all_creation_calls: Vec<(&'a Expr, LocalId, &'a Expr, &'a Expr)>,
     box_model: Option<BoxModel>,
     numbers: StaticNumberEvaluator,
@@ -2094,11 +2136,39 @@ fn generation_name<'a>(
 struct BoxRewriteContext<'a> {
     ctx: &'a Ctx<'a>,
     model: BoxModel,
-    tracked: &'a BTreeSet<LocalId>,
     names: &'a BTreeMap<u64, String>,
     unique_names: &'a BTreeMap<LocalId, String>,
     capture_spans: &'a BTreeSet<u64>,
     upvalue_boxes: &'a [String],
+}
+
+fn box_handle_aliases(
+    stat: &Stat,
+    state: &BTreeMap<LocalId, BoxRegisterState>,
+) -> Vec<(LocalId, BoxRegisterState, Span)> {
+    let StatKind::Assign { targets, values } = &stat.kind else {
+        return Vec::new();
+    };
+    targets
+        .iter()
+        .zip(values)
+        .filter_map(
+            |(target, value): (&AssignTarget, &Expr)| -> Option<(LocalId, BoxRegisterState, Span)> {
+                let AssignTarget::Var(Var::Local(target), _) = target else {
+                    return None;
+                };
+                let ExprKind::Var(Var::Local(source)) = &unwrap_paren(value).kind else {
+                    return None;
+                };
+                let box_state: BoxRegisterState = *state.get(source)?;
+                matches!(
+                    box_state,
+                    BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_)
+                )
+                .then_some((*target, box_state, unwrap_paren(value).span))
+            },
+        )
+        .collect()
 }
 
 fn rewrite_box_uses(
@@ -2107,6 +2177,11 @@ fn rewrite_box_uses(
     state: &BTreeMap<LocalId, BoxRegisterState>,
     substitutions: &mut BTreeMap<u64, String>,
 ) -> Result<()> {
+    let aliases: Vec<(LocalId, BoxRegisterState, Span)> = box_handle_aliases(stat, state);
+    let alias_spans: BTreeSet<u64> = aliases
+        .iter()
+        .map(|(_, _, span): &(LocalId, BoxRegisterState, Span)| span_key(*span))
+        .collect();
     let mut expressions: Vec<&Expr> = Vec::new();
     walk_exprs_stat(stat, &mut expressions);
     if expressions.len() > MAX_BOX_STATEMENT_USES {
@@ -2123,7 +2198,7 @@ fn rewrite_box_uses(
             continue;
         }
         let replacement: String = match &unwrap_paren(key).kind {
-            ExprKind::Var(Var::Local(id)) if rewrite.tracked.contains(id) => {
+            ExprKind::Var(Var::Local(id)) if state.contains_key(id) => {
                 heap_key_spans.insert(span_key(key.span));
                 match state.get(id) {
                     Some(BoxRegisterState::Live(site)) => rewrite
@@ -2179,7 +2254,7 @@ fn rewrite_box_uses(
             continue;
         }
         let replacement: String = match &unwrap_paren(key).kind {
-            ExprKind::Var(Var::Local(id)) if rewrite.tracked.contains(id) => {
+            ExprKind::Var(Var::Local(id)) if state.contains_key(id) => {
                 let name: &String = match state.get(id) {
                     Some(BoxRegisterState::Live(site) | BoxRegisterState::MaybeLive(site)) => {
                         rewrite.names.get(site).ok_or_else(|| {
@@ -2231,13 +2306,14 @@ fn rewrite_box_uses(
         let ExprKind::Var(Var::Local(id)) = &expression.kind else {
             continue;
         };
-        if !rewrite.tracked.contains(id) {
+        if !state.contains_key(id) {
             continue;
         }
         match state.get(id) {
             Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_))
                 if rewrite.capture_spans.contains(&span_key(expression.span))
-                    || heap_key_spans.contains(&span_key(expression.span)) =>
+                    || heap_key_spans.contains(&span_key(expression.span))
+                    || alias_spans.contains(&span_key(expression.span)) =>
             {
                 let name: &String = generation_name(state, rewrite.names, *id)
                     .ok_or_else(|| refuse("an upvalue-box generation has no name"))?;
@@ -2424,7 +2500,6 @@ fn bind_function_boxes(
     let rewrite: BoxRewriteContext<'_> = BoxRewriteContext {
         ctx,
         model,
-        tracked: &tracked,
         names: &names_by_site,
         unique_names: &unique_names,
         capture_spans: &capture_spans,
@@ -2466,7 +2541,7 @@ fn bind_function_boxes(
             if let Some(release) = model.release
                 && let Some((id, clears_register)) = exact_box_release(stat, release)
             {
-                if !tracked.contains(&id) {
+                if !state.contains_key(&id) {
                     return Err(refuse_owned(format!(
                         "the upvalue-box release at byte {} targets register {id}, which this function never allocates a box into",
                         stat.span.start
@@ -2502,9 +2577,13 @@ fn bind_function_boxes(
                 continue;
             }
             rewrite_box_uses(&rewrite, stat, &state, subst)?;
+            let aliases: Vec<(LocalId, BoxRegisterState, Span)> = box_handle_aliases(stat, &state);
             let mut definitions: BTreeSet<LocalId> = BTreeSet::new();
             collect_statement_defs(stat, &mut definitions);
             apply_box_definitions(&mut state, &tracked, &definitions);
+            for (target, box_state, _) in aliases {
+                state.insert(target, box_state);
+            }
         }
         successors.clear();
         if let Some(term) = terms.get(index) {
@@ -3337,8 +3416,14 @@ fn recover_function(
         }
         visited.insert(key, leaf);
         order.push(key);
-        let (transfer, _plan): (Transfer<'_>, LeafPlan) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst, &ctx.numbers)?;
+        let (transfer, _plan): (Transfer<'_>, LeafPlan) = terminal_transfer(
+            leaf,
+            ctx.pos_local,
+            ctx.return_local,
+            subst,
+            &ctx.encrypted_resolvers,
+            &ctx.numbers,
+        )?;
         match transfer {
             Transfer::Return => {}
             Transfer::Goto(n) => pending.push(n),
@@ -3400,8 +3485,14 @@ fn recover_function(
         let leaf: &Block = visited[&key];
         let node_id: u32 = node_of[&key];
         leaf_of_node[node_id as usize] = leaf;
-        let (transfer, plan): (Transfer<'_>, LeafPlan) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst, &ctx.numbers)?;
+        let (transfer, plan): (Transfer<'_>, LeafPlan) = terminal_transfer(
+            leaf,
+            ctx.pos_local,
+            ctx.return_local,
+            subst,
+            &ctx.encrypted_resolvers,
+            &ctx.numbers,
+        )?;
         let term: Terminator = match transfer {
             Transfer::Return => Terminator::Return,
             Transfer::Goto(n) => {
@@ -3547,7 +3638,9 @@ fn recover_function(
     let budget: CnsBudget = CnsBudget::tight_for(&cfg);
     let outcome: Option<CnsOutcome> = structure_with_cns(&cfg, budget);
 
+    let packs_before: usize = stats.multret_packs;
     let unpacks_arguments: bool = bind_multret_packs(ctx, &order, &visited, subst, stats);
+    let has_multret_packs: bool = stats.multret_packs > packs_before;
 
     let mut used_locals: BTreeSet<LocalId> = BTreeSet::new();
     for (leaf, plan) in leaf_of_node.iter().zip(&plan_of_node) {
@@ -3682,6 +3775,9 @@ fn recover_function(
             if renderer.ok {
                 (text, true, order.len())
             } else {
+                if has_multret_packs {
+                    stats.ambiguous_multret_fallbacks += 1;
+                }
                 (
                     render_dispatch_fallback(
                         ctx,
@@ -3693,8 +3789,8 @@ fn recover_function(
                         &cond_of_atom,
                         subst,
                     ),
-                    false,
-                    0,
+                    true,
+                    order.len(),
                 )
             }
         }
@@ -4650,7 +4746,7 @@ fn render_dispatch_fallback(
     out
 }
 
-fn pool_resolver_shape(expr: &Expr, pool_locals: &BTreeSet<LocalId>) -> Option<f64> {
+fn pool_resolver_binding(expr: &Expr) -> Option<(LocalId, f64)> {
     let ExprKind::Function {
         params,
         is_vararg,
@@ -4674,21 +4770,223 @@ fn pool_resolver_shape(expr: &Expr, pool_locals: &BTreeSet<LocalId>) -> Option<f
     let ExprKind::Index(base, key) = &value.kind else {
         return None;
     };
-    if !matches!(&base.kind, ExprKind::Var(Var::Local(id)) if pool_locals.contains(id)) {
+    let ExprKind::Var(Var::Local(pool)) = &base.kind else {
         return None;
-    }
-    match &key.kind {
+    };
+    let offset: f64 = match &key.kind {
         ExprKind::Binary(BinOp::Add, left, right) if is_bare_local(left, params[0]) => {
-            static_number_value(right)
+            static_number_value(right)?
         }
         ExprKind::Binary(BinOp::Add, left, right) if is_bare_local(right, params[0]) => {
-            static_number_value(left)
+            static_number_value(left)?
         }
         ExprKind::Binary(BinOp::Sub, left, right) if is_bare_local(left, params[0]) => {
-            static_number_value(right).map(|value: f64| -value)
+            -static_number_value(right)?
         }
-        _ => None,
+        _ => return None,
+    };
+    Some((*pool, offset))
+}
+
+fn pool_resolver_shape(expr: &Expr, pool_locals: &BTreeSet<LocalId>) -> Option<f64> {
+    let (pool, offset): (LocalId, f64) = pool_resolver_binding(expr)?;
+    pool_locals.contains(&pool).then_some(offset)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EncryptedPoolResolver {
+    pool: LocalId,
+    offset: f64,
+    pool_len: usize,
+}
+
+fn lua_string_literal(expression: &Expr, text: &str) -> Option<String> {
+    if !matches!(expression.kind, ExprKind::Str) {
+        return None;
     }
+    let token: &[u8] = expression.span.text(text).as_bytes();
+    let quote: u8 = *token.first()?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+    let (value, end): (String, usize) = read_lua_quoted(token, 1, quote);
+    (end + 1 == token.len()).then_some(value)
+}
+
+fn encrypted_pool_entries(
+    text: &str,
+    chunk: &Block,
+    all_exprs: &[&Expr],
+) -> BTreeMap<LocalId, Vec<String>> {
+    let mut pools: BTreeMap<LocalId, Vec<String>> = all_exprs
+        .iter()
+        .filter_map(|expression: &&Expr| {
+            let ExprKind::Table(fields) = &expression.kind else {
+                return None;
+            };
+            if fields.len() < 32 {
+                return None;
+            }
+            let entries: Option<Vec<String>> = fields
+                .iter()
+                .map(|field: &TableField| {
+                    let TableField::Positional(value) = field else {
+                        return None;
+                    };
+                    lua_string_literal(value, text)
+                })
+                .collect();
+            let entries: Vec<String> = entries?;
+            let tag: char = entries.first()?.chars().next()?;
+            if !tag.is_ascii_graphic()
+                || entries.iter().any(|entry: &String| !entry.starts_with(tag))
+            {
+                return None;
+            }
+            find_local_binding(chunk, expression.span).map(|local: LocalId| (local, entries))
+        })
+        .collect();
+    let rotations: Option<Vec<(usize, usize)>> = parse_constarray_rotation(text);
+    if let Some(pairs) = rotations {
+        for entries in pools.values_mut() {
+            if pairs
+                .iter()
+                .all(|(start, end): &(usize, usize)| *start >= 1 && *end <= entries.len())
+            {
+                apply_segment_reversals(entries, &pairs);
+            }
+        }
+    }
+    pools
+}
+
+fn encrypted_pool_resolvers(
+    chunk: &Block,
+    function_exprs: &[&Expr],
+    pools: &BTreeMap<LocalId, Vec<String>>,
+) -> BTreeMap<LocalId, EncryptedPoolResolver> {
+    function_exprs
+        .iter()
+        .filter_map(|expression: &&Expr| {
+            let (pool, offset): (LocalId, f64) = pool_resolver_binding(expression)?;
+            let pool_len: usize = pools.get(&pool)?.len();
+            let resolver: LocalId = find_local_binding(chunk, expression.span)?;
+            Some((
+                resolver,
+                EncryptedPoolResolver {
+                    pool,
+                    offset,
+                    pool_len,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn encrypted_pool_substitutions(
+    text: &str,
+    all_exprs: &[&Expr],
+    pools: &BTreeMap<LocalId, Vec<String>>,
+    resolvers: &BTreeMap<LocalId, EncryptedPoolResolver>,
+) -> Result<BTreeMap<u64, String>> {
+    let alphabets: Vec<(char, BTreeMap<char, u8>)> = all_exprs
+        .iter()
+        .filter_map(|expression: &&Expr| {
+            let ExprKind::Table(fields) = &expression.kind else {
+                return None;
+            };
+            if fields.len() != 85 {
+                return None;
+            }
+            let mut alphabet: BTreeMap<char, u8> = BTreeMap::new();
+            let mut values: BTreeSet<u8> = BTreeSet::new();
+            for field in fields {
+                let (key, value): (char, &Expr) = match field {
+                    TableField::Named(name, value) => {
+                        let mut chars: core::str::Chars<'_> = name.text(text).chars();
+                        let key: char = chars.next()?;
+                        if chars.next().is_some() {
+                            return None;
+                        }
+                        (key, value)
+                    }
+                    TableField::Indexed(key, value) => {
+                        let literal: String = lua_string_literal(key, text)?;
+                        let mut chars: core::str::Chars<'_> = literal.chars();
+                        let key: char = chars.next()?;
+                        if chars.next().is_some() {
+                            return None;
+                        }
+                        (key, value)
+                    }
+                    TableField::Positional(_) => return None,
+                };
+                let number: f64 = static_number_value(value)?;
+                if number.fract() != 0.0 || !(0.0..=84.0).contains(&number) {
+                    return None;
+                }
+                let number: u8 = number as u8;
+                if alphabet.insert(key, number).is_some() || !values.insert(number) {
+                    return None;
+                }
+            }
+            (alphabet.len() == 85 && values.len() == 85).then_some(alphabet)
+        })
+        .map(|alphabet: BTreeMap<char, u8>| ('\0', alphabet))
+        .collect();
+    if alphabets.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    if alphabets.len() > MAX_CONSTANT_POOL_RESOLVERS {
+        return Err(refuse(
+            "the ConstantArray Base85 alphabet count exceeds the recovery budget",
+        ));
+    }
+    let mut substitutions: BTreeMap<u64, String> = BTreeMap::new();
+    let mut replacement_bytes: usize = 0;
+    for expression in all_exprs {
+        let ExprKind::Call { base, args } = &expression.kind else {
+            continue;
+        };
+        let ExprKind::Var(Var::Local(resolver)) = &unwrap_paren(base).kind else {
+            continue;
+        };
+        let Some(shape): Option<&EncryptedPoolResolver> = resolvers.get(resolver) else {
+            continue;
+        };
+        let [argument]: &[Expr] = args.as_slice() else {
+            continue;
+        };
+        let Some(argument): Option<f64> = static_number_value(argument) else {
+            continue;
+        };
+        let one_based: f64 = argument + shape.offset;
+        if !one_based.is_finite() || one_based.fract() != 0.0 || one_based < 1.0 {
+            return Err(refuse(
+                "a static encrypted ConstantArray lookup has an invalid index",
+            ));
+        }
+        let index: usize = one_based as usize;
+        let entry: &String = pools
+            .get(&shape.pool)
+            .and_then(|entries: &Vec<String>| entries.get(index - 1))
+            .ok_or_else(|| refuse("a static encrypted ConstantArray lookup exceeds its pool"))?;
+        let decoded: Vec<u8> = decode_unresolved_base85(entry, &alphabets)?
+            .ok_or_else(|| refuse("an encrypted ConstantArray entry has no exact Base85 decode"))?;
+        let replacement: String = quote_lua_bytes(&decoded);
+        replacement_bytes = replacement_bytes
+            .checked_add(replacement.len())
+            .ok_or_else(|| {
+                refuse("encrypted ConstantArray substitutions exceed the output byte budget")
+            })?;
+        if replacement_bytes > crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES {
+            return Err(refuse(
+                "encrypted ConstantArray substitutions exceed the output byte budget",
+            ));
+        }
+        substitutions.insert(span_key(expression.span), replacement);
+    }
+    Ok(substitutions)
 }
 
 fn constant_pool_substitutions(
@@ -4929,6 +5227,10 @@ pub fn recover_with_string_pool(
         .copied()
         .filter(|e: &&Expr| matches!(e.kind, ExprKind::Function { .. }))
         .collect();
+    let encrypted_pools: BTreeMap<LocalId, Vec<String>> =
+        encrypted_pool_entries(text, &chunk, &all_exprs);
+    let encrypted_resolvers: BTreeMap<LocalId, EncryptedPoolResolver> =
+        encrypted_pool_resolvers(&chunk, &function_exprs, &encrypted_pools);
     let mut subst: BTreeMap<u64, String> = constant_pool_substitutions(
         text,
         &chunk,
@@ -4938,6 +5240,15 @@ pub fn recover_with_string_pool(
         resolved_entries,
         pool_binding,
     )?;
+    let mut used_supplemental_encrypted_pool: bool = false;
+    for (span, replacement) in
+        encrypted_pool_substitutions(text, &all_exprs, &encrypted_pools, &encrypted_resolvers)?
+    {
+        if let std::collections::btree_map::Entry::Vacant(entry) = subst.entry(span) {
+            entry.insert(replacement);
+            used_supplemental_encrypted_pool = true;
+        }
+    }
 
     let mut containers: Vec<ContainerShape<'_>> = function_exprs
         .iter()
@@ -4997,7 +5308,7 @@ pub fn recover_with_string_pool(
                 .ok_or_else(|| {
                     refuse("the post-dispatch unpack helper binding cannot be located in the AST")
                 })?;
-            if !is_exact_unpack_alias(binding, text, &subst) {
+            if !is_exact_unpack_alias(binding, text, &subst, &encrypted_resolvers) {
                 return Err(refuse(
                     "the post-dispatch return helper is not bound to the exact 'unpack or table.unpack' compatibility expression",
                 ));
@@ -5023,6 +5334,7 @@ pub fn recover_with_string_pool(
         container.dispatch_root,
         container.pos_local,
         &subst,
+        &encrypted_resolvers,
         &numbers,
         post_dispatch_return_local,
     )?;
@@ -5061,6 +5373,7 @@ pub fn recover_with_string_pool(
         upvalue_bindings,
         environment_locals,
         unpack_local,
+        encrypted_resolvers,
         all_creation_calls,
         box_model,
         numbers,
@@ -5107,9 +5420,14 @@ pub fn recover_with_string_pool(
     let mut targeted: BTreeSet<u64> = BTreeSet::new();
     let mut unclassified_leaves: usize = 0;
     for leaf in &all_leaves {
-        let Ok((transfer, _plan)) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, &subst, &ctx.numbers)
-        else {
+        let Ok((transfer, _plan)) = terminal_transfer(
+            leaf,
+            ctx.pos_local,
+            ctx.return_local,
+            &subst,
+            &ctx.encrypted_resolvers,
+            &ctx.numbers,
+        ) else {
             if !leaf.stats.is_empty() {
                 unclassified_leaves += 1;
             }
@@ -5177,7 +5495,8 @@ pub fn recover_with_string_pool(
         .unwrap_or(&recovered.text);
 
     let fully_recovered: bool = stats.functions_fully_structured == stats.functions_attempted
-        && stats.leaves_recovered >= handlers_total;
+        && stats.leaves_recovered >= handlers_total
+        && stats.ambiguous_multret_fallbacks == 0;
     dbg_kv("prometheus_vmify.handlers", || {
         format!(
             "{}/{}",
@@ -5216,6 +5535,8 @@ pub fn recover_with_string_pool(
         functions_recovered: stats.functions_fully_structured,
         functions_total: stats.functions_attempted,
         unreached_structural_leaves,
+        ambiguous_multret_fallbacks: stats.ambiguous_multret_fallbacks,
+        used_supplemental_encrypted_pool,
         fully_recovered,
     }))
 }
@@ -5392,7 +5713,6 @@ mod tests {
             .copied()
             .find(|expression: &&Expr| is_bare_local(expression, *handle))
             .expect("capture statement must reference the handle");
-        let tracked: BTreeSet<LocalId> = BTreeSet::from([*handle]);
         let names: BTreeMap<u64, String> = BTreeMap::from([(11, "__vu0".to_owned())]);
         let unique_names: BTreeMap<LocalId, String> =
             BTreeMap::from([(*handle, "__vu0".to_owned())]);
@@ -5413,6 +5733,7 @@ mod tests {
             upvalue_bindings: BTreeMap::new(),
             environment_locals: BTreeSet::new(),
             unpack_local: None,
+            encrypted_resolvers: BTreeMap::new(),
             all_creation_calls: Vec::new(),
             box_model: None,
             numbers: StaticNumberEvaluator::new(),
@@ -5424,7 +5745,6 @@ mod tests {
                 alloc: *creator,
                 release: None,
             },
-            tracked: &tracked,
             names: &names,
             unique_names: &unique_names,
             capture_spans: &capture_spans,
@@ -5516,6 +5836,7 @@ mod tests {
             upvalue_bindings: BTreeMap::new(),
             environment_locals: BTreeSet::new(),
             unpack_local: None,
+            encrypted_resolvers: BTreeMap::new(),
             all_creation_calls: Vec::new(),
             box_model: None,
             numbers: StaticNumberEvaluator::new(),

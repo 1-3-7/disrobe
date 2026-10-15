@@ -260,7 +260,21 @@ fn apply_vmify_devirt(
             .passes_run
             .push(format!("prometheus-vmify-nested-devirt-{passes}-layers"));
     }
-    result.fully_recovered = recovery.fully_recovered && refusal.is_none();
+    let encryptstrings_runtime_remains: bool = recovery.used_supplemental_encrypted_pool;
+    if encryptstrings_runtime_remains {
+        result.residual_markers.push(
+            "prometheus: the EncryptStrings per-string runtime remains after Vmify recovery; its encrypted ConstantArray keys are resolved, but the stateful decryptor is not lifted"
+                .to_owned(),
+        );
+    }
+    result.fully_recovered =
+        recovery.fully_recovered && refusal.is_none() && !encryptstrings_runtime_remains;
+    if recovery.ambiguous_multret_fallbacks > 0 {
+        result.residual_markers.push(format!(
+            "prometheus: {} complete dispatch fallback function(s) contain packed call results whose fixed-one versus open-result arity is not represented by the Vmify wrapper",
+            recovery.ambiguous_multret_fallbacks
+        ));
+    }
     let mut summary: String = format!(
         "prometheus: Vmify container devirtualized over {passes} layer(s), handlers {}/{} ({}%), functions {}/{}",
         recovery.handlers_recovered,
