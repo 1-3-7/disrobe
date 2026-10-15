@@ -3,7 +3,7 @@ tar.gz	extract	corpus/binfmt/carve/nested.tar.gz
 7z	extract	corpus/binfmt/sevenzip/hello.7z
 rar	extract	corpus/binfmt/rar/filter-delta-rar5.rar
 iso	extract	corpus/binfmt/iso/joliet-rockridge.iso
-asar	members-unverified	crates/disrobe-binfmt/tests/fixtures/asar/real_electron.asar
+asar	members-unverified	corpus/electron-app/app.asar
 pkg	extract	corpus/binfmt/pkg/bzip2.pkg
 dmg	extract	corpus/binfmt/dmg/bzip2-udif.dmg
 rpm	extract	crates/disrobe-binfmt/tests/fixtures/rpm/hello-v4-gzip.rpm
@@ -40,6 +40,8 @@ lz	members-unverified	corpus/binfmt/bare-stream/payload.lz
 lz4	extract	corpus/binfmt/bare-stream/payload-legacy.lz4
 zlib	extract	corpus/binfmt/bare-stream/payload.zlib
 Z	extract	corpus/binfmt/bare-stream/payload.Z
+forge	members-unverified	corpus/binfmt/forge/v30_kraken.forge
+scimitar-block	members-unverified	corpus/binfmt/forge/leviathan.depgraphbin
 uefi-fv	members-unverified	crates/disrobe-binfmt/tests/fixtures/uefi_fv/edk2_brotli_guided.fv
 dotnet-single-file	members-unverified	corpus/binfmt/dotnet-single-file/probe.v1.win-x64.exe
 luks1	detect-only	crates/disrobe-binfmt/tests/fixtures/luks1/aes128-cbc-plain.luks1
