@@ -2642,8 +2642,16 @@ fn committed_large_benign_fixture_has_no_detected_findings() {
     let mut fixture_entries: Vec<String> = std::fs::read_dir(&fixture_directory)
         .expect("read fixture directory")
         .map(|entry: Result<std::fs::DirEntry, std::io::Error>| {
+            entry.expect("read fixture directory entry")
+        })
+        .filter(|entry: &std::fs::DirEntry| {
             entry
-                .expect("read fixture directory entry")
+                .file_type()
+                .expect("read fixture entry type")
+                .is_file()
+        })
+        .map(|entry: std::fs::DirEntry| {
+            entry
                 .file_name()
                 .into_string()
                 .expect("fixture entry name must be UTF-8")
