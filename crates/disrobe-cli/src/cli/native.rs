@@ -679,7 +679,7 @@ fn decompile_native(
     ) {
         let Some(arch): Option<DecompileArch> = DecompileArch::of(&obj) else {
             return Err(miette::miette!(
-                "DR-NATIVE-0162: the in-tree decompiler supports x86-64, aarch64, arm32 and mips32 (got {:?}); use --backend ghidra for other architectures",
+                "DR-NATIVE-0162: the in-tree decompiler supports x86-64, x86-32, aarch64, arm32 and mips32 (got {:?}); use --backend ghidra for other architectures",
                 obj.architecture()
             ));
         };
@@ -806,9 +806,13 @@ fn decompile_native(
             DecompileLang::Rust => rec.rust_source.as_deref(),
         };
         let Some(src): Option<&str> = selected else {
+            let reason: &str = if abi == PseudoAbi::I386 {
+                "x86-32 recovery emits C only; Rust output is not produced for x86-32"
+            } else {
+                "not in the pure-safe Rust-emittable class (struct return or a block memcpy/memset idiom)"
+            };
             unrecovered.push(serde_json::json!({
-                "name": f.name, "address": f.address,
-                "reason": "not in the pure-safe Rust-emittable class (struct return or a block memcpy/memset idiom)"
+                "name": f.name, "address": f.address, "reason": reason
             }));
             continue;
         };
@@ -899,9 +903,14 @@ fn decompile_native(
         .map_err(|e| miette::miette!("DR-NATIVE-0164: cannot write decompiled output: {e}"))?;
 
     let total: usize = module.functions().len();
+    let (backend, arch_label): (&str, &str) = if abi == PseudoAbi::I386 {
+        ("native-in-tree-x86", "x86-32")
+    } else {
+        ("native-in-tree-x86_64", "x86-64")
+    };
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.native.decompile/v1",
-        "backend": if abi == PseudoAbi::I386 { "native-in-tree-x86" } else { "native-in-tree-x86_64" },
+        "backend": backend,
         "language": format.label(),
         "input": input.display().to_string(),
         "abi": format!("{abi:?}"),
@@ -932,7 +941,8 @@ fn decompile_native(
     .map_err(|e| miette::miette!("DR-NATIVE-0166: cannot write manifest: {e}"))?;
 
     println!(
-        "native decompile (in-tree x86-64 -> {}): recovered {}/{} function(s), {} typed slot(s) across {} function(s) -> {}",
+        "native decompile (in-tree {} -> {}): recovered {}/{} function(s), {} typed slot(s) across {} function(s) -> {}",
+        arch_label,
         format.label(),
         recovered.len(),
         total,
