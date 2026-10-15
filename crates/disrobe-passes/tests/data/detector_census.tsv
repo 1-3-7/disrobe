@@ -1228,6 +1228,17 @@ corpus/native/d/clean_control.exe	native.image-classify	pe	native-format	low	-	-
 corpus/native/d/hello.d	-	-	-	-	-	-	-
 corpus/native/d/hello.d.exe	nativelang.classify	d	native-format	medium	native.image-classify	native-format	low
 corpus/native/d/hello.d.o.elf	nativelang.classify	d	native-format	medium	native.image-classify	native-format	low
+corpus/native/decompile/address_taken/address_taken.c	-	-	-	-	-	-	-
+corpus/native/decompile/address_taken/address_taken.dll	native.image-classify	pe	native-format	low	-	-	-
+corpus/native/decompile/address_taken/gs_support.c	-	-	-	-	-	-	-
+corpus/native/decompile/globals/globals.c	-	-	-	-	-	-	-
+corpus/native/decompile/globals/globals.dll	native.image-classify	pe	native-format	low	-	-	-
+corpus/native/decompile/push_frames/push_frames.c	-	-	-	-	-	-	-
+corpus/native/decompile/push_frames/push_frames.dll	native.image-classify	pe	native-format	low	-	-	-
+corpus/native/decompile/slot_calls/slot_calls.c	-	-	-	-	-	-	-
+corpus/native/decompile/slot_calls/slot_calls.dll	native.image-classify	pe	native-format	low	-	-	-
+corpus/native/decompile/stack_args/stack_args.c	-	-	-	-	-	-	-
+corpus/native/decompile/stack_args/stack_args.dll	native.image-classify	pe	native-format	low	-	-	-
 corpus/native/discovery/disc.c	-	-	-	-	-	-	-
 corpus/native/discovery/disc.stripped.elf	native.image-classify	elf	native-format	low	-	-	-
 corpus/native/discovery/disc.unstripped.elf	native.image-classify	elf	native-format	low	-	-	-
