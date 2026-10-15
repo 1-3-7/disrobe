@@ -2050,21 +2050,33 @@ mod tests {
     }
 
     #[test]
-    fn a_positive_gate_remains_hidden_even_with_a_named_workflow_target() {
+    fn a_positive_gate_is_covered_only_by_a_workflow_target_that_enables_it() {
         let facts: CrateFacts = crate_facts(
             &[("default", &[]), ("chain", &[])],
             vec![negative_target(vec![Requirement::Enabled(
                 "chain".to_owned(),
             )])],
         );
-        let invocation: Invocation = parse_invocation(
+        let enabling: Invocation = parse_invocation(
             "cargo test -p disrobe-pass-example --features chain --test slim_bail",
         );
-        let selection: Selection = invocation_selection(&facts, &invocation);
-        let mut coverage: ConfigurationCoverage = ConfigurationCoverage::default();
-        coverage.record(&facts, &invocation, &selection);
+        let mut covered: ConfigurationCoverage = ConfigurationCoverage::default();
+        covered.record(&facts, &enabling, &invocation_selection(&facts, &enabling));
+        assert!(
+            facts
+                .hidden_labels_with_configuration_coverage(&covered)
+                .is_empty()
+        );
+        let default_only: Invocation =
+            parse_invocation("cargo test -p disrobe-pass-example --test slim_bail");
+        let mut uncovered: ConfigurationCoverage = ConfigurationCoverage::default();
+        uncovered.record(
+            &facts,
+            &default_only,
+            &invocation_selection(&facts, &default_only),
+        );
         assert_eq!(
-            facts.hidden_labels_with_configuration_coverage(&coverage),
+            facts.hidden_labels_with_configuration_coverage(&uncovered),
             BTreeSet::from(["chain".to_owned()])
         );
     }
