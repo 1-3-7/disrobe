@@ -409,6 +409,9 @@ mod native_unbind_report;
 #[path = "../native_unpack_chain_notice.rs"]
 mod native_unpack_chain_notice;
 
+#[path = "../nib_cli.rs"]
+mod nib_cli;
+
 #[path = "../out_stage_mirror.rs"]
 mod out_stage_mirror;
 

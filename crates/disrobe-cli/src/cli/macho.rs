@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use disrobe_pass_swift_objc::keyed_archive::{ArchivedValue, KeyedArchive, decode_keyed_archive};
+use disrobe_pass_swift_objc::nib_archive::{NibArchive, decode_nib_archive};
 
 use disrobe_pass_swift_objc::{
     ContainerKind, DyldCacheFamily, DyldSharedCache, FatArchEntry, MachoKind, ObjcClassDump,
@@ -59,6 +60,15 @@ pub(crate) enum MachoCmd {
         #[arg(long, help = "print the decoded graph as JSON")]
         json: bool,
     },
+    #[command(
+        about = "decode a compiled NIB (NIBArchive, from a .nib file or a storyboardc bundle) into its object graph, with the outlet and action connections that tie the interface to code, the custom classes it instantiates and its strings"
+    )]
+    Nib {
+        #[arg(help = "input compiled .nib file")]
+        input: PathBuf,
+        #[arg(long, help = "print the decoded graph as JSON")]
+        json: bool,
+    },
     #[command(about = "walk a Fat-Mach-O envelope & report each slice's CPU type, size, & offset")]
     Fat {
         #[arg(help = "input fat Mach-O binary")]
@@ -92,9 +102,67 @@ pub(crate) fn run(action: MachoCmd) -> miette::Result<()> {
         MachoCmd::Dump { input, out } => dump(input, out),
         MachoCmd::Classdump { input, out, emit } => classdump(input, out, emit),
         MachoCmd::KeyedArchive { input, json } => keyed_archive(&input, json),
+        MachoCmd::Nib { input, json } => nib(&input, json),
         MachoCmd::Fat { input } => fat(input),
         MachoCmd::Dyldcache { input, out, images } => dyldcache(input, out, images),
     }
+}
+
+const MAX_NIB_BYTES: u64 = 256 * 1024 * 1024;
+
+fn nib(input: &Path, json: bool) -> miette::Result<()> {
+    let size: u64 = std::fs::metadata(input)
+        .map_err(|e| miette::miette!("DR-CLI-0506: cannot read {}: {e}", input.display()))?
+        .len();
+    if size > MAX_NIB_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0506: {} is {size} bytes, above the {MAX_NIB_BYTES}-byte limit",
+            input.display()
+        ));
+    }
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-CLI-0506: cannot read {}: {e}", input.display()))?;
+    let archive: NibArchive = decode_nib_archive(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0506: {}: {e}", input.display()))?;
+    if json {
+        let rendered: String = serde_json::to_string_pretty(&archive)
+            .map_err(|e| miette::miette!("DR-CLI-0506: serialize: {e}"))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+    println!(
+        "NIBArchive version {}, coder {}, {} objects of {} classes",
+        archive.format_version,
+        archive.coder_version,
+        archive.objects.len(),
+        archive.classes.len()
+    );
+    if !archive.custom_classes.is_empty() {
+        println!("custom classes: {}", archive.custom_classes.join(", "));
+    }
+    for connection in &archive.connections {
+        println!(
+            "{} {} : {} -> {}",
+            connection.kind,
+            connection.label.as_deref().unwrap_or("?"),
+            connection.source_class.as_deref().unwrap_or("?"),
+            connection.destination_class.as_deref().unwrap_or("?")
+        );
+    }
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for object in &archive.objects {
+        *counts.entry(object.class.as_str()).or_default() += 1;
+    }
+    for (class, count) in counts {
+        println!("  {count:>4} {class}");
+    }
+    for text in &archive.strings {
+        println!("string {text:?}");
+    }
+    if archive.trailing_bytes > 0 {
+        println!("{} bytes follow the last table", archive.trailing_bytes);
+    }
+    Ok(())
 }
 
 const MAX_KEYED_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
