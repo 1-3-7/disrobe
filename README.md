@@ -102,7 +102,7 @@ The grades: `strong` means an independent reference could have rejected the outp
 
 | Interpreter | Modules | Matching code objects | Rate | Grade | Runs |
 |---|---|---|---|---|---|
-| CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | <!-- m:py_band_38_count_grouped -->4,599 of 5,088<!-- /m --> | <!-- m:py_band_38_rate -->90.38%<!-- /m --> | `recompile-only` | weekly |
+| CPython <!-- m:py_band_38_interpreter -->3.8.20<!-- /m --> | <!-- m:py_band_38_modules -->154<!-- /m --> | <!-- m:py_band_38_count_grouped -->4,893 of 5,088<!-- /m --> | <!-- m:py_band_38_rate -->96.16%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_39_interpreter -->3.9.25<!-- /m --> | <!-- m:py_band_39_modules -->157<!-- /m --> | <!-- m:py_band_39_count_grouped -->5,032 of 5,233<!-- /m --> | <!-- m:py_band_39_rate -->96.15%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | <!-- m:py_band_310_frac -->5279 / 5458<!-- /m --> | <!-- m:py_band_310_rate -->96.72%<!-- /m --> | `recompile-only` | push |
 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | <!-- m:py_band_311_frac -->5504 / 5638<!-- /m --> | <!-- m:py_band_311_rate -->97.62%<!-- /m --> | `recompile-only` | weekly |
@@ -111,16 +111,16 @@ The grades: `strong` means an independent reference could have rejected the outp
 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> | <!-- m:py_stdlib_pinned_count -->6139 of 6286<!-- /m --> | <!-- m:py_stdlib_pinned_pct -->97.66%<!-- /m --> | `recompile-only` | weekly |
 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | <!-- m:py_band_315_frac -->6296 / 6480<!-- /m --> | <!-- m:py_band_315_rate -->97.16%<!-- /m --> | `recompile-only` | weekly |
 
-A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m --> core modules gives <!-- m:py_stdlib_full_count -->17396 of 18276<!-- /m --> matching code objects (<!-- m:py_stdlib_full_pct -->95.18%<!-- /m -->, local). [Pinned result](evidence/results/py-stdlib-recompile.md) · [Full-population result](evidence/results/py-stdlib-full.md).
+A wider CPython 3.14.5 population of <!-- m:py_stdlib_full_modules -->574<!-- /m --> core modules gives <!-- m:py_stdlib_full_count -->17637 of 18276<!-- /m --> matching code objects (<!-- m:py_stdlib_full_pct -->96.5%<!-- /m -->, local). [Pinned result](evidence/results/py-stdlib-recompile.md) · [Full-population result](evidence/results/py-stdlib-full.md).
 
 **Other ecosystems.**
 
 | Recovery | Result | Reference | Grade | Runs |
 |---|---|---|---|---|
 | Java class files to Java | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> top-level methods of the EdgeCases corpus recompile | Real `javac` | `recompile-only` | weekly |
-| Java behaviour | <!-- m:jvm_execution_frac -->121 / 131<!-- /m --> of the same methods behave identically; the rest diverge or cannot be driven in isolation, each named by the test | A real JVM | `strong` | weekly |
+| Java behaviour | <!-- m:jvm_execution_frac -->130 / 131<!-- /m --> of the same methods behave identically; the rest diverge or cannot be driven in isolation, each named by the test | A real JVM | `strong` | weekly |
 | Android DEX to Java | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes pass; <!-- m:dalvik_link_skipped_count -->37 of 155<!-- /m --> classes are link-skipped and ungraded | `java -Xverify:all` | `strong` | weekly |
-| .NET assemblies to C# | <!-- m:dotnet_whole_type_frac -->20 / 35<!-- /m --> EdgeCases types' method bodies recompile inside harness-built type shells | Roslyn `csc` | `recompile-only` | weekly |
+| .NET assemblies to C# | <!-- m:dotnet_whole_type_frac -->22 / 35<!-- /m --> EdgeCases types' method bodies recompile inside harness-built type shells | Roslyn `csc` | `recompile-only` | weekly |
 | WebAssembly | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions return the same values, traps, and first 4,096 bytes of linear memory | wasmtime | `strong` | weekly |
 | Stripped BEAM modules | <!-- m:beam_recompile_frac -->21 / 21<!-- /m --> modules recompile, keep their exports, and print the same `test/0` result | Erlang/OTP 27.3.4 | `strong` | weekly |
 | Go type names, stripped binary | <!-- m:go_typename_count -->838 of 838<!-- /m --> names | None: the names come from the binary's own type data | `coverage-self-reported` | weekly |

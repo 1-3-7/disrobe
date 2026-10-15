@@ -3,7 +3,7 @@
 - id: `py-stdlib-full`
 - ecosystem: python
 - claim: disrobe reaches normalized opcode-structure agreement for the majority of code objects in a fixed 574-module CPython 3.14.5 core population. The population excludes 60 idlelib and 21 turtledemo sources from that release's Lib directory.
-- measured: 95.18%
+- measured: 96.50%
 - oracle strength: recompile-only
 - CI-attested: no [local]
 - evidence basis: CPython 3.14.5 recompiles the recovered source at optimize 0. The comparator normalizes opcode structure: it drops jump targets and most operands, removes and merges selected opcodes, omits __annotate__ code objects, and does not reject extra recovered objects. It does not establish semantic or emitted-bytecode equivalence.

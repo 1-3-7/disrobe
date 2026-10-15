@@ -507,7 +507,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1144, unclassi
 | `disrobe-mba` | `MAX_ENUM_STEPS` | work | silent: `.min()` clamp in `enumerate_conjunction` | `usize` | `1usize << 15` | `crates/disrobe-mba/src/symexec/solver_cert.rs` |
 | `disrobe-mba` | `MAX_ENUM_VARS` | other | silent: `return` in `enumeration_domain` | `usize` | `6` | `crates/disrobe-mba/src/symexec/solver_cert.rs` |
 | `disrobe-mba` | `MAX_ENUM_VAR_BITS` | other | silent: `return` in `enumeration_domain` | `u32` | `16` | `crates/disrobe-mba/src/symexec/solver_cert.rs` |
-| `disrobe-mba` | `MAX_WIDTH_BITS` | other | error: `ApplyError::CaptureKindMismatch`; `ApplyError::MissingCapture`; `BuildStop::ClassBudget`; 29 more | `u16` | `64` | `crates/disrobe-mba/src/symexec/value.rs` |
+| `disrobe-mba` | `MAX_WIDTH_BITS` | other | error: `.as_str()`; `ApplyError::CaptureKindMismatch`; `ApplyError::MissingCapture`; 30 more | `u16` | `64` | `crates/disrobe-mba/src/symexec/value.rs` |
 | `disrobe-mba` | `DEFAULT_NODE_BUDGET` | work | error: `EncodeExhausted`; `MixedRefusal::VariableLimit` | `usize` | `1usize << 20` | `crates/disrobe-mba/src/verify.rs` |
 | `disrobe-mba` | `DEFAULT_OP_BUDGET` | work | recorded: flag `exhausted`; flag `truncated` | `usize` | `DEFAULT_NODE_BUDGET * 8` | `crates/disrobe-mba/src/verify.rs` |
 | `disrobe-mba` | `MAX_COUNTEREXAMPLE_SLOTS` | count | silent: `return` in `expand_counterexample` | `usize` | `1024` | `crates/disrobe-mba/src/verify.rs` |
