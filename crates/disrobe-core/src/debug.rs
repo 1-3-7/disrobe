@@ -231,6 +231,48 @@ fn json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
+#[macro_export]
+macro_rules! debug_scope {
+    ($scope:literal $(, $item:ident)* $(,)?) => {
+        #[must_use]
+        pub(crate) fn debug_log() -> $crate::debug::DebugLog {
+            $crate::debug::DebugLog::for_scope($scope)
+        }
+        $($crate::debug_scope!(@item $item);)*
+    };
+    (@item enabled) => {
+        #[must_use]
+        pub(crate) fn dbg_enabled() -> bool {
+            debug_log().on()
+        }
+    };
+    (@item section) => {
+        pub(crate) fn dbg_section(name: &str) {
+            debug_log().section(name);
+        }
+    };
+    (@item line) => {
+        pub(crate) fn dbg_line(f: impl FnOnce() -> String) {
+            debug_log().line(f);
+        }
+    };
+    (@item kv) => {
+        pub(crate) fn dbg_kv(key: &str, f: impl FnOnce() -> String) {
+            debug_log().kv(key, f);
+        }
+    };
+    (@item kv_guarded) => {
+        pub(crate) fn dbg_kv_guarded(key: &str, f: impl FnOnce() -> String) {
+            debug_log().kv_guarded(key, f);
+        }
+    };
+    (@item hex) => {
+        pub(crate) fn dbg_hex(label: &str, bytes: &[u8], max: usize) {
+            debug_log().hex(label, bytes, max);
+        }
+    };
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -279,6 +321,32 @@ mod tests {
         assert_eq!(guard_secret_shaped("deadbeef"), "deadbeef");
         let lowered: &str = "abcdefghijklmnopqrstuvwxyz";
         assert_eq!(guard_secret_shaped(lowered), lowered);
+    }
+
+    mod scoped {
+        crate::debug_scope!(
+            "debug-scope-probe",
+            enabled,
+            section,
+            line,
+            kv,
+            kv_guarded,
+            hex
+        );
+    }
+
+    #[test]
+    fn generated_scope_matches_its_log_and_skips_closures_when_off() {
+        let log: DebugLog = scoped::debug_log();
+        assert_eq!(scoped::dbg_enabled(), log.on());
+        assert_eq!(log.on(), DebugLog::for_scope("debug-scope-probe").on());
+        if !log.on() {
+            scoped::dbg_section("section");
+            scoped::dbg_line(|| panic!("closure must not run when disabled"));
+            scoped::dbg_kv("k", || panic!("closure must not run when disabled"));
+            scoped::dbg_kv_guarded("k", || panic!("closure must not run when disabled"));
+            scoped::dbg_hex("bytes", &[0x41, 0x00], 2);
+        }
     }
 
     #[test]
