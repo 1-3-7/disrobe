@@ -504,10 +504,6 @@ pub(crate) enum DotnetCmd {
         out: Option<PathBuf>,
     },
     #[command(
-        name = "native-aot",
-        about = "recover NativeAOT names, types, method boundaries and managed signatures from an ahead-of-time compiled .NET image (PE, ELF or Mach-O)"
-    )]
-    #[command(
         about = "list the native boundaries of a .NET assembly: P/Invoke imports with module, entry point, character set and calling convention, LibraryImport declarations, UnmanagedCallersOnly exports and COM imports with their GUIDs"
     )]
     Interop {
@@ -516,6 +512,10 @@ pub(crate) enum DotnetCmd {
         #[arg(long, help = "print the report as JSON")]
         json: bool,
     },
+    #[command(
+        name = "native-aot",
+        about = "recover NativeAOT names, types, method boundaries and managed signatures from an ahead-of-time compiled .NET image (PE, ELF or Mach-O)"
+    )]
     NativeAot {
         #[arg(help = "input NativeAOT image (PE, ELF, or Mach-O)")]
         input: PathBuf,
