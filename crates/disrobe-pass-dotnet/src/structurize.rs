@@ -45,6 +45,14 @@ pub struct StructuredMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedByRefArgumentMode {
+    Ref,
+    Out,
+    In,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallInfo {
     pub arg_count: usize,
 
@@ -54,14 +62,17 @@ pub struct CallInfo {
 
     pub explicit_this: bool,
 
-    pub byref_param_mask: u64,
+    pub byref_argument_modes: Vec<Option<ManagedByRefArgumentMode>>,
 }
 
 impl CallInfo {
     #[must_use]
-    fn arg_is_byref(&self, arg_index: usize) -> bool {
+    fn managed_byref_argument_mode(&self, arg_index: usize) -> Option<ManagedByRefArgumentMode> {
         let param_index: usize = arg_index.saturating_sub(usize::from(self.has_this));
-        param_index < 64 && self.byref_param_mask & (1u64 << param_index) != 0
+        self.byref_argument_modes
+            .get(param_index)
+            .copied()
+            .flatten()
     }
 }
 
@@ -190,24 +201,23 @@ impl TokenNamer for Resolver {
         self.callee_signature(token).map(|sig| {
             let params: usize = sig.params.len();
             let has_this: bool = sig.has_this;
-            let byref_param_mask: u64 = sig
-                .params
-                .iter()
-                .take(64)
-                .enumerate()
-                .filter(|(_, p): &(usize, &crate::signature::TypeSig)| {
-                    matches!(p, crate::signature::TypeSig::ByRef(_))
-                })
-                .fold(
-                    0u64,
-                    |acc: u64, (idx, _): (usize, &crate::signature::TypeSig)| acc | (1u64 << idx),
-                );
+            let byref_argument_modes: Vec<Option<ManagedByRefArgumentMode>> = self
+                .callee_managed_byref_argument_modes(token)
+                .unwrap_or_else(|| {
+                    sig.params
+                        .iter()
+                        .map(|parameter: &crate::signature::TypeSig| {
+                            matches!(parameter, crate::signature::TypeSig::ByRef(_))
+                                .then_some(ManagedByRefArgumentMode::Unresolved)
+                        })
+                        .collect()
+                });
             CallInfo {
                 arg_count: params + usize::from(has_this),
                 returns_value: !matches!(sig.return_type, crate::signature::TypeSigOrVoid::Void),
                 has_this,
                 explicit_this: sig.explicit_this,
-                byref_param_mask,
+                byref_argument_modes,
             }
         })
     }
@@ -2674,11 +2684,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
     fn render_byref_args(
         &mut self,
         args: &[Expr],
-        info: Option<CallInfo>,
+        info: Option<&CallInfo>,
         has_this: bool,
     ) -> Vec<Expr> {
-        let Some(info): Option<CallInfo> = info.filter(|c: &CallInfo| c.byref_param_mask != 0)
-        else {
+        let Some(info): Option<&CallInfo> = info else {
             return args.to_vec();
         };
         args.iter()
@@ -2687,12 +2696,25 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 if idx == 0 && has_this {
                     return arg.clone();
                 }
-                if !info.arg_is_byref(idx) {
+                let Some(mode): Option<ManagedByRefArgumentMode> =
+                    info.managed_byref_argument_mode(idx)
+                else {
+                    return arg.clone();
+                };
+                if self.lang == TargetLang::CSharp && mode == ManagedByRefArgumentMode::Unresolved {
+                    self.managed_byref_argument_refused = true;
                     return arg.clone();
                 }
                 if self.lang == TargetLang::CSharp {
-                    self.managed_byref_argument_refused = true;
-                    return arg.clone();
+                    let keyword: &str = match mode {
+                        ManagedByRefArgumentMode::Ref => "ref",
+                        ManagedByRefArgumentMode::Out => "out",
+                        ManagedByRefArgumentMode::In => "in",
+                        ManagedByRefArgumentMode::Unresolved => return arg.clone(),
+                    };
+                    let target: String = managed_byref_target(arg, self.lang, self.names)
+                        .unwrap_or_else(|| arg.render(self.lang, self.names));
+                    return Expr::Raw(format!("{keyword} {target}"));
                 }
                 match arg {
                     Expr::AddressOf(inner) => {
@@ -2741,8 +2763,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             _ => 0,
         };
         let info: Option<CallInfo> = self.namer.call_info(token);
-        let arg_count: usize = info.map_or(0, |c: CallInfo| c.arg_count);
-        let returns_value: bool = info.map_or(!is_ctor, |c: CallInfo| c.returns_value);
+        let arg_count: usize = info.as_ref().map_or(0, |c: &CallInfo| c.arg_count);
+        let returns_value: bool = info
+            .as_ref()
+            .map_or(!is_ctor, |c: &CallInfo| c.returns_value);
         let returns_boolean: bool = self.namer.call_returns_boolean(token);
         let return_kind: ConditionKind = self.namer.call_return_condition_kind(token);
         let result_kind: StackKind = self.call_result_kind(token);
@@ -2750,7 +2774,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             .namer
             .call_return_type_name(token)
             .filter(|ty: &String| !ty.contains('!'));
-        let has_this: bool = info.map_or_else(|| raw.contains("::"), |c: CallInfo| c.has_this);
+        let has_this: bool = info
+            .as_ref()
+            .map_or_else(|| raw.contains("::"), |c: &CallInfo| c.has_this);
         let base_call: bool = self.lang == TargetLang::CSharp
             && ins.name == "call"
             && has_this
@@ -2796,7 +2822,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
         }
         if ins.name == "call"
-            && info.is_some_and(|call: CallInfo| {
+            && info.as_ref().is_some_and(|call: &CallInfo| {
                 call.arg_count == 2 && !call.has_this && !call.returns_value
             })
             && self.namer.is_initialize_array(token)
@@ -2942,7 +2968,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 return;
             }
         }
-        let rendered_args: Vec<Expr> = self.render_byref_args(&args, info, has_this);
+        let rendered_args: Vec<Expr> = self.render_byref_args(&args, info.as_ref(), has_this);
         let call: Expr = if has_this && !rendered_args.is_empty() {
             let mut rendered_args: Vec<Expr> = rendered_args;
             let recv: Expr = rendered_args.remove(0);
@@ -4707,7 +4733,7 @@ mod tests {
                 returns_value: false,
                 has_this: true,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             })
         }
     }
@@ -4737,7 +4763,7 @@ mod tests {
                 returns_value: true,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             })
         }
     }
@@ -4922,7 +4948,7 @@ mod tests {
                 returns_value: true,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             })
         }
 
@@ -5204,7 +5230,7 @@ mod tests {
                 returns_value: false,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             })
         }
 
@@ -5987,21 +6013,24 @@ mod tests {
     }
 
     #[test]
-    fn call_info_arg_byref_accounts_for_receiver_slot() {
+    fn call_info_argument_mode_accounts_for_receiver_slot() {
         let info: CallInfo = CallInfo {
             arg_count: 3,
             returns_value: true,
             has_this: true,
             explicit_this: false,
-            byref_param_mask: 0b10,
+            byref_argument_modes: vec![None, Some(ManagedByRefArgumentMode::Out)],
         };
-        assert!(!info.arg_is_byref(0));
-        assert!(!info.arg_is_byref(1));
-        assert!(info.arg_is_byref(2));
+        assert_eq!(info.managed_byref_argument_mode(0), None);
+        assert_eq!(info.managed_byref_argument_mode(1), None);
+        assert_eq!(
+            info.managed_byref_argument_mode(2),
+            Some(ManagedByRefArgumentMode::Out)
+        );
     }
 
     #[test]
-    fn managed_byref_argument_mode_is_a_named_refusal() {
+    fn unresolved_managed_byref_argument_mode_is_a_named_refusal() {
         let names: NameTable = NameTable::new(
             false,
             vec!["result".to_owned()],
@@ -6011,17 +6040,48 @@ mod tests {
         let mut lifter: Lifter<'_, HexNamer> = Lifter::new(&HexNamer, &names, TargetLang::CSharp);
         let rendered: Vec<Expr> = lifter.render_byref_args(
             &[Expr::Arg(1)],
-            Some(CallInfo {
+            Some(&CallInfo {
                 arg_count: 1,
                 returns_value: false,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 1,
+                byref_argument_modes: vec![Some(ManagedByRefArgumentMode::Unresolved)],
             }),
             false,
         );
         assert_eq!(rendered[0].render(TargetLang::CSharp, &names), "result");
         assert!(lifter.managed_byref_argument_refused);
+    }
+
+    #[test]
+    fn managed_byref_argument_modes_render_csharp_keywords() {
+        let names: NameTable = NameTable::new(
+            false,
+            vec!["value".to_owned()],
+            vec!["ref int".to_owned()],
+            Vec::new(),
+        );
+        for (mode, keyword) in [
+            (ManagedByRefArgumentMode::Ref, "ref"),
+            (ManagedByRefArgumentMode::Out, "out"),
+            (ManagedByRefArgumentMode::In, "in"),
+        ] {
+            let info: CallInfo = CallInfo {
+                arg_count: 1,
+                returns_value: false,
+                has_this: false,
+                explicit_this: false,
+                byref_argument_modes: vec![Some(mode)],
+            };
+            let mut lifter: Lifter<'_, HexNamer> =
+                Lifter::new(&HexNamer, &names, TargetLang::CSharp);
+            let rendered: Vec<Expr> = lifter.render_byref_args(&[Expr::Arg(1)], Some(&info), false);
+            assert_eq!(
+                rendered[0].render(TargetLang::CSharp, &names),
+                format!("{keyword} value")
+            );
+            assert!(!lifter.managed_byref_argument_refused);
+        }
     }
 
     #[test]
@@ -6068,7 +6128,7 @@ mod tests {
                 returns_value: true,
                 has_this: false,
                 explicit_this: false,
-                byref_param_mask: 0,
+                byref_argument_modes: Vec::new(),
             })
         }
 

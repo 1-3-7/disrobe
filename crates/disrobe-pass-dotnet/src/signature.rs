@@ -438,17 +438,28 @@ impl<'a> SigReader<'a> {
     }
 
     fn type_sig(&mut self) -> Result<TypeSig> {
+        let mut required_modifiers: Option<&mut Vec<u32>> = None;
+        self.type_sig_with_required_modifiers(&mut required_modifiers)
+    }
+
+    fn type_sig_with_required_modifiers(
+        &mut self,
+        required_modifiers: &mut Option<&mut Vec<u32>>,
+    ) -> Result<TypeSig> {
         self.consume_node()?;
         self.depth += 1;
         if self.depth > MAX_SIG_DEPTH {
             return Err(Error::SignatureTooDeep(MAX_SIG_DEPTH));
         }
-        let parsed: Result<TypeSig> = self.type_sig_inner();
+        let parsed: Result<TypeSig> = self.type_sig_inner(required_modifiers);
         self.depth -= 1;
         parsed
     }
 
-    fn type_sig_inner(&mut self) -> Result<TypeSig> {
+    fn type_sig_inner(
+        &mut self,
+        required_modifiers: &mut Option<&mut Vec<u32>>,
+    ) -> Result<TypeSig> {
         use element_type as et;
         let mut leading_modifiers: bool = true;
         while leading_modifiers {
@@ -460,12 +471,18 @@ impl<'a> SigReader<'a> {
                     if self.policy == SignaturePolicy::DefinitionValidation {
                         self.consume_node()?;
                     }
-                    let _: u8 = self.byte()?;
-                    let _ = self.type_def_or_ref()?;
+                    let modifier: u8 = self.byte()?;
+                    let token: u32 = self.type_def_or_ref()?;
+                    if modifier == et::CMOD_REQD
+                        && let Some(modifiers) = required_modifiers.as_deref_mut()
+                    {
+                        modifiers.push(token);
+                    }
                 }
                 Some(et::PINNED) => {
                     let _: u8 = self.byte()?;
-                    let inner: TypeSig = self.type_sig()?;
+                    let inner: TypeSig =
+                        self.type_sig_with_required_modifiers(required_modifiers)?;
                     return Ok(TypeSig::Pinned(Box::new(inner)));
                 }
                 _ => leading_modifiers = false,
@@ -499,13 +516,19 @@ impl<'a> SigReader<'a> {
                 is_value_type: false,
                 token: self.type_def_or_ref()?,
             },
-            et::SZARRAY => TypeSig::SzArray(Box::new(self.type_sig()?)),
-            et::PTR => TypeSig::Ptr(Box::new(self.type_sig()?)),
-            et::BYREF => TypeSig::ByRef(Box::new(self.type_sig()?)),
+            et::SZARRAY => TypeSig::SzArray(Box::new(
+                self.type_sig_with_required_modifiers(required_modifiers)?,
+            )),
+            et::PTR => TypeSig::Ptr(Box::new(
+                self.type_sig_with_required_modifiers(required_modifiers)?,
+            )),
+            et::BYREF => TypeSig::ByRef(Box::new(
+                self.type_sig_with_required_modifiers(required_modifiers)?,
+            )),
             et::VAR => TypeSig::Var(self.compressed()?),
             et::MVAR => TypeSig::MVar(self.compressed()?),
             et::ARRAY => {
-                let element: TypeSig = self.type_sig()?;
+                let element: TypeSig = self.type_sig_with_required_modifiers(required_modifiers)?;
                 let rank: u32 = self.compressed()?;
                 let num_sizes: u32 = self.compressed()?;
                 if self.policy != SignaturePolicy::Recovery && (rank == 0 || num_sizes > rank) {
@@ -528,7 +551,7 @@ impl<'a> SigReader<'a> {
             }
             et::GENERICINST => {
                 let base_position: usize = self.reader.position();
-                let base: TypeSig = self.type_sig()?;
+                let base: TypeSig = self.type_sig_with_required_modifiers(required_modifiers)?;
                 if self.policy != SignaturePolicy::Recovery
                     && !matches!(base, TypeSig::NamedType { .. })
                 {
@@ -541,7 +564,7 @@ impl<'a> SigReader<'a> {
                 let capacity: usize = self.signature_capacity(argc)?;
                 let mut args: Vec<TypeSig> = Vec::with_capacity(capacity);
                 for _ in 0..argc {
-                    args.push(self.type_sig()?);
+                    args.push(self.type_sig_with_required_modifiers(required_modifiers)?);
                 }
                 TypeSig::GenericInst {
                     base: Box::new(base),
@@ -593,6 +616,27 @@ impl<'a> SigReader<'a> {
             params,
         })
     }
+
+    fn parse_method_param_required_modifiers(&mut self) -> Result<Vec<Vec<u32>>> {
+        let cc: u8 = self.byte()?;
+        if cc & SIG_GENERIC != 0 {
+            let _: u32 = self.compressed()?;
+        }
+        let param_count: u32 = self.compressed()?;
+        let _: TypeSig = self.type_sig()?;
+        let capacity: usize = self.signature_capacity(param_count)?;
+        let mut parameter_required_modifiers: Vec<Vec<u32>> = Vec::with_capacity(capacity);
+        for _ in 0..param_count {
+            if self.peek().is_none() {
+                return Err(Error::BadCompressedUint(self.reader.position()));
+            }
+            let mut required_modifiers: Vec<u32> = Vec::new();
+            let mut modifier_sink: Option<&mut Vec<u32>> = Some(&mut required_modifiers);
+            let _: TypeSig = self.type_sig_with_required_modifiers(&mut modifier_sink)?;
+            parameter_required_modifiers.push(required_modifiers);
+        }
+        Ok(parameter_required_modifiers)
+    }
 }
 
 fn parse_method_sig_with_reader(mut reader: SigReader<'_>) -> Result<MethodSig> {
@@ -608,6 +652,18 @@ pub fn parse_method_sig(blob: &[u8]) -> Result<MethodSig> {
         return Err(Error::BadCompressedUint(0));
     }
     parse_method_sig_with_reader(SigReader::new(blob))
+}
+
+pub(crate) fn parse_method_param_required_modifiers(blob: &[u8]) -> Result<Vec<Vec<u32>>> {
+    if blob.is_empty() {
+        return Err(Error::BadCompressedUint(0));
+    }
+    let mut reader: SigReader<'_> = SigReader::new(blob);
+    let modifiers: Vec<Vec<u32>> = reader.parse_method_param_required_modifiers()?;
+    if reader.remaining() != 0 {
+        return Err(Error::BadCompressedUint(reader.reader.position()));
+    }
+    Ok(modifiers)
 }
 
 pub(crate) fn parse_method_sig_strict(blob: &[u8]) -> Result<MethodSig> {
@@ -1265,6 +1321,37 @@ mod tests {
         assert_eq!(sig.return_type.render(), "int");
         assert_eq!(sig.params.len(), 1);
         assert_eq!(sig.params[0].render(), "string");
+    }
+
+    #[test]
+    fn method_parameter_modifiers_preserve_ref_and_in_modreqs() {
+        const IS_READ_ONLY_ATTRIBUTE: u32 = 0x0100_0001;
+        const IN_ATTRIBUTE: u32 = 0x0100_0002;
+        let blob: [u8; 11] = [
+            SIG_DEFAULT,
+            0x02,
+            element_type::VOID,
+            element_type::BYREF,
+            element_type::I4,
+            element_type::CMOD_REQD,
+            0x05,
+            element_type::BYREF,
+            element_type::CMOD_REQD,
+            0x09,
+            element_type::I4,
+        ];
+        let signature: MethodSig = parse_method_sig(&blob).expect("method signature");
+        assert_eq!(
+            signature.params,
+            vec![
+                TypeSig::ByRef(Box::new(TypeSig::I4)),
+                TypeSig::ByRef(Box::new(TypeSig::I4)),
+            ]
+        );
+        assert_eq!(
+            parse_method_param_required_modifiers(&blob).expect("parameter modifiers"),
+            vec![Vec::new(), vec![IS_READ_ONLY_ATTRIBUTE, IN_ATTRIBUTE]]
+        );
     }
 
     #[test]

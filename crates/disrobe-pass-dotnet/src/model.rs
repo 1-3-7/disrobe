@@ -11,11 +11,12 @@ use crate::pe::{ClrHeader, PeImage};
 use crate::signature::{
     FieldSig, MethodSig, SIG_DEFAULT, SIG_HASTHIS, TypeSig, TypeSigOrVoid, parse_field_sig,
     parse_field_sig_strict, parse_field_sig_validated, parse_field_sig_with_modifiers,
-    parse_method_sig, parse_method_sig_strict, parse_method_sig_validated,
+    parse_method_param_required_modifiers, parse_method_sig, parse_method_sig_strict,
+    parse_method_sig_validated,
 };
 use crate::structurize::{
-    FieldRvaPrimitive, MetadataTokenKind, TargetLang, csharp_escape_identifier,
-    is_simple_identifier,
+    FieldRvaPrimitive, ManagedByRefArgumentMode, MetadataTokenKind, TargetLang,
+    csharp_escape_identifier, is_simple_identifier,
 };
 use crate::tables::{
     FieldRow, GenericParamRow, InterfaceImplRow, MemberRefRow, MethodDefRow, MethodSpecRow, RowRef,
@@ -2536,6 +2537,210 @@ impl Resolver {
     }
 
     #[must_use]
+    pub(crate) fn callee_managed_byref_argument_modes(
+        &self,
+        token: u32,
+    ) -> Option<Vec<Option<ManagedByRefArgumentMode>>> {
+        let (method_token, signature_index): (u32, u32) = self.callee_signature_source(token)?;
+        let signature: MethodSig = parse_method_sig(self.blob(signature_index)?).ok()?;
+        let required_modifiers: Vec<Vec<u32>> =
+            parse_method_param_required_modifiers(self.blob(signature_index)?).ok()?;
+        if required_modifiers.len() != signature.params.len() {
+            return Some(
+                signature
+                    .params
+                    .iter()
+                    .map(|parameter: &TypeSig| {
+                        matches!(parameter, TypeSig::ByRef(_))
+                            .then_some(ManagedByRefArgumentMode::Unresolved)
+                    })
+                    .collect(),
+            );
+        }
+        let parameter_flags: Option<Vec<Option<u16>>> = if token_table(method_token)
+            == Some(TableId::MethodDef)
+        {
+            let Some(flags): Option<Vec<Option<u16>>> = self.method_parameter_flags(method_token)
+            else {
+                return Some(
+                    signature
+                        .params
+                        .iter()
+                        .map(|parameter: &TypeSig| {
+                            matches!(parameter, TypeSig::ByRef(_))
+                                .then_some(ManagedByRefArgumentMode::Unresolved)
+                        })
+                        .collect(),
+                );
+            };
+            Some(flags)
+        } else {
+            None
+        };
+        Some(
+            signature
+                .params
+                .iter()
+                .zip(required_modifiers)
+                .enumerate()
+                .map(
+                    |(index, (parameter, modifiers)): (usize, (&TypeSig, Vec<u32>))| {
+                        if !matches!(parameter, TypeSig::ByRef(_)) {
+                            return None;
+                        }
+                        let flags: Option<u16> =
+                            parameter_flags
+                                .as_ref()
+                                .and_then(|parameters: &Vec<Option<u16>>| {
+                                    parameters.get(index).copied().flatten()
+                                });
+                        Some(self.managed_byref_argument_mode(flags, &modifiers))
+                    },
+                )
+                .collect(),
+        )
+    }
+
+    fn callee_signature_source(&self, token: u32) -> Option<(u32, u32)> {
+        let mut method_token: u32 = token;
+        while token_table(method_token) == Some(TableId::MethodSpec) {
+            let method_spec: &MethodSpecRow = self
+                .tables
+                .method_specs
+                .get(token_rid(method_token)?.checked_sub(1)? as usize)?;
+            method_token = row_ref_token(method_spec.method?);
+        }
+        let signature: u32 = match token_table(method_token)? {
+            TableId::MethodDef => {
+                self.tables
+                    .methods
+                    .get(token_rid(method_token)?.checked_sub(1)? as usize)?
+                    .signature
+            }
+            TableId::MemberRef => {
+                self.tables
+                    .member_refs
+                    .get(token_rid(method_token)?.checked_sub(1)? as usize)?
+                    .signature
+            }
+            _ => return None,
+        };
+        Some((method_token, signature))
+    }
+
+    fn method_parameter_flags(&self, method_token: u32) -> Option<Vec<Option<u16>>> {
+        (token_table(method_token) == Some(TableId::MethodDef)).then_some(())?;
+        let method_index: usize = token_rid(method_token)?.checked_sub(1)? as usize;
+        let method: &MethodDefRow = self.tables.methods.get(method_index)?;
+        let parameter_count: usize = self
+            .blob(method.signature)
+            .and_then(|blob: &[u8]| parse_method_sig(blob).ok())?
+            .params
+            .len();
+        let end: u32 = self
+            .tables
+            .methods
+            .get(method_index.checked_add(1)?)
+            .map_or_else(
+                || self.tables.list_rows(TableId::Param).checked_add(1),
+                |next| Some(next.param_list),
+            )?;
+        let mut flags_by_sequence: BTreeMap<usize, u16> = BTreeMap::new();
+        for parameter_list_rid in method.param_list..end {
+            let parameter_rid: u32 = self
+                .tables
+                .resolve_list_rid(TableId::Param, parameter_list_rid)?;
+            let parameter: &crate::tables::ParamRow = self
+                .tables
+                .params
+                .get(parameter_rid.checked_sub(1)? as usize)?;
+            let sequence: usize = usize::from(parameter.sequence);
+            if sequence != 0
+                && (sequence > parameter_count
+                    || flags_by_sequence
+                        .insert(sequence, parameter.flags)
+                        .is_some())
+            {
+                return None;
+            }
+        }
+        Some(
+            (1..=parameter_count)
+                .map(|sequence: usize| flags_by_sequence.get(&sequence).copied())
+                .collect(),
+        )
+    }
+
+    fn managed_byref_argument_mode(
+        &self,
+        parameter_flags: Option<u16>,
+        required_modifiers: &[u32],
+    ) -> ManagedByRefArgumentMode {
+        let has_in_modifier: bool = required_modifiers
+            .iter()
+            .copied()
+            .any(|modifier: u32| self.is_in_modifier(modifier));
+        let Some(flags): Option<u16> = parameter_flags else {
+            return if has_in_modifier {
+                ManagedByRefArgumentMode::In
+            } else {
+                ManagedByRefArgumentMode::Ref
+            };
+        };
+        let is_in: bool = flags & 0x0001 != 0;
+        let is_out: bool = flags & 0x0002 != 0;
+        match (is_in, is_out, has_in_modifier) {
+            (true, true, _) | (false, true, true) => ManagedByRefArgumentMode::Unresolved,
+            (_, true, false) => ManagedByRefArgumentMode::Out,
+            (true, false, _) | (false, false, true) => ManagedByRefArgumentMode::In,
+            (false, false, false) => ManagedByRefArgumentMode::Ref,
+        }
+    }
+
+    fn is_in_modifier(&self, token: u32) -> bool {
+        let (Some(table), Some(rid)): (Option<TableId>, Option<u32>) =
+            (token_table(token), token_rid(token))
+        else {
+            return false;
+        };
+        let identity: Option<(String, String)> = match table {
+            TableId::TypeDef => {
+                let Some(index): Option<usize> = rid
+                    .checked_sub(1)
+                    .and_then(|value: u32| usize::try_from(value).ok())
+                else {
+                    return false;
+                };
+                self.tables
+                    .type_defs
+                    .get(index)
+                    .map(|row: &TypeDefRow| (self.string(row.namespace), self.string(row.name)))
+            }
+            TableId::TypeRef => {
+                let Some(index): Option<usize> = rid
+                    .checked_sub(1)
+                    .and_then(|value: u32| usize::try_from(value).ok())
+                else {
+                    return false;
+                };
+                self.tables
+                    .type_refs
+                    .get(index)
+                    .map(|row: &TypeRefRow| (self.string(row.namespace), self.string(row.name)))
+            }
+            _ => None,
+        };
+        let Some((namespace, name)): Option<(String, String)> = identity else {
+            return false;
+        };
+        matches!(
+            (namespace.as_str(), name.as_str()),
+            ("System.Runtime.CompilerServices", "IsReadOnlyAttribute")
+                | ("System.Runtime.InteropServices", "InAttribute")
+        )
+    }
+
+    #[must_use]
     pub fn enclosing_type_token(&self, type_token: u32) -> Option<u32> {
         let rid: u32 = token_rid(type_token)?;
         self.tables
@@ -3651,6 +3856,92 @@ mod tests {
         let root: MetadataRoot =
             crate::metadata::parse_metadata_root(&bytes, &pe, &clr).expect("root");
         Resolver::build(&bytes, &pe, &clr, &root).expect("resolver")
+    }
+
+    fn byref_resolver(parameter_flags: u16) -> Resolver {
+        Resolver {
+            tables: Tables {
+                methods: vec![MethodDefRow {
+                    rva: 0,
+                    impl_flags: 0,
+                    flags: 0,
+                    name: 0,
+                    signature: 1,
+                    param_list: 1,
+                }],
+                params: vec![crate::tables::ParamRow {
+                    flags: parameter_flags,
+                    sequence: 1,
+                    name: 0,
+                }],
+                method_specs: vec![MethodSpecRow {
+                    method: Some(RowRef {
+                        table: TableId::MethodDef,
+                        row: 1,
+                    }),
+                    instantiation: 0,
+                }],
+                row_counts: BTreeMap::from([(TableId::Param.index(), 1)]),
+                ..Tables::default()
+            },
+            method_impl_indices_by_type: BTreeMap::new(),
+            strings_heap: Vec::new(),
+            blob: vec![0, 5, 0, 1, 1, 0x10, 8],
+            us: Vec::new(),
+            member_renames: BTreeMap::new(),
+            type_renames: BTreeMap::new(),
+            namespace_renames: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn callee_managed_byref_modes_unwrap_method_specs_and_read_param_flags() {
+        let out: Resolver = byref_resolver(0x0002);
+        assert_eq!(
+            out.callee_managed_byref_argument_modes(0x2B00_0001),
+            Some(vec![Some(ManagedByRefArgumentMode::Out)])
+        );
+        let input: Resolver = byref_resolver(0x0001);
+        assert_eq!(
+            input.callee_managed_byref_argument_modes(0x2B00_0001),
+            Some(vec![Some(ManagedByRefArgumentMode::In)])
+        );
+        let reference: Resolver = byref_resolver(0);
+        assert_eq!(
+            reference.callee_managed_byref_argument_modes(0x2B00_0001),
+            Some(vec![Some(ManagedByRefArgumentMode::Ref)])
+        );
+    }
+
+    #[test]
+    fn callee_managed_byref_modes_retain_member_ref_signatures_for_type_specs() {
+        let mut resolver: Resolver = byref_resolver(0);
+        resolver
+            .tables
+            .type_specs
+            .push(TypeSpecRow { signature: 0 });
+        resolver.tables.member_refs.push(MemberRefRow {
+            parent: Some(RowRef {
+                table: TableId::TypeSpec,
+                row: 1,
+            }),
+            name: 0,
+            signature: 1,
+        });
+        assert_eq!(
+            resolver.callee_managed_byref_argument_modes(0x0A00_0001),
+            Some(vec![Some(ManagedByRefArgumentMode::Ref)])
+        );
+    }
+
+    #[test]
+    fn malformed_method_parameter_metadata_leaves_byref_mode_unresolved() {
+        let mut resolver: Resolver = byref_resolver(0);
+        resolver.tables.params[0].sequence = 2;
+        assert_eq!(
+            resolver.callee_managed_byref_argument_modes(0x0600_0001),
+            Some(vec![Some(ManagedByRefArgumentMode::Unresolved)])
+        );
     }
 
     #[test]
