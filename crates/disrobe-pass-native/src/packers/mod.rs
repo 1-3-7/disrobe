@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-mod anchor;
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) mod anchor;
 
 use anchor::AnchorRegions;
 

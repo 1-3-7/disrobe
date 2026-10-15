@@ -237,6 +237,14 @@ fn native_pseudo_report(
         | crate::arch::Arch::Ebpf
         | crate::arch::Arch::Avr => return Ok(None),
     };
+    if let Some(runtime) = crate::runtime_image::detect_runtime_decrypted(bytes) {
+        return Ok(Some(serde_json::json!({
+            "schema": "disrobe.native.pseudo-source/v1",
+            "run": false,
+            "verdict": crate::runtime_image::RUNTIME_DECRYPTED_VERDICT,
+            "reason": runtime.refusal(),
+        })));
+    }
     if bytes.len() > MAX_AUTO_PSEUDO_IMAGE_BYTES {
         return Ok(Some(serde_json::json!({
             "schema": "disrobe.native.pseudo-source/v1",
@@ -246,13 +254,23 @@ fn native_pseudo_report(
             "image_byte_limit": MAX_AUTO_PSEUDO_IMAGE_BYTES,
         })));
     }
-    let payload: disrobe_ir::payload::DisasmPayload = crate::disasm_ir::build_disasm_payload(bytes)
-        .map_err(|error: crate::Error| {
-            CoreError::PassFailure(format!(
-                "DR-NAT-0944: native.image-classify: build {} function inventory: {error}",
-                arch.label()
-            ))
-        })?;
+    let payload: disrobe_ir::payload::DisasmPayload =
+        match crate::disasm_ir::build_disasm_payload(bytes) {
+            Ok(payload) => payload,
+            Err(error @ crate::Error::NoExecutableCode(_)) => {
+                return Ok(Some(serde_json::json!({
+                    "schema": "disrobe.native.pseudo-source/v1",
+                    "run": false,
+                    "reason": error.to_string(),
+                })));
+            }
+            Err(error) => {
+                return Err(CoreError::PassFailure(format!(
+                    "DR-NAT-0944: native.image-classify: build {} function inventory: {error}",
+                    arch.label()
+                )));
+            }
+        };
     let spans: Vec<crate::disasm_ir::FunctionSpan> =
         crate::disasm_ir::function_spans(&payload, arch);
     if spans.len() > MAX_AUTO_PSEUDO_FUNCTIONS {
@@ -2105,6 +2123,65 @@ mod tests {
         buf[sec_table + 36..sec_table + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
         buf.extend_from_slice(body);
         buf
+    }
+
+    fn pseudo_source_report(bytes: Vec<u8>) -> serde_json::Value {
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let children: Vec<ChildArtifact> = NATIVE_IMAGE_PASS
+            .extract_children(&artifact)
+            .expect("the image pass classifies the image");
+        let report: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| child.handle.relative_path == PSEUDO_SOURCE_PATH)
+            .expect("the pseudo-source report is a child artifact");
+        serde_json::from_slice(&report.bytes).expect("the report is JSON")
+    }
+
+    #[test]
+    fn a_resource_only_image_classifies_with_a_named_empty_inventory() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let image: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::backed(*b".rdata\0\0", 0x1000, vec![0x11; 0x80], 0x4000_0040),
+                SyntheticSection::backed(*b".rsrc\0\0\0", 0x2000, vec![0x22; 0x200], 0x4000_0040),
+            ],
+            0,
+        );
+        let report: serde_json::Value = pseudo_source_report(image);
+        assert_eq!(report["run"], false);
+        assert!(
+            report["reason"]
+                .as_str()
+                .is_some_and(|reason: &str| reason.contains("DR-NATIVE-0226")),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_runtime_decrypted_image_is_refused_by_name_in_auto() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let mut state: u64 = 0x0123_4567_89AB_CDEF;
+        let sealed: Vec<u8> = (0..0x8000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 32) as u8
+            })
+            .collect();
+        let image: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::unbacked(*b".text\0\0\0", 0x1000, 0x10_0000, 0x6000_0020),
+                SyntheticSection::backed(*b".seal\0\0\0", 0x10_1000, sealed, 0x6000_0020),
+            ],
+            0x10_1000,
+        );
+        let report: serde_json::Value = pseudo_source_report(image);
+        assert_eq!(report["run"], false);
+        assert_eq!(
+            report["verdict"],
+            crate::runtime_image::RUNTIME_DECRYPTED_VERDICT
+        );
     }
 
     #[test]

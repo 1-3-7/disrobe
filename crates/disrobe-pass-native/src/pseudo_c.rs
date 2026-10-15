@@ -3107,6 +3107,25 @@ fn object_transfer_facts(
         };
         facts.relocated_lea_values.insert(insn.address, target);
     }
+    if matches!(file.format(), object::BinaryFormat::Pe)
+        && let Some(cookie) = pe_security_cookie_va(object)
+    {
+        for insn in insns {
+            if exact_rip_relative_mov_load_destination(insn).is_some()
+                && rip_relative_target(insn) == Some(cookie)
+            {
+                facts.msvc_cookie_load_sites.insert(insn.address);
+            }
+        }
+        for transfer in &transfers {
+            if transfer.mnemonic == "call"
+                && let Some(target) = parse_branch_target(&transfer.operands)
+                && image_function_checks_cookie(&file, target, cookie)
+            {
+                facts.msvc_cookie_check_sites.insert(transfer.address);
+            }
+        }
+    }
     facts.stack_guard_sequence_sites = stack_guard_sequence_sites(
         insns,
         &facts.stack_guard_sequence_sites,
@@ -3551,6 +3570,59 @@ fn stack_guard_sequence_sites(
         ]);
     }
     sequence_sites
+}
+
+const LOAD_CONFIG_DIRECTORY_INDEX: usize = 10;
+const LOAD_CONFIG64_SECURITY_COOKIE_OFFSET: usize = 0x58;
+const RIP_RELATIVE_COMPARE_RCX: [u8; 3] = [0x48, 0x3b, 0x0d];
+
+fn pe_security_cookie_va(image: &[u8]) -> Option<u64> {
+    let pe: crate::packers::pe_sections::PeImage =
+        crate::packers::pe_sections::parse_pe_image(image).ok()?;
+    if !pe.is_pe32_plus {
+        return None;
+    }
+    let directory: &crate::packers::pe_sections::DataDirectory =
+        pe.data_directories.get(LOAD_CONFIG_DIRECTORY_INDEX)?;
+    let declared: usize = directory.size as usize;
+    if directory.virtual_address == 0 || declared < LOAD_CONFIG64_SECURITY_COOKIE_OFFSET + 8 {
+        return None;
+    }
+    let at: usize = pe
+        .file_offset_for_rva(directory.virtual_address, image.len())
+        .ok()?;
+    let structure_size: usize = disrobe_bytes::read_u32_le_at(image, at).ok()? as usize;
+    if structure_size < LOAD_CONFIG64_SECURITY_COOKIE_OFFSET + 8 {
+        return None;
+    }
+    let cookie: u64 =
+        disrobe_bytes::read_u64_le_at(image, at + LOAD_CONFIG64_SECURITY_COOKIE_OFFSET).ok()?;
+    (cookie != 0).then_some(cookie)
+}
+
+fn rip_relative_target(insn: &DisasmInsn) -> Option<u64> {
+    let displacement: [u8; 4] = insn.bytes.get(3..7)?.try_into().ok()?;
+    insn.address
+        .checked_add(insn.bytes.len() as u64)?
+        .checked_add_signed(i64::from(i32::from_le_bytes(displacement)))
+}
+
+fn image_function_checks_cookie(file: &object::File<'_>, entry: u64, cookie: u64) -> bool {
+    use object::{Object as _, ObjectSection as _};
+    file.sections()
+        .find_map(|section: object::Section<'_, '_>| section.data_range(entry, 7).ok().flatten())
+        .is_some_and(|head: &[u8]| {
+            head.starts_with(&RIP_RELATIVE_COMPARE_RCX)
+                && head
+                    .get(3..7)
+                    .and_then(|raw: &[u8]| raw.try_into().ok())
+                    .and_then(|raw: [u8; 4]| {
+                        entry
+                            .checked_add(7)?
+                            .checked_add_signed(i64::from(i32::from_le_bytes(raw)))
+                    })
+                    == Some(cookie)
+        })
 }
 
 fn exact_rip_relative_mov_load_destination(insn: &DisasmInsn) -> Option<RegRef> {
@@ -4841,6 +4913,54 @@ fn refuse_high_byte_registers(insns: &[DisasmInsn]) -> Result<()> {
     Ok(())
 }
 
+const MS_X64_HOME_AREA_BYTES: i64 = 0x20;
+
+fn rsp_slot_displacement(operand: &str) -> Option<i64> {
+    let mem: MemRef = parse_memory_operand(operand, Width::W64)?;
+    (mem.base == Some(Reg::Rsp) && mem.index.is_none()).then_some(mem.disp)
+}
+
+fn refuse_unread_ms_x64_stack_argument_stores(insns: &[DisasmInsn]) -> Result<()> {
+    let (Some(first), Some(last)): (Option<&DisasmInsn>, Option<&DisasmInsn>) =
+        (insns.first(), insns.last())
+    else {
+        return Ok(());
+    };
+    let start: u64 = first.address;
+    let end: u64 = last.address.saturating_add(last.bytes.len() as u64);
+    let transfers_out: bool = insns.iter().any(|insn: &DisasmInsn| {
+        parse_branch_target(&insn.operands).is_some_and(|target: u64| {
+            insn.mnemonic == "call" || (insn.mnemonic == "jmp" && !(start..end).contains(&target))
+        })
+    });
+    if !transfers_out {
+        return Ok(());
+    }
+    let mut stored: BTreeSet<i64> = BTreeSet::new();
+    let mut read: BTreeSet<i64> = BTreeSet::new();
+    for insn in insns {
+        let plain_store: bool = matches!(insn.mnemonic.as_str(), "mov" | "movq" | "movd");
+        for (position, operand) in insn.operands.split(',').enumerate() {
+            let Some(displacement): Option<i64> = rsp_slot_displacement(operand) else {
+                continue;
+            };
+            if position == 0 && plain_store {
+                stored.insert(displacement);
+            } else {
+                read.insert(displacement);
+            }
+        }
+    }
+    stored
+        .difference(&read)
+        .find(|displacement: &&i64| **displacement >= MS_X64_HOME_AREA_BYTES)
+        .map_or(Ok(()), |displacement: &i64| {
+            Err(Error::LlvmIr(format!(
+                "a store to [rsp+{displacement:#x}] is never read back, so it is an outgoing stack argument of a direct call or tail jump that the call IR cannot carry"
+            )))
+        })
+}
+
 fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
@@ -4856,6 +4976,9 @@ fn build_leaf_items(
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
     let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
+    if abi == Abi::MsX64 {
+        refuse_unread_ms_x64_stack_argument_stores(&insns)?;
+    }
     let pop_moves: BTreeMap<u64, Stmt> = stack_transfer::plan_stack_transfers(&insns, abi, &[])?;
     let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(&insns)?;
     let entry_flags: CfgEntryFlags = cfg_entry_flags(&insns, consts)?;
@@ -8648,8 +8771,19 @@ fn rax_write_width(stmt: &Stmt) -> Option<Width> {
 }
 
 fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
+    let (fallthrough, returned): (Width, Option<Width>) = fold_return_widths(nodes, incoming);
+    returned.map_or(fallthrough, |width: Width| width.max(fallthrough))
+}
+
+fn widen_returned(returned: &mut Option<Width>, width: Option<Width>) {
+    if let Some(width) = width {
+        *returned = Some(returned.map_or(width, |seen: Width| seen.max(width)));
+    }
+}
+
+fn fold_return_widths(nodes: &[Node], incoming: Width) -> (Width, Option<Width>) {
     let mut cur: Width = incoming;
-    let mut result: Width = Width::W8;
+    let mut returned: Option<Width> = None;
     for node in nodes {
         match node {
             Node::Stmt(stmt) => {
@@ -8662,23 +8796,33 @@ fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
                 else_body,
                 ..
             } => {
-                let then_w: Width = folded_int_return_width(then_body, cur);
-                let else_w: Width = else_body
+                let (then_w, then_returned): (Width, Option<Width>) =
+                    fold_return_widths(then_body, cur);
+                let (else_w, else_returned): (Width, Option<Width>) = else_body
                     .as_ref()
-                    .map_or(cur, |e: &Block| folded_int_return_width(e, cur));
+                    .map_or((cur, None), |e: &Block| fold_return_widths(e, cur));
+                widen_returned(&mut returned, then_returned);
+                widen_returned(&mut returned, else_returned);
                 cur = then_w.max(else_w);
             }
             Node::While { body, .. } | Node::DoWhile { body, .. } => {
-                cur = cur.max(folded_int_return_width(body, cur));
+                let (body_w, body_returned): (Width, Option<Width>) = fold_return_widths(body, cur);
+                widen_returned(&mut returned, body_returned);
+                cur = cur.max(body_w);
             }
             Node::Switch { cases, default, .. } => {
-                let mut widest: Width = folded_int_return_width(default, cur);
+                let (mut widest, default_returned): (Width, Option<Width>) =
+                    fold_return_widths(default, cur);
+                widen_returned(&mut returned, default_returned);
                 for case in cases {
-                    widest = widest.max(folded_int_return_width(&case.body, cur));
+                    let (case_w, case_returned): (Width, Option<Width>) =
+                        fold_return_widths(&case.body, cur);
+                    widen_returned(&mut returned, case_returned);
+                    widest = widest.max(case_w);
                 }
                 cur = cur.max(widest);
             }
-            Node::Return => result = result.max(cur),
+            Node::Return => widen_returned(&mut returned, Some(cur)),
             Node::Break
             | Node::CondSnapshot { .. }
             | Node::Continue
@@ -8690,7 +8834,7 @@ fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
             | Node::Goto(_) => {}
         }
     }
-    result.max(cur)
+    (cur, returned)
 }
 
 fn chain_terminal_int_width(
@@ -30352,6 +30496,94 @@ mod tests {
         assert!(lift_double_shift("shld", "rdx,rax,64").is_none());
         assert!(lift_double_shift("shrd", "eax,edx,3").is_none());
         assert!(lift_double_shift("shld", "rdx,rax").is_none());
+    }
+
+    #[test]
+    fn linked_image_cookie_guard_is_recognised_from_the_load_config() {
+        use crate::test_support::{SyntheticSection, pe64_layout_with_directories};
+        let image_base: u64 = crate::test_support::pe64_text_base();
+        let mut text: Vec<u8> = vec![0xCC; 0x60];
+        let function: [u8; 40] = [
+            0x48, 0x83, 0xec, 0x48, 0x48, 0x8b, 0x05, 0xf5, 0x1f, 0x00, 0x00, 0x48, 0x33, 0xc4,
+            0x48, 0x89, 0x44, 0x24, 0x38, 0x8d, 0x41, 0x01, 0x48, 0x8b, 0x4c, 0x24, 0x38, 0x48,
+            0x33, 0xcc, 0xe8, 0x1d, 0x00, 0x00, 0x00, 0x48, 0x83, 0xc4, 0x48, 0xc3,
+        ];
+        text[..function.len()].copy_from_slice(&function);
+        text[0x40..0x4b].copy_from_slice(&[
+            0x48, 0x3b, 0x0d, 0xb9, 0x1f, 0x00, 0x00, 0x75, 0x01, 0xc3, 0xcc,
+        ]);
+        let mut load_config: Vec<u8> = vec![0u8; 0x100];
+        load_config[..4].copy_from_slice(&0x100u32.to_le_bytes());
+        load_config[0x58..0x60].copy_from_slice(&(image_base + 0x3000).to_le_bytes());
+        let image: Vec<u8> = pe64_layout_with_directories(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, text, 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", 0x2000, load_config, 0x4000_0040),
+                SyntheticSection::backed(*b".data\0\0\0", 0x3000, vec![0x2b; 0x10], 0xC000_0040),
+            ],
+            0x1000,
+            &[(10, 0x2000, 0x100)],
+        );
+        let rec: LeafRecovery = recover_leaf_function_in_object(
+            &image,
+            &function,
+            image_base + 0x1000,
+            Abi::MsX64,
+            &[],
+        )
+        .expect("the load-config cookie guard is plumbing, not a global load");
+        assert!(!rec.source.contains("sub_"), "{}", rec.source);
+        assert!(rec.source.contains("r_rcx"), "{}", rec.source);
+    }
+
+    #[test]
+    fn a_pointer_returned_from_a_loop_keeps_its_width_beside_a_null_return() {
+        let code: [u8; 32] = [
+            0x4d, 0x85, 0xc0, 0x74, 0x18, 0x49, 0x8d, 0x40, 0xff, 0x48, 0x01, 0xc8, 0x48, 0x39,
+            0xc8, 0x72, 0x0c, 0x38, 0x10, 0x74, 0x0a, 0x48, 0xff, 0xc8, 0x48, 0x39, 0xc8, 0x73,
+            0xf4, 0x33, 0xc0, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&code, 0x1000, Abi::MsX64).expect("memrchr-shaped leaf");
+        assert_eq!(
+            rec.return_width_bits, 64,
+            "the found pointer is a 64-bit rax definition; the 32-bit null write zero-extends: {}",
+            rec.source
+        );
+        assert!(
+            !rec.source.contains("return (r_rax) & 0xffffffffULL"),
+            "{}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn an_unread_outgoing_stack_argument_refuses_the_call_site() {
+        let fifth_argument: [u8; 23] = [
+            0x48, 0x83, 0xec, 0x38, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xff, 0xff, 0xff, 0xff, 0xe8,
+            0xe6, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc4, 0x38, 0xc3,
+        ];
+        let refusal: String = recover_leaf_function_abi(&fifth_argument, 0x8, Abi::MsX64)
+            .map(|rec: LeafRecovery| rec.source)
+            .expect_err("a call that reads a fifth argument from [rsp+0x20] cannot drop it")
+            .to_string();
+        assert!(refusal.contains("outgoing stack argument"), "{refusal}");
+
+        let local_reloaded: [u8; 28] = [
+            0x48, 0x83, 0xec, 0x38, 0x48, 0xc7, 0x44, 0x24, 0x20, 0x05, 0x00, 0x00, 0x00, 0xe8,
+            0xe6, 0xff, 0xff, 0xff, 0x48, 0x03, 0x44, 0x24, 0x20, 0x48, 0x83, 0xc4, 0x38, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&local_reloaded, 0x8, Abi::MsX64)
+            .expect("a local read back after the call is not a stack argument");
+        assert!(rec.source.contains("sub_0("), "{}", rec.source);
+
+        let tail_fifth_argument: [u8; 14] = [
+            0x48, 0xc7, 0x44, 0x24, 0x28, 0xff, 0xff, 0xff, 0xff, 0xe9, 0xea, 0xff, 0xff, 0xff,
+        ];
+        assert!(
+            recover_leaf_function_abi(&tail_fifth_argument, 0x8, Abi::MsX64).is_err(),
+            "a tail jump that passes a fifth argument on the stack is refused"
+        );
     }
 
     #[test]

@@ -86,6 +86,125 @@ fn wrong_eku_leaf_never_reaches_valid() {
     );
 }
 
+fn tlv_parts(bytes: &[u8]) -> (usize, usize) {
+    let first: u8 = bytes[1];
+    if first & 0x80 == 0 {
+        return (2, usize::from(first));
+    }
+    let count: usize = usize::from(first & 0x7F);
+    let length: usize = bytes[2..2 + count]
+        .iter()
+        .fold(0usize, |acc: usize, &b: &u8| (acc << 8) | usize::from(b));
+    (2 + count, length)
+}
+
+fn tlv_with(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = vec![tag];
+    let length: usize = content.len();
+    if length < 0x80 {
+        out.push(length as u8);
+    } else {
+        let be: [u8; 4] = (length as u32).to_be_bytes();
+        let skip: usize = be.iter().take_while(|&&b: &&u8| b == 0).count();
+        out.push(0x80 | (4 - skip) as u8);
+        out.extend_from_slice(&be[skip..]);
+    }
+    out.extend_from_slice(content);
+    out
+}
+
+fn children(content: &[u8]) -> Vec<&[u8]> {
+    let mut out: Vec<&[u8]> = Vec::new();
+    let mut pos: usize = 0;
+    while pos < content.len() {
+        let (header, length): (usize, usize) = tlv_parts(&content[pos..]);
+        out.push(&content[pos..pos + header + length]);
+        pos += header + length;
+    }
+    out
+}
+
+fn content_of(tlv: &[u8]) -> &[u8] {
+    let (header, length): (usize, usize) = tlv_parts(tlv);
+    &tlv[header..header + length]
+}
+
+fn with_first_certificate_repeated(pe: &[u8]) -> Vec<u8> {
+    let e_lfanew: usize = u32::from_le_bytes(pe[0x3C..0x40].try_into().unwrap()) as usize;
+    let opt: usize = e_lfanew + 24;
+    let directory: usize = opt
+        + if u16::from_le_bytes([pe[opt], pe[opt + 1]]) == 0x020B {
+            144
+        } else {
+            128
+        };
+    let table: usize =
+        u32::from_le_bytes(pe[directory..directory + 4].try_into().unwrap()) as usize;
+    let table_len: usize =
+        u32::from_le_bytes(pe[directory + 4..directory + 8].try_into().unwrap()) as usize;
+    assert_eq!(
+        table + table_len,
+        pe.len(),
+        "the certificate table ends the fixture"
+    );
+    let entry_len: usize = u32::from_le_bytes(pe[table..table + 4].try_into().unwrap()) as usize;
+    let pkcs7: &[u8] = &pe[table + 8..table + entry_len];
+    let (header, length): (usize, usize) = tlv_parts(pkcs7);
+    let content_info: Vec<&[u8]> = children(&pkcs7[header..header + length]);
+    let signed_data: &[u8] = content_of(content_info[1]);
+    let fields: Vec<&[u8]> = children(content_of(signed_data));
+    let mut rebuilt_fields: Vec<u8> = Vec::new();
+    let mut repeated: bool = false;
+    for field in fields {
+        if field[0] == 0xA0 {
+            let certificates: Vec<&[u8]> = children(content_of(field));
+            let mut set: Vec<u8> = Vec::new();
+            for (index, certificate) in certificates.iter().enumerate() {
+                set.extend_from_slice(certificate);
+                if index == 0 {
+                    set.extend_from_slice(certificate);
+                    repeated = true;
+                }
+            }
+            rebuilt_fields.extend_from_slice(&tlv_with(0xA0, &set));
+        } else {
+            rebuilt_fields.extend_from_slice(field);
+        }
+    }
+    assert!(repeated, "the fixture carries a certificate set");
+    let signed: Vec<u8> = tlv_with(0x30, &rebuilt_fields);
+    let mut info: Vec<u8> = content_info[0].to_vec();
+    info.extend_from_slice(&tlv_with(0xA0, &signed));
+    let der: Vec<u8> = tlv_with(0x30, &info);
+    let mut entry: Vec<u8> = Vec::new();
+    entry.extend_from_slice(&((8 + der.len()) as u32).to_le_bytes());
+    entry.extend_from_slice(&pe[table + 4..table + 8]);
+    entry.extend_from_slice(&der);
+    while !entry.len().is_multiple_of(8) {
+        entry.push(0);
+    }
+    let mut out: Vec<u8> = pe[..table].to_vec();
+    out.extend_from_slice(&entry);
+    out[directory + 4..directory + 8].copy_from_slice(&(entry.len() as u32).to_le_bytes());
+    out
+}
+
+#[test]
+fn a_repeated_certificate_in_the_signed_data_set_keeps_the_verdict() {
+    let original: Vec<u8> =
+        read_fixture("valid_untrusted.exe").expect("valid-untrusted fixture present");
+    let repeated: Vec<u8> = with_first_certificate_repeated(&original);
+    assert_ne!(repeated, original);
+    let report: AuthenticodeReport = verify_authenticode(&repeated, NOW_SECS);
+    assert_eq!(
+        report.verdict,
+        AuthenticodeVerdict::UntrustedChain,
+        "signers that repeat a certificate in the SET OF still carry a well-formed signature"
+    );
+    assert_eq!(report.computed_hash, report.claimed_hash);
+    assert_eq!(report.chain.len(), 2, "leaf plus self-signed test CA");
+}
+
 #[test]
 fn injected_timestamp_cannot_unexpire_a_signature() {
     let bytes: Vec<u8> =

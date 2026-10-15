@@ -94,10 +94,7 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
 
     let sections: Vec<ExecutableSection> = executable_sections(bytes, &native.sections);
     if sections.is_empty() {
-        return Err(Error::ObjectParse(format!(
-            "{} carries no readable executable section to disassemble",
-            native.format.label()
-        )));
+        return Err(Error::NoExecutableCode(native.format.label()));
     }
 
     let arm_mapping: ArmMappingSymbols = if matches!(native.arch, BinArch::Arm) {
@@ -205,17 +202,28 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
     instructions.sort_by_key(|i: &DisasmInstruction| i.offset);
 
     let mut symbol_table: Vec<DisasmSymbol> = build_symbol_table(bytes, &native);
-    let has_function_or_export: bool = symbol_table.iter().any(|symbol: &DisasmSymbol| {
-        matches!(
-            symbol.kind,
-            DisasmSymbolKind::Function | DisasmSymbolKind::Export
-        ) && instructions
-            .binary_search_by_key(&symbol.address, |instruction: &DisasmInstruction| {
-                instruction.offset
-            })
-            .is_ok()
-    });
-    let needs_discovery: bool = needs_function_discovery(arch, has_function_or_export);
+    let names_decoded_code = |symbol: &DisasmSymbol, kinds: &[DisasmSymbolKind]| -> bool {
+        kinds.contains(&symbol.kind)
+            && instructions
+                .binary_search_by_key(&symbol.address, |instruction: &DisasmInstruction| {
+                    instruction.offset
+                })
+                .is_ok()
+    };
+    let symbols_complete: bool = if matches!(native.format, NativeFormat::Pe32 | NativeFormat::Pe64)
+    {
+        symbol_table
+            .iter()
+            .any(|symbol: &DisasmSymbol| names_decoded_code(symbol, &[DisasmSymbolKind::Function]))
+    } else {
+        symbol_table.iter().any(|symbol: &DisasmSymbol| {
+            names_decoded_code(
+                symbol,
+                &[DisasmSymbolKind::Function, DisasmSymbolKind::Export],
+            )
+        })
+    };
+    let needs_discovery: bool = needs_function_discovery(arch, symbols_complete);
     let discovered_starts: BTreeSet<u64> = if needs_discovery {
         inject_discovered_functions(
             arch,
@@ -322,8 +330,8 @@ fn decoded_instruction_end(
     (end <= byte_limit).then_some(end)
 }
 
-const fn needs_function_discovery(arch: DisasmArch, has_function_or_export: bool) -> bool {
-    matches!(arch, DisasmArch::Aarch64) || !has_function_or_export
+const fn needs_function_discovery(arch: DisasmArch, symbols_complete: bool) -> bool {
+    matches!(arch, DisasmArch::Aarch64) || !symbols_complete
 }
 
 fn inject_discovered_functions(
@@ -400,15 +408,23 @@ fn inject_discovered_functions(
                         object::ObjectKind::Executable | object::ObjectKind::Dynamic
                     )
                 });
-            let (mut discovered, incomplete): (DiscoveredFunctions, bool) = match outcome
-                .into_parts()
-            {
-                (discovered, NoreturnInferenceTermination::Complete) => (discovered, false),
-                (discovered, NoreturnInferenceTermination::IterationLimit) if linked_x86_elf => {
-                    (discovered, true)
-                }
-                (_, _) => return BTreeSet::new(),
-            };
+            let pe64_image: bool =
+                matches!(arch, DisasmArch::X86_64) && matches!(native.format, NativeFormat::Pe64);
+            let (mut discovered, incomplete): (DiscoveredFunctions, bool) =
+                match outcome.into_parts() {
+                    (discovered, NoreturnInferenceTermination::Complete) => (discovered, false),
+                    (discovered, NoreturnInferenceTermination::IterationLimit)
+                        if linked_x86_elf || pe64_image =>
+                    {
+                        (discovered, true)
+                    }
+                    (discovered, NoreturnInferenceTermination::DecodedInstructionBudget)
+                        if pe64_image =>
+                    {
+                        (discovered, true)
+                    }
+                    (_, _) => return BTreeSet::new(),
+                };
             if !incomplete
                 && matches!(arch, DisasmArch::X86_64)
                 && matches!(native.format, NativeFormat::Elf64 | NativeFormat::Pe64)
@@ -467,7 +483,9 @@ fn inject_discovered_functions(
         .collect();
     let retain_provenance: bool = matches!(arch, DisasmArch::Aarch64);
     let authoritative_x86_starts: BTreeSet<u64> =
-        if !inference_incomplete && matches!(arch, DisasmArch::X86 | DisasmArch::X86_64) {
+        if matches!(arch, DisasmArch::X86 | DisasmArch::X86_64)
+            && (!inference_incomplete || matches!(native.format, NativeFormat::Pe64))
+        {
             x86_authoritative_starts(native, bytes, decoded_code, instructions, arch)
         } else {
             BTreeSet::new()
@@ -561,6 +579,7 @@ const fn discovery_bitness(arch: DisasmArch) -> Option<Bitness> {
 fn discovery_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
     let mut seeds: Vec<u64> = entry_export_seeds(native, bytes);
     seeds.extend(pdata_function_starts(bytes));
+    seeds.extend(pe_table_function_starts(bytes));
     seeds.sort_unstable();
     seeds.dedup();
     seeds
@@ -668,6 +687,7 @@ fn x86_authoritative_starts(
     };
     let mut starts: Vec<u64> = authoritative_entry_export_starts(native, bytes);
     starts.extend(x86_unwind_starts(bytes, code));
+    starts.extend(pe_table_function_starts(bytes));
     starts.extend(validated_pdata_function_starts(
         bytes,
         &windows,
@@ -706,7 +726,119 @@ fn validated_pdata_function_starts(
     let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
         return Vec::new();
     };
-    validated_pdata_records(data, file.relative_address_base(), windows, instructions)
+    let primary: Vec<u8> = primary_pdata_records(bytes, data);
+    validated_pdata_records(
+        &primary,
+        file.relative_address_base(),
+        windows,
+        instructions,
+    )
+}
+
+const UNW_FLAG_CHAININFO: u8 = 0x04;
+const PE_TLS_DIRECTORY_INDEX: usize = 9;
+const PE_LOAD_CONFIG_DIRECTORY_INDEX: usize = 10;
+const PE64_TLS_DIRECTORY_BYTES: u32 = 40;
+const PE64_TLS_CALLBACKS_OFFSET: usize = 24;
+const PE64_GUARD_CF_TABLE_OFFSET: usize = 0x80;
+const PE64_GUARD_CF_COUNT_OFFSET: usize = 0x88;
+const PE64_GUARD_FLAGS_OFFSET: usize = 0x90;
+const PE64_LOAD_CONFIG_GUARD_CF_BYTES: usize = 0x94;
+const PE_GUARD_CF_FUNCTION_TABLE_PRESENT: u32 = 0x0000_0400;
+const MAX_PE_TLS_CALLBACKS: u64 = 1 << 12;
+const MAX_PE_GUARD_CF_FUNCTIONS: u64 = 1 << 17;
+
+fn pe_table_function_starts(bytes: &[u8]) -> Vec<u64> {
+    use crate::packers::pe_sections::{DataDirectory, PeImage, parse_pe_image};
+    let Ok(image): crate::error::Result<PeImage> = parse_pe_image(bytes) else {
+        return Vec::new();
+    };
+    if !image.is_pe32_plus {
+        return Vec::new();
+    }
+    let offset_of_va = |va: u64| -> Option<usize> {
+        let rva: u32 = u32::try_from(va.checked_sub(image.image_base)?).ok()?;
+        image.file_offset_for_rva(rva, bytes.len()).ok()
+    };
+    let offset_of_directory = |index: usize, minimum: u32| -> Option<usize> {
+        let directory: &DataDirectory = image.data_directories.get(index)?;
+        if directory.virtual_address == 0 || directory.size < minimum {
+            return None;
+        }
+        image
+            .file_offset_for_rva(directory.virtual_address, bytes.len())
+            .ok()
+    };
+    let mut starts: Vec<u64> = Vec::new();
+    if let Some(tls) = offset_of_directory(PE_TLS_DIRECTORY_INDEX, PE64_TLS_DIRECTORY_BYTES)
+        && let Ok(array) = disrobe_bytes::read_u64_le_at(bytes, tls + PE64_TLS_CALLBACKS_OFFSET)
+        && array != 0
+    {
+        for index in 0..MAX_PE_TLS_CALLBACKS {
+            let Some(callback): Option<u64> = array
+                .checked_add(index * 8)
+                .and_then(offset_of_va)
+                .and_then(|at: usize| disrobe_bytes::read_u64_le_at(bytes, at).ok())
+            else {
+                break;
+            };
+            if callback == 0 {
+                break;
+            }
+            starts.push(callback);
+        }
+    }
+    if let Some(config) = offset_of_directory(PE_LOAD_CONFIG_DIRECTORY_INDEX, 4)
+        && disrobe_bytes::read_u32_le_at(bytes, config)
+            .is_ok_and(|size: u32| size as usize >= PE64_LOAD_CONFIG_GUARD_CF_BYTES)
+        && let Ok(table) = disrobe_bytes::read_u64_le_at(bytes, config + PE64_GUARD_CF_TABLE_OFFSET)
+        && let Ok(count) = disrobe_bytes::read_u64_le_at(bytes, config + PE64_GUARD_CF_COUNT_OFFSET)
+        && let Ok(flags) = disrobe_bytes::read_u32_le_at(bytes, config + PE64_GUARD_FLAGS_OFFSET)
+        && flags & PE_GUARD_CF_FUNCTION_TABLE_PRESENT != 0
+        && table != 0
+        && let Some(table_at) = offset_of_va(table)
+    {
+        let stride: u64 = 4 + u64::from(flags >> 28);
+        for index in 0..count.min(MAX_PE_GUARD_CF_FUNCTIONS) {
+            let Some(entry_at): Option<usize> = index
+                .checked_mul(stride)
+                .and_then(|delta: u64| usize::try_from(delta).ok())
+                .and_then(|delta: usize| table_at.checked_add(delta))
+            else {
+                break;
+            };
+            let Ok(rva): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+                disrobe_bytes::read_u32_le_at(bytes, entry_at)
+            else {
+                break;
+            };
+            if rva != 0 {
+                starts.push(image.image_base.saturating_add(u64::from(rva)));
+            }
+        }
+    }
+    starts
+}
+
+fn primary_pdata_records(bytes: &[u8], data: &[u8]) -> Vec<u8> {
+    let image: Option<crate::packers::pe_sections::PeImage> =
+        crate::packers::pe_sections::parse_pe_image(bytes).ok();
+    let mut primary: Vec<u8> = Vec::with_capacity(data.len());
+    for record in data.chunks_exact(12) {
+        let unwind_rva: u32 = u32::from_le_bytes([record[8], record[9], record[10], record[11]]);
+        let chained: bool = unwind_rva & 1 != 0
+            || image.as_ref().is_some_and(|image| {
+                image
+                    .file_offset_for_rva(unwind_rva, bytes.len())
+                    .ok()
+                    .and_then(|offset: usize| bytes.get(offset))
+                    .is_some_and(|&header: &u8| (header >> 3) & UNW_FLAG_CHAININFO != 0)
+            });
+        if !chained {
+            primary.extend_from_slice(record);
+        }
+    }
+    primary
 }
 
 fn validated_pdata_records(
@@ -1018,9 +1150,10 @@ fn pdata_function_starts(bytes: &[u8]) -> Vec<u64> {
     else {
         return Vec::new();
     };
-    let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
+    let Ok(raw): core::result::Result<&[u8], object::Error> = section.data() else {
         return Vec::new();
     };
+    let data: Vec<u8> = primary_pdata_records(bytes, raw);
     let mut starts: Vec<u64> = Vec::new();
     let mut idx: usize = 0;
     while idx + 12 <= data.len() {
@@ -3869,6 +4002,198 @@ mod tests {
             hit.targets.len() >= 4,
             "expected several case targets, got {:?}",
             hit.targets
+        );
+    }
+
+    #[test]
+    fn a_pe_too_large_for_the_noreturn_budget_keeps_its_runtime_function_starts() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let filler: usize = crate::desync::MAX_NORETURN_DECODED_INSTRUCTIONS + 4096;
+        let mut text: Vec<u8> = vec![0x90; 0x20 + filler + 1];
+        text[0x00] = 0xC3;
+        text[0x10..0x13].copy_from_slice(&[0x31, 0xC0, 0xC3]);
+        text[0x20 + filler] = 0xC3;
+        let mut rdata: Vec<u8> = vec![0u8; 0x40];
+        rdata[0x00] = 0x01;
+        rdata[0x10] = 0x01;
+        let mut pdata: Vec<u8> = Vec::new();
+        let rdata_rva: u32 = (0x1000 + text.len() as u32).next_multiple_of(0x1000);
+        for (begin, end, info) in [
+            (0x1000u32, 0x1001u32, rdata_rva),
+            (0x1010, 0x1013, rdata_rva + 0x10),
+        ] {
+            pdata.extend_from_slice(&begin.to_le_bytes());
+            pdata.extend_from_slice(&end.to_le_bytes());
+            pdata.extend_from_slice(&info.to_le_bytes());
+        }
+        let pe: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, text, 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", rdata_rva, rdata, 0x4000_0040),
+                SyntheticSection::backed(*b".pdata\0\0", rdata_rva + 0x1000, pdata, 0x4000_0040),
+            ],
+            0x1000,
+        );
+        let base: u64 = crate::test_support::pe64_text_base();
+        let payload: DisasmPayload = build_disasm_payload(&pe).expect("build pe payload");
+        let starts: Vec<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|s: &&DisasmSymbol| s.kind == DisasmSymbolKind::Function)
+            .map(|s: &DisasmSymbol| s.address)
+            .collect();
+        assert!(
+            starts.contains(&(base + 0x1000)) && starts.contains(&(base + 0x1010)),
+            "an exhausted noreturn budget must not discard the .pdata starts: {starts:x?}"
+        );
+    }
+
+    #[test]
+    fn tls_callbacks_and_guard_cf_targets_are_x86_64_function_starts() {
+        use crate::test_support::{SyntheticSection, pe64_layout_with_directories};
+        let base: u64 = crate::test_support::pe64_text_base();
+        let mut text: Vec<u8> = vec![0xCC; 0x40];
+        text[0x00] = 0xC3;
+        text[0x10..0x13].copy_from_slice(&[0x31, 0xC0, 0xC3]);
+        text[0x20..0x24].copy_from_slice(&[0x8D, 0x41, 0x02, 0xC3]);
+        let mut rdata: Vec<u8> = vec![0u8; 0x200];
+        rdata[0x18..0x20].copy_from_slice(&(base + 0x2100).to_le_bytes());
+        rdata[0x100..0x108].copy_from_slice(&(base + 0x1010).to_le_bytes());
+        rdata[0x40..0x44].copy_from_slice(&0x94u32.to_le_bytes());
+        rdata[0x40 + 0x80..0x40 + 0x88].copy_from_slice(&(base + 0x2180).to_le_bytes());
+        rdata[0x40 + 0x88..0x40 + 0x90].copy_from_slice(&1u64.to_le_bytes());
+        rdata[0x40 + 0x90..0x40 + 0x94].copy_from_slice(&0x0000_0500u32.to_le_bytes());
+        rdata[0x180..0x184].copy_from_slice(&0x1020u32.to_le_bytes());
+        let pe: Vec<u8> = pe64_layout_with_directories(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, text, 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", 0x2000, rdata, 0x4000_0040),
+            ],
+            0x1000,
+            &[(9, 0x2000, 40), (10, 0x2040, 0x94)],
+        );
+        assert_eq!(
+            pe_table_function_starts(&pe),
+            vec![base + 0x1010, base + 0x1020]
+        );
+        let payload: DisasmPayload = build_disasm_payload(&pe).expect("build pe payload");
+        let starts: Vec<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|s: &&DisasmSymbol| s.kind == DisasmSymbolKind::Function)
+            .map(|s: &DisasmSymbol| s.address)
+            .collect();
+        assert!(
+            starts.contains(&(base + 0x1010)),
+            "TLS callback: {starts:x?}"
+        );
+        assert!(
+            starts.contains(&(base + 0x1020)),
+            "guard CF target: {starts:x?}"
+        );
+    }
+
+    #[test]
+    fn exported_dll_still_discovers_its_unexported_functions() {
+        use crate::test_support::{SyntheticSection, pe64_layout_with_directories};
+        let mut text: Vec<u8> = vec![0xCC; 0x40];
+        text[..5].copy_from_slice(&[0xE8, 0x1B, 0x00, 0x00, 0x00]);
+        text[5] = 0xC3;
+        text[0x20..0x24].copy_from_slice(&[0x8D, 0x41, 0x01, 0xC3]);
+        let mut rdata: Vec<u8> = vec![0u8; 0x100];
+        let directory: [(usize, u32); 8] = [
+            (12, 0x2080),
+            (16, 1),
+            (20, 1),
+            (24, 1),
+            (28, 0x2040),
+            (32, 0x2044),
+            (36, 0x2048),
+            (0, 0),
+        ];
+        for (at, value) in directory {
+            rdata[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        rdata[0x40..0x44].copy_from_slice(&0x1000u32.to_le_bytes());
+        rdata[0x44..0x48].copy_from_slice(&0x2090u32.to_le_bytes());
+        rdata[0x48..0x4A].copy_from_slice(&0u16.to_le_bytes());
+        rdata[0x80..0x8A].copy_from_slice(b"probe.dll\0");
+        rdata[0x90..0x9A].copy_from_slice(b"api_entry\0");
+        rdata[0xA0] = 0x01;
+        rdata[0xB0] = 0x01;
+        let mut pdata: Vec<u8> = Vec::new();
+        for (begin, end, info) in [(0x1000u32, 0x1006u32, 0x20A0u32), (0x1020, 0x1024, 0x20B0)] {
+            pdata.extend_from_slice(&begin.to_le_bytes());
+            pdata.extend_from_slice(&end.to_le_bytes());
+            pdata.extend_from_slice(&info.to_le_bytes());
+        }
+        let pe: Vec<u8> = pe64_layout_with_directories(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, text, 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", 0x2000, rdata, 0x4000_0040),
+                SyntheticSection::backed(*b".pdata\0\0", 0x3000, pdata, 0x4000_0040),
+            ],
+            0,
+            &[(0, 0x2000, 0x100), (3, 0x3000, 24)],
+        );
+        let base: u64 = crate::test_support::pe64_text_base();
+        let payload: DisasmPayload = build_disasm_payload(&pe).expect("build pe payload");
+        let functions: Vec<(u64, DisasmSymbolKind)> = payload
+            .symbol_table
+            .iter()
+            .filter(|s: &&DisasmSymbol| {
+                matches!(
+                    s.kind,
+                    DisasmSymbolKind::Function | DisasmSymbolKind::Export
+                )
+            })
+            .map(|s: &DisasmSymbol| (s.address, s.kind))
+            .collect();
+        assert!(
+            functions.contains(&(base + 0x1000, DisasmSymbolKind::Export)),
+            "{functions:x?}"
+        );
+        assert!(
+            functions.contains(&(base + 0x1020, DisasmSymbolKind::Function)),
+            "the unexported callee named by .pdata and a direct call is a function: {functions:x?}"
+        );
+    }
+
+    #[test]
+    fn chained_unwind_records_do_not_seed_function_starts() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let mut text: Vec<u8> = vec![0xCC; 0x40];
+        text[..4].copy_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
+        text[4] = 0xC3;
+        text[0x10] = 0xC3;
+        text[0x20] = 0xC3;
+        let mut unwind: Vec<u8> = vec![0u8; 0x40];
+        unwind[0x00] = 0x01;
+        unwind[0x10] = 0x01 | (UNW_FLAG_CHAININFO << 3);
+        unwind[0x20] = 0x01;
+        let mut pdata: Vec<u8> = Vec::new();
+        for (begin, end, info) in [
+            (0x1000u32, 0x1010u32, 0x2000u32),
+            (0x1010, 0x1020, 0x2010),
+            (0x1020, 0x1030, 0x2020),
+        ] {
+            pdata.extend_from_slice(&begin.to_le_bytes());
+            pdata.extend_from_slice(&end.to_le_bytes());
+            pdata.extend_from_slice(&info.to_le_bytes());
+        }
+        let pe: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, text, 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", 0x2000, unwind, 0x4000_0040),
+                SyntheticSection::backed(*b".pdata\0\0", 0x3000, pdata, 0x4000_0040),
+            ],
+            0x1000,
+        );
+        let base: u64 = crate::test_support::pe64_text_base();
+        assert_eq!(
+            pdata_function_starts(&pe),
+            vec![base + 0x1000, base + 0x1020],
+            "a chained runtime-function record continues its parent and starts no function"
         );
     }
 

@@ -16,13 +16,13 @@ const ELF_NOTE_PAD_BYTES: usize = 8;
 const MACHO_THIN_MAGICS: [(u32, usize); 2] = [(0xFEED_FACE, 28), (0xFEED_FACF, 32)];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AnchorRegions {
+pub(crate) struct AnchorRegions {
     spans: Vec<Range<usize>>,
 }
 
 impl AnchorRegions {
     #[must_use]
-    pub(super) fn of(bytes: &[u8], pe: Option<&PeImage>) -> Self {
+    pub(crate) fn of(bytes: &[u8], pe: Option<&PeImage>) -> Self {
         let fixed_header =
             || -> Vec<Range<usize>> { std::iter::once(0..fixed_header_end(bytes)).collect() };
         let raw: Vec<Range<usize>> = match pe {
@@ -41,14 +41,14 @@ impl AnchorRegions {
     }
 
     #[must_use]
-    pub(super) fn contains(&self, offset: usize) -> bool {
+    pub(crate) fn contains(&self, offset: usize) -> bool {
         self.spans
             .iter()
             .any(|span: &Range<usize>| span.contains(&offset))
     }
 
     #[must_use]
-    pub(super) fn find(&self, bytes: &[u8], needle: &[u8]) -> Option<usize> {
+    pub(crate) fn find(&self, bytes: &[u8], needle: &[u8]) -> Option<usize> {
         if needle.is_empty() {
             return None;
         }

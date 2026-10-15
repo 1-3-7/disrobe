@@ -67,6 +67,7 @@ const TRUSTED_ROOTS: &[&[u8]] = &[
     include_bytes!("authenticode_roots/digicert_high_assurance_ev_root.der"),
     include_bytes!("authenticode_roots/usertrust_rsa.der"),
     include_bytes!("authenticode_roots/sectigo_public_code_signing_root_r46.der"),
+    include_bytes!("authenticode_roots/microsoft_identity_verification_root_2020.der"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,8 +249,12 @@ fn verify_signed(
         .content
         .to_der()
         .map_err(|_| AuthenticodeVerdict::MalformedSignature)?;
-    let signed_data: SignedData =
-        SignedData::from_der(&signed_der).map_err(|_| AuthenticodeVerdict::MalformedSignature)?;
+    let signed_data: SignedData = match SignedData::from_der(&signed_der) {
+        Ok(parsed) => parsed,
+        Err(_) => canonical_certificate_set(&signed_der)
+            .and_then(|canonical: Vec<u8>| SignedData::from_der(&canonical).ok())
+            .ok_or(AuthenticodeVerdict::MalformedSignature)?,
+    };
 
     let signer: &SignerInfo = signed_data
         .signer_infos
@@ -571,14 +576,21 @@ fn leaf_permits_code_signing(cert: &Certificate) -> bool {
     else {
         return true;
     };
-    let Ok(eku): Result<x509_cert::ext::pkix::ExtendedKeyUsage, _> =
-        x509_cert::ext::pkix::ExtendedKeyUsage::from_der(eku_ext.extn_value.as_bytes())
+    eku_permits_code_signing(eku_ext.extn_value.as_bytes())
+}
+
+fn eku_permits_code_signing(eku_der: &[u8]) -> bool {
+    let Some([(DER_SEQUENCE, purposes)]): Option<[(u8, &[u8]); 1]> =
+        der_children(eku_der).and_then(|children: Vec<(u8, &[u8])>| children.try_into().ok())
     else {
         return false;
     };
-    eku.0
-        .iter()
-        .any(|oid: &ObjectIdentifier| *oid == OID_EKU_CODE_SIGNING || *oid == OID_EKU_ANY)
+    der_children(purposes).is_some_and(|oids: Vec<(u8, &[u8])>| {
+        oids.iter().any(|&(tag, value): &(u8, &[u8])| {
+            tag == DER_OBJECT_IDENTIFIER
+                && (value == OID_EKU_CODE_SIGNING.as_bytes() || value == OID_EKU_ANY.as_bytes())
+        })
+    })
 }
 
 fn links_verify(chain: &[Certificate]) -> bool {
@@ -1203,6 +1215,67 @@ fn der_tlv_total_len(bytes: &[u8]) -> Option<usize> {
     2usize.checked_add(count)?.checked_add(length)
 }
 
+const DER_SEQUENCE: u8 = 0x30;
+const DER_OBJECT_IDENTIFIER: u8 = 0x06;
+const DER_CERTIFICATE_SET: u8 = 0xA0;
+
+fn der_header(tag: u8, length: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = vec![tag];
+    if length < 0x80 {
+        out.push(length as u8);
+        return out;
+    }
+    let be: [u8; 8] = (length as u64).to_be_bytes();
+    let skip: usize = be.iter().take_while(|&&byte: &&u8| byte == 0).count();
+    out.push(0x80 | (be.len() - skip) as u8);
+    out.extend_from_slice(&be[skip..]);
+    out
+}
+
+fn der_elements(content: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut out: Vec<&[u8]> = Vec::new();
+    let mut pos: usize = 0;
+    while pos < content.len() {
+        let len: usize = der_tlv_total_len(content.get(pos..)?)?;
+        let end: usize = pos.checked_add(len)?;
+        out.push(content.get(pos..end)?);
+        pos = end;
+    }
+    Some(out)
+}
+
+fn canonical_certificate_set(signed_der: &[u8]) -> Option<Vec<u8>> {
+    let [(DER_SEQUENCE, body)]: [(u8, &[u8]); 1] = der_children(signed_der)?.try_into().ok()?
+    else {
+        return None;
+    };
+    let mut rebuilt: Vec<u8> = Vec::with_capacity(body.len());
+    let mut changed: bool = false;
+    for field in der_elements(body)? {
+        if field.first() != Some(&DER_CERTIFICATE_SET) {
+            rebuilt.extend_from_slice(field);
+            continue;
+        }
+        let [(_, certificates)]: [(u8, &[u8]); 1] = der_children(field)?.try_into().ok()?;
+        let original: Vec<&[u8]> = der_elements(certificates)?;
+        let mut canonical: Vec<&[u8]> = original.clone();
+        canonical.sort_unstable();
+        canonical.dedup();
+        changed |= canonical != original;
+        let length: usize = canonical.iter().map(|cert: &&[u8]| cert.len()).sum();
+        rebuilt.extend_from_slice(&der_header(DER_CERTIFICATE_SET, length));
+        for cert in canonical {
+            rebuilt.extend_from_slice(cert);
+        }
+    }
+    if !changed {
+        return None;
+    }
+    let mut out: Vec<u8> = der_header(DER_SEQUENCE, rebuilt.len());
+    out.extend_from_slice(&rebuilt);
+    Some(out)
+}
+
 fn der_children(bytes: &[u8]) -> Option<Vec<(u8, &[u8])>> {
     let mut out: Vec<(u8, &[u8])> = Vec::new();
     let mut pos: usize = 0;
@@ -1296,6 +1369,40 @@ mod tests {
         let bytes: Vec<u8> = crate::fixtures::minimal_pe32();
         let report: AuthenticodeReport = verify(&bytes, NOW_SECS);
         assert_eq!(report.verdict, AuthenticodeVerdict::NoSignature);
+    }
+
+    #[test]
+    fn code_signing_purpose_is_found_beside_an_arc_wider_than_four_octets() {
+        let eku: [u8; 40] = [
+            0x30, 0x26, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x61, 0x01, 0x00,
+            0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x03, 0x06, 0x0e, 0x2b, 0x06,
+            0x01, 0x04, 0x01, 0x82, 0x37, 0x61, 0x8b, 0x96, 0xc1, 0xbc, 0x30, 0x01,
+        ];
+        assert!(
+            x509_cert::ext::pkix::ExtendedKeyUsage::from_der(&eku).is_err(),
+            "the strict decoder rejects a five-octet arc whose low octet has bits 4-6 set"
+        );
+        assert!(eku_permits_code_signing(&eku));
+        let mut without: Vec<u8> = eku.to_vec();
+        without.drain(14..24);
+        without[1] = 0x1c;
+        assert!(!eku_permits_code_signing(&without));
+    }
+
+    #[test]
+    fn microsoft_identity_verification_root_anchors_its_chains() {
+        let root: Certificate = Certificate::from_der(include_bytes!(
+            "authenticode_roots/microsoft_identity_verification_root_2020.der"
+        ))
+        .expect("bundled root parses");
+        assert!(name_eq(
+            &root.tbs_certificate.subject,
+            &root.tbs_certificate.issuer
+        ));
+        assert!(
+            chain_is_anchored(&[root]),
+            "the root that issues Microsoft ID Verified code-signing and the Microsoft Public RSA Timestamping CA anchors their chains"
+        );
     }
 
     #[test]

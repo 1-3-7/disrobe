@@ -10,12 +10,18 @@ use disrobe_bytes::read_u32_le_at;
 use crate::format::{NativeFormat, detect as detect_format};
 use crate::identify::{IdentityKind, SupportRoute, detect as detect_byte_identity};
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
+use crate::runtime_image::{
+    RUNTIME_DECRYPTED_VERDICT, RuntimeDecryptedImage, detect_runtime_decrypted,
+};
 
 const RICH_TAG: &[u8; 4] = b"Rich";
 const DANS_TAG: u32 = 0x536E_6144;
 const HEADER_SCAN: usize = 4096;
 const CLR_DATA_DIRECTORY_INDEX: usize = 14;
 const OVERLAY_SCAN_CAP: usize = 64 * 1024;
+const HIGH_ENTROPY_CODE_FAMILY: &str = "high-entropy-code";
+const GENERIC_PACKER_FAMILY: &str = "generic-packer";
+const RUNTIME_DECRYPTED_FAMILY: &str = "runtime-decrypted";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
@@ -115,6 +121,17 @@ impl Builder {
         if !slot.evidence.contains(&evidence) {
             slot.evidence.push(evidence);
         }
+    }
+
+    fn has_named_unpacker(&self) -> bool {
+        self.findings.values().any(|finding: &Finding| {
+            finding.kind == IdentityKind::Packer
+                && finding.support == SupportRoute::NativeUnpack
+                && !matches!(
+                    finding.family.as_str(),
+                    HIGH_ENTROPY_CODE_FAMILY | GENERIC_PACKER_FAMILY
+                )
+        })
     }
 
     fn finish(self) -> Vec<Finding> {
@@ -435,70 +452,6 @@ const MACHO_SECTION_SIGNATURES: &[SectionSig] = &[
     },
 ];
 
-struct RichProduct {
-    min_id: u16,
-    max_id: u16,
-    name: &'static str,
-}
-
-const RICH_PRODUCTS: &[RichProduct] = &[
-    RichProduct {
-        min_id: 0x000A,
-        max_id: 0x000F,
-        name: "MSVC 6.0 / 7.x (Visual C++ 6-2003)",
-    },
-    RichProduct {
-        min_id: 0x005F,
-        max_id: 0x006D,
-        name: "MSVC 7.0 (Visual Studio .NET 2002)",
-    },
-    RichProduct {
-        min_id: 0x006E,
-        max_id: 0x0083,
-        name: "MSVC 8.0 (Visual Studio 2005)",
-    },
-    RichProduct {
-        min_id: 0x0084,
-        max_id: 0x009E,
-        name: "MSVC 9.0 (Visual Studio 2008)",
-    },
-    RichProduct {
-        min_id: 0x009F,
-        max_id: 0x00AB,
-        name: "MSVC 10.0 (Visual Studio 2010)",
-    },
-    RichProduct {
-        min_id: 0x00AC,
-        max_id: 0x00CB,
-        name: "MSVC 11.0 (Visual Studio 2012)",
-    },
-    RichProduct {
-        min_id: 0x00CC,
-        max_id: 0x00FF,
-        name: "MSVC 12.0 (Visual Studio 2013)",
-    },
-    RichProduct {
-        min_id: 0x0100,
-        max_id: 0x0105,
-        name: "MSVC 14.0 (Visual Studio 2015)",
-    },
-    RichProduct {
-        min_id: 0x0106,
-        max_id: 0x010F,
-        name: "MSVC 14.1 (Visual Studio 2017)",
-    },
-    RichProduct {
-        min_id: 0x0110,
-        max_id: 0x0125,
-        name: "MSVC 14.2 (Visual Studio 2019)",
-    },
-    RichProduct {
-        min_id: 0x0126,
-        max_id: 0x0150,
-        name: "MSVC 14.3+ (Visual Studio 2022)",
-    },
-];
-
 #[must_use]
 pub fn identify(bytes: &[u8], now_secs: u64) -> FileIdReport {
     let detected: crate::format::DetectedFormat =
@@ -528,6 +481,9 @@ pub fn identify(bytes: &[u8], now_secs: u64) -> FileIdReport {
 
     merge_byte_identity(bytes, now_secs, &mut builder);
     merge_struct_findings(bytes, &mut builder);
+    if matches!(detected.kind, NativeFormat::Pe32 | NativeFormat::Pe64) {
+        record_runtime_decrypted(bytes, &mut builder);
+    }
 
     FileIdReport {
         format: detected.kind.label().to_owned(),
@@ -666,7 +622,7 @@ fn analyze_pe(bytes: &[u8], builder: &mut Builder) {
     detect_high_entropy_sections(&image, bytes, builder);
     detect_rich(bytes, builder);
     detect_pe_imports(bytes, builder);
-    detect_pe_installers(bytes, builder);
+    detect_pe_installers(&image, bytes, builder);
 }
 
 const ENTROPY_PACKED_THRESHOLD: f64 = 7.2;
@@ -697,7 +653,7 @@ fn detect_high_entropy_sections(image: &PeImage, bytes: &[u8], builder: &mut Bui
     if flagged > 0 {
         builder.record(
             IdentityKind::Packer,
-            "high-entropy-code",
+            HIGH_ENTROPY_CODE_FAMILY,
             "compressed or encrypted code section",
             None,
             58 + u8::try_from(flagged.min(6)).unwrap_or(6) * 4,
@@ -798,7 +754,7 @@ fn detect_packed_entry(image: &PeImage, builder: &mut Builder) {
     if image.sections.len() >= 2 && is_last && writable_exec {
         builder.record(
             IdentityKind::Packer,
-            "generic-packer",
+            GENERIC_PACKER_FAMILY,
             "unknown packer (heuristic)",
             None,
             55,
@@ -838,23 +794,6 @@ fn detect_rich(bytes: &[u8], builder: &mut Builder) {
     let Some(dans_pos): Option<usize> = dans else {
         return;
     };
-    let mut best: Option<(u16, &'static RichProduct)> = None;
-    let mut entry: usize = dans_pos + 16;
-    while entry + 8 <= rich_pos {
-        let Some(comp_id): Option<u32> = read_u32_le_at(scan, entry).ok() else {
-            break;
-        };
-        let product_id: u16 = ((comp_id ^ key) >> 16) as u16;
-        for product in RICH_PRODUCTS {
-            if product_id >= product.min_id && product_id <= product.max_id {
-                let take: bool = best.is_none_or(|(prev, _): (u16, _)| product_id > prev);
-                if take {
-                    best = Some((product_id, product));
-                }
-            }
-        }
-        entry += 8;
-    }
     builder.record(
         IdentityKind::Linker,
         "msvc-link",
@@ -865,24 +804,9 @@ fn detect_rich(bytes: &[u8], builder: &mut Builder) {
         Evidence {
             kind: EvidenceKind::RichHeader,
             locus: format!("rich header at 0x{rich_pos:X}"),
-            detail: "DanS/Rich build-stamp block present".to_owned(),
+            detail: format!("DanS/Rich build-stamp block present at 0x{dans_pos:X}"),
         },
     );
-    if let Some((product_id, product)) = best {
-        builder.record(
-            IdentityKind::Compiler,
-            "msvc",
-            "MSVC (Visual C++)",
-            None,
-            86,
-            SupportRoute::NativeDecompile,
-            Evidence {
-                kind: EvidenceKind::RichHeader,
-                locus: format!("rich comp.id product 0x{product_id:04X}"),
-                detail: format!("rich-header product id maps to {}", product.name),
-            },
-        );
-    }
 }
 
 fn detect_pe_imports(bytes: &[u8], builder: &mut Builder) {
@@ -958,29 +882,23 @@ fn detect_pe_imports(bytes: &[u8], builder: &mut Builder) {
     }
 }
 
-fn detect_pe_installers(bytes: &[u8], builder: &mut Builder) {
-    let overlay: &[u8] = if bytes.len() > OVERLAY_SCAN_CAP {
+fn detect_pe_installers(image: &PeImage, bytes: &[u8], builder: &mut Builder) {
+    let tail: &[u8] = if bytes.len() > OVERLAY_SCAN_CAP {
         &bytes[bytes.len() - OVERLAY_SCAN_CAP..]
     } else {
         bytes
     };
-    if find_subslice(overlay, b"Nullsoft").is_some() {
-        builder.record(
-            IdentityKind::Installer,
-            "nsis",
-            "NSIS",
-            None,
-            90,
-            SupportRoute::ContainerExtract,
-            Evidence {
-                kind: EvidenceKind::Overlay,
-                locus: "overlay".to_owned(),
-                detail: "Nullsoft installer overlay marker".to_owned(),
-            },
-        );
-    }
-    if find_subslice(overlay, b"Inno Setup").is_some() || find_subslice(bytes, b"zlb\x1a").is_some()
-    {
+    let overlay_start: usize = image
+        .sections
+        .iter()
+        .filter_map(|section: &PeSection| section.raw_range(bytes.len()))
+        .map(|(_, end): (usize, usize)| end)
+        .max()
+        .unwrap_or(image.size_of_headers as usize);
+    let zlib_block_at_overlay: bool = bytes
+        .get(overlay_start..)
+        .is_some_and(|overlay: &[u8]| overlay.starts_with(b"zlb\x1a"));
+    if find_subslice(tail, b"Inno Setup").is_some() || zlib_block_at_overlay {
         builder.record(
             IdentityKind::Installer,
             "innosetup",
@@ -1042,9 +960,58 @@ fn analyze_fat(bytes: &[u8], builder: &mut Builder) {
     analyze_object(bytes, MACHO_SECTION_SIGNATURES, builder);
 }
 
+fn record_runtime_decrypted(bytes: &[u8], builder: &mut Builder) {
+    if builder.has_named_unpacker() {
+        return;
+    }
+    let Some(runtime): Option<RuntimeDecryptedImage> = detect_runtime_decrypted(bytes) else {
+        return;
+    };
+    builder
+        .findings
+        .remove(&(IdentityKind::Packer, HIGH_ENTROPY_CODE_FAMILY));
+    builder.record(
+        IdentityKind::Protector,
+        RUNTIME_DECRYPTED_FAMILY,
+        RUNTIME_DECRYPTED_VERDICT,
+        None,
+        90,
+        SupportRoute::RuntimeOnly,
+        Evidence {
+            kind: EvidenceKind::Entropy,
+            locus: format!("section {}", runtime.entry_section),
+            detail: format!(
+                "entry point 0x{:X} lies in this executable section: {} bytes on disk at {:.2} bits/byte",
+                runtime.entry_point_rva, runtime.entry_section_raw_bytes, runtime.entry_section_entropy
+            ),
+        },
+    );
+    for section in &runtime.unbacked_code {
+        builder.record(
+            IdentityKind::Protector,
+            RUNTIME_DECRYPTED_FAMILY,
+            RUNTIME_DECRYPTED_VERDICT,
+            None,
+            90,
+            SupportRoute::RuntimeOnly,
+            Evidence {
+                kind: EvidenceKind::SectionName,
+                locus: format!("section {}", section.name),
+                detail: format!(
+                    "code section declares {} bytes at RVA 0x{:X} with no bytes on disk",
+                    section.virtual_size, section.virtual_address
+                ),
+            },
+        );
+    }
+}
+
 fn merge_byte_identity(bytes: &[u8], now_secs: u64, builder: &mut Builder) {
     let report: crate::identify::IdentityReport = detect_byte_identity(bytes, now_secs);
     for hit in report.hits {
+        if hit.support == SupportRoute::RuntimeOnly {
+            continue;
+        }
         let family: &'static str = canonical_family(&hit.name);
         let display: &'static str = canonical_display(family);
         builder.record(
@@ -1218,29 +1185,138 @@ mod tests {
 
     const NOW_SECS: u64 = 1_798_761_600;
 
+    fn layout_noise(len: usize) -> Vec<u8> {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runtime_decrypted_image_is_named_and_routed_to_refusal() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let bytes: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::unbacked(*b".text\0\0\0", 0x1000, 0x80_0000, 0x6000_0020),
+                SyntheticSection::unbacked(*b".pdata\0\0", 0x81_0000, 0x4000, 0x4000_0040),
+                SyntheticSection::backed(
+                    *b".enc1\0\0\0",
+                    0x82_0000,
+                    layout_noise(0x4_0000),
+                    0x6000_0020,
+                ),
+                SyntheticSection::backed(*b".rsrc\0\0\0", 0x87_0000, vec![0u8; 0x400], 0x4000_0040),
+            ],
+            0x83_0000,
+        );
+        let report: FileIdReport = identify(&bytes, NOW_SECS);
+        let runtime: &Finding = report
+            .findings
+            .iter()
+            .find(|f: &&Finding| f.family == RUNTIME_DECRYPTED_FAMILY)
+            .unwrap_or_else(|| panic!("runtime-decrypted verdict missing: {:?}", report.findings));
+        assert_eq!(runtime.kind, IdentityKind::Protector);
+        assert_eq!(runtime.name, RUNTIME_DECRYPTED_VERDICT);
+        assert_eq!(runtime.support, SupportRoute::RuntimeOnly);
+        assert!(
+            runtime.evidence.iter().any(
+                |e: &Evidence| e.locus == "section .text" && e.detail.contains("8388608 bytes")
+            ),
+            "{:?}",
+            runtime.evidence
+        );
+        assert!(
+            runtime
+                .evidence
+                .iter()
+                .any(|e: &Evidence| e.locus == "section .enc1"),
+            "{:?}",
+            runtime.evidence
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f: &Finding| f.support == SupportRoute::NativeUnpack),
+            "no unpacker route is offered for code that exists only at run time: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn rich_product_ids_shared_by_every_14x_toolset_do_not_name_a_release() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let mut bytes: Vec<u8> = pe64_layout(
+            &[SyntheticSection::backed(
+                *b".text\0\0\0",
+                0x1000,
+                vec![0xC3; 0x10],
+                0x6000_0020,
+            )],
+            0x1000,
+        );
+        let key: u32 = 0x2468_ACE1;
+        let mut rich: Vec<u8> = Vec::new();
+        for word in [DANS_TAG, 0, 0, 0] {
+            rich.extend_from_slice(&(word ^ key).to_le_bytes());
+        }
+        for (product, build) in [(0x0108u32, 30795u32), (0x0102, 30795)] {
+            rich.extend_from_slice(&(((product << 16) | build) ^ key).to_le_bytes());
+            rich.extend_from_slice(&(1u32 ^ key).to_le_bytes());
+        }
+        rich.extend_from_slice(RICH_TAG);
+        rich.extend_from_slice(&key.to_le_bytes());
+        bytes[0x40..0x40 + rich.len()].copy_from_slice(&rich);
+        let report: FileIdReport = identify(&bytes, NOW_SECS);
+        let msvc: &Finding = report
+            .findings
+            .iter()
+            .find(|f: &&Finding| f.family == "msvc")
+            .unwrap_or_else(|| panic!("msvc finding missing: {:?}", report.findings));
+        assert_eq!(msvc.version.as_deref(), Some("14.3.30795 (VS2022)"));
+        assert!(
+            !msvc
+                .evidence
+                .iter()
+                .any(|e: &Evidence| e.detail.contains("2017") || e.detail.contains("2015")),
+            "a product id shared by VS2015-VS2022 names no release: {:?}",
+            msvc.evidence
+        );
+    }
+
+    #[test]
+    fn inno_zlib_marker_inside_a_section_is_not_an_installer() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let mut data: Vec<u8> = vec![0u8; 0x200];
+        data[0x20..0x24].copy_from_slice(b"zlb\x1a");
+        let bytes: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, vec![0xC3; 0x10], 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", 0x2000, data, 0x4000_0040),
+            ],
+            0x1000,
+        );
+        let report: FileIdReport = identify(&bytes, NOW_SECS);
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f: &Finding| f.family == "innosetup"),
+            "{:?}",
+            report.findings
+        );
+    }
+
     #[test]
     fn unknown_format_yields_empty_findings() {
         let report: FileIdReport = identify(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05], NOW_SECS);
         assert_eq!(report.format, "unknown");
         assert!(report.findings.is_empty());
-    }
-
-    #[test]
-    fn rich_product_table_is_monotone_and_nonoverlapping() {
-        assert!(!RICH_PRODUCTS.is_empty());
-        let mut prev_max: Option<u16> = None;
-        for product in RICH_PRODUCTS {
-            assert!(product.min_id <= product.max_id);
-            assert!(!product.name.is_empty());
-            if let Some(prev) = prev_max {
-                assert!(
-                    product.min_id > prev,
-                    "rich product ranges overlap at 0x{:04X}",
-                    product.min_id
-                );
-            }
-            prev_max = Some(product.max_id);
-        }
     }
 
     #[test]

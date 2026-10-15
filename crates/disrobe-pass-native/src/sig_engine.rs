@@ -2439,50 +2439,63 @@ fn dotnet_bsjb_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFindin
     });
 }
 
-fn nsis_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
-    const NSIS_MAGIC: u32 = 0xDEAD_BEEF;
-    let mut firstheader: Option<usize> = None;
-    let mut cursor: usize = 0;
-    while cursor + 4 <= bytes.len() {
-        if read_u32_le_at(bytes, cursor).ok() == Some(NSIS_MAGIC) {
-            firstheader = Some(cursor);
-            break;
-        }
-        cursor += 4;
-    }
-    let nullsoft: bool = byte_find(bytes, b"Nullsoft").is_some();
-    if firstheader.is_none() && !nullsoft {
-        return;
-    }
+const NSIS_FIRSTHEADER_ALIGNMENT: usize = 512;
+const NSIS_FIRSTHEADER_SIGNATURE: &[u8; 16] = b"\xEF\xBE\xAD\xDENullsoftInst";
+
+fn overlay_start(image: &PeImage, bytes: &[u8]) -> usize {
+    image
+        .sections
+        .iter()
+        .filter_map(|section: &PeSection| section.raw_range(bytes.len()))
+        .map(|(_, end): (usize, usize)| end)
+        .max()
+        .unwrap_or(image.size_of_headers as usize)
+}
+
+fn nsis_firstheader(image: &PeImage, bytes: &[u8]) -> Option<usize> {
+    let first: usize = overlay_start(image, bytes).next_multiple_of(NSIS_FIRSTHEADER_ALIGNMENT);
+    (first..bytes.len())
+        .step_by(NSIS_FIRSTHEADER_ALIGNMENT)
+        .find(|&at: &usize| {
+            bytes
+                .get(at + 4..at + 4 + NSIS_FIRSTHEADER_SIGNATURE.len())
+                .is_some_and(|window: &[u8]| window == NSIS_FIRSTHEADER_SIGNATURE)
+        })
+}
+
+fn nsis_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFinding>) {
     let version: Option<String> = nsis_manifest_version(bytes);
-    let (locus, detail): (String, String) = firstheader.map_or_else(
-        || {
-            (
-                "overlay".to_owned(),
-                "Nullsoft installer overlay marker".to_owned(),
-            )
-        },
-        |off: usize| {
-            let compression: &str = nsis_compression(bytes, off);
-            (
-                format!("firstheader 0xDEADBEEF at 0x{off:X}"),
-                format!("NSIS firstheader present, compression={compression}"),
-            )
-        },
-    );
+    let Some(firstheader): Option<usize> = nsis_firstheader(image, bytes) else {
+        if version.is_some() {
+            out.push(StructFinding {
+                class: StructClass::Installer,
+                family: StructFamily::Nsis,
+                version,
+                confidence: Confidence::Low,
+                locus: "manifest".to_owned(),
+                detail: "Nullsoft Install System manifest without an installer data block"
+                    .to_owned(),
+                native_vm: false,
+            });
+        }
+        return;
+    };
+    let compression: &str = nsis_compression(bytes, firstheader);
     out.push(StructFinding {
         class: StructClass::Installer,
         family: StructFamily::Nsis,
         version,
         confidence: Confidence::High,
-        locus,
-        detail,
+        locus: format!("firstheader at 0x{firstheader:X}"),
+        detail: format!(
+            "NSIS firstheader (0xDEADBEEF, NullsoftInst) on a 512-byte boundary of the overlay, compression={compression}"
+        ),
         native_vm: false,
     });
 }
 
 fn nsis_compression(bytes: &[u8], firstheader: usize) -> &'static str {
-    match read_u32_le_at(bytes, firstheader + 0x1C).ok() {
+    match read_u32_le_at(bytes, firstheader + 0x20).ok() {
         Some(value) if value & 0x8000_0000 != 0 => "solid",
         Some(_) => "non-solid",
         None => "unknown",
@@ -2508,10 +2521,13 @@ fn nsis_manifest_version(bytes: &[u8]) -> Option<String> {
     }
 }
 
-fn inno_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
+fn inno_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFinding>) {
     let marker: &[u8] = b"Inno Setup Setup Data (";
     let Some(start): Option<usize> = byte_find(bytes, marker) else {
-        if byte_find(bytes, b"zlb\x1a").is_some() {
+        if bytes
+            .get(overlay_start(image, bytes)..)
+            .is_some_and(|tail: &[u8]| tail.starts_with(b"zlb\x1a"))
+        {
             out.push(StructFinding {
                 class: StructClass::Installer,
                 family: StructFamily::InnoSetup,
@@ -2545,15 +2561,8 @@ fn inno_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
 }
 
 fn installshield_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFinding>) {
-    let overlay_start: usize = image
-        .sections
-        .iter()
-        .filter_map(|section: &PeSection| section.raw_range(bytes.len()))
-        .map(|(_, end): (usize, usize)| end)
-        .max()
-        .unwrap_or(image.size_of_headers as usize);
     let cabinet_at_overlay: bool = bytes
-        .get(overlay_start..)
+        .get(overlay_start(image, bytes)..)
         .is_some_and(|tail: &[u8]| tail.starts_with(b"ISc("));
     let present: bool = byte_find(bytes, b"InstallShield").is_some()
         || byte_find(bytes, b"ISSetupStream").is_some()
@@ -2799,8 +2808,8 @@ pub fn struct_findings(bytes: &[u8]) -> Vec<StructFinding> {
         nspack_split_finding(&image, &mut out);
         rich_compiler_finding(bytes, &mut out);
         dotnet_bsjb_finding(&image, bytes, &mut out);
-        nsis_finding(bytes, &mut out);
-        inno_finding(bytes, &mut out);
+        nsis_finding(&image, bytes, &mut out);
+        inno_finding(&image, bytes, &mut out);
         installshield_finding(&image, bytes, &mut out);
         wise_finding(bytes, &mut out);
         autoit_finding(bytes, &mut out);
@@ -3408,6 +3417,47 @@ mod tests {
             buf[at..end].copy_from_slice(&bp.rsrc_payload[..end - at]);
         }
         buf
+    }
+
+    #[test]
+    fn nsis_firstheader_counts_only_on_an_overlay_sector_boundary() {
+        const FIRSTHEADER: &[u8; 20] = b"\x00\x00\x00\x00\xEF\xBE\xAD\xDENullsoftInst";
+        let mut inside: Vec<u8> = build_pe(&PeBlueprint::default());
+        inside[0x200..0x214].copy_from_slice(FIRSTHEADER);
+        assert!(
+            !struct_findings(&inside)
+                .iter()
+                .any(|f: &StructFinding| f.family == StructFamily::Nsis),
+            "a firstheader inside a section is not installer data"
+        );
+        let mut overlay: Vec<u8> = build_pe(&PeBlueprint::default());
+        overlay.resize(0x800, 0);
+        overlay[0x600..0x614].copy_from_slice(FIRSTHEADER);
+        let nsis: StructFinding = struct_findings(&overlay)
+            .into_iter()
+            .find(|f: &StructFinding| f.family == StructFamily::Nsis)
+            .expect("a firstheader on the first overlay sector boundary is NSIS data");
+        assert_eq!(nsis.confidence, Confidence::High);
+        assert_eq!(nsis.locus, "firstheader at 0x600");
+    }
+
+    #[test]
+    fn inno_zlib_block_marker_counts_only_at_the_overlay_start() {
+        let mut inside: Vec<u8> = build_pe(&PeBlueprint::default());
+        inside[0x210..0x214].copy_from_slice(b"zlb\x1a");
+        assert!(
+            !struct_findings(&inside)
+                .iter()
+                .any(|f: &StructFinding| f.family == StructFamily::InnoSetup),
+            "a zlib block marker inside a section is not Inno Setup data"
+        );
+        let mut overlay: Vec<u8> = build_pe(&PeBlueprint::default());
+        overlay[0x500..0x504].copy_from_slice(b"zlb\x1a");
+        assert!(
+            struct_findings(&overlay)
+                .iter()
+                .any(|f: &StructFinding| f.family == StructFamily::InnoSetup)
+        );
     }
 
     #[test]

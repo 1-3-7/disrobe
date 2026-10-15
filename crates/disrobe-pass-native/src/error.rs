@@ -20,6 +20,11 @@ pub enum Error {
     #[error("DR-NATIVE-0004: object-crate parse failure: {0}")]
     ObjectParse(String),
 
+    #[error(
+        "DR-NATIVE-0226: {0} carries no executable section with bytes on disk (a resource-only or data-only image), so it holds no code to disassemble"
+    )]
+    NoExecutableCode(&'static str),
+
     #[error("DR-NATIVE-0005: goblin parse failure: {0}")]
     GoblinParse(String),
 

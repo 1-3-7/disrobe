@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use disrobe_bytes::read_u32_le_at;
 
-use crate::authenticode::AuthenticodeReport;
+use crate::authenticode::{AuthenticodeReport, AuthenticodeVerdict};
+use crate::packers::anchor::AnchorRegions;
+use crate::packers::pe_sections::{PeImage, parse_pe_image};
 
 const PE_MAGIC: &[u8; 2] = b"MZ";
 const ELF_MAGIC: &[u8; 4] = &[0x7F, b'E', b'L', b'F'];
@@ -13,6 +15,11 @@ const RICH_TAG: &[u8; 4] = b"Rich";
 const DANS_TAG: u32 = 0x536E_6144;
 const SCAN_LIMIT: usize = 4 * 1024 * 1024;
 const DOTNET_METADATA_ROOT: &[u8; 4] = b"BSJB";
+const MAX_METADATA_ROOT_PROBES: usize = 64;
+const MAX_METADATA_VERSION_BYTES: usize = 255;
+const MAX_METADATA_STREAMS: usize = 16;
+const MAX_METADATA_STREAM_NAME: usize = 32;
+const RICH_LINKER_1400_PRODUCT: u16 = 0x0102;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -40,10 +47,11 @@ pub enum SupportRoute {
     ContainerExtract,
     DetectCarveOnly,
     SignatureInspect,
+    RuntimeOnly,
 }
 
 impl SupportRoute {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::DotnetDecompile,
         Self::GoDecompile,
         Self::RustRecover,
@@ -54,6 +62,7 @@ impl SupportRoute {
         Self::ContainerExtract,
         Self::DetectCarveOnly,
         Self::SignatureInspect,
+        Self::RuntimeOnly,
     ];
 
     #[must_use]
@@ -68,7 +77,7 @@ impl SupportRoute {
             Self::NativeUnpack => &["native unpack"],
             Self::ContainerExtract => &["auto"],
             Self::DetectCarveOnly => &["native devirt", "native unpack"],
-            Self::SignatureInspect => &[],
+            Self::SignatureInspect | Self::RuntimeOnly => &[],
         }
     }
 
@@ -87,6 +96,9 @@ impl SupportRoute {
                 "disrobe native devirt (generic VM lift) + section carve via disrobe native unpack"
             }
             Self::SignatureInspect => "signature inspection only",
+            Self::RuntimeOnly => {
+                "none: the code is decrypted only at run time, so static recovery is refused"
+            }
         }
     }
 }
@@ -115,6 +127,14 @@ struct ByteSig {
     detail: &'static str,
     confidence: u8,
     support: SupportRoute,
+    anchor: SigAnchor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SigAnchor {
+    Anywhere,
+    PeSectionName,
+    Structural,
 }
 
 const SIGNATURES: &[ByteSig] = &[
@@ -125,6 +145,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "UPX packer magic",
         confidence: 95,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Structural,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -133,6 +154,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "ASPack section",
         confidence: 90,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -141,6 +163,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "ASPack data section",
         confidence: 70,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -149,6 +172,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "PECompact marker",
         confidence: 90,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Structural,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -157,6 +181,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "FSG packer magic",
         confidence: 90,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Structural,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -165,6 +190,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "MEW packer marker",
         confidence: 70,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -173,6 +199,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "MPRESS section",
         confidence: 90,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -181,6 +208,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Petite section",
         confidence: 90,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -189,6 +217,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "NSPack section",
         confidence: 85,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -197,6 +226,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "kkrunchy marker",
         confidence: 90,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Structural,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -205,6 +235,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Themida section",
         confidence: 95,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -213,6 +244,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "WinLicense section",
         confidence: 90,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -221,6 +253,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "VMProtect section",
         confidence: 95,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -229,6 +262,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "VMProtect section",
         confidence: 90,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -237,6 +271,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Enigma Protector section",
         confidence: 90,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -245,6 +280,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Obsidium marker",
         confidence: 85,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -253,6 +289,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Armadillo string marker",
         confidence: 80,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -261,6 +298,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: ".NET ConfuserEx marker",
         confidence: 90,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -269,6 +307,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Go build id",
         confidence: 95,
         support: SupportRoute::GoDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -277,6 +316,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Go build id section",
         confidence: 90,
         support: SupportRoute::GoDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -285,6 +325,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Rust compiler path",
         confidence: 90,
         support: SupportRoute::RustRecover,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -293,6 +334,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Rust stdlib path",
         confidence: 85,
         support: SupportRoute::RustRecover,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -301,6 +343,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "MinGW runtime marker",
         confidence: 90,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -309,6 +352,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GCC compiler comment",
         confidence: 90,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -317,6 +361,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Clang version string",
         confidence: 90,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -325,6 +370,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Delphi marker",
         confidence: 90,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -333,6 +379,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Embarcadero Delphi marker",
         confidence: 90,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -341,6 +388,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Nim runtime symbol",
         confidence: 85,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -349,6 +397,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Free Pascal marker",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -357,6 +406,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: ".NET CLR entry import",
         confidence: 85,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -365,6 +415,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "NSIS installer",
         confidence: 95,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -373,6 +424,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Inno Setup data",
         confidence: 95,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -381,6 +433,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "InstallShield marker",
         confidence: 85,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -389,6 +442,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "MSI/WiX marker",
         confidence: 80,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -397,6 +451,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "compiled AutoIt3 script",
         confidence: 95,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -405,14 +460,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "PyInstaller marker",
         confidence: 85,
         support: SupportRoute::PyDecompile,
-    },
-    ByteSig {
-        kind: IdentityKind::Sign,
-        name: "Authenticode",
-        pattern: b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x07\x02",
-        detail: "PKCS#7 signature OID",
-        confidence: 70,
-        support: SupportRoute::SignatureInspect,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -421,6 +469,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Nuitka onefile/standalone marker",
         confidence: 90,
         support: SupportRoute::PyDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -429,6 +478,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "py2exe embedded script resource",
         confidence: 85,
         support: SupportRoute::PyDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -437,6 +487,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Electron app.asar archive",
         confidence: 85,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -445,6 +496,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Bun standalone executable trailer",
         confidence: 95,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -453,6 +505,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: ".NET Reactor protector marker",
         confidence: 85,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -461,6 +514,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Eazfuscator.NET protector marker",
         confidence: 85,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -469,6 +523,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Zig panic handler symbol",
         confidence: 80,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -477,6 +532,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Crystal runtime entry symbol",
         confidence: 80,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -485,6 +541,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Swift runtime symbol",
         confidence: 85,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -493,6 +550,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GHC runtime marker",
         confidence: 70,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Linker,
@@ -501,6 +559,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNU linker comment",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Linker,
@@ -509,6 +568,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "LLVM lld linker comment",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -517,6 +577,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Go ELF build-id note section",
         confidence: 90,
         support: SupportRoute::GoDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -525,6 +586,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "musl dynamic loader path",
         confidence: 85,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -533,6 +595,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "glibc runtime banner",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -541,6 +604,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNU ELF build-id note section",
         confidence: 70,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -549,6 +613,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Swift 5 protocol-conformance Mach-O section",
         confidence: 90,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -557,6 +622,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Objective-C class-list Mach-O section",
         confidence: 85,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -565,6 +631,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Swift core runtime dylib reference",
         confidence: 80,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -573,6 +640,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Dart AOT isolate snapshot symbol",
         confidence: 85,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -581,6 +649,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "OCaml native runtime entry symbol",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -589,6 +658,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Tiny C Compiler banner",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -597,6 +667,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Intel C++ compiler banner",
         confidence: 85,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -605,6 +676,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Intel Fortran compiler banner",
         confidence: 85,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -613,6 +685,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Open Watcom compiler banner",
         confidence: 82,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -621,6 +694,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNAT Ada runtime marker",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -629,6 +703,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "V language panic symbol",
         confidence: 70,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -637,6 +712,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "D runtime entry symbol",
         confidence: 80,
         support: SupportRoute::NativeLangDemangle,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -645,6 +721,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "experimental, unvalidated PyOxidizer embedded interpreter marker",
         confidence: 85,
         support: SupportRoute::PyDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -653,6 +730,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Node.js single-executable-application blob",
         confidence: 90,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -661,6 +739,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Deno compiled binary trailer magic",
         confidence: 90,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -669,6 +748,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Vercel pkg Node snapshot marker",
         confidence: 85,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -677,6 +757,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "WiX Burn bootstrapper section",
         confidence: 88,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -685,6 +766,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Squirrel.Windows installer marker",
         confidence: 80,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -693,6 +775,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "InstallAnywhere installer marker",
         confidence: 82,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -701,6 +784,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Setup Factory installer marker",
         confidence: 82,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -709,6 +793,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Advanced Installer marker",
         confidence: 80,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -717,6 +802,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Wise installation system marker",
         confidence: 78,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -725,6 +811,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "MoleBox virtualizing packer section",
         confidence: 82,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -733,6 +820,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "MoleBox runtime marker",
         confidence: 80,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -741,6 +829,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "RLPack section marker",
         confidence: 82,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -749,6 +838,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "exeStealth packer marker",
         confidence: 80,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Packer,
@@ -757,6 +847,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "ASProtect protector section",
         confidence: 85,
         support: SupportRoute::NativeUnpack,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -765,6 +856,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Oreans Code Virtualizer marker",
         confidence: 85,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -773,6 +865,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: ".NET SmartAssembly protector marker",
         confidence: 85,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -781,6 +874,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: ".NET Dotfuscator marker",
         confidence: 85,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -789,6 +883,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Agile.NET (CliSecure) runtime marker",
         confidence: 85,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -797,6 +892,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Babel.NET obfuscator marker",
         confidence: 82,
         support: SupportRoute::DotnetDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -805,6 +901,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Themida runtime banner",
         confidence: 80,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Linker,
@@ -813,6 +910,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Borland Turbo linker marker",
         confidence: 70,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Linker,
@@ -821,6 +919,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNU gold linker comment",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Linker,
@@ -829,6 +928,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "mold linker comment",
         confidence: 72,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -837,6 +937,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "OpenSSL version banner",
         confidence: 65,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -845,6 +946,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Qt 6 runtime version string",
         confidence: 65,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Library,
@@ -853,6 +955,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Boost C++ libraries marker",
         confidence: 60,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -861,6 +964,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Metrowerks CodeWarrior compiler comment",
         confidence: 88,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -869,6 +973,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Metrowerks toolchain marker",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -877,6 +982,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "AdaCore vendor marker",
         confidence: 82,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -885,6 +991,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNAT runtime configuration symbol",
         confidence: 84,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -893,6 +1000,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNAT Ada.IO_Exceptions runtime unit symbol",
         confidence: 80,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Compiler,
@@ -901,6 +1009,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "GNAT Ada.Strings runtime unit symbol",
         confidence: 78,
         support: SupportRoute::NativeDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -909,6 +1018,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "cx_Freeze frozen main-script bootstrap banner",
         confidence: 90,
         support: SupportRoute::PyDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -917,6 +1027,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "cx_Freeze frozen bootstrap fatal-error banner",
         confidence: 88,
         support: SupportRoute::PyDecompile,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -925,6 +1036,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: ".NET apphost single-file bundle extraction env-var marker",
         confidence: 88,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -933,6 +1045,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Safengine Shielden protector banner",
         confidence: 82,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -941,14 +1054,16 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Safengine Shielden section",
         confidence: 84,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
         name: "Denuvo",
-        pattern: b".arch\x00",
+        pattern: b".arch",
         detail: "Denuvo Anti-Tamper section marker",
         confidence: 78,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::PeSectionName,
     },
     ByteSig {
         kind: IdentityKind::Protector,
@@ -957,6 +1072,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Denuvo Anti-Tamper banner",
         confidence: 80,
         support: SupportRoute::DetectCarveOnly,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -965,6 +1081,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Makeself self-extracting shell archive header",
         confidence: 90,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Installer,
@@ -973,6 +1090,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "Makeself generated launcher script marker",
         confidence: 88,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Anywhere,
     },
     ByteSig {
         kind: IdentityKind::Format,
@@ -981,6 +1099,7 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "DxLib DXA archive magic (version 1)",
         confidence: 80,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Structural,
     },
     ByteSig {
         kind: IdentityKind::Format,
@@ -989,17 +1108,68 @@ const SIGNATURES: &[ByteSig] = &[
         detail: "DxLib DXA archive magic (version 2)",
         confidence: 80,
         support: SupportRoute::ContainerExtract,
+        anchor: SigAnchor::Structural,
     },
 ];
 
-fn dotnet_stream_marker(bytes: &[u8]) -> Option<&'static str> {
-    if bytes_find(bytes, b"#~") {
-        Some("#~")
-    } else if bytes_find(bytes, b"#-") {
-        Some("#-")
-    } else {
-        None
+fn dotnet_metadata_stream(bytes: &[u8]) -> Option<&'static str> {
+    let window: &[u8] = &bytes[..bytes.len().min(SCAN_LIMIT)];
+    let mut from: usize = 0;
+    for _ in 0..MAX_METADATA_ROOT_PROBES {
+        let at: usize = from + find_subslice(window.get(from..)?, DOTNET_METADATA_ROOT)?;
+        if let Some(stream) = metadata_root_stream(window, at) {
+            return Some(stream);
+        }
+        from = at + 1;
     }
+    None
+}
+
+fn metadata_root_stream(bytes: &[u8], root: usize) -> Option<&'static str> {
+    let u16_at = |offset: usize| -> Option<u16> {
+        let raw: &[u8] = bytes.get(offset..offset.checked_add(2)?)?;
+        Some(u16::from_le_bytes([raw[0], raw[1]]))
+    };
+    if u16_at(root + 4)? != 1
+        || u16_at(root + 6)? != 1
+        || read_u32_le_at(bytes, root + 8).ok()? != 0
+    {
+        return None;
+    }
+    let version_len: usize = read_u32_le_at(bytes, root + 12).ok()? as usize;
+    if version_len == 0 || version_len > MAX_METADATA_VERSION_BYTES {
+        return None;
+    }
+    let version: &[u8] = bytes.get(root + 16..root + 16 + version_len)?;
+    if version.first() != Some(&b'v') {
+        return None;
+    }
+    let streams_at: usize = root + 16 + version_len.next_multiple_of(4);
+    let stream_count: usize = usize::from(u16_at(streams_at + 2)?);
+    if stream_count == 0 || stream_count > MAX_METADATA_STREAMS {
+        return None;
+    }
+    let mut cursor: usize = streams_at + 4;
+    let mut found: Option<&'static str> = None;
+    for _ in 0..stream_count {
+        let name_at: usize = cursor + 8;
+        let tail: &[u8] = bytes.get(name_at..)?;
+        let name_len: usize = tail
+            .iter()
+            .take(MAX_METADATA_STREAM_NAME)
+            .position(|&b: &u8| b == 0)?;
+        let name: &[u8] = &tail[..name_len];
+        if name.first() != Some(&b'#') {
+            return None;
+        }
+        match name {
+            b"#~" => found = Some("#~"),
+            b"#-" => found = found.or(Some("#-")),
+            _ => {}
+        }
+        cursor = name_at + (name_len + 1).next_multiple_of(4);
+    }
+    found
 }
 
 fn detect_format(bytes: &[u8]) -> &'static str {
@@ -1044,12 +1214,36 @@ fn bytes_find(haystack: &[u8], needle: &[u8]) -> bool {
     false
 }
 
+fn signature_matches(
+    sig: &ByteSig,
+    bytes: &[u8],
+    pe: Option<&PeImage>,
+    anchors: &AnchorRegions,
+) -> bool {
+    match sig.anchor {
+        SigAnchor::Anywhere => bytes_find(bytes, sig.pattern),
+        SigAnchor::PeSectionName => pe.is_some_and(|image: &PeImage| {
+            image
+                .sections
+                .iter()
+                .any(|section| section.name_trimmed() == sig.pattern)
+        }),
+        SigAnchor::Structural => anchors.find(bytes, sig.pattern).is_some(),
+    }
+}
+
 #[must_use]
 pub fn detect(bytes: &[u8], now_secs: u64) -> IdentityReport {
     let format: &'static str = detect_format(bytes);
+    let pe: Option<PeImage> = if format == "pe" {
+        parse_pe_image(bytes).ok()
+    } else {
+        None
+    };
+    let anchors: AnchorRegions = AnchorRegions::of(bytes, pe.as_ref());
     let mut hits: Vec<IdentityHit> = Vec::new();
     for sig in SIGNATURES {
-        if bytes_find(bytes, sig.pattern) {
+        if signature_matches(sig, bytes, pe.as_ref(), &anchors) {
             hits.push(IdentityHit {
                 kind: sig.kind,
                 name: sig.name.to_owned(),
@@ -1059,48 +1253,68 @@ pub fn detect(bytes: &[u8], now_secs: u64) -> IdentityReport {
             });
         }
     }
-    if bytes_find(bytes, DOTNET_METADATA_ROOT)
-        && let Some(stream) = dotnet_stream_marker(bytes)
-    {
+    if let Some(stream) = dotnet_metadata_stream(bytes) {
         hits.push(IdentityHit {
             kind: IdentityKind::Compiler,
             name: ".NET".to_owned(),
-            detail: format!(".NET metadata stream ({stream}) under a BSJB metadata root"),
+            detail: format!(".NET metadata root (BSJB) declaring a {stream} table stream"),
             confidence: 70,
             support: SupportRoute::DotnetDecompile,
         });
     }
     if format == "pe"
-        && let Some((linker_major, linker_minor)) = pe_rich_linker(bytes)
+        && let Some(rich) = pe_rich_summary(bytes)
     {
+        let detail: String = rich.linker_build.map_or_else(
+            || {
+                format!(
+                    "Rich header build stamp with {} comp.id entries",
+                    rich.entries
+                )
+            },
+            |build: u16| format!("Rich header lists link.exe 14.x build {build}"),
+        );
         hits.push(IdentityHit {
             kind: IdentityKind::Linker,
             name: "MSVC link".to_owned(),
-            detail: format!("Rich header linker {linker_major}.{linker_minor}"),
+            detail,
             confidence: 85,
             support: SupportRoute::NativeDecompile,
         });
     }
-    dedup_hits(&mut hits);
-    let authenticode: Option<AuthenticodeReport> = if format == "pe"
-        && hits
-            .iter()
-            .any(|h: &IdentityHit| h.kind == IdentityKind::Sign)
+    if format == "pe"
+        && !hits.iter().any(|h: &IdentityHit| {
+            h.kind == IdentityKind::Packer && h.support == SupportRoute::NativeUnpack
+        })
+        && let Some(runtime) = crate::runtime_image::detect_runtime_decrypted(bytes)
     {
+        hits.push(IdentityHit {
+            kind: IdentityKind::Protector,
+            name: crate::runtime_image::RUNTIME_DECRYPTED_VERDICT.to_owned(),
+            detail: runtime.summary(),
+            confidence: 90,
+            support: SupportRoute::RuntimeOnly,
+        });
+    }
+    let authenticode: Option<AuthenticodeReport> = if format == "pe" {
         let report: AuthenticodeReport = crate::authenticode::verify(bytes, now_secs);
-        for hit in &mut hits {
-            if hit.kind == IdentityKind::Sign {
-                hit.detail = format!(
-                    "{}; Authenticode verdict: {}",
-                    hit.detail,
+        (report.verdict != AuthenticodeVerdict::NoSignature).then(|| {
+            hits.push(IdentityHit {
+                kind: IdentityKind::Sign,
+                name: "Authenticode".to_owned(),
+                detail: format!(
+                    "certificate table in the security directory; Authenticode verdict: {}",
                     report.verdict.label()
-                );
-            }
-        }
-        Some(report)
+                ),
+                confidence: 95,
+                support: SupportRoute::SignatureInspect,
+            });
+            report
+        })
     } else {
         None
     };
+    dedup_hits(&mut hits);
     IdentityReport {
         format: format.to_owned(),
         hits,
@@ -1119,22 +1333,38 @@ fn dedup_hits(hits: &mut Vec<IdentityHit>) {
     hits.retain(|h: &IdentityHit| seen.insert((h.kind, h.name.clone())));
 }
 
-fn pe_rich_linker(bytes: &[u8]) -> Option<(u16, u16)> {
+struct RichSummary {
+    entries: usize,
+    linker_build: Option<u16>,
+}
+
+fn pe_rich_summary(bytes: &[u8]) -> Option<RichSummary> {
     let scan: &[u8] = &bytes[..bytes.len().min(4096)];
     let rich_pos: usize = find_subslice(scan, RICH_TAG)?;
     let key: u32 = read_u32_le_at(scan, rich_pos + 4).ok()?;
     let mut cursor: usize = rich_pos;
+    let mut dans: Option<usize> = None;
     while cursor >= 4 {
         cursor -= 4;
-        let raw: u32 = read_u32_le_at(scan, cursor).ok()?;
-        if raw ^ key == DANS_TAG {
-            let entry: u32 = read_u32_le_at(scan, cursor + 8).ok()? ^ key;
-            let product_id: u16 = (entry >> 16) as u16;
-            let build: u16 = (entry & 0xFFFF) as u16;
-            return Some((product_id, build));
+        if read_u32_le_at(scan, cursor).ok()? ^ key == DANS_TAG {
+            dans = Some(cursor);
+            break;
         }
     }
-    None
+    let mut entry: usize = dans? + 16;
+    let mut summary: RichSummary = RichSummary {
+        entries: 0,
+        linker_build: None,
+    };
+    while entry + 8 <= rich_pos {
+        let comp_id: u32 = read_u32_le_at(scan, entry).ok()? ^ key;
+        summary.entries += 1;
+        if (comp_id >> 16) as u16 == RICH_LINKER_1400_PRODUCT {
+            summary.linker_build = Some((comp_id & 0xFFFF) as u16);
+        }
+        entry += 8;
+    }
+    Some(summary)
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1153,12 +1383,36 @@ mod tests {
 
     const NOW_SECS: u64 = 1_798_761_600;
 
+    use crate::test_support::{SyntheticSection, pe64_layout};
+
+    const CODE: u32 = 0x6000_0020;
+    const DATA: u32 = 0x4000_0040;
+
+    fn hit_names(bytes: &[u8]) -> Vec<String> {
+        detect(bytes, NOW_SECS)
+            .hits
+            .into_iter()
+            .map(|h: IdentityHit| h.name)
+            .collect()
+    }
+
+    fn pe_with_rdata(name: [u8; 8], rdata: &[u8]) -> Vec<u8> {
+        let mut data: Vec<u8> = vec![0u8; 0x200];
+        data[0x40..0x40 + rdata.len()].copy_from_slice(rdata);
+        pe64_layout(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, vec![0xC3; 0x200], CODE),
+                SyntheticSection::backed(name, 0x2000, data, DATA),
+            ],
+            0x1000,
+        )
+    }
+
     #[test]
     fn detects_upx_in_pe() {
-        let mut buf: Vec<u8> = b"MZ".to_vec();
-        buf.extend(std::iter::repeat_n(0u8, 512));
-        buf.extend_from_slice(b"some data UPX! more data");
-        let report: IdentityReport = detect(&buf, NOW_SECS);
+        let mut bytes: Vec<u8> = pe_with_rdata(*b".rdata\0\0", b"");
+        bytes[0x3E0..0x3E4].copy_from_slice(b"UPX!");
+        let report: IdentityReport = detect(&bytes, NOW_SECS);
         assert_eq!(report.format, "pe");
         let hit: &IdentityHit = report
             .hits
@@ -1170,10 +1424,163 @@ mod tests {
     }
 
     #[test]
+    fn packer_magic_inside_section_data_is_not_a_packer() {
+        for magic in [&b"UPX!"[..], b"PEC2", b"FSG!", b"DX\x02\x00"] {
+            let names: Vec<String> = hit_names(&pe_with_rdata(*b".rdata\0\0", magic));
+            assert!(
+                !names.iter().any(|n: &String| {
+                    matches!(n.as_str(), "UPX" | "PECompact" | "FSG" | "DxLib archive")
+                }),
+                "{:?} inside .rdata claimed {names:?}",
+                String::from_utf8_lossy(magic)
+            );
+        }
+    }
+
+    #[test]
+    fn section_marker_counts_only_as_a_section_name() {
+        let cases: &[([u8; 8], &str, SupportRoute)] = &[
+            (*b".vmp0\0\0\0", "VMProtect", SupportRoute::DetectCarveOnly),
+            (*b"MEW\0\0\0\0\0", "MEW", SupportRoute::NativeUnpack),
+            (*b".wixburn", "WiX Burn", SupportRoute::ContainerExtract),
+            (*b".sedata\0", "Safengine", SupportRoute::DetectCarveOnly),
+            (*b".arch\0\0\0", "Denuvo", SupportRoute::DetectCarveOnly),
+        ];
+        for (name, family, route) in cases {
+            let report: IdentityReport = detect(&pe_with_rdata(*name, b""), NOW_SECS);
+            let hit: &IdentityHit = report
+                .hits
+                .iter()
+                .find(|h: &&IdentityHit| h.name == *family)
+                .unwrap_or_else(|| panic!("section {family} not detected: {:?}", report.hits));
+            assert_eq!(hit.support, *route, "{family} route");
+            let text: String = String::from_utf8_lossy(name)
+                .trim_end_matches('\0')
+                .to_owned();
+            let in_data: Vec<String> = hit_names(&pe_with_rdata(
+                *b".rdata\0\0",
+                format!("{text}\0").as_bytes(),
+            ));
+            assert!(
+                !in_data.iter().any(|n: &String| n == family),
+                "{text} inside .rdata claimed {family}: {in_data:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dxlib_archive_magic_at_the_file_start_is_an_archive() {
+        let mut archive: Vec<u8> = b"DX\x02\x00".to_vec();
+        archive.extend(std::iter::repeat_n(0u8, 60));
+        assert!(
+            hit_names(&archive)
+                .iter()
+                .any(|n: &String| n == "DxLib archive")
+        );
+    }
+
+    #[test]
+    fn authenticode_is_claimed_from_the_security_directory_only() {
+        let oid: &[u8] = b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x07\x02";
+        let report: IdentityReport = detect(&pe_with_rdata(*b".rdata\0\0", oid), NOW_SECS);
+        assert!(
+            !report
+                .hits
+                .iter()
+                .any(|h: &IdentityHit| h.kind == IdentityKind::Sign),
+            "a PKCS#7 OID in section data is not a signature: {:?}",
+            report.hits
+        );
+        assert!(report.authenticode.is_none());
+        let mut signed: Vec<u8> = pe_with_rdata(*b".rdata\0\0", b"");
+        let table_at: u32 = signed.len() as u32;
+        let mut certificate: Vec<u8> = Vec::new();
+        certificate.extend_from_slice(&16u32.to_le_bytes());
+        certificate.extend_from_slice(&0x0200u16.to_le_bytes());
+        certificate.extend_from_slice(&0x0002u16.to_le_bytes());
+        certificate.extend_from_slice(&[0x30, 0x03, 0x02, 0x01, 0x01, 0, 0, 0]);
+        signed.extend_from_slice(&certificate);
+        let directory: usize = 0x80 + 4 + 20 + 112 + 4 * 8;
+        signed[directory..directory + 4].copy_from_slice(&table_at.to_le_bytes());
+        signed[directory + 4..directory + 8].copy_from_slice(&16u32.to_le_bytes());
+        let report: IdentityReport = detect(&signed, NOW_SECS);
+        let sign: &IdentityHit = report
+            .hits
+            .iter()
+            .find(|h: &&IdentityHit| h.kind == IdentityKind::Sign)
+            .unwrap_or_else(|| panic!("security directory signature missing: {:?}", report.hits));
+        assert!(
+            sign.detail.contains("security directory"),
+            "{}",
+            sign.detail
+        );
+        assert!(report.authenticode.is_some());
+    }
+
+    #[test]
+    fn rich_linker_detail_names_the_link_build() {
+        let mut bytes: Vec<u8> = pe_with_rdata(*b".rdata\0\0", b"");
+        let key: u32 = 0x1357_9BDF;
+        let mut rich: Vec<u8> = Vec::new();
+        for word in [0x536E_6144u32, 0, 0, 0] {
+            rich.extend_from_slice(&(word ^ key).to_le_bytes());
+        }
+        for (product, build, count) in [(0x0104u32, 35207u32, 8u32), (0x0102, 35229, 1)] {
+            rich.extend_from_slice(&(((product << 16) | build) ^ key).to_le_bytes());
+            rich.extend_from_slice(&(count ^ key).to_le_bytes());
+        }
+        rich.extend_from_slice(b"Rich");
+        rich.extend_from_slice(&key.to_le_bytes());
+        bytes[0x40..0x40 + rich.len()].copy_from_slice(&rich);
+        let report: IdentityReport = detect(&bytes, NOW_SECS);
+        let link: &IdentityHit = report
+            .hits
+            .iter()
+            .find(|h: &&IdentityHit| h.name == "MSVC link")
+            .unwrap_or_else(|| panic!("rich linker missing: {:?}", report.hits));
+        assert_eq!(link.detail, "Rich header lists link.exe 14.x build 35229");
+    }
+
+    #[test]
+    fn runtime_decrypted_image_is_a_named_hit() {
+        use crate::test_support::{SyntheticSection, pe64_layout};
+        let mut state: u32 = 0x1234_5678;
+        let sealed: Vec<u8> = (0..0x4_0000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 8) as u8
+            })
+            .collect();
+        let bytes: Vec<u8> = pe64_layout(
+            &[
+                SyntheticSection::unbacked(*b".text\0\0\0", 0x1000, 0x20_0000, 0x6000_0020),
+                SyntheticSection::backed(*b".seal\0\0\0", 0x21_0000, sealed, 0xE000_0020),
+            ],
+            0x21_0400,
+        );
+        let report: IdentityReport = detect(&bytes, NOW_SECS);
+        let hit: &IdentityHit = report
+            .hits
+            .iter()
+            .find(|h: &&IdentityHit| h.name == crate::runtime_image::RUNTIME_DECRYPTED_VERDICT)
+            .unwrap_or_else(|| panic!("runtime-decrypted hit missing: {:?}", report.hits));
+        assert_eq!(hit.kind, IdentityKind::Protector);
+        assert_eq!(hit.support, SupportRoute::RuntimeOnly);
+        assert!(
+            hit.detail.contains(".text (2097152 bytes)"),
+            "{}",
+            hit.detail
+        );
+        assert!(hit.detail.contains(".seal"), "{}", hit.detail);
+    }
+
+    #[test]
     fn detects_go_and_routes_to_go_decompile() {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend(std::iter::repeat_n(0u8, 64));
-        buf.extend_from_slice(b".vmp0\x00\x00\x00 Go build ID: \"abc\"");
+        buf.extend_from_slice(b" Go build ID: \"abc\"");
         let report: IdentityReport = detect(&buf, NOW_SECS);
         let go: &IdentityHit = report
             .hits
@@ -1181,12 +1588,6 @@ mod tests {
             .find(|h: &&IdentityHit| h.name == "Go")
             .expect("go hit");
         assert_eq!(go.support, SupportRoute::GoDecompile);
-        let vmp: &IdentityHit = report
-            .hits
-            .iter()
-            .find(|h: &&IdentityHit| h.name == "VMProtect")
-            .expect("vmp hit");
-        assert_eq!(vmp.support, SupportRoute::DetectCarveOnly);
     }
 
     #[test]
@@ -1265,12 +1666,6 @@ mod tests {
             (
                 b"NODE_SEA_BLOB",
                 "Node SEA",
-                IdentityKind::Installer,
-                SupportRoute::ContainerExtract,
-            ),
-            (
-                b".wixburn",
-                "WiX Burn",
                 IdentityKind::Installer,
                 SupportRoute::ContainerExtract,
             ),
@@ -1361,12 +1756,6 @@ mod tests {
                 SupportRoute::ContainerExtract,
             ),
             (
-                b".sedata",
-                "Safengine",
-                IdentityKind::Protector,
-                SupportRoute::DetectCarveOnly,
-            ),
-            (
                 b"Denuvo",
                 "Denuvo",
                 IdentityKind::Protector,
@@ -1376,12 +1765,6 @@ mod tests {
                 b"This archive was made with makeself",
                 "Makeself",
                 IdentityKind::Installer,
-                SupportRoute::ContainerExtract,
-            ),
-            (
-                b"DX\x01\x00",
-                "DxLib archive",
-                IdentityKind::Format,
                 SupportRoute::ContainerExtract,
             ),
         ];
@@ -1413,11 +1796,51 @@ mod tests {
         );
     }
 
+    fn metadata_root(streams: &[&[u8]]) -> Vec<u8> {
+        let mut root: Vec<u8> = b"BSJB".to_vec();
+        root.extend_from_slice(&1u16.to_le_bytes());
+        root.extend_from_slice(&1u16.to_le_bytes());
+        root.extend_from_slice(&0u32.to_le_bytes());
+        root.extend_from_slice(&12u32.to_le_bytes());
+        root.extend_from_slice(b"v4.0.30319\0\0");
+        root.extend_from_slice(&0u16.to_le_bytes());
+        root.extend_from_slice(&(streams.len() as u16).to_le_bytes());
+        for name in streams {
+            root.extend_from_slice(&0x6Cu32.to_le_bytes());
+            root.extend_from_slice(&0x10u32.to_le_bytes());
+            root.extend_from_slice(name);
+            root.push(0);
+            while root.len() % 4 != 0 {
+                root.push(0);
+            }
+        }
+        root
+    }
+
+    #[test]
+    fn bsjb_constant_and_stream_strings_outside_a_root_do_not_flag_dotnet() {
+        let mut buf: Vec<u8> = b"MZ".to_vec();
+        buf.extend(std::iter::repeat_n(0u8, 256));
+        buf.extend_from_slice(b"\x81\x38BSJB\x0f\x85 cmp; strings: #~\x00#-\x00#Strings\x00");
+        let report: IdentityReport = detect(&buf, NOW_SECS);
+        assert!(
+            !report.hits.iter().any(|h: &IdentityHit| h.name == ".NET"),
+            "BSJB in code beside stream-name strings is not a metadata root: {:?}",
+            report.hits
+        );
+    }
+
     #[test]
     fn metadata_stream_under_bsjb_root_flags_dotnet() {
         let mut buf: Vec<u8> = b"MZ".to_vec();
         buf.extend(std::iter::repeat_n(0u8, 256));
-        buf.extend_from_slice(b"BSJBv4.0.30319\x00\x00#~\x00#Strings\x00#Blob");
+        buf.extend_from_slice(&metadata_root(&[
+            b"#~",
+            b"#Strings",
+            b"#US",
+            b"#GUID",
+            b"#Blob",
+        ]));
         let report: IdentityReport = detect(&buf, NOW_SECS);
         let dotnet: &IdentityHit = report
             .hits

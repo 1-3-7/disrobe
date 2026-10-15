@@ -60,6 +60,7 @@ pub mod patch;
 pub mod pdb_cxx;
 pub mod plt_resolve;
 pub mod pseudo_c;
+pub mod runtime_image;
 pub mod rust_recovery;
 pub mod sig_engine;
 pub mod sigmaker;
@@ -276,6 +277,9 @@ pub use pseudo_c::{
     recover_leaf_function_rust_abi, recover_leaf_function_switch_abi,
     recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls, recover_program,
     recover_vectorized_reduction, resolved_int_arity_in_object,
+};
+pub use runtime_image::{
+    RUNTIME_DECRYPTED_VERDICT, RuntimeDecryptedImage, UnbackedSection, detect_runtime_decrypted,
 };
 pub use rust_recovery::{
     AuditableCrate, AuditableSbom, DemangleScheme, DemangledSymbol, EnumDiscriminant,
