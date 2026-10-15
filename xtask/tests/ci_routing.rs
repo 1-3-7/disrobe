@@ -825,7 +825,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
         test_step(test_steps, "build the CLI used by workspace caller tests")
             .get("if")
             .and_then(Value::as_str),
-        Some("matrix.shard == 'one' || matrix.shard == 'two'")
+        Some("matrix.shard == 'one' || matrix.shard == 'two' || matrix.shard == 'three'")
     );
     for (name, shard) in [
         (
