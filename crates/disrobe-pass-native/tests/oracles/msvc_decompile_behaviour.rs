@@ -14,24 +14,33 @@ use disrobe_pass_native::{
 };
 use object::{Object as _, ObjectSection as _};
 
+use super::msvc_rust_behaviour::{
+    rust_add_one_to_every_returned_value, rust_write_one_more_at_the_first_store,
+};
 use crate::common::{COMPILE_TIMEOUT, MAX_CAPTURE_BYTES, scratch_dir};
 use crate::compiler_toolchain;
 
 const FIXTURE_ROOT: &str = "corpus/native/decompile";
-const VALID_INPUTS: u32 = 1000;
-const RUN_TIMEOUT: Duration = Duration::from_mins(1);
+pub(super) const VALID_INPUTS: u32 = 1000;
+pub(super) const RUN_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Clone, Copy)]
-enum Target {
+pub(super) enum Target {
     Export(&'static str),
     JumpThunk(&'static str),
 }
 
-struct Case {
-    target: Target,
-    params: usize,
-    return_bits: u32,
-    mutate: fn(&str) -> String,
+pub(super) struct Case {
+    pub(super) target: Target,
+    pub(super) params: usize,
+    pub(super) return_bits: u32,
+    pub(super) mutate_c: fn(&str) -> String,
+    pub(super) mutate_rust: fn(&str) -> String,
+}
+
+pub(super) struct Fixture {
+    pub(super) dll: &'static str,
+    pub(super) cases: &'static [Case],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,21 +50,21 @@ enum Mode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Grade {
-    valid: u32,
-    equal: u32,
-    differ: u32,
+pub(super) struct Grade {
+    pub(super) valid: u32,
+    pub(super) equal: u32,
+    pub(super) differ: u32,
 }
 
-struct Image {
+pub(super) struct Image {
     bytes: Vec<u8>,
-    path: PathBuf,
-    preferred_base: u64,
-    program: RecoveredProgram,
+    pub(super) path: PathBuf,
+    pub(super) preferred_base: u64,
+    pub(super) program: RecoveredProgram,
     names: BTreeMap<String, u64>,
 }
 
-fn fixture_path(relative: &str) -> PathBuf {
+pub(super) fn fixture_path(relative: &str) -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();
     root.pop();
@@ -73,7 +82,7 @@ fn mapped_bytes(file: &object::File<'_>, start: u64, end: u64) -> Option<Vec<u8>
         })
 }
 
-fn load_image(relative: &str) -> Image {
+pub(super) fn load_image(relative: &str) -> Image {
     let path: PathBuf = fixture_path(relative);
     let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
@@ -107,7 +116,7 @@ fn load_image(relative: &str) -> Image {
     }
 }
 
-fn target_address(image: &Image, target: Target) -> u64 {
+pub(super) fn target_address(image: &Image, target: Target) -> u64 {
     match target {
         Target::Export(name) => *image
             .names
@@ -136,7 +145,7 @@ fn target_address(image: &Image, target: Target) -> u64 {
     }
 }
 
-fn recovered_at(image: &Image, address: u64) -> &RecoveredFunction {
+pub(super) fn recovered_at(image: &Image, address: u64) -> &RecoveredFunction {
     image
         .program
         .recovered
@@ -153,7 +162,7 @@ fn recovered_at(image: &Image, address: u64) -> &RecoveredFunction {
         })
 }
 
-fn bridge_target(image: &Image, name: &str) -> u64 {
+pub(super) fn bridge_target(image: &Image, name: &str) -> u64 {
     if let Some(hex) = name.strip_prefix("sub_")
         && let Ok(address) = u64::from_str_radix(hex, 16)
     {
@@ -369,9 +378,9 @@ fn run_harness(image: &Image, source: &str, tag: &str) -> Result<Grade, String> 
     })
 }
 
-fn grade_fixture(relative: &str, cases: &[Case]) {
-    let image: Image = load_image(relative);
-    for case in cases {
+fn grade_fixture(fixture: &Fixture) {
+    let image: Image = load_image(fixture.dll);
+    for case in fixture.cases {
         let address: u64 = target_address(&image, case.target);
         let function: &RecoveredFunction = recovered_at(&image, address);
         let tag: String = format!("f_{address:x}");
@@ -412,7 +421,7 @@ fn grade_fixture(relative: &str, cases: &[Case]) {
             "{tag}: the recovered C must behave like the original on every input:\n{}",
             function.source
         );
-        let mutated_source: String = (case.mutate)(&function.source);
+        let mutated_source: String = (case.mutate_c)(&function.source);
         assert_ne!(
             mutated_source, function.source,
             "{tag}: the mutation control must change the source"
@@ -477,6 +486,54 @@ fn swap_first_two_stack_parameters(source: &str) -> String {
         .replacen("r_x86_stack_swap", "r_x86_stack1", 1)
 }
 
+pub(super) const STACK_ARGS: Fixture = Fixture {
+    dll: "stack_args/stack_args.dll",
+    cases: &[
+        Case {
+            target: Target::Export("pass_six"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: drop_stack_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("pass_unresolved"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: drop_stack_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("pass_null"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: pass_a_register_for_the_null_argument,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("pass_five_int"),
+            params: 2,
+            return_bits: 32,
+            mutate_c: drop_stack_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::JumpThunk("call_mix6"),
+            params: 6,
+            return_bits: 64,
+            mutate_c: swap_first_two_stack_parameters,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::JumpThunk("call_mix7"),
+            params: 7,
+            return_bits: 32,
+            mutate_c: swap_first_two_stack_parameters,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+    ],
+};
+
 #[test]
 fn msvc_o2_outgoing_stack_arguments_behave_like_the_original() {
     let source: String =
@@ -484,47 +541,7 @@ fn msvc_o2_outgoing_stack_arguments_behave_like_the_original() {
     assert!(source.contains(
         "int64_t mix6(int64_t a, int64_t b, int64_t c, int64_t d, int64_t e, int64_t f)"
     ));
-    grade_fixture(
-        "stack_args/stack_args.dll",
-        &[
-            Case {
-                target: Target::Export("pass_six"),
-                params: 2,
-                return_bits: 64,
-                mutate: drop_stack_arguments,
-            },
-            Case {
-                target: Target::Export("pass_unresolved"),
-                params: 2,
-                return_bits: 64,
-                mutate: drop_stack_arguments,
-            },
-            Case {
-                target: Target::Export("pass_null"),
-                params: 2,
-                return_bits: 64,
-                mutate: pass_a_register_for_the_null_argument,
-            },
-            Case {
-                target: Target::Export("pass_five_int"),
-                params: 2,
-                return_bits: 32,
-                mutate: drop_stack_arguments,
-            },
-            Case {
-                target: Target::JumpThunk("call_mix6"),
-                params: 6,
-                return_bits: 64,
-                mutate: swap_first_two_stack_parameters,
-            },
-            Case {
-                target: Target::JumpThunk("call_mix7"),
-                params: 7,
-                return_bits: 32,
-                mutate: swap_first_two_stack_parameters,
-            },
-        ],
-    );
+    grade_fixture(&STACK_ARGS);
 }
 
 fn store_the_rcx_home_save_at_its_entry_displacement(source: &str) -> String {
@@ -543,6 +560,54 @@ fn add_one_to_the_first_return(source: &str) -> String {
     source.replacen("    return ", "    return 1 + ", 1)
 }
 
+pub(super) const PUSH_FRAMES: Fixture = Fixture {
+    dll: "push_frames/push_frames.dll",
+    cases: &[
+        Case {
+            target: Target::Export("pass_seven_twice"),
+            params: 3,
+            return_bits: 32,
+            mutate_c: drop_stack_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("spill_across_calls"),
+            params: 4,
+            return_bits: 64,
+            mutate_c: store_the_rcx_home_save_at_its_entry_displacement,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("stack_args_across_call"),
+            params: 6,
+            return_bits: 64,
+            mutate_c: swap_first_two_stack_parameters,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("keep_across_calls"),
+            params: 4,
+            return_bits: 64,
+            mutate_c: scale_the_first_product_differently,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("chain_calls"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("wide_leaf"),
+            params: 6,
+            return_bits: 64,
+            mutate_c: swap_first_two_stack_parameters,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+    ],
+};
+
 #[test]
 fn msvc_o2_push_built_frames_behave_like_the_original() {
     let source: String =
@@ -550,47 +615,7 @@ fn msvc_o2_push_built_frames_behave_like_the_original() {
     assert!(
         source.contains("int64_t spill_across_calls(int64_t a, int64_t b, int64_t c, int64_t d)")
     );
-    grade_fixture(
-        "push_frames/push_frames.dll",
-        &[
-            Case {
-                target: Target::Export("pass_seven_twice"),
-                params: 3,
-                return_bits: 32,
-                mutate: drop_stack_arguments,
-            },
-            Case {
-                target: Target::Export("spill_across_calls"),
-                params: 4,
-                return_bits: 64,
-                mutate: store_the_rcx_home_save_at_its_entry_displacement,
-            },
-            Case {
-                target: Target::Export("stack_args_across_call"),
-                params: 6,
-                return_bits: 64,
-                mutate: swap_first_two_stack_parameters,
-            },
-            Case {
-                target: Target::Export("keep_across_calls"),
-                params: 4,
-                return_bits: 64,
-                mutate: scale_the_first_product_differently,
-            },
-            Case {
-                target: Target::Export("chain_calls"),
-                params: 2,
-                return_bits: 64,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("wide_leaf"),
-                params: 6,
-                return_bits: 64,
-                mutate: swap_first_two_stack_parameters,
-            },
-        ],
-    );
+    grade_fixture(&PUSH_FRAMES);
 }
 
 fn exchange_the_multiplier_and_the_divisor(source: &str) -> String {
@@ -609,46 +634,53 @@ fn swap_the_first_two_call_arguments(source: &str) -> String {
     )
 }
 
+pub(super) const SLOT_CALLS: Fixture = Fixture {
+    dll: "slot_calls/slot_calls.dll",
+    cases: &[
+        Case {
+            target: Target::Export("scale_by_import"),
+            params: 3,
+            return_bits: 32,
+            mutate_c: exchange_the_multiplier_and_the_divisor,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("compare_through_import"),
+            params: 2,
+            return_bits: 32,
+            mutate_c: drop_stack_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("call_through_global"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: swap_the_first_two_call_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("call_through_register"),
+            params: 3,
+            return_bits: 64,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("release_twice"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+    ],
+};
+
 #[test]
 fn msvc_o2_calls_through_import_and_pointer_slots_behave_like_the_original() {
     let source: String =
         std::fs::read_to_string(fixture_path("slot_calls/slot_calls.c")).expect("fixture source");
     assert!(source.contains("return MulDiv(a, b, c) + 1;"));
-    grade_fixture(
-        "slot_calls/slot_calls.dll",
-        &[
-            Case {
-                target: Target::Export("scale_by_import"),
-                params: 3,
-                return_bits: 32,
-                mutate: exchange_the_multiplier_and_the_divisor,
-            },
-            Case {
-                target: Target::Export("compare_through_import"),
-                params: 2,
-                return_bits: 32,
-                mutate: drop_stack_arguments,
-            },
-            Case {
-                target: Target::Export("call_through_global"),
-                params: 2,
-                return_bits: 64,
-                mutate: swap_the_first_two_call_arguments,
-            },
-            Case {
-                target: Target::Export("call_through_register"),
-                params: 3,
-                return_bits: 64,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("release_twice"),
-                params: 2,
-                return_bits: 64,
-                mutate: add_one_to_the_first_return,
-            },
-        ],
-    );
+    grade_fixture(&SLOT_CALLS);
     let image: Image = load_image("slot_calls/slot_calls.dll");
     let scale: &RecoveredFunction = recovered_at(
         &image,
@@ -700,76 +732,88 @@ fn flip_the_written_mode(source: &str) -> String {
     )
 }
 
+pub(super) const GLOBALS: Fixture = Fixture {
+    dll: "globals/globals.dll",
+    cases: &[
+        Case {
+            target: Target::Export("bump"),
+            params: 1,
+            return_bits: 64,
+            mutate_c: store_the_counter_one_word_higher,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("clamp_counter"),
+            params: 1,
+            return_bits: 64,
+            mutate_c: store_the_counter_one_word_higher,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("set_mode"),
+            params: 1,
+            return_bits: 0,
+            mutate_c: flip_the_written_mode,
+            mutate_rust: rust_write_one_more_at_the_first_store,
+        },
+        Case {
+            target: Target::Export("mode_flags"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("table_pick"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("bits_select"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: test_a_different_bit,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("byte_table_test"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: test_a_different_bit,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("masked_counter"),
+            params: 1,
+            return_bits: 64,
+            mutate_c: test_the_complement,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("bits_test"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("toggle_flags"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+    ],
+};
+
 #[test]
 fn msvc_o2_rip_relative_globals_behave_like_the_original() {
     let source: String =
         std::fs::read_to_string(fixture_path("globals/globals.c")).expect("fixture source");
     assert!(source.contains("g_counter += by;"));
-    grade_fixture(
-        "globals/globals.dll",
-        &[
-            Case {
-                target: Target::Export("bump"),
-                params: 1,
-                return_bits: 64,
-                mutate: store_the_counter_one_word_higher,
-            },
-            Case {
-                target: Target::Export("clamp_counter"),
-                params: 1,
-                return_bits: 64,
-                mutate: store_the_counter_one_word_higher,
-            },
-            Case {
-                target: Target::Export("set_mode"),
-                params: 1,
-                return_bits: 0,
-                mutate: flip_the_written_mode,
-            },
-            Case {
-                target: Target::Export("mode_flags"),
-                params: 1,
-                return_bits: 32,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("table_pick"),
-                params: 1,
-                return_bits: 32,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("bits_select"),
-                params: 1,
-                return_bits: 32,
-                mutate: test_a_different_bit,
-            },
-            Case {
-                target: Target::Export("byte_table_test"),
-                params: 1,
-                return_bits: 32,
-                mutate: test_a_different_bit,
-            },
-            Case {
-                target: Target::Export("masked_counter"),
-                params: 1,
-                return_bits: 64,
-                mutate: test_the_complement,
-            },
-            Case {
-                target: Target::Export("bits_test"),
-                params: 1,
-                return_bits: 32,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("toggle_flags"),
-                params: 1,
-                return_bits: 32,
-                mutate: add_one_to_the_first_return,
-            },
-        ],
-    );
+    grade_fixture(&GLOBALS);
 }
 
 fn store_one_where_the_buffer_is_zeroed(source: &str) -> String {
@@ -780,40 +824,46 @@ fn store_one_where_the_buffer_is_zeroed(source: &str) -> String {
     )
 }
 
+pub(super) const ADDRESS_TAKEN: Fixture = Fixture {
+    dll: "address_taken/address_taken.dll",
+    cases: &[
+        Case {
+            target: Target::Export("through_struct"),
+            params: 1,
+            return_bits: 64,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("through_array"),
+            params: 1,
+            return_bits: 32,
+            mutate_c: add_one_to_the_first_return,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("guarded_scan"),
+            params: 2,
+            return_bits: 32,
+            mutate_c: store_one_where_the_buffer_is_zeroed,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+        Case {
+            target: Target::Export("call_va"),
+            params: 2,
+            return_bits: 64,
+            mutate_c: drop_stack_arguments,
+            mutate_rust: rust_add_one_to_every_returned_value,
+        },
+    ],
+};
+
 #[test]
 fn msvc_o2_address_taken_locals_behave_like_the_original() {
     let source: String = std::fs::read_to_string(fixture_path("address_taken/address_taken.c"))
         .expect("fixture source");
     assert!(source.contains("fill_pair(&p, value);"));
-    grade_fixture(
-        "address_taken/address_taken.dll",
-        &[
-            Case {
-                target: Target::Export("through_struct"),
-                params: 1,
-                return_bits: 64,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("through_array"),
-                params: 1,
-                return_bits: 32,
-                mutate: add_one_to_the_first_return,
-            },
-            Case {
-                target: Target::Export("guarded_scan"),
-                params: 2,
-                return_bits: 32,
-                mutate: store_one_where_the_buffer_is_zeroed,
-            },
-            Case {
-                target: Target::Export("call_va"),
-                params: 2,
-                return_bits: 64,
-                mutate: drop_stack_arguments,
-            },
-        ],
-    );
+    grade_fixture(&ADDRESS_TAKEN);
     let image: Image = load_image("address_taken/address_taken.dll");
     let out_params: u64 = target_address(&image, Target::Export("through_out_params"));
     let refusal: &str = image

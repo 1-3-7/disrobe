@@ -468,6 +468,169 @@ const SHAPE_PROGRAMS: &[WholeProgram] = &[
     },
 ];
 
+#[cfg(windows)]
+const DISPATCH_PROGRAMS: &[WholeProgram] = &[
+    WholeProgram {
+        name: "wp_dsp_guarded_or",
+        entry: "wp_dsp_guarded_or_entry",
+        entry_arity: 3,
+        loopy: false,
+        functions: &["wp_dsp_guarded_or_entry", "wp_dsp_guarded_or_h"],
+        c_source: r#"__asm__(
+".section .text$_wp_dsp_guarded_or,\"x\"\n"
+".globl wp_dsp_guarded_or_h\n"
+".def wp_dsp_guarded_or_h; .scl 2; .type 32; .endef\n"
+"wp_dsp_guarded_or_h:\n"
+"    xorl %eax, %eax\n"
+"    testb $1, %r8b\n"
+"    je .Lgo_after\n"
+"    testb $3, %cl\n"
+"    jne .Lgo_src\n"
+"    testb $4, %dl\n"
+"    jne .Lgo_set\n"
+"    testb $2, %r8b\n"
+"    je .Lgo_src\n"
+".Lgo_set:\n"
+"    movl $87, %eax\n"
+".Lgo_src:\n"
+"    testb $8, %dl\n"
+"    jne .Lgo_after\n"
+"    addq $5, %rdx\n"
+".Lgo_after:\n"
+"    leaq (%rax,%rdx,2), %rax\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %dl\n"
+"    je .Lguarded_or_dl_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Lguarded_or_dl_\\step:\n"
+"    .endr\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %r8b\n"
+"    je .Lguarded_or_r8b_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Lguarded_or_r8b_\\step:\n"
+"    .endr\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %cl\n"
+"    je .Lguarded_or_cl_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Lguarded_or_cl_\\step:\n"
+"    .endr\n"
+"    ret\n"
+".text\n");
+long long wp_dsp_guarded_or_h(long long, long long, long long);
+long long wp_dsp_guarded_or_entry(long long a, long long b, long long c) { return wp_dsp_guarded_or_h(a, b, c) + 1; }
+"#,
+    },
+    WholeProgram {
+        name: "wp_dsp_guarded_or_mul",
+        entry: "wp_dsp_guarded_or_mul_entry",
+        entry_arity: 3,
+        loopy: false,
+        functions: &["wp_dsp_guarded_or_mul_entry", "wp_dsp_guarded_or_mul_h"],
+        c_source: r#"__asm__(
+".section .text$_wp_dsp_guarded_or_mul,\"x\"\n"
+".globl wp_dsp_guarded_or_mul_h\n"
+".def wp_dsp_guarded_or_mul_h; .scl 2; .type 32; .endef\n"
+"wp_dsp_guarded_or_mul_h:\n"
+"    movq %rcx, %rax\n"
+"    testb $1, %r8b\n"
+"    je .Lgm_after\n"
+"    testq %rcx, %rcx\n"
+"    jg .Lgm_src\n"
+"    testb $4, %dl\n"
+"    jne .Lgm_set\n"
+"    cmpq $3, %r8\n"
+"    jl .Lgm_src\n"
+".Lgm_set:\n"
+"    imulq $3, %rax, %rax\n"
+".Lgm_src:\n"
+"    cmpq $10, %rdx\n"
+"    jle .Lgm_after\n"
+"    subq %rdx, %rax\n"
+".Lgm_after:\n"
+"    addq %rdx, %rax\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %dl\n"
+"    je .Lguarded_or_mul_dl_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Lguarded_or_mul_dl_\\step:\n"
+"    .endr\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %r8b\n"
+"    je .Lguarded_or_mul_r8b_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Lguarded_or_mul_r8b_\\step:\n"
+"    .endr\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %cl\n"
+"    je .Lguarded_or_mul_cl_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Lguarded_or_mul_cl_\\step:\n"
+"    .endr\n"
+"    ret\n"
+".text\n");
+long long wp_dsp_guarded_or_mul_h(long long, long long, long long);
+long long wp_dsp_guarded_or_mul_entry(long long a, long long b, long long c) { return wp_dsp_guarded_or_mul_h(a, b, c) + 1; }
+"#,
+    },
+    WholeProgram {
+        name: "wp_dsp_two_guards",
+        entry: "wp_dsp_two_guards_entry",
+        entry_arity: 3,
+        loopy: false,
+        functions: &["wp_dsp_two_guards_entry", "wp_dsp_two_guards_h"],
+        c_source: r#"__asm__(
+".section .text$_wp_dsp_two_guards,\"x\"\n"
+".globl wp_dsp_two_guards_h\n"
+".def wp_dsp_two_guards_h; .scl 2; .type 32; .endef\n"
+"wp_dsp_two_guards_h:\n"
+"    xorl %eax, %eax\n"
+"    testb $1, %cl\n"
+"    je .Ltg_second\n"
+"    testb $2, %dl\n"
+"    jne .Ltg_first_set\n"
+"    testb $4, %r8b\n"
+"    je .Ltg_second\n"
+".Ltg_first_set:\n"
+"    addq $40, %rax\n"
+".Ltg_second:\n"
+"    testb $8, %r8b\n"
+"    je .Ltg_done\n"
+"    testb $1, %dl\n"
+"    jne .Ltg_second_set\n"
+"    cmpq %rdx, %rcx\n"
+"    jle .Ltg_done\n"
+".Ltg_second_set:\n"
+"    addq %rcx, %rax\n"
+".Ltg_done:\n"
+"    subq %r8, %rax\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %dl\n"
+"    je .Ltwo_guards_dl_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Ltwo_guards_dl_\\step:\n"
+"    .endr\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %r8b\n"
+"    je .Ltwo_guards_r8b_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Ltwo_guards_r8b_\\step:\n"
+"    .endr\n"
+"    .irp step,0,1,2,3,4,5,6,7,8,9,10,11\n"
+"    testb $(1 << (\\step & 3)), %cl\n"
+"    je .Ltwo_guards_cl_\\step\n"
+"    addq $(\\step * 7 + 3), %rax\n"
+".Ltwo_guards_cl_\\step:\n"
+"    .endr\n"
+"    ret\n"
+".text\n");
+long long wp_dsp_two_guards_h(long long, long long, long long);
+long long wp_dsp_two_guards_entry(long long a, long long b, long long c) { return wp_dsp_two_guards_h(a, b, c) + 1; }
+"#,
+    },
+];
+
 #[cfg(not(target_os = "macos"))]
 fn full_battery() -> Vec<&'static WholeProgram> {
     PROGRAMS.iter().chain(SHAPE_PROGRAMS).collect()
@@ -803,6 +966,150 @@ fn c_ground_values(
         BoundedRun::Exited(_) => None,
         BoundedRun::TimedOut => panic!("{tag} c ground truth did not terminate within watchdog"),
     }
+}
+
+#[cfg(windows)]
+fn try_rust_recovered_values(
+    rustc_bin: &str,
+    program: &WholeProgram,
+    recovered: &RecoveredProgram,
+    dir: &Path,
+    tag: &str,
+) -> Result<Vec<u64>, String> {
+    let src: String = build_rust_program(program, recovered);
+    let src_path: PathBuf = dir.join(format!("{tag}_recovered.rs"));
+    std::fs::write(&src_path, src.as_bytes()).expect("write recovered rust");
+    let exe: PathBuf = dir.join(format!("{tag}_recovered.exe"));
+    let build: std::process::Output = Command::new(rustc_bin)
+        .args(["--edition", "2021", "-C", "overflow-checks=on", "-o"])
+        .arg(&exe)
+        .arg(&src_path)
+        .output()
+        .expect("invoke rustc for recovered whole program");
+    assert!(
+        build.status.success(),
+        "{tag} recovered rust compile failed: {}\n--- recovered.rs ---\n{src}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    match run_bounded(&exe, 10) {
+        BoundedRun::Exited(out) if out.status.success() => {
+            Ok(parse_values(&String::from_utf8_lossy(&out.stdout)))
+        }
+        BoundedRun::Exited(out) => Err(format!(
+            "{tag} exited with {:?}: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        )),
+        BoundedRun::TimedOut => Err(format!("{tag} did not terminate within its watchdog")),
+    }
+}
+
+#[cfg(windows)]
+fn add_one_to_every_dispatched_return(module: &str) -> String {
+    let mut in_dispatch: bool = false;
+    module
+        .lines()
+        .map(|line: &str| {
+            if line.starts_with("pub fn ") {
+                in_dispatch = false;
+            }
+            if line.contains("let mut recover_state: usize") {
+                in_dispatch = true;
+            }
+            let indent: usize = line.len() - line.trim_start().len();
+            match line
+                .trim()
+                .strip_prefix("return ")
+                .and_then(|rest: &str| rest.strip_suffix(';'))
+            {
+                Some(returned) if in_dispatch => {
+                    format!("{}return ({returned}).wrapping_add(1);", &line[..indent])
+                }
+                _ => line.to_owned(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+#[cfg(windows)]
+#[test]
+fn goto_shapes_recompile_to_rust_through_the_dispatch_loop() {
+    let builder: String = gcc();
+    let rustc_bin: String = rustc();
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let mut dispatched: Vec<String> = Vec::new();
+    let mut graded: usize = 0;
+    let mut rejected: Vec<String> = Vec::new();
+    for opt in OPT_LEVELS {
+        for program in DISPATCH_PROGRAMS {
+            let tag: String = format!("{}_{}_dispatch", program.name, opt_tag(opt));
+            let object: Vec<u8> = compile_object_opt(
+                &builder,
+                opt,
+                &CC_FLAGS,
+                program.c_source,
+                &dir.join(format!("{tag}.o")),
+            )
+            .unwrap_or_else(|| panic!("{tag}: the authored goto program must compile"));
+            let Some(recovered): Option<RecoveredProgram> =
+                recover_program(&object, program, HOST_ABI)
+            else {
+                rejected.push(tag);
+                continue;
+            };
+            let golden: Vec<u64> = c_ground_values(&builder, program, opt, &dir, &tag)
+                .unwrap_or_else(|| panic!("{tag}: the C ground truth must run"));
+            let got: Vec<u64> =
+                try_rust_recovered_values(&rustc_bin, program, &recovered, &dir, &tag)
+                    .unwrap_or_else(|failure: String| panic!("{failure}"));
+            assert_eq!(
+                golden, got,
+                "{tag}: the recovered Rust must compute what the original computes:\n{}",
+                recovered.module
+            );
+            graded += 1;
+            if !recovered.module.contains("let mut recover_state: usize") {
+                continue;
+            }
+            dispatched.push(tag.clone());
+            let mutated: RecoveredProgram = RecoveredProgram {
+                module: add_one_to_every_dispatched_return(&recovered.module),
+                entry_params: recovered.entry_params,
+                entry_return_width: recovered.entry_return_width,
+                used_frame: recovered.used_frame,
+            };
+            assert_ne!(
+                mutated.module, recovered.module,
+                "{tag}: the mutation control must change the dispatched returns"
+            );
+            let mutated_values: Result<Vec<u64>, String> = try_rust_recovered_values(
+                &rustc_bin,
+                program,
+                &mutated,
+                &dir,
+                &format!("{tag}_mutated"),
+            );
+            assert!(
+                mutated_values
+                    .as_ref()
+                    .map_or(true, |values: &Vec<u64>| *values != golden),
+                "{tag}: the mutation control must turn the grade red"
+            );
+        }
+    }
+    println!(
+        "goto shapes: {graded} graded equal, {} through the dispatch loop {dispatched:?}, {} sound-rejected {rejected:?}",
+        dispatched.len(),
+        rejected.len()
+    );
+    assert_eq!(
+        dispatched.len(),
+        DISPATCH_PROGRAMS.len() * OPT_LEVELS.len(),
+        "every authored goto shape must recover, at every entry optimisation level, through the \
+         dispatch loop: dispatched {dispatched:?}, sound-rejected {rejected:?}"
+    );
 }
 
 #[cfg(not(target_os = "macos"))]
