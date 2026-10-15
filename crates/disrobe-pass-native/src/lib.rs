@@ -75,6 +75,10 @@ pub mod stub_emu;
 #[cfg(test)]
 #[allow(clippy::redundant_pub_crate)]
 mod test_support;
+pub mod verify_function;
+#[cfg(test)]
+#[path = "../tests/verify_function.rs"]
+mod verify_function_tests;
 pub mod vm_devirt;
 
 pub mod entropy;
@@ -306,6 +310,12 @@ pub use stack_string::{
 };
 pub use stream_disasm::{
     RipRef, StreamDisasmLimits, StreamDisasmStats, scan_rip_relative_refs, stream_disasm_x86,
+};
+pub use verify_function::{
+    CallingConvention as VerifyCallingConvention, CaseClassification, CaseDivergence,
+    DEFAULT_CASES as VERIFY_FUNCTION_DEFAULT_CASES, DEFAULT_SEED as VERIFY_FUNCTION_DEFAULT_SEED,
+    DEFAULT_STEP_CAP as VERIFY_FUNCTION_DEFAULT_STEP_CAP, VerifyFunctionError,
+    VerifyFunctionOptions, VerifyFunctionReport, verify_function,
 };
 
 pub use vm_devirt::{

@@ -1,0 +1,60 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-native"
+generated = "2026-10-15"
+toolchain = "clang 19.1.7"
+note = "self-authored freestanding C inputs for bounded differential verification; tests compile these sources at run time for ELF x86-64, PE x86-64, and PE i386"
+
+[provenance]
+original_x86_64_elf = "clang --target=x86_64-unknown-linux-gnu -O2 -ffreestanding -fno-stack-protector -fno-pic -nostdlib verify_original.c -fuse-ld=lld -no-pie -Wl,-e,verify_overflow -o verify-original-x86_64.elf"
+original_x86_64_pe = "clang --target=x86_64-pc-windows-msvc -O2 -ffreestanding -fno-stack-protector -fno-pic -nostdlib verify_original.c -fuse-ld=lld -Wl,/entry:verify_overflow -Wl,/subsystem:console -o verify-original-x86_64.exe"
+original_i386_pe = "clang --target=i686-pc-windows-msvc -O2 -ffreestanding -fno-stack-protector -fno-pic -nostdlib verify_original.c -fuse-ld=lld -Wl,/entry:verify_overflow -Wl,/subsystem:console -o verify-original-i386.exe"
+candidate = "clang --target=<target> <-O0|-O2> -ffreestanding -fno-stack-protector -fno-pic -c <candidate>.c -o <candidate>.o"
+reproducible = "the tests retain generated objects only in their owned temporary directory; all tracked inputs are source-only"
+
+[[fixture]]
+name = "verify_original.c"
+path = "verify_original.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "c4d33eb53462fc95ae5751bb32dbc9818084b0b4272f023ab6884fa3ba17a8c0"
+description = "32-bit wrapping arithmetic, read-only table lookup, an early-exit byte loop, signed and unsigned comparisons, and a byte-store through a pointer"
+
+[[fixture]]
+name = "candidate_good.c"
+path = "candidate_good.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "0e5844df1a857e52e3fa6b9ba79521357be9ca40f1bc90a8e2f9c1161beb3521"
+description = "the matching reconstruction used for equivalent-on-cases checks"
+
+[[fixture]]
+name = "candidate_off_by_one.c"
+path = "candidate_off_by_one.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "b343f74aab4a14096470713727cdd11d50bdd15cbda35ad777625c9410446033"
+description = "arithmetic mutation that adds one after the reconstructed result"
+
+[[fixture]]
+name = "candidate_wrong_signedness.c"
+path = "candidate_wrong_signedness.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "6b926f455093262fdbf261a383722a4c2160468183c5e33194885ed581ceb53d"
+description = "comparison mutation that treats a signed operand as unsigned"
+
+[[fixture]]
+name = "candidate_missed_side_effect.c"
+path = "candidate_missed_side_effect.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "99d5c6835ff0f809097b20d60290e782dcf5f4533fbd96f4a4cb9d62b74fe30b"
+description = "pointer-output mutation that returns the prior byte but omits the store"
+
+[[fixture]]
+name = "candidate_import.c"
+path = "candidate_import.c"
+kind = "c-source"
+provenance = "self-authored"
+sha256 = "f250bbe5541d9d772de0e6acabda22f5788d96c5d02b8ed8832234fee5c0035a"
+description = "candidate with one unresolved imported call, used to verify refusal or escaped-target reporting"
