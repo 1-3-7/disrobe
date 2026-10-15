@@ -163,6 +163,7 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | Command | Purpose |
 |---|---|
 | `disrobe go recover\|info <bin>` | Go symbol recovery / build fingerprint. |
+| `disrobe rust inventory <bin> [--json]` | Rust binary inventory: rustc release from `/rustc/<commit>` panic paths, crate names, versions and sources from Cargo registry, git and path dependency paths, the cargo-auditable dependency graph, and per-crate symbol counts. |
 | `disrobe lua decompile\|deobfuscate\|detect <chunk>` | Lua decompile / obfuscator peel / dialect detect. |
 | `disrobe php decode\|deobfuscate\|extract <input>` | Encoder decode / eval-chain peel / Phar extract. |
 | `disrobe shell deob\|detect <input>` | PowerShell / Bash / Batch / VBA deobfuscate (Invoke-Obfuscation, Invoke-Stealth, Bashfuscator, ...) and dialect / family detect. |

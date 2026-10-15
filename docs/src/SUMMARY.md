@@ -40,6 +40,7 @@
   - [Native unpacking and devirtualization](./languages/native-unpack.md)
   - [PE resources](./languages/pe-resources.md)
 - [Go](./languages/go.md)
+- [Rust](./languages/rust.md)
 - [Lua](./languages/lua.md)
 - [PHP](./languages/php.md)
 - [Ruby](./languages/ruby.md)

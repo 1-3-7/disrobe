@@ -228,7 +228,7 @@ Apart from `prowl`, which queries public web archives and threat-intel services,
 | Task | Commands |
 |---|---|
 | Recover | `auto`, `chain`, `extract`, `webview`, `pyarmor`, `pyinstaller`, `pyfreeze`, `nuitka` |
-| One language or runtime | `py`, `js`, `wasm`, `native`, `jvm`, `apk`, `dotnet`, `hermes`, `flutter`, `mobile`, `macho`, `swift`, `go`, `lua`, `php`, `ruby`, `beam`, `as3`, `shell`, `pickle`, `evm` |
+| One language or runtime | `py`, `js`, `wasm`, `native`, `jvm`, `apk`, `dotnet`, `hermes`, `flutter`, `mobile`, `macho`, `swift`, `go`, `lua`, `php`, `ruby`, `beam`, `as3`, `shell`, `pickle`, `evm`, `rust` |
 | Identify and scan | `identify`, `detect`, `catalog`, `strings`, `scan`, `ioc`, `indicators`, `frisk`, `behavior`, `capabilities`, `yara`, `electron`, `resources` |
 | Navigate and compare | `query`, `semdiff`, `diff` |
 | Data and forensics | `capture`, `crash`, `sqlite` |

@@ -18,7 +18,7 @@
   },
   "cli": {
     "binary": "disrobe",
-    "root_command_count": 75,
+    "root_command_count": 76,
     "root_commands": [
       "pyarmor",
       "pyinstaller",
@@ -94,7 +94,8 @@
       "evm",
       "mcp",
       "resources",
-      "sqlite"
+      "sqlite",
+      "rust"
     ],
     "hidden_commands": [
       "subcommand-tree"
@@ -297,7 +298,8 @@
         "swift",
         "as3",
         "semdiff",
-        "resources"
+        "resources",
+        "rust"
       ],
       "status": "partial",
       "entry_point": "crates/disrobe-cli/src/main.rs",
