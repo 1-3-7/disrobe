@@ -65,6 +65,8 @@ pub(crate) mod emit;
 #[cfg(any(feature = "jvm", feature = "php"))]
 pub(crate) mod entry_path;
 pub(crate) mod envelope;
+#[cfg(feature = "evm")]
+pub(crate) mod evm;
 pub(crate) mod explain;
 pub(crate) mod extract;
 #[cfg(feature = "flutter")]

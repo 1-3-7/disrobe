@@ -25,12 +25,13 @@ path = "tests/it/main.rs"
 
 [features]
 default = ["full"]
-full = ["server", "prowl", "net-fetch", "auto", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history", "data"]
+full = ["server", "prowl", "net-fetch", "auto", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin", "webview", "git-history", "data", "evm"]
 server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:disrobe-mcp"]
 prowl = ["dep:disrobe-prowl", "dep:tokio"]
 net-fetch = ["dep:reqwest"]
 git-history = ["disrobe-core/git-history"]
 data = ["dep:disrobe-dataforensics"]
+evm = ["dep:disrobe-pass-evm"]
 
 py = ["dep:disrobe-pass-pyarmor", "dep:disrobe-pass-pyinstaller", "dep:disrobe-pass-pyfreeze", "dep:disrobe-pass-nuitka", "dep:disrobe-pass-sourcedefender", "dep:disrobe-pass-py-deob", "dep:disrobe-pass-py-disasm", "dep:disrobe-pass-py-decompile", "disrobe-nir-lift?/python"]
 native = ["dep:disrobe-capabilities", "dep:disrobe-pass-native"]
@@ -136,6 +137,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 miette = { workspace = true, features = ["fancy"] }
 disrobe-dataforensics = { workspace = true, optional = true }
+disrobe-pass-evm = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

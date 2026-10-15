@@ -779,6 +779,14 @@ enum Cmd {
         #[arg(long, help = "print every thread's registers")]
         registers: bool,
     },
+    #[cfg(feature = "evm")]
+    #[command(
+        about = "EVM bytecode: disassembly through Osaka, CFG, creation/runtime split, solc metadata, dispatcher selectors with payable/view/pure and argument types, proxy detection, pseudo-Solidity"
+    )]
+    Evm {
+        #[command(subcommand)]
+        action: cli::evm::EvmCmd,
+    },
     #[command(
         about = "inspect an Electron app: fuse states (Node mode, NODE_OPTIONS, inspector, ASAR integrity, load-from-asar) with what each allows, the ASAR integrity hashes declared in the executable or Info.plist, and each archive's header and per-file integrity"
     )]
@@ -2174,6 +2182,8 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "data")]
         Cmd::Capture { path, extract } => cli::capture::run(path, extract, fmt),
         Cmd::Resources { path, extract } => cli::resources::run(path, extract, fmt),
+        #[cfg(feature = "evm")]
+        Cmd::Evm { action } => cli::evm::run(action, fmt),
         Cmd::Electron {
             path,
             asar,

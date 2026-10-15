@@ -275,6 +275,10 @@ mod electron_cli;
 #[path = "../envelope_cli_e2e.rs"]
 mod envelope_cli_e2e;
 
+#[cfg(feature = "evm")]
+#[path = "../evm_cli.rs"]
+mod evm_cli;
+
 #[path = "../flutter_decompile_aot.rs"]
 mod flutter_decompile_aot;
 
