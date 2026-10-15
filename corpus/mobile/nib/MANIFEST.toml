@@ -1,0 +1,34 @@
+schema = "disrobe-corpus-v1"
+category = "mobile.nib"
+target_crate = "disrobe-pass-swift-objc"
+fetched_utc = "2026-10-14T00:00:00Z"
+notes = """
+Compiled NIBs (NIBArchive format) of the SDCAlertView framework (MIT, sdcalertview/LICENSE),
+extracted unchanged from Payload/OnionBrowser.app/Frameworks/SDCAlertView.framework/SDCAlertView.bundle
+in the OnionBrowser 3.3.8 release IPA published by that project on GitHub (sha256
+b869c77343f93cfecb271b99dc261c3390cd8cfc7777889e076fffeca104504a). The app's own NIBs are not
+committed: its licence grants redistribution in source form only. reference.json is the object
+graph the independent `nibarchive` 1.1.0 parser from PyPI reads from each file, written by
+crates/disrobe-pass-swift-objc/tests/support/dump_nib_reference.py.
+"""
+
+[[sample]]
+name = "sdcalertview/ActionCell.objects-12.3+.nib"
+source_path = "SDCAlertView.bundle/ActionCell.nib/objects-12.3+.nib"
+sha256 = "8f1d17dd724fb7bed420fef16ef59459a2735944791f4eda7203f625233ecf63"
+size_bytes = 4016
+license = "MIT"
+
+[[sample]]
+name = "sdcalertview/ActionCell.runtime.nib"
+source_path = "SDCAlertView.bundle/ActionCell.nib/runtime.nib"
+sha256 = "01106ec7c22d9ee516781b43c30c216f60fef3d4c98bf2702b4439245aa72377"
+size_bytes = 3789
+license = "MIT"
+
+[[sample]]
+name = "sdcalertview/TextFieldCell.nib"
+source_path = "SDCAlertView.bundle/TextFieldCell.nib"
+sha256 = "9207702e1c2a19f59afb4a12925ff8b8f7175694ee089e6d65725b2ce676a73a"
+size_bytes = 3980
+license = "MIT"

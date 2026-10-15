@@ -81,6 +81,9 @@ pub enum Error {
 
     #[error("DR-IOS-0021: dyld shared cache image '{image}' cannot be reconstructed: {reason}")]
     DyldImageUnsupported { image: String, reason: String },
+
+    #[error("DR-IOS-0022: compiled NIB (NIBArchive) malformed: {0}")]
+    NibArchive(String),
 }
 
 impl From<ByteReadError> for Error {

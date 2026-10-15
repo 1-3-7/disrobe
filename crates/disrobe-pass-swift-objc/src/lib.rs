@@ -12,6 +12,7 @@ pub mod ipa;
 pub mod keyed_archive;
 pub mod macho;
 pub mod native_bodies;
+pub mod nib_archive;
 pub mod objc;
 pub mod objc_dispatch;
 pub mod objc_records;
