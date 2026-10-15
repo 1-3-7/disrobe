@@ -487,11 +487,20 @@ fn reference(object: &NibObject, key: &str) -> Option<u32> {
         })
 }
 
-fn class_of(objects: &[NibObject], index: Option<u32>) -> Option<String> {
-    let index: usize = usize::try_from(index?).ok()?;
-    objects
-        .get(index)
-        .map(|object: &NibObject| object.class.clone())
+fn class_of(
+    objects: &[NibObject],
+    strings: &BTreeMap<usize, String>,
+    index: Option<u32>,
+) -> Option<String> {
+    let object: &NibObject = objects.get(usize::try_from(index?).ok()?)?;
+    if object.class == "UIClassSwapper"
+        && let Some(name) = reference(object, "UIClassName")
+            .and_then(|target: u32| usize::try_from(target).ok())
+            .and_then(|target: usize| strings.get(&target))
+    {
+        return Some(name.clone());
+    }
+    Some(object.class.clone())
 }
 
 fn connections(objects: &[NibObject], strings: &BTreeMap<usize, String>) -> Vec<NibConnection> {
@@ -518,9 +527,9 @@ fn connections(objects: &[NibObject], strings: &BTreeMap<usize, String>) -> Vec<
             kind: kind.to_owned(),
             label,
             source,
-            source_class: class_of(objects, source),
+            source_class: class_of(objects, strings, source),
             destination,
-            destination_class: class_of(objects, destination),
+            destination_class: class_of(objects, strings, destination),
         });
     }
     found.sort();

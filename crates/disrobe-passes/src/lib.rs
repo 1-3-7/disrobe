@@ -52,6 +52,8 @@ pub fn build_registry() -> PassRegistry {
     r.register(&disrobe_pass_lua::chain_detector::LUA_PASS);
     #[cfg(feature = "swift")]
     r.register(&disrobe_pass_swift_objc::chain_detector::SWIFT_OBJC_PASS);
+    #[cfg(feature = "swift")]
+    r.register(&disrobe_pass_swift_objc::archive_pass::APPLE_ARCHIVE_PASS);
     #[cfg(feature = "jvm")]
     r.register(&disrobe_pass_jvm::chain_detector::JVM_PASS);
     #[cfg(feature = "dotnet")]
@@ -122,6 +124,8 @@ pub fn expected_pass_ids() -> Vec<PassId> {
     ids.push(disrobe_pass_lua::chain_detector::PASS_ID);
     #[cfg(feature = "swift")]
     ids.push(disrobe_pass_swift_objc::chain_detector::PASS_ID);
+    #[cfg(feature = "swift")]
+    ids.push(disrobe_pass_swift_objc::archive_pass::PASS_ID);
     #[cfg(feature = "jvm")]
     ids.push(disrobe_pass_jvm::chain_detector::PASS_ID);
     #[cfg(feature = "dotnet")]

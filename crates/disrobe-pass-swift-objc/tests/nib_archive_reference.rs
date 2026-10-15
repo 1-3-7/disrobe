@@ -3,7 +3,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use disrobe_core::chain::{DetectContext, DetectVerdict, Detector, Pass};
 use disrobe_core::scratch::scratch_root;
+use disrobe_core::{Artifact, Rung};
+use disrobe_pass_swift_objc::archive_pass::{APPLE_ARCHIVE_PASS, AppleArchiveDetector};
 use disrobe_pass_swift_objc::nib_archive::{
     NibArchive, NibConnection, NibValue, decode_nib_archive,
 };
@@ -210,11 +213,13 @@ fn outlets_and_custom_classes_follow_the_reference_graph() {
             .filter(|object: &&Value| object[0] == "UIRuntimeOutletConnection")
             .map(|object: &Value| {
                 let class_of = |index: Option<u64>| -> Option<String> {
-                    Some(
-                        objects[usize::try_from(index?).ok()?][0]
-                            .as_str()?
-                            .to_owned(),
-                    )
+                    let target: &Value = &objects[usize::try_from(index?).ok()?];
+                    if target[0] == "UIClassSwapper"
+                        && let Some(name) = reference_of(target, "UIClassName").and_then(string_of)
+                    {
+                        return Some(name);
+                    }
+                    Some(target[0].as_str()?.to_owned())
                 };
                 (
                     reference_of(object, "UILabel").and_then(string_of),
@@ -315,4 +320,45 @@ fn local_app_nibs_match_the_reference_parser() {
     }
     let objects: usize = grade_directory(&directory);
     assert!(objects > 2000, "{objects}");
+}
+
+#[test]
+fn the_chain_pass_claims_nibs_and_writes_the_decoded_graph() {
+    for name in committed_reference().keys() {
+        let bytes: Vec<u8> = committed(name);
+        let context: DetectContext<'_> = DetectContext {
+            bytes: &bytes,
+            path_hint: None,
+            parent_hint: None,
+            depth: 0,
+        };
+        let verdict: DetectVerdict = AppleArchiveDetector
+            .detect(&context)
+            .unwrap_or_else(|| panic!("{name} not claimed"));
+        assert_eq!(verdict.format_tag, "apple-nib-archive", "{name}");
+        let output: Artifact = APPLE_ARCHIVE_PASS
+            .run(&Artifact::new(Rung::Raw, bytes.clone(), [0u8; 32]))
+            .expect("pass output");
+        let report: Value = serde_json::from_slice(&output.envelope).expect("json report");
+        let direct: NibArchive = decode_nib_archive(&bytes).expect("decode");
+        assert_eq!(
+            report["objects"].as_array().expect("objects").len(),
+            direct.objects.len(),
+            "{name}"
+        );
+        assert_eq!(
+            report["connections"].as_array().expect("connections").len(),
+            direct.connections.len(),
+            "{name}"
+        );
+    }
+    let mut broken: Vec<u8> = committed("TextFieldCell.nib");
+    broken.truncate(60);
+    let context: DetectContext<'_> = DetectContext {
+        bytes: &broken,
+        path_hint: None,
+        parent_hint: None,
+        depth: 0,
+    };
+    assert!(AppleArchiveDetector.detect(&context).is_none());
 }

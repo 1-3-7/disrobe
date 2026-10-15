@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![allow(clippy::redundant_pub_crate)]
+pub mod archive_pass;
 pub mod chain_detector;
 pub mod code_signature;
 pub(crate) mod debug;
