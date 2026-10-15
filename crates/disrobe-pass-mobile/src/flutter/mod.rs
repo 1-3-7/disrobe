@@ -60,9 +60,9 @@ pub use dart_graph_inventory::{
 pub use dart_graph_layout::{
     DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES,
     DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT, DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES,
-    DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT, DartClassBodyLayout, DartClusterBodyEntry,
-    DartClusterBodyKind, DartDeclarationBodyLayouts, DartFieldBodyLayout, DartFunctionBodyLayout,
-    DartLibraryBodyLayout, DartPatchClassBodyLayout, DartPinnedLayout, PINNED_DART_GRAPH_LAYOUTS,
+    DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT, DartClassBodyLayout, DartClusterBodyKind,
+    DartDeclarationBodyLayouts, DartFieldBodyLayout, DartFunctionBodyLayout, DartLibraryBodyLayout,
+    DartPatchClassBodyLayout, DartPinnedLayout, PINNED_DART_GRAPH_LAYOUTS,
     has_pinned_dart_graph_layout, pinned_dart_graph_layout,
 };
 pub use dart_graph_recovery::{

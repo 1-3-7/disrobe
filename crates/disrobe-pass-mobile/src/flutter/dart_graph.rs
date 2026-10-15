@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 
 use super::cluster::DartReadStream;
-use super::dart_graph_layout::{DartClusterBodyKind, DartPinnedLayout};
+use super::dart_graph_layout::{DartClusterBodyKind, DartClusterTagEncoding, DartPinnedLayout};
 use crate::error::{Error, Result};
 
 const HARD_CLUSTER_LIMIT: usize = 4096;
@@ -13,7 +13,11 @@ const HARD_STRING_CODE_UNIT_LIMIT: usize = 16 * 1024 * 1024;
 const HARD_TOTAL_STRING_BYTE_LIMIT: usize = 256 * 1024 * 1024;
 const HARD_VARIABLE_LENGTH_LIMIT: usize = 64 * 1024 * 1024;
 
-const MINT_CLASS_ID: i32 = 61;
+const CLASS_ID_TAG_SHIFT: u32 = 12;
+
+const CLASS_ID_TAG_MASK: u32 = 0x000f_ffff;
+
+const CANONICAL_TAG_BIT: u32 = 1;
 
 const MAX_POOL_SLOTS: usize = 1 << 21;
 
@@ -167,7 +171,7 @@ pub struct DartGraphClusterSummary {
     pub class_id: u32,
     pub kind: DartClusterBodyKind,
     pub canonical: bool,
-    pub deeply_immutable: bool,
+    pub immutable: bool,
     pub object_count: usize,
     pub first_reference: u32,
     pub allocation_offset: usize,
@@ -216,7 +220,7 @@ struct DartGraphCluster {
     class_id: u32,
     kind: DartClusterBodyKind,
     canonical: bool,
-    deeply_immutable: bool,
+    immutable: bool,
     start_reference: usize,
     end_reference: usize,
     allocation_offset: usize,
@@ -293,6 +297,13 @@ impl<'data> DartGraphCursor<'data> {
             .ok_or(Error::DartGraphTruncated { offset, resource })
     }
 
+    fn read_bits(&mut self, bit_width: u32, resource: &'static str) -> Result<u64> {
+        let offset: usize = self.position();
+        self.stream
+            .read_compact(bit_width)
+            .ok_or(Error::DartGraphTruncated { offset, resource })
+    }
+
     fn read_i64(&mut self, resource: &'static str) -> Result<i64> {
         let offset: usize = self.position();
         self.stream
@@ -331,6 +342,8 @@ struct DartGraphParser<'data> {
     layout: DartPinnedLayout,
     limits: DartGraphLimits,
     role: DartGraphSnapshotRole,
+    code_class_id: Option<i32>,
+    mint_class_id: Option<i32>,
     object_count: usize,
     nodes: Vec<DartGraphNode>,
     next_reference: usize,
@@ -446,6 +459,8 @@ pub(super) fn parse_dart_graph(
         layout,
         limits,
         role,
+        code_class_id: class_id_of(layout, "Code"),
+        mint_class_id: class_id_of(layout, "Mint"),
         object_count: total_objects,
         nodes,
         next_reference: base_objects.saturating_add(1),
@@ -480,7 +495,7 @@ pub(super) fn parse_dart_graph(
             class_id: cluster.class_id,
             kind: cluster.kind,
             canonical: cluster.canonical,
-            deeply_immutable: cluster.deeply_immutable,
+            immutable: cluster.immutable,
             object_count: cluster
                 .end_reference
                 .saturating_sub(cluster.start_reference),
@@ -511,10 +526,7 @@ pub(super) fn parse_dart_graph(
 impl DartGraphParser<'_> {
     fn read_allocation(&mut self, index: usize) -> Result<DartGraphCluster> {
         let allocation_offset: usize = self.cursor.position();
-        let tags: u32 = self.cursor.read_u32("cluster tags")?;
-        let class_id: u32 = (tags >> 12) & 0x000f_ffff;
-        let canonical: bool = tags & 0x2 != 0;
-        let deeply_immutable: bool = tags & 0x80 != 0;
+        let (class_id, canonical, immutable): (u32, bool, bool) = self.read_cluster_tags()?;
         let kind: DartClusterBodyKind =
             self.layout
                 .cluster_body_kind(class_id)
@@ -551,7 +563,7 @@ impl DartGraphParser<'_> {
             class_id,
             kind,
             canonical,
-            deeply_immutable,
+            immutable,
             start_reference,
             end_reference,
             allocation_offset,
@@ -560,6 +572,23 @@ impl DartGraphParser<'_> {
             fill_end: 0,
             allocation,
         })
+    }
+
+    fn read_cluster_tags(&mut self) -> Result<(u32, bool, bool)> {
+        match self.layout.cluster_tags {
+            DartClusterTagEncoding::ClassIdAndCanonical => {
+                let packed: u64 = self.cursor.read_bits(64, "cluster class id")?;
+                Ok(((packed >> 1) as u32, packed & 1 != 0, false))
+            }
+            DartClusterTagEncoding::ObjectTags { immutable_bit } => {
+                let tags: u32 = self.cursor.read_u32("cluster tags")?;
+                Ok((
+                    (tags >> CLASS_ID_TAG_SHIFT) & CLASS_ID_TAG_MASK,
+                    tags & (1 << CANONICAL_TAG_BIT) != 0,
+                    tags & (1 << immutable_bit) != 0,
+                ))
+            }
+        }
     }
 
     fn allocate_fixed(
@@ -596,12 +625,12 @@ impl DartGraphParser<'_> {
         let primary_count: usize = self.read_count(index, "code count")?;
         for _ in 0..primary_count {
             let _state_bits: i32 = self.cursor.read_i32("code state bits")?;
-            self.assign_nodes(index, 1, DartGraphNodeKind::Other, Some(18))?;
+            self.assign_nodes(index, 1, DartGraphNodeKind::Other, self.code_class_id)?;
         }
         let deferred_count: usize = self.read_count(index, "deferred code count")?;
         for _ in 0..deferred_count {
             let _state_bits: i32 = self.cursor.read_i32("deferred code state bits")?;
-            self.assign_nodes(index, 1, DartGraphNodeKind::Other, Some(18))?;
+            self.assign_nodes(index, 1, DartGraphNodeKind::Other, self.code_class_id)?;
         }
         Ok(DartGraphAllocation::Code { primary_count })
     }
@@ -646,7 +675,7 @@ impl DartGraphParser<'_> {
         for _ in 0..count {
             let value: i64 = self.cursor.read_i64("mint value")?;
             let reference: usize = self.next_reference;
-            self.assign_nodes(index, 1, DartGraphNodeKind::Other, Some(MINT_CLASS_ID))?;
+            self.assign_nodes(index, 1, DartGraphNodeKind::Other, self.mint_class_id)?;
             self.node_mut(reference)?.immediate = Some(value);
         }
         Ok(DartGraphAllocation::Fixed)
@@ -848,9 +877,10 @@ impl DartGraphParser<'_> {
 
     fn fill_fields(&mut self, cluster: &DartGraphCluster) -> Result<()> {
         let reference_count: usize = self.layout.declarations.field.reference_count;
+        let kind_bits_width: u32 = self.layout.declarations.field.kind_bits_width;
         for reference in cluster.start_reference..cluster.end_reference {
             let mut references: Vec<u32> = self.read_references(reference_count)?;
-            let _kind_bits: u32 = self.cursor.read_u32("field kind bits")?;
+            let _kind_bits: u64 = self.cursor.read_bits(kind_bits_width, "field kind bits")?;
             let host_offset: u32 = self.cursor.read_ref(self.object_count)?;
             references.push(host_offset);
             self.node_mut(reference)?.references = references;
@@ -1353,7 +1383,9 @@ impl DartGraphParser<'_> {
     fn fill_loading_units(&mut self, cluster: &DartGraphCluster) -> Result<()> {
         for reference in cluster.start_reference..cluster.end_reference {
             let parent: u32 = self.cursor.read_ref(self.object_count)?;
-            let _unit_id: i64 = self.cursor.read_i64("loading unit id")?;
+            let _unit_id: u64 = self
+                .cursor
+                .read_bits(self.layout.loading_unit_id_width, "loading unit id")?;
             self.node_mut(reference)?.references = vec![parent];
         }
         Ok(())
@@ -1490,6 +1522,12 @@ impl DartGraphParser<'_> {
                 offset,
             })
     }
+}
+
+fn class_id_of(layout: DartPinnedLayout, name: &str) -> Option<i32> {
+    layout
+        .class_id(name)
+        .and_then(|class_id: u32| i32::try_from(class_id).ok())
 }
 
 fn allocation_lengths(cluster: &DartGraphCluster) -> Result<&[usize]> {

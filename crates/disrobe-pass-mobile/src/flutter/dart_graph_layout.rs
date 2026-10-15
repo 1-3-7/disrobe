@@ -1,15 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-use super::cid_table::{DART_3_12_VERSION_HASH, predefined_count};
+use super::cid_table::{
+    DART_3_3_CLASS_IDS, DART_3_4_CLASS_IDS, DART_3_6_CLASS_IDS, DART_3_9_CLASS_IDS,
+    DART_3_12_VERSION_HASH, DartClassIdTable,
+};
 
 pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES: &str = "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers";
 pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES: &str = "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-asan no-msan no-tsan no-shared_data arm64 android compressed-pointers";
 
-const FIRST_TYPED_DATA_CID: u32 = 112;
-const LAST_TYPED_DATA_CID: u32 = 167;
-const TYPED_DATA_VARIANTS: u32 = 4;
-const FIRST_FFI_MARKER_CID: u32 = 97;
-const LAST_FFI_MARKER_CID: u32 = 109;
+const DART_3_3_PRODUCT_FEATURES: &str = "product no-code_comments no-dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety";
+const DART_3_3_PRODUCT_DWARF_FEATURES: &str = "product no-code_comments dwarf_stack_traces_mode no-lazy_dispatchers dedup_instructions no-tsan no-asserts arm64 android compressed-pointers null-safety";
+const DART_3_5_PRODUCT_FEATURES: &str = "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers";
+const DART_3_5_PRODUCT_DWARF_FEATURES: &str = "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan arm64 android compressed-pointers";
+const DART_3_9_PRODUCT_FEATURES: &str = "product no-code_comments no-dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers";
+const DART_3_9_PRODUCT_DWARF_FEATURES: &str = "product no-code_comments dwarf_stack_traces_mode dedup_instructions no-tsan no-msan no-shared_data arm64 android compressed-pointers";
+
+const TOP_LEVEL_CLASS_ID_OFFSET: i32 = 1 << 20;
+const IMMUTABLE_TAG_BIT: u32 = 6;
+const DEEPLY_IMMUTABLE_TAG_BIT: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -49,10 +57,11 @@ pub enum DartClusterBodyKind {
     WeakArray,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DartClusterBodyEntry {
-    pub class_id: u32,
-    pub kind: DartClusterBodyKind,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DartClusterTagEncoding {
+    ClassIdAndCanonical,
+    ObjectTags { immutable_bit: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -76,6 +85,7 @@ pub struct DartFieldBodyLayout {
     pub reference_count: usize,
     pub name_reference: usize,
     pub owner_reference: usize,
+    pub kind_bits_width: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -111,228 +121,168 @@ pub struct DartDeclarationBodyLayouts {
 pub struct DartPinnedLayout {
     pub version_hash: &'static str,
     pub features: &'static str,
-    pub clusters: &'static [DartClusterBodyEntry],
-    pub first_typed_data_cid: u32,
-    pub last_typed_data_cid: u32,
-    pub typed_data_variants: u32,
-    pub first_ffi_marker_cid: u32,
-    pub last_ffi_marker_cid: u32,
-    pub num_predefined_cids: u32,
+    pub class_ids: DartClassIdTable,
+    pub cluster_tags: DartClusterTagEncoding,
+    pub loading_unit_id_width: u32,
     pub instance_header_words: usize,
     pub word_32_parts: usize,
     pub declarations: DartDeclarationBodyLayouts,
     pub code_table: DartCodeTableLayout,
 }
 
-const DART_3_12_2_DECLARATIONS: DartDeclarationBodyLayouts = DartDeclarationBodyLayouts {
-    class: DartClassBodyLayout {
-        reference_count: 13,
-        name_reference: 0,
-        library_reference: 7,
-        top_level_class_id_offset: 1 << 20,
-    },
-    function: DartFunctionBodyLayout {
-        reference_count: 4,
-        name_reference: 0,
-        owner_reference: 1,
-        signature_reference: 2,
-    },
-    field: DartFieldBodyLayout {
-        reference_count: 4,
-        name_reference: 0,
-        owner_reference: 1,
-    },
-    library: DartLibraryBodyLayout {
-        reference_count: 10,
-        name_reference: 0,
-        url_reference: 1,
-    },
-    patch_class: DartPatchClassBodyLayout {
-        reference_count: 2,
-        wrapped_class_reference: 0,
-    },
+#[derive(Debug, Clone, Copy)]
+struct DartRelease {
+    version_hash: &'static str,
+    class_ids: DartClassIdTable,
+    cluster_tags: DartClusterTagEncoding,
+    field_kind_bits_width: u32,
+    loading_unit_id_width: u32,
+}
+
+const DART_3_3: DartRelease = DartRelease {
+    version_hash: "ee1eb666c76a5cb7746faf39d0b97547",
+    class_ids: DART_3_3_CLASS_IDS,
+    cluster_tags: DartClusterTagEncoding::ClassIdAndCanonical,
+    field_kind_bits_width: 16,
+    loading_unit_id_width: 32,
 };
 
-const DART_3_12_2_CLUSTERS: &[DartClusterBodyEntry] = &[
-    DartClusterBodyEntry {
-        class_id: 5,
-        kind: DartClusterBodyKind::Class,
+const DART_3_4: DartRelease = DartRelease {
+    version_hash: "d20a1be77c3d3c41b2a5accaee1ce549",
+    class_ids: DART_3_4_CLASS_IDS,
+    cluster_tags: DartClusterTagEncoding::ObjectTags {
+        immutable_bit: IMMUTABLE_TAG_BIT,
     },
-    DartClusterBodyEntry {
-        class_id: 6,
-        kind: DartClusterBodyKind::PatchClass,
-    },
-    DartClusterBodyEntry {
-        class_id: 7,
-        kind: DartClusterBodyKind::Function,
-    },
-    DartClusterBodyEntry {
-        class_id: 8,
-        kind: DartClusterBodyKind::TypeParameters,
-    },
-    DartClusterBodyEntry {
-        class_id: 9,
-        kind: DartClusterBodyKind::ClosureData,
-    },
-    DartClusterBodyEntry {
-        class_id: 11,
-        kind: DartClusterBodyKind::Field,
-    },
-    DartClusterBodyEntry {
-        class_id: 12,
-        kind: DartClusterBodyKind::Script,
-    },
-    DartClusterBodyEntry {
-        class_id: 13,
-        kind: DartClusterBodyKind::Library,
-    },
-    DartClusterBodyEntry {
-        class_id: 17,
-        kind: DartClusterBodyKind::WeakArray,
-    },
-    DartClusterBodyEntry {
-        class_id: 18,
-        kind: DartClusterBodyKind::Code,
-    },
-    DartClusterBodyEntry {
-        class_id: 23,
-        kind: DartClusterBodyKind::ObjectPool,
-    },
-    DartClusterBodyEntry {
-        class_id: 24,
-        kind: DartClusterBodyKind::PcDescriptors,
-    },
-    DartClusterBodyEntry {
-        class_id: 25,
-        kind: DartClusterBodyKind::CodeSourceMap,
-    },
-    DartClusterBodyEntry {
-        class_id: 28,
-        kind: DartClusterBodyKind::ExceptionHandlers,
-    },
-    DartClusterBodyEntry {
-        class_id: 35,
-        kind: DartClusterBodyKind::UnlinkedCall,
-    },
-    DartClusterBodyEntry {
-        class_id: 38,
-        kind: DartClusterBodyKind::SubtypeTestCache,
-    },
-    DartClusterBodyEntry {
-        class_id: 39,
-        kind: DartClusterBodyKind::LoadingUnit,
-    },
-    DartClusterBodyEntry {
-        class_id: 45,
-        kind: DartClusterBodyKind::Instance,
-    },
-    DartClusterBodyEntry {
-        class_id: 47,
-        kind: DartClusterBodyKind::TypeArguments,
-    },
-    DartClusterBodyEntry {
-        class_id: 49,
-        kind: DartClusterBodyKind::Type,
-    },
-    DartClusterBodyEntry {
-        class_id: 50,
-        kind: DartClusterBodyKind::FunctionType,
-    },
-    DartClusterBodyEntry {
-        class_id: 51,
-        kind: DartClusterBodyKind::RecordType,
-    },
-    DartClusterBodyEntry {
-        class_id: 52,
-        kind: DartClusterBodyKind::TypeParameter,
-    },
-    DartClusterBodyEntry {
-        class_id: 57,
-        kind: DartClusterBodyKind::Closure,
-    },
-    DartClusterBodyEntry {
-        class_id: 61,
-        kind: DartClusterBodyKind::Mint,
-    },
-    DartClusterBodyEntry {
-        class_id: 62,
-        kind: DartClusterBodyKind::Double,
-    },
-    DartClusterBodyEntry {
-        class_id: 67,
-        kind: DartClusterBodyKind::Record,
-    },
-    DartClusterBodyEntry {
-        class_id: 87,
-        kind: DartClusterBodyKind::Map,
-    },
-    DartClusterBodyEntry {
-        class_id: 89,
-        kind: DartClusterBodyKind::Set,
-    },
-    DartClusterBodyEntry {
-        class_id: 90,
-        kind: DartClusterBodyKind::Array,
-    },
-    DartClusterBodyEntry {
-        class_id: 91,
-        kind: DartClusterBodyKind::Array,
-    },
-    DartClusterBodyEntry {
-        class_id: 92,
-        kind: DartClusterBodyKind::GrowableObjectArray,
-    },
-    DartClusterBodyEntry {
-        class_id: 93,
-        kind: DartClusterBodyKind::String,
-    },
-    DartClusterBodyEntry {
-        class_id: 94,
-        kind: DartClusterBodyKind::String,
-    },
-];
+    field_kind_bits_width: 16,
+    loading_unit_id_width: 32,
+};
 
-const DART_3_12_2_CODE_TABLE: DartCodeTableLayout = DartCodeTableLayout {
+const DART_3_5: DartRelease = DartRelease {
+    version_hash: "80a49c7111088100a233b2ae788e1f48",
+    loading_unit_id_width: 64,
+    ..DART_3_4
+};
+
+const DART_3_6: DartRelease = DartRelease {
+    version_hash: "f956f595844a2f845a55707faaaa51e4",
+    class_ids: DART_3_6_CLASS_IDS,
+    ..DART_3_5
+};
+
+const DART_3_7: DartRelease = DartRelease {
+    version_hash: "d91c0e6f35f0eb2e44124e8f42aa44a7",
+    ..DART_3_6
+};
+
+const DART_3_8: DartRelease = DartRelease {
+    version_hash: "830f4f59e7969c70b595182826435c19",
+    ..DART_3_6
+};
+
+const DART_3_9: DartRelease = DartRelease {
+    version_hash: "97ff04a728735e6b6b098bdf983faaba",
+    class_ids: DART_3_9_CLASS_IDS,
+    ..DART_3_6
+};
+
+const DART_3_10: DartRelease = DartRelease {
+    version_hash: "1ce86630892e2dca9a8543fdb8ed8e22",
+    field_kind_bits_width: 32,
+    ..DART_3_9
+};
+
+const DART_3_11: DartRelease = DartRelease {
+    version_hash: "78da37fed6bf1489361a312568249f3f",
+    ..DART_3_10
+};
+
+const DART_3_12: DartRelease = DartRelease {
+    version_hash: DART_3_12_VERSION_HASH,
+    cluster_tags: DartClusterTagEncoding::ObjectTags {
+        immutable_bit: DEEPLY_IMMUTABLE_TAG_BIT,
+    },
+    ..DART_3_11
+};
+
+const DART_CODE_TABLE: DartCodeTableLayout = DartCodeTableLayout {
     object_header_bytes: 20,
     descriptor_bytes: 12,
     entry_stride: 8,
 };
 
-pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT: DartPinnedLayout = DartPinnedLayout {
-    version_hash: DART_3_12_VERSION_HASH,
-    features: DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES,
-    clusters: DART_3_12_2_CLUSTERS,
-    first_typed_data_cid: FIRST_TYPED_DATA_CID,
-    last_typed_data_cid: LAST_TYPED_DATA_CID,
-    typed_data_variants: TYPED_DATA_VARIANTS,
-    first_ffi_marker_cid: FIRST_FFI_MARKER_CID,
-    last_ffi_marker_cid: LAST_FFI_MARKER_CID,
-    num_predefined_cids: predefined_count() as u32,
-    instance_header_words: 2,
-    word_32_parts: 2,
-    declarations: DART_3_12_2_DECLARATIONS,
-    code_table: DART_3_12_2_CODE_TABLE,
-};
+const fn declarations(field_kind_bits_width: u32) -> DartDeclarationBodyLayouts {
+    DartDeclarationBodyLayouts {
+        class: DartClassBodyLayout {
+            reference_count: 13,
+            name_reference: 0,
+            library_reference: 7,
+            top_level_class_id_offset: TOP_LEVEL_CLASS_ID_OFFSET,
+        },
+        function: DartFunctionBodyLayout {
+            reference_count: 4,
+            name_reference: 0,
+            owner_reference: 1,
+            signature_reference: 2,
+        },
+        field: DartFieldBodyLayout {
+            reference_count: 4,
+            name_reference: 0,
+            owner_reference: 1,
+            kind_bits_width: field_kind_bits_width,
+        },
+        library: DartLibraryBodyLayout {
+            reference_count: 10,
+            name_reference: 0,
+            url_reference: 1,
+        },
+        patch_class: DartPatchClassBodyLayout {
+            reference_count: 2,
+            wrapped_class_reference: 0,
+        },
+    }
+}
 
-pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT: DartPinnedLayout = DartPinnedLayout {
-    version_hash: DART_3_12_VERSION_HASH,
-    features: DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES,
-    clusters: DART_3_12_2_CLUSTERS,
-    first_typed_data_cid: FIRST_TYPED_DATA_CID,
-    last_typed_data_cid: LAST_TYPED_DATA_CID,
-    typed_data_variants: TYPED_DATA_VARIANTS,
-    first_ffi_marker_cid: FIRST_FFI_MARKER_CID,
-    last_ffi_marker_cid: LAST_FFI_MARKER_CID,
-    num_predefined_cids: predefined_count() as u32,
-    instance_header_words: 2,
-    word_32_parts: 2,
-    declarations: DART_3_12_2_DECLARATIONS,
-    code_table: DART_3_12_2_CODE_TABLE,
-};
+const fn pinned(release: DartRelease, features: &'static str) -> DartPinnedLayout {
+    DartPinnedLayout {
+        version_hash: release.version_hash,
+        features,
+        class_ids: release.class_ids,
+        cluster_tags: release.cluster_tags,
+        loading_unit_id_width: release.loading_unit_id_width,
+        instance_header_words: 2,
+        word_32_parts: 2,
+        declarations: declarations(release.field_kind_bits_width),
+        code_table: DART_CODE_TABLE,
+    }
+}
+
+pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT: DartPinnedLayout =
+    pinned(DART_3_12, DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES);
+
+pub const DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT: DartPinnedLayout =
+    pinned(DART_3_12, DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES);
 
 pub const PINNED_DART_GRAPH_LAYOUTS: &[DartPinnedLayout] = &[
     DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
     DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT,
+    pinned(DART_3_11, DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES),
+    pinned(DART_3_11, DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_10, DART_3_9_PRODUCT_FEATURES),
+    pinned(DART_3_10, DART_3_9_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_9, DART_3_9_PRODUCT_FEATURES),
+    pinned(DART_3_9, DART_3_9_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_8, DART_3_5_PRODUCT_FEATURES),
+    pinned(DART_3_8, DART_3_5_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_7, DART_3_5_PRODUCT_FEATURES),
+    pinned(DART_3_7, DART_3_5_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_6, DART_3_5_PRODUCT_FEATURES),
+    pinned(DART_3_6, DART_3_5_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_5, DART_3_5_PRODUCT_FEATURES),
+    pinned(DART_3_5, DART_3_5_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_4, DART_3_3_PRODUCT_FEATURES),
+    pinned(DART_3_4, DART_3_3_PRODUCT_DWARF_FEATURES),
+    pinned(DART_3_3, DART_3_3_PRODUCT_FEATURES),
+    pinned(DART_3_3, DART_3_3_PRODUCT_DWARF_FEATURES),
 ];
 
 #[must_use]
@@ -353,36 +303,74 @@ pub fn has_pinned_dart_graph_layout(version_hash: &str) -> bool {
 }
 
 impl DartPinnedLayout {
-    pub(super) fn cluster_body_kind(self, class_id: u32) -> Option<DartClusterBodyKind> {
-        if class_id >= self.num_predefined_cids
-            || (self.first_ffi_marker_cid..=self.last_ffi_marker_cid).contains(&class_id)
-        {
-            return Some(DartClusterBodyKind::Instance);
-        }
-        if (self.first_typed_data_cid..=self.last_typed_data_cid).contains(&class_id)
-            && (class_id - self.first_typed_data_cid).is_multiple_of(self.typed_data_variants)
-        {
-            return Some(DartClusterBodyKind::TypedData);
-        }
-        self.clusters
-            .binary_search_by_key(&class_id, |entry: &DartClusterBodyEntry| entry.class_id)
-            .ok()
-            .map(|index: usize| self.clusters[index].kind)
+    #[must_use]
+    pub fn class_id(self, name: &str) -> Option<u32> {
+        self.class_ids.cid(name).map(u32::from)
     }
 
-    pub(super) const fn typed_data_element_size(self, class_id: u32) -> Option<usize> {
-        if class_id < self.first_typed_data_cid || class_id > self.last_typed_data_cid {
-            return None;
+    pub(super) fn cluster_body_kind(self, class_id: u32) -> Option<DartClusterBodyKind> {
+        if class_id >= u32::from(self.class_ids.predefined_count()) {
+            return Some(DartClusterBodyKind::Instance);
         }
-        let family: u32 = (class_id - self.first_typed_data_cid) / self.typed_data_variants;
-        match family {
-            0..=2 => Some(1),
-            3..=4 => Some(2),
-            5..=6 | 9 => Some(4),
-            7..=8 | 10 => Some(8),
-            11..=13 => Some(16),
-            _ => None,
+        let name: &str = self.class_ids.name(u16::try_from(class_id).ok()?)?;
+        if typed_data_element_bytes(name).is_some() {
+            return Some(DartClusterBodyKind::TypedData);
         }
+        let kind: DartClusterBodyKind = match name {
+            "Class" => DartClusterBodyKind::Class,
+            "PatchClass" => DartClusterBodyKind::PatchClass,
+            "Function" => DartClusterBodyKind::Function,
+            "TypeParameters" => DartClusterBodyKind::TypeParameters,
+            "ClosureData" => DartClusterBodyKind::ClosureData,
+            "Field" => DartClusterBodyKind::Field,
+            "Script" => DartClusterBodyKind::Script,
+            "Library" => DartClusterBodyKind::Library,
+            "WeakArray" => DartClusterBodyKind::WeakArray,
+            "Code" => DartClusterBodyKind::Code,
+            "ObjectPool" => DartClusterBodyKind::ObjectPool,
+            "PcDescriptors" => DartClusterBodyKind::PcDescriptors,
+            "CodeSourceMap" => DartClusterBodyKind::CodeSourceMap,
+            "ExceptionHandlers" => DartClusterBodyKind::ExceptionHandlers,
+            "UnlinkedCall" => DartClusterBodyKind::UnlinkedCall,
+            "SubtypeTestCache" => DartClusterBodyKind::SubtypeTestCache,
+            "LoadingUnit" => DartClusterBodyKind::LoadingUnit,
+            "TypeArguments" => DartClusterBodyKind::TypeArguments,
+            "Type" => DartClusterBodyKind::Type,
+            "FunctionType" => DartClusterBodyKind::FunctionType,
+            "RecordType" => DartClusterBodyKind::RecordType,
+            "TypeParameter" => DartClusterBodyKind::TypeParameter,
+            "Closure" => DartClusterBodyKind::Closure,
+            "Mint" => DartClusterBodyKind::Mint,
+            "Double" => DartClusterBodyKind::Double,
+            "Record" => DartClusterBodyKind::Record,
+            "ConstMap" => DartClusterBodyKind::Map,
+            "ConstSet" => DartClusterBodyKind::Set,
+            "Array" | "ImmutableArray" => DartClusterBodyKind::Array,
+            "GrowableObjectArray" => DartClusterBodyKind::GrowableObjectArray,
+            "String" => DartClusterBodyKind::String,
+            "Instance" | "FfiInt8" | "FfiInt16" | "FfiInt32" | "FfiInt64" | "FfiUint8"
+            | "FfiUint16" | "FfiUint32" | "FfiUint64" | "FfiFloat" | "FfiDouble" | "FfiVoid"
+            | "FfiHandle" | "FfiBool" => DartClusterBodyKind::Instance,
+            _ => return None,
+        };
+        Some(kind)
+    }
+
+    pub(super) fn typed_data_element_size(self, class_id: u32) -> Option<usize> {
+        let cid: u16 = u16::try_from(class_id).ok()?;
+        typed_data_element_bytes(self.class_ids.name(cid)?)
+    }
+}
+
+fn typed_data_element_bytes(name: &str) -> Option<usize> {
+    let element: &str = name.strip_prefix("TypedData")?.strip_suffix("Array")?;
+    match element {
+        "Int8" | "Uint8" | "Uint8Clamped" => Some(1),
+        "Int16" | "Uint16" => Some(2),
+        "Int32" | "Uint32" | "Float32" => Some(4),
+        "Int64" | "Uint64" | "Float64" => Some(8),
+        "Float32x4" | "Int32x4" | "Float64x2" => Some(16),
+        _ => None,
     }
 }
 
@@ -391,29 +379,65 @@ impl DartPinnedLayout {
 mod tests {
     use super::{
         DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT, DartClusterBodyKind, DartPinnedLayout,
-        has_pinned_dart_graph_layout, pinned_dart_graph_layout,
+        PINNED_DART_GRAPH_LAYOUTS, has_pinned_dart_graph_layout, pinned_dart_graph_layout,
     };
     use crate::flutter::cid_table::DART_3_12_VERSION_HASH;
 
     #[test]
-    fn maps_both_string_class_ids() {
+    fn maps_only_the_string_cluster_class_id_to_strings() {
         let layout: DartPinnedLayout = DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT;
         assert_eq!(
             layout.cluster_body_kind(93),
             Some(DartClusterBodyKind::String)
         );
-        assert_eq!(
-            layout.cluster_body_kind(94),
-            Some(DartClusterBodyKind::String)
-        );
+        assert_eq!(layout.cluster_body_kind(94), None);
     }
 
     #[test]
-    fn num_predefined_cids_matches_the_cid_table() {
+    fn typed_data_clusters_cover_internal_typed_data_only() {
+        let layout: DartPinnedLayout = DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT;
+        let int8: u32 = layout.class_id("TypedDataInt8Array").expect("int8");
         assert_eq!(
-            DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT.num_predefined_cids,
-            u32::from(crate::flutter::cid_table::predefined_count())
+            layout.cluster_body_kind(int8),
+            Some(DartClusterBodyKind::TypedData)
         );
+        assert_eq!(layout.typed_data_element_size(int8), Some(1));
+        assert_eq!(layout.cluster_body_kind(int8 + 1), None);
+        assert_eq!(layout.cluster_body_kind(int8 + 2), None);
+        let float64x2: u32 = layout
+            .class_id("TypedDataFloat64x2Array")
+            .expect("float64x2");
+        assert_eq!(layout.typed_data_element_size(float64x2), Some(16));
+    }
+
+    #[test]
+    fn class_ids_above_the_predefined_range_are_instances() {
+        for layout in PINNED_DART_GRAPH_LAYOUTS {
+            let first_user_class: u32 = u32::from(layout.class_ids.predefined_count());
+            assert_eq!(
+                layout.cluster_body_kind(first_user_class),
+                Some(DartClusterBodyKind::Instance)
+            );
+            assert_eq!(
+                layout.cluster_body_kind(first_user_class - 1),
+                None,
+                "Never is a pseudo class id and has no cluster"
+            );
+        }
+    }
+
+    #[test]
+    fn every_release_pins_a_product_and_a_dwarf_tuple() {
+        for layout in PINNED_DART_GRAPH_LAYOUTS {
+            let dwarf: String = layout
+                .features
+                .replace("no-dwarf_stack_traces_mode", "dwarf_stack_traces_mode");
+            let product: String = layout
+                .features
+                .replace(" dwarf_stack_traces_mode", " no-dwarf_stack_traces_mode");
+            assert!(pinned_dart_graph_layout(layout.version_hash, &dwarf).is_some());
+            assert!(pinned_dart_graph_layout(layout.version_hash, &product).is_some());
+        }
     }
 
     #[test]

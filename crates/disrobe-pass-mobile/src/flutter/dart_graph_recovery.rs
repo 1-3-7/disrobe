@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::cid_table::matches_version;
 use super::code_table::{DartCodeTable, parse_code_table};
 use super::dart_graph::{
     DartGraphLimits, DartGraphSnapshotRole, DartGraphSnapshotSummary, DartParsedGraph,
@@ -576,6 +577,9 @@ pub(super) fn parse_pinned_isolate_graph(
         return Err(Error::DartGraphHeaderMismatch {
             field: "snapshot compatibility hash",
         });
+    }
+    if !matches_version(&isolate_header.snapshot_compatibility_hash) {
+        return Ok(None);
     }
     let Some(layout): Option<DartPinnedLayout> = pinned_dart_graph_layout(
         &isolate_header.snapshot_compatibility_hash,
