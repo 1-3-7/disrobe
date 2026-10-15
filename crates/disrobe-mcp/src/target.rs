@@ -11,6 +11,9 @@ use disrobe_core::{ExtractedString, StringTagging as Tagging, StringsOptions, st
 use disrobe_dataforensics::capture::{
     CaptureError, CaptureOptions, CaptureReport, inspect as inspect_capture,
 };
+use disrobe_dataforensics::crash::{
+    CrashError, CrashLimits, CrashReport, inspect as inspect_crash,
+};
 use disrobe_dataforensics::sqlite::{
     InspectOptions, Limits as SqliteLimits, SqliteError, SqliteReport, inspect as inspect_sqlite,
 };
@@ -703,7 +706,7 @@ pub(super) struct StringRowOut {
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
-pub(super) struct CaptureParams {
+pub(super) struct FileParams {
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
@@ -1106,19 +1109,9 @@ impl DisrobeMcp {
     )]
     fn inspect_capture(
         &self,
-        Parameters(p): Parameters<CaptureParams>,
+        Parameters(p): Parameters<FileParams>,
     ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
-        let workspace: &Workspace = self.workspace()?;
-        let bytes: Vec<u8> = match (p.path.as_deref(), p.target_id.as_deref()) {
-            (Some(path), None) => workspace.read_path(path, MAX_TARGET_BYTES)?.1,
-            (None, Some(target_id)) => workspace.get(target_id)?.bytes.clone(),
-            _ => {
-                return Err(ErrorData::invalid_params(
-                    "DR-MCP-0709: pass exactly one of `path` and `target_id`",
-                    None,
-                ));
-            }
-        };
+        let bytes: Vec<u8> = self.file_bytes(&p)?;
         let report: CaptureReport = inspect_capture(&bytes, &CaptureOptions::default()).map_err(
             |error: CaptureError| ErrorData::invalid_params(format!("DR-MCP-0725: {error}"), None),
         )?;
@@ -1130,6 +1123,32 @@ impl DisrobeMcp {
             )),
             Err(error) => Err(ErrorData::internal_error(
                 format!("DR-MCP-0725: capture report serialize: {error}"),
+                None,
+            )),
+        }
+    }
+
+    #[rmcp::tool(
+        name = "inspect_crash",
+        description = "Triage a Linux ELF core or a Windows, Breakpad or Crashpad minidump inside a workspace root (`path`) or an opened target (`target_id`): the signal or exception with its faulting instruction and data address as module+offset, every thread with registers and its instruction pointer as module+offset, mapped modules with GNU build IDs or PDB identities, the auxiliary vector, memory totals, and return-address candidates scanned from each stack (not an unwound backtrace). Nothing is executed."
+    )]
+    fn inspect_crash(
+        &self,
+        Parameters(p): Parameters<FileParams>,
+    ) -> Result<Json<serde_json::Map<String, serde_json::Value>>, ErrorData> {
+        let bytes: Vec<u8> = self.file_bytes(&p)?;
+        let report: CrashReport =
+            inspect_crash(&bytes, &CrashLimits::default()).map_err(|error: CrashError| {
+                ErrorData::invalid_params(format!("DR-MCP-0726: {error}"), None)
+            })?;
+        match serde_json::to_value(&report) {
+            Ok(serde_json::Value::Object(object)) => Ok(Json(object)),
+            Ok(_) => Err(ErrorData::internal_error(
+                "DR-MCP-0726: crash report serialized to a non-object value",
+                None,
+            )),
+            Err(error) => Err(ErrorData::internal_error(
+                format!("DR-MCP-0726: crash report serialize: {error}"),
                 None,
             )),
         }
@@ -1503,6 +1522,18 @@ impl DisrobeMcp {
 
     pub(super) fn known_target(&self, target_id: &str) -> Result<(), ErrorData> {
         self.workspace()?.get(target_id).map(|_| ())
+    }
+
+    fn file_bytes(&self, p: &FileParams) -> Result<Vec<u8>, ErrorData> {
+        let workspace: &Workspace = self.workspace()?;
+        match (p.path.as_deref(), p.target_id.as_deref()) {
+            (Some(path), None) => Ok(workspace.read_path(path, MAX_TARGET_BYTES)?.1),
+            (None, Some(target_id)) => Ok(workspace.get(target_id)?.bytes.clone()),
+            _ => Err(ErrorData::invalid_params(
+                "DR-MCP-0709: pass exactly one of `path` and `target_id`",
+                None,
+            )),
+        }
     }
 
     fn workspace(&self) -> Result<&Workspace, ErrorData> {

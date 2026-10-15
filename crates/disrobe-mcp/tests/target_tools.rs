@@ -751,3 +751,50 @@ async fn inspect_capture_decodes_a_reference_capture() {
     assert_eq!(report["http"].as_array().expect("http").len(), 2);
     session.client.cancel().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn inspect_crash_triages_a_reference_core() {
+    let session: Session = session().await;
+    let script: std::path::PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../disrobe-dataforensics/tests/support/make_cores.py");
+    let python: &str = ["python", "python3", "py"]
+        .into_iter()
+        .find(|candidate: &&str| {
+            std::process::Command::new(candidate)
+                .args(["-c", "import struct"])
+                .status()
+                .is_ok_and(|status: std::process::ExitStatus| status.success())
+        })
+        .expect("the crash case needs CPython 3 as its reference writer");
+    let status: std::process::ExitStatus = std::process::Command::new(python)
+        .arg(&script)
+        .arg(session.root.path())
+        .status()
+        .expect("run the core writer");
+    assert!(status.success());
+    let truth: Value = serde_json::from_slice(
+        &std::fs::read(session.root.path().join("truth.json")).expect("truth"),
+    )
+    .expect("truth JSON");
+    let report: Value = call(
+        &session.client,
+        "inspect_crash",
+        json!({ "path": "x86_64.core" }),
+    )
+    .await;
+    assert_eq!(report["format"], json!("elf-core"));
+    assert_eq!(report["fault"]["name"], json!("SIGSEGV"));
+    assert_eq!(report["fault"]["reason"], json!("SEGV_MAPERR"));
+    assert_eq!(
+        report["fault"]["instruction_location"],
+        truth["x86_64"]["fault"]["instruction_location"]
+    );
+    assert_eq!(
+        report["threads"].as_array().expect("threads").len(),
+        truth["x86_64"]["threads"]
+            .as_array()
+            .expect("threads")
+            .len()
+    );
+    session.client.cancel().await.expect("shutdown");
+}
