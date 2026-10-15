@@ -5,8 +5,9 @@ mod pyformat;
 mod stores;
 mod value;
 
-pub(crate) use fold::int_to_expr;
+pub(crate) use fold::{fold_constant_expr, int_to_expr, value_to_expr};
 pub use public::{EvalReport, evaluate_source};
+pub(crate) use value::Value;
 
 mod public {
     use ruff_python_ast::ModModule;
@@ -286,6 +287,26 @@ mod tests {
     fn folds_zip_and_enumerate() {
         assert_folds("x = list(zip([1, 2], [3, 4]))\n", "(1, 3)");
         assert_folds("x = list(enumerate(['a', 'b']))\n", "(0, 'a')");
+    }
+
+    #[test]
+    fn lazy_builtins_keep_their_type() {
+        for (src, call) in [
+            ("x = range(3)\n", "range(3)"),
+            ("print(range(3))\n", "range(3)"),
+            ("for i in range(3):\n    print(i)\n", "range(3)"),
+            ("x = map(str, [1, 2])\n", "map(str, [1, 2])"),
+            ("x = filter(None, [0, 1])\n", "filter(None, [0, 1])"),
+            ("x = zip([1], [2])\n", "zip([1], [2])"),
+            ("x = enumerate('ab')\n", "enumerate('ab')"),
+            ("x = reversed('ab')\n", "reversed('ab')"),
+            ("x = iter([1])\n", "iter([1])"),
+        ] {
+            let out: String = fold(src);
+            assert!(out.contains(call), "{src} must keep its lazy call: {out}");
+        }
+        assert_folds("x = list(range(3))\n", "[0, 1, 2]");
+        assert_folds("x = range(10)[2]\n", "x = 2");
     }
 
     #[test]

@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use ruff_python_parser::parse_module;
+
+use super::alias_view::fold_alias_views;
 use super::replace_identifier;
 use crate::ast_eval::{EvalReport, evaluate_source};
 use crate::error::Result;
@@ -107,12 +110,24 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
         post_compression
     };
 
-    let alias_map: BTreeMap<String, String> = extract_aliases(&normalized);
-    let dealiased: String = if alias_map.is_empty() {
-        normalized
+    let (dealiased, aliases_restored): (String, usize) = if parse_module(&normalized).is_ok() {
+        match fold_alias_views(&normalized, is_short_identifier, is_builtin_name) {
+            Some(fold) => {
+                stages.push("alias-unrename".to_owned());
+                let count: usize = fold.folded.len();
+                (fold.source, count)
+            }
+            None => (normalized, 0),
+        }
     } else {
-        stages.push("alias-unrename".to_owned());
-        apply_aliases(&normalized, &alias_map)
+        let alias_map: BTreeMap<String, String> = extract_aliases(&normalized);
+        if alias_map.is_empty() {
+            (normalized, 0)
+        } else {
+            stages.push("alias-unrename".to_owned());
+            let count: usize = alias_map.len();
+            (apply_aliases(&normalized, &alias_map), count)
+        }
     };
 
     let post_rename: String = dealiased;
@@ -142,7 +157,7 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
     diagnostics.insert("prepend_lines".to_owned(), report.prepend_lines.to_string());
     diagnostics.insert("use_tabs".to_owned(), report.use_tabs.to_string());
     diagnostics.insert("recursion_depth".to_owned(), recursion_depth.to_string());
-    diagnostics.insert("aliases_recovered".to_owned(), alias_map.len().to_string());
+    diagnostics.insert("aliases_recovered".to_owned(), aliases_restored.to_string());
     diagnostics.insert(
         "identifiers_renamed_by_tool".to_owned(),
         tokens_renamed.to_string(),
@@ -164,7 +179,7 @@ fn peel_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
         "pyminifier {variant}: {compressed_layers} compression layers, {aliases} builtin aliases restored, AST folded {exprs}/{binds}",
         variant = describe_variant(report.kind),
         compressed_layers = recursion_depth,
-        aliases = alias_map.len(),
+        aliases = aliases_restored,
         exprs = ast_report.exprs_folded,
         binds = ast_report.bindings_learned,
     );
@@ -508,7 +523,8 @@ mod tests {
             out.recovered_source
         );
         assert!(
-            !out.recovered_source.contains("q=print"),
+            !out.recovered_source.contains("q=print")
+                && !out.recovered_source.contains("q = print"),
             "alias must be removed: {}",
             out.recovered_source
         );

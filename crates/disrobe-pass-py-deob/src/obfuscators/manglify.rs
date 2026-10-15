@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::manglify_engine::{EnginePeel, EngineRefusal, peel_engine};
 use super::replace_identifier;
 use crate::ast_eval::{EvalReport, evaluate_source};
 use crate::error::Result;
@@ -59,7 +60,10 @@ impl ObfuscatorPass for ManglifyPass {
     fn peel(&self, source: &[u8]) -> Result<PeelOutcome> {
         let text: String = String::from_utf8_lossy(source).into_owned();
         if text.contains("Manglify Obfuscator") || text.contains("github.com/ImInTheICU/Manglify") {
-            return Ok(peel_upstream_partial(self.id(), &text));
+            return Ok(match peel_engine(&text) {
+                Ok(engine) => engine_outcome(self.id(), engine),
+                Err(refusal) => peel_upstream_partial(self.id(), &text, &refusal),
+            });
         }
         let mut stages: Vec<String> = Vec::new();
         let map: BTreeMap<String, String> = parse_sidecar(&text);
@@ -114,9 +118,57 @@ fn count_o0_identifiers(text: &str) -> usize {
     count
 }
 
-fn peel_upstream_partial(id: Obfuscator, text: &str) -> PeelOutcome {
+fn engine_outcome(id: Obfuscator, engine: EnginePeel) -> PeelOutcome {
+    let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
+    diagnostics.insert("engine_layers".to_owned(), engine.keys.len().to_string());
+    diagnostics.insert(
+        "engine_keys".to_owned(),
+        engine
+            .keys
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<String>>()
+            .join(","),
+    );
+    diagnostics.insert("engine_decoy_keys".to_owned(), engine.decoys.to_string());
+    let mut lossy_notes: Vec<String> = vec![
+        "Manglify: the Engine loader runs the payload through exec with its lambda's locals and swallows every exception the payload raises; the recovered source is the payload as a plain module".to_owned(),
+    ];
+    if engine.decoys > 0 {
+        lossy_notes.push(format!(
+            "Manglify: {} other keys decode to Python the loader also executes; each raises NameError on its first name before any effect",
+            engine.decoys
+        ));
+    }
+    if engine.uncompilable_layers > 0 {
+        lossy_notes.push(
+            "Manglify: the obfuscated loader itself does not compile under CPython, so the file never ran; the recovered source is the payload it carries".to_owned(),
+        );
+    }
+    PeelOutcome {
+        obfuscator: id,
+        stages_applied: engine
+            .keys
+            .iter()
+            .flat_map(|_| {
+                [
+                    "engine-key-search".to_owned(),
+                    "integrity-check-strip".to_owned(),
+                ]
+            })
+            .collect(),
+        recovered_source: engine.source,
+        confidence: 0.97,
+        quality: Quality::Full,
+        lossy_notes,
+        diagnostics,
+    }
+}
+
+fn peel_upstream_partial(id: Obfuscator, text: &str, refusal: &EngineRefusal) -> PeelOutcome {
     let mut stages: Vec<String> = vec!["upstream-detect".to_owned(), "strip-trailer".to_owned()];
     let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
+    diagnostics.insert("engine_refusal".to_owned(), refusal.to_string());
     diagnostics.insert(
         "o0_identifier_count".to_owned(),
         count_o0_identifiers(text).to_string(),
@@ -147,11 +199,14 @@ fn peel_upstream_partial(id: Obfuscator, text: &str) -> PeelOutcome {
         "ast_bindings_skipped_dynamic".to_owned(),
         ast_report.bindings_skipped_dynamic.to_string(),
     );
-    let notes: Vec<String> = vec![if ast_ok {
-        "Manglify: the Engine trailer was stripped and octal-escape literals and constants were folded, but the payload stays in the loader: the tool brute-forces a four-digit XOR key over nested hex layers at run time, which this peel does not reverse.".to_owned()
-    } else {
-        "Manglify: no foldable expressions; the chunked-dict loader remains intact".to_owned()
-    }];
+    let notes: Vec<String> = vec![
+        format!("Manglify: the Engine key search was refused: {refusal}"),
+        if ast_ok {
+            "Manglify: the Engine trailer was stripped and octal-escape literals and constants were folded, but the payload stays in the loader".to_owned()
+        } else {
+            "Manglify: no foldable expressions; the chunked-dict loader remains intact".to_owned()
+        },
+    ];
     let (quality, confidence): (Quality, f32) = (Quality::Partial, if ast_ok { 0.6 } else { 0.5 });
     PeelOutcome {
         obfuscator: id,

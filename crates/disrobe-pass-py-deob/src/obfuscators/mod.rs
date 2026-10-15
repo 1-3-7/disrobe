@@ -59,14 +59,17 @@ const fn is_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
 }
 
+pub(crate) mod alias_view;
 pub mod berserker;
 pub mod blankobf;
 pub(crate) mod blankobf_layers;
 pub(crate) mod builtins_view;
 pub(crate) mod de4py_family;
+pub(crate) mod declared_names;
 pub mod jawbreaker;
 pub mod kramer;
 pub mod manglify;
+pub(crate) mod manglify_engine;
 pub mod obfuxtreme;
 pub mod online_family;
 pub mod oxyry;
@@ -79,9 +82,11 @@ pub mod pyminifier_variants;
 pub mod pyobfus;
 pub mod pyobfuscate_com;
 pub mod pyobfuscate_com_xor;
+pub(crate) mod pyobfuscator_fold;
 pub mod pypacker;
 pub(crate) mod python_obfuscator_junk;
 pub mod python_obfuscator_pypi;
+pub(crate) mod state_machine;
 pub mod xindex;
 
 pub const REFUSAL_KEY: &str = "refusal";

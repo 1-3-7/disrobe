@@ -154,6 +154,13 @@ impl ScopeWalk<'_> {
     }
 }
 
+pub(crate) fn fold_constant_expr(expr: &mut Expr) -> bool {
+    let scope: Scope = Scope::new();
+    let mut report: FoldReport = FoldReport::default();
+    fold_expr_in_place(expr, &scope, &mut report);
+    report.exprs_folded > 0
+}
+
 pub(crate) fn fold_expr_in_place(expr: &mut Expr, scope: &Scope, report: &mut FoldReport) {
     walk_children(expr, scope, report);
     let folded: EvalResult = eval_expr(expr, scope);
@@ -240,12 +247,23 @@ fn value_is_simple(v: &Value) -> bool {
     }
 }
 
+const DISTINCT_TYPE_BUILDERS: [&str; 8] = [
+    "bytearray",
+    "enumerate",
+    "filter",
+    "iter",
+    "map",
+    "range",
+    "reversed",
+    "zip",
+];
+
 fn expr_builds_distinct_type(expr: &Expr) -> bool {
     let Expr::Call(call) = expr else {
         return false;
     };
     match &*call.func {
-        Expr::Name(name) => name.id.as_str() == "bytearray",
+        Expr::Name(name) => DISTINCT_TYPE_BUILDERS.contains(&name.id.as_str()),
         Expr::Attribute(attr) => {
             attr.attr.as_str() == "fromhex"
                 && matches!(&*attr.value, Expr::Name(owner) if owner.id.as_str() == "bytearray")

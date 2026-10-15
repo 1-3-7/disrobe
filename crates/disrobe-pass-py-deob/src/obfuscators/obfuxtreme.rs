@@ -14,6 +14,8 @@ use crate::codec::{
     extract_largest_python_bytes_literal, python_bytes_literal, zlib_compress, zlib_decompress,
 };
 use crate::error::{Error, Result};
+use crate::obfuscators::declared_names::restore_declared_names;
+use crate::obfuscators::state_machine::unflatten;
 use crate::obfuscators::{
     DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality, render_str_literal,
 };
@@ -242,9 +244,25 @@ fn peel_v4_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
     };
     ctx.stages.push("decompile".to_owned());
 
-    let (recovered, decrypted): (String, usize) = decrypt_inline_strings(&raw_source, &key);
+    let (mut recovered, decrypted): (String, usize) = decrypt_inline_strings(&raw_source, &key);
     if decrypted > 0 {
         ctx.stages.push("string-aes-decrypt".to_owned());
+    }
+    let mut machines: usize = 0;
+    if let Some((sequential, count)) = unflatten(&recovered) {
+        recovered = sequential;
+        machines = count;
+        ctx.stages.push("state-machine-unflatten".to_owned());
+    }
+    ctx.diagnostics.insert(
+        "state_machines_unflattened".to_owned(),
+        machines.to_string(),
+    );
+    if let Some((restored, renames)) = restore_declared_names(&recovered, is_generated_name) {
+        recovered = restored;
+        ctx.stages.push("declared-name-restore".to_owned());
+        ctx.diagnostics
+            .insert("names_restored".to_owned(), renames.len().to_string());
     }
     ctx.diagnostics
         .insert("strings_decrypted".to_owned(), decrypted.to_string());
@@ -262,7 +280,7 @@ fn peel_v4_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
 
     if quality == Quality::Full {
         ctx.lossy_notes.push(
-            "ObfuXtreme v4 fully reversed: AES key/iv recovered from the loader xor-split, payload AES-256-CBC decrypted, marshalled code object decompiled to source, and every _decrypt_str/_decrypt_bytes constant statically AES-decrypted to its literal. Control-flow flattening (state-machine) and local renames are structural and remain in the recovered source."
+            "ObfuXtreme v4 fully reversed: AES key/iv recovered from the loader xor-split, payload AES-256-CBC decrypted, marshalled code object decompiled to source, and every _decrypt_str/_decrypt_bytes constant statically AES-decrypted to its literal, and each linear state machine the tool flattened a body into is put back in sequence. A renamed TypeVar, ParamSpec, TypeVarTuple or NewType takes back the name it was declared with; other renamed variables keep the tool's random names."
                 .to_owned(),
         );
     } else if still_wrapped {
@@ -285,6 +303,15 @@ fn peel_v4_upstream(id: Obfuscator, text: &str) -> PeelOutcome {
         lossy_notes: ctx.lossy_notes,
         diagnostics: ctx.diagnostics,
     }
+}
+
+fn is_generated_name(name: &str) -> bool {
+    name.strip_prefix("v_").is_some_and(|hex: &str| {
+        hex.len() == 16
+            && hex
+                .bytes()
+                .all(|byte: u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 fn detect_expected_version(text: &str) -> Option<PyVersion> {

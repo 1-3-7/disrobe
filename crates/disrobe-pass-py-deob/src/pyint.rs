@@ -36,8 +36,93 @@ pub(crate) fn pow_mod(base: i128, exp: i128, modulus: i128) -> Option<i128> {
     floor_mod(result, modulus)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntText {
+    Invalid,
+    NonAscii,
+    TooWide,
+}
+
+pub(crate) fn parse_int(text: &str, radix: u32) -> Result<i128, IntText> {
+    if !text.is_ascii() {
+        return Err(IntText::NonAscii);
+    }
+    if !(2..=36).contains(&radix) {
+        return Err(IntText::Invalid);
+    }
+    let trimmed: &str = text.trim_matches(|c: char| matches!(c, ' ' | '\t'..='\r'));
+    let (negative, unsigned): (bool, &str) = match trimmed.as_bytes().first() {
+        Some(b'-') => (true, &trimmed[1..]),
+        Some(b'+') => (false, &trimmed[1..]),
+        _ => (false, trimmed),
+    };
+    let marker: Option<char> = match radix {
+        2 => Some('b'),
+        8 => Some('o'),
+        16 => Some('x'),
+        _ => None,
+    };
+    let digits: &str = marker
+        .and_then(|marker: char| {
+            let rest: &str = unsigned.strip_prefix('0')?;
+            let rest: &str = rest
+                .strip_prefix(marker)
+                .or_else(|| rest.strip_prefix(marker.to_ascii_uppercase()))?;
+            Some(rest.strip_prefix('_').unwrap_or(rest))
+        })
+        .unwrap_or(unsigned);
+    if digits.is_empty()
+        || digits.starts_with('_')
+        || digits.ends_with('_')
+        || digits.contains("__")
+    {
+        return Err(IntText::Invalid);
+    }
+    let mut value: i128 = 0;
+    for digit in digits.chars().filter(|c: &char| *c != '_') {
+        let digit: u32 = digit.to_digit(radix).ok_or(IntText::Invalid)?;
+        value = value
+            .checked_mul(i128::from(radix))
+            .and_then(|scaled: i128| scaled.checked_add(i128::from(digit)))
+            .ok_or(IntText::TooWide)?;
+    }
+    Ok(if negative { -value } else { value })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn int_text_follows_cpython() {
+        for (text, radix, expected) in [
+            ("0b_1", 2, Ok(1)),
+            ("_1", 2, Err(IntText::Invalid)),
+            (" 1 ", 2, Ok(1)),
+            ("1_", 2, Err(IntText::Invalid)),
+            ("0B1", 2, Ok(1)),
+            ("-0b1", 2, Ok(-1)),
+            ("0b", 2, Err(IntText::Invalid)),
+            ("0_b1", 2, Err(IntText::Invalid)),
+            ("0b__1", 2, Err(IntText::Invalid)),
+            ("1\u{1c}", 2, Err(IntText::Invalid)),
+            ("0o345", 8, Ok(229)),
+            ("0O17", 8, Ok(15)),
+            ("0x1f", 16, Ok(31)),
+            ("0x1f", 10, Err(IntText::Invalid)),
+            ("0_0", 10, Ok(0)),
+            ("+_1", 10, Err(IntText::Invalid)),
+            ("007", 10, Ok(7)),
+            ("- 5", 10, Err(IntText::Invalid)),
+            ("\u{661}", 10, Err(IntText::NonAscii)),
+            (
+                "170141183460469231731687303715884105728",
+                10,
+                Err(IntText::TooWide),
+            ),
+        ] {
+            assert_eq!(parse_int(text, radix), expected, "{text:?} base {radix}");
+        }
+    }
+
     use super::*;
 
     #[test]

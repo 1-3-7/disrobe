@@ -5,6 +5,7 @@ use crate::codec::{
     python_bytes_literal, xor_apply,
 };
 use crate::error::{Error, Result};
+use crate::obfuscators::pyobfuscator_fold::{PayloadFold, fold_payload};
 use crate::obfuscators::{DetectReport, Obfuscator, ObfuscatorPass, PeelOutcome, Quality};
 
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +102,9 @@ fn peel_real_gzip(id: Obfuscator, raw: &[u8]) -> Result<PeelOutcome> {
     let mut diagnostics: BTreeMap<String, String> = BTreeMap::new();
     diagnostics.insert("gzip_payload_len".to_owned(), raw.len().to_string());
     diagnostics.insert("inner_layer_len".to_owned(), inner.len().to_string());
+    if let Some(folded) = fold_payload(&inner_source) {
+        return Ok(folded_outcome(id, folded, diagnostics));
+    }
     let inner_is_char_arith: bool = inner_source.contains("chr(")
         && inner_source.contains("def ")
         && inner_source.contains("__import__");
@@ -121,6 +125,44 @@ fn peel_real_gzip(id: Obfuscator, raw: &[u8]) -> Result<PeelOutcome> {
         }],
         diagnostics,
     })
+}
+
+fn folded_outcome(
+    id: Obfuscator,
+    folded: PayloadFold,
+    mut diagnostics: BTreeMap<String, String>,
+) -> PeelOutcome {
+    diagnostics.insert("aliases_folded".to_owned(), folded.aliases.to_string());
+    diagnostics.insert("strings_decoded".to_owned(), folded.decoded.to_string());
+    diagnostics.insert("getattr_folded".to_owned(), folded.attributes.to_string());
+    diagnostics.insert(
+        "helpers_dropped".to_owned(),
+        folded.helpers_dropped.to_string(),
+    );
+    diagnostics.insert("imports_restored".to_owned(), folded.imports.to_string());
+    let (quality, confidence, notes): (Quality, f32, Vec<String>) = if folded.binds_names {
+        (
+            Quality::Partial,
+            0.75,
+            vec!["PyObfuscator (Mauricelambert): the builtin alias table, the XOR string decoder and getattr lookups are folded, but the tool renamed every identifier, attribute names included, and keeps no mapping".to_owned()],
+        )
+    } else {
+        (Quality::Full, 0.95, Vec::new())
+    };
+    PeelOutcome {
+        obfuscator: id,
+        stages_applied: vec![
+            "bytes-literal-extract".to_owned(),
+            "gzip-decompress".to_owned(),
+            "builtin-alias-fold".to_owned(),
+            "xor-string-fold".to_owned(),
+        ],
+        recovered_source: folded.source,
+        confidence,
+        quality,
+        lossy_notes: notes,
+        diagnostics,
+    }
 }
 
 #[must_use]

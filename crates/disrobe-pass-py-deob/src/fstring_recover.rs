@@ -1,17 +1,26 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 
 use ruff_python_ast::visitor::transformer::{Transformer, walk_expr};
 use ruff_python_ast::{
-    AtomicNodeIndex, ConversionFlag, Expr, ExprBinOp, ExprCall, ExprFString, ExprName,
-    ExprStringLiteral, FString, FStringFlags, FStringValue, InterpolatedElement,
-    InterpolatedStringElement, InterpolatedStringElements, InterpolatedStringLiteralElement,
-    ModModule, Operator,
+    AtomicNodeIndex, ConversionFlag, Expr, ExprBinOp, ExprCall, ExprFString, ExprList, ExprName,
+    ExprStringLiteral, ExprTuple, FString, FStringFlags, FStringValue, InterpolatedElement,
+    InterpolatedStringElement, InterpolatedStringElements, InterpolatedStringFormatSpec,
+    InterpolatedStringLiteralElement, ModModule, Operator,
 };
-use ruff_text_size::Ranged;
+use ruff_text_size::{Ranged, TextRange};
+
+use crate::bindings::bindings;
+
+const FORMAT_BUILTINS: [&str; 4] = ["ascii", "format", "repr", "str"];
 
 pub(crate) fn recover(module: &mut ModModule) -> usize {
+    let bound: BTreeSet<String> = bindings(&module.body);
     let rewriter: FStringRewriter = FStringRewriter {
         count: Cell::new(0),
+        joins: !FORMAT_BUILTINS
+            .iter()
+            .any(|name: &&str| bound.contains(*name)),
     };
     for stmt in &mut module.body {
         rewriter.visit_stmt(stmt);
@@ -22,15 +31,18 @@ pub(crate) fn recover(module: &mut ModModule) -> usize {
 #[derive(Debug)]
 struct FStringRewriter {
     count: Cell<usize>,
+    joins: bool,
 }
 
 impl Transformer for FStringRewriter {
     fn visit_expr(&self, expr: &mut Expr) {
         walk_expr(self, expr);
-        if let Expr::BinOp(b) = expr
-            && matches!(b.op, Operator::Add)
-            && let Some(new_expr) = try_rewrite_concat(b)
-        {
+        let rewritten: Option<Expr> = match expr {
+            Expr::BinOp(b) if matches!(b.op, Operator::Add) => try_rewrite_concat(b),
+            Expr::Call(call) if self.joins => try_rewrite_join(call),
+            _ => None,
+        };
+        if let Some(new_expr) = rewritten {
             *expr = new_expr;
             self.count.set(self.count.get() + 1);
         }
@@ -43,6 +55,7 @@ enum Fragment {
     Interpolation {
         expression: Box<Expr>,
         conversion: ConversionFlag,
+        spec: String,
     },
 }
 
@@ -60,18 +73,106 @@ fn try_rewrite_concat(bin: &ExprBinOp) -> Option<Expr> {
     {
         return None;
     }
+    Some(fstring(fragments, bin.range))
+}
+
+fn fstring(fragments: Vec<Fragment>, range: TextRange) -> Expr {
     let merged: Vec<Fragment> = merge_literals(fragments);
-    let elements: InterpolatedStringElements = build_elements(merged, bin.range);
-    Some(Expr::FString(ExprFString {
-        range: bin.range,
+    let elements: InterpolatedStringElements = build_elements(merged, range);
+    Expr::FString(ExprFString {
+        range,
         node_index: AtomicNodeIndex::default(),
         value: FStringValue::single(FString {
-            range: bin.range,
+            range,
             node_index: AtomicNodeIndex::default(),
             elements,
             flags: FStringFlags::empty(),
         }),
-    }))
+    })
+}
+
+fn try_rewrite_join(call: &ExprCall) -> Option<Expr> {
+    let parts: &[Expr] = empty_join(call)?;
+    let mut fragments: Vec<Fragment> = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            Expr::StringLiteral(literal) => {
+                fragments.push(Fragment::Literal(literal.value.to_str().to_owned()));
+            }
+            Expr::Call(formatted) => fragments.push(format_fragment(formatted)?),
+            _ => return None,
+        }
+    }
+    fragments
+        .iter()
+        .any(|f| matches!(f, Fragment::Interpolation { .. }))
+        .then(|| fstring(fragments, call.range))
+}
+
+fn empty_join(call: &ExprCall) -> Option<&[Expr]> {
+    let Expr::Attribute(join) = call.func.as_ref() else {
+        return None;
+    };
+    let separator_is_empty: bool = matches!(
+        join.value.as_ref(),
+        Expr::StringLiteral(separator) if separator.value.to_str().is_empty()
+    );
+    if join.attr.as_str() != "join" || !separator_is_empty || !call.arguments.keywords.is_empty() {
+        return None;
+    }
+    match call.arguments.args.as_ref() {
+        [Expr::List(ExprList { elts, .. }) | Expr::Tuple(ExprTuple { elts, .. })] => Some(elts),
+        _ => None,
+    }
+}
+
+fn format_fragment(call: &ExprCall) -> Option<Fragment> {
+    let Expr::Name(callee) = call.func.as_ref() else {
+        return None;
+    };
+    let [value, spec] = call.arguments.args.as_ref() else {
+        return None;
+    };
+    if callee.id.as_str() != "format" || !call.arguments.keywords.is_empty() {
+        return None;
+    }
+    let spec: String = constant_text(spec)?;
+    let (expression, conversion): (&Expr, ConversionFlag) = match value {
+        Expr::Call(converted)
+            if converted.arguments.keywords.is_empty() && converted.arguments.args.len() == 1 =>
+        {
+            let flag: ConversionFlag = match converted.func.as_ref() {
+                Expr::Name(name) if name.id.as_str() == "str" => ConversionFlag::Str,
+                Expr::Name(name) if name.id.as_str() == "repr" => ConversionFlag::Repr,
+                Expr::Name(name) if name.id.as_str() == "ascii" => ConversionFlag::Ascii,
+                _ => return None,
+            };
+            (converted.arguments.args.first()?, flag)
+        }
+        other => (other, ConversionFlag::None),
+    };
+    if !is_simple_interpolatable(expression) || spec.contains(['{', '}']) {
+        return None;
+    }
+    Some(Fragment::Interpolation {
+        expression: Box::new(expression.clone()),
+        conversion,
+        spec,
+    })
+}
+
+fn constant_text(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+        Expr::Call(call) => empty_join(call)?
+            .iter()
+            .map(|part: &Expr| match part {
+                Expr::StringLiteral(literal) => Some(literal.value.to_str()),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
 }
 
 fn flatten_add(expr: &Expr, out: &mut Vec<Fragment>) -> bool {
@@ -99,6 +200,7 @@ fn flatten_add(expr: &Expr, out: &mut Vec<Fragment>) -> bool {
             out.push(Fragment::Interpolation {
                 expression: Box::new(inner.clone()),
                 conversion,
+                spec: String::new(),
             });
             true
         }
@@ -161,8 +263,25 @@ fn build_elements(
             Fragment::Interpolation {
                 expression,
                 conversion,
+                spec,
             } => {
                 let expr_range: ruff_text_size::TextRange = expression.range();
+                let format_spec: Option<Box<InterpolatedStringFormatSpec>> = (!spec.is_empty())
+                    .then(|| {
+                        Box::new(InterpolatedStringFormatSpec {
+                            range,
+                            node_index: AtomicNodeIndex::default(),
+                            elements: InterpolatedStringElements::from(vec![
+                                InterpolatedStringElement::Literal(
+                                    InterpolatedStringLiteralElement {
+                                        range,
+                                        node_index: AtomicNodeIndex::default(),
+                                        value: spec.into_boxed_str(),
+                                    },
+                                ),
+                            ]),
+                        })
+                    });
                 elements.push(InterpolatedStringElement::Interpolation(
                     InterpolatedElement {
                         range: expr_range,
@@ -170,7 +289,7 @@ fn build_elements(
                         expression,
                         debug_text: None,
                         conversion,
-                        format_spec: None,
+                        format_spec,
                     },
                 ));
             }
@@ -200,6 +319,27 @@ mod tests {
             out.contains("f'val={x}'") || out.contains("f\"val={x}\""),
             "expected f-string; got: {out}"
         );
+    }
+
+    #[test]
+    fn recovers_a_lowered_join_of_format_calls() {
+        let out: String = run(
+            "def f(name, score, pct):\n    return ''.join(['hi ', format(repr(name), ''), ', score=', format(score, ''.join(['04d'])), ' pct=', format(pct, '.2f'), format(str(name), '')])\nprint(f('a', 7, 0.5))\n",
+        );
+        assert!(
+            out.contains("f'hi {name!r}, score={score:04d} pct={pct:.2f}{name!s}'")
+                || out.contains("f\"hi {name!r}, score={score:04d} pct={pct:.2f}{name!s}\""),
+            "expected the f-string back; got: {out}"
+        );
+    }
+
+    #[test]
+    fn a_rebound_format_keeps_the_join() {
+        let out: String =
+            run("def format(value, spec):\n    return '?'\nmsg = ''.join(['a', format(1, '')])\n");
+        assert!(out.contains("''.join("), "format is user code here: {out}");
+        let braces: String = run("x = 1\nmsg = ''.join(['a', format(x, '{')])\n");
+        assert!(braces.contains("''.join("), "{braces}");
     }
 
     #[test]

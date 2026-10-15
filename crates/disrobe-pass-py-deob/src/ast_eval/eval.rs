@@ -830,14 +830,12 @@ fn call_builtin(name: &str, args: &[Value]) -> EvalResult {
         ))),
         ("int" | "round", [Value::Int(n)]) => Ok(Value::Int(*n)),
         ("int", [Value::Bool(b)]) => Ok(Value::Int(i128::from(*b))),
-        ("int", [Value::Str(s)]) => s
-            .trim()
-            .parse::<i128>()
+        ("int", [Value::Str(s)]) => crate::pyint::parse_int(s, 10)
             .map(Value::Int)
             .map_err(|_| EvalError::TypeMismatch),
         ("int", [Value::Str(s), Value::Int(base)]) if (2..=36).contains(base) => {
             let radix: u32 = u32::try_from(*base).map_err(|_| EvalError::Overflow)?;
-            i128::from_str_radix(s.trim(), radix)
+            crate::pyint::parse_int(s, radix)
                 .map(Value::Int)
                 .map_err(|_| EvalError::TypeMismatch)
         }

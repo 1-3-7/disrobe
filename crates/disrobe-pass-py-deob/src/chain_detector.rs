@@ -313,7 +313,6 @@ const fn quality_of(obf: Obfuscator) -> SupportQuality {
         | Obfuscator::Patchwork
         | Obfuscator::ObfuXtreme
         | Obfuscator::PyobfuscateComXor
-        | Obfuscator::Manglify
         | Obfuscator::PyObfuscatorMauricelambert => SupportQuality::Partial,
         Obfuscator::Jawbreaker => SupportQuality::DetectOnly,
         _ => SupportQuality::Full,
