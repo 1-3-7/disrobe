@@ -304,6 +304,16 @@ fn native_decompile_refuses_a_runtime_decrypted_image_by_name() {
         !out.join("manifest.json").exists(),
         "no decompilation of encrypted bytes is written"
     );
+    let listing: Output = disrobe(&["native", "disasm"], &input, &[]);
+    let listing_stderr: String = String::from_utf8_lossy(&listing.stderr)
+        .replace('\u{2502}', " ")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(
+        !listing.status.success() && listing_stderr.contains("DR-NATIVE-0225"),
+        "disasm must refuse the encrypted image too; stderr: {listing_stderr}"
+    );
     let identify: Output = disrobe(&["--json", "identify"], &input, &[]);
     assert!(identify.status.success());
     let report: Json = serde_json::from_slice(&identify.stdout).expect("identify json");

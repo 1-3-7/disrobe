@@ -3246,6 +3246,12 @@ pub(crate) fn disasm(
                 syntax.into_syntax().label()
             ));
         }
+        if let Some(runtime) = disrobe_pass_native::detect_runtime_decrypted(&bytes) {
+            return Err(miette::miette!(
+                "DR-NATIVE-0225: {}; `--raw` still sweeps the bytes as they are on disk",
+                runtime.refusal()
+            ));
+        }
         let module: disrobe_query::Module = load_native_module(&input, &bytes)?;
         match emit {
             DisasmEmit::Asm => render_module_asm(&module),
