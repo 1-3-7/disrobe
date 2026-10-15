@@ -48,6 +48,7 @@ pub mod fixtures;
 pub mod flirt;
 pub mod flow_facts;
 pub mod format;
+pub mod hardening;
 pub mod identify;
 pub mod lang;
 #[cfg(feature = "llm-metadata")]
