@@ -1968,6 +1968,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "toml",
+ "toml_edit",
  "tonic",
  "tonic-build",
  "tonic-health",
@@ -2146,6 +2147,7 @@ version = "0.10.6"
 dependencies = [
  "base64",
  "blake3",
+ "clap",
  "disrobe-binfmt",
  "disrobe-core",
  "disrobe-dataforensics",
@@ -2156,6 +2158,7 @@ dependencies = [
  "disrobe-pass-wasm-deob",
  "disrobe-passes",
  "disrobe-query",
+ "disrobe-tool-process",
  "iced-x86",
  "miette",
  "object 0.37.3",
@@ -8905,6 +8908,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.3",
 ]
 

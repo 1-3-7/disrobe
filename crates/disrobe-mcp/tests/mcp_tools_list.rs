@@ -43,6 +43,8 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         "inspect_crash",
         "add_note",
         "list_notes",
+        "list_commands",
+        "run_command",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
@@ -56,7 +58,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         "missing WebAssembly lift tool"
     );
     let expected_count: usize =
-        31 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
+        33 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
     assert_eq!(
         tools.len(),
         expected_count,

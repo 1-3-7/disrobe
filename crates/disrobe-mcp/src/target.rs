@@ -135,6 +135,10 @@ impl Workspace {
         })
     }
 
+    pub(super) fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
     fn resolve(&self, raw: &str) -> Result<PathBuf, ErrorData> {
         if raw.trim().is_empty() {
             return Err(ErrorData::invalid_params(

@@ -4,6 +4,11 @@
 mod chain;
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "parent-only visibility keeps command protocol types behind the private module while satisfying unreachable_pub"
+)]
+mod command;
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "parent-only visibility keeps navigation protocol types behind the private module while satisfying unreachable_pub"
 )]
 mod navigation;
@@ -12,6 +17,11 @@ mod navigation;
     reason = "parent-only visibility keeps note protocol types behind the private module while satisfying unreachable_pub"
 )]
 mod notes;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "parent-only visibility keeps prompt argument types behind the private module while satisfying unreachable_pub"
+)]
+mod prompts;
 #[allow(
     clippy::redundant_pub_crate,
     reason = "parent-only visibility keeps target protocol types behind the private module while satisfying unreachable_pub"
@@ -47,6 +57,8 @@ use rmcp::Json;
 use rmcp::handler::server::wrapper::Parameters;
 use serde::{Deserialize, Serialize};
 
+pub use command::CommandCatalog;
+
 const RENAMES_SCHEMA: &str = "disrobe.renames/v1";
 #[cfg(feature = "auto")]
 const DEFAULT_CHAIN_DEPTH: u8 = 8;
@@ -70,6 +82,13 @@ const MAX_WORKSPACE_READ_BYTES: u64 = 16 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct DisrobeMcp {
     workspace: Option<Arc<target::Workspace>>,
+    commands: Option<Arc<CommandCatalog>>,
+}
+
+#[derive(Debug, Default)]
+pub struct ServerOptions {
+    pub roots: Vec<PathBuf>,
+    pub commands: Option<CommandCatalog>,
 }
 
 impl Default for DisrobeMcp {
@@ -1161,10 +1180,12 @@ impl DisrobeMcp {
             + Self::target_tool_router()
             + Self::reference_tool_router()
             + Self::notes_tool_router()
+            + Self::command_tool_router()
     }
 }
 
 #[rmcp::tool_handler]
+#[rmcp::prompt_handler]
 impl rmcp::ServerHandler for DisrobeMcp {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info: rmcp::model::ServerInfo = rmcp::model::ServerInfo::default();
@@ -1172,6 +1193,7 @@ impl rmcp::ServerHandler for DisrobeMcp {
         env!("CARGO_PKG_VERSION").clone_into(&mut info.server_info.version);
         info.capabilities = rmcp::model::ServerCapabilities::builder()
             .enable_tools()
+            .enable_prompts()
             .build();
         #[cfg(feature = "wasm")]
         let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), match functions across two native images (native_match), lift WebAssembly to Rust, TypeScript, C, or WAT (wasm_lift), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
@@ -1180,7 +1202,7 @@ impl rmcp::ServerHandler for DisrobeMcp {
         #[cfg(not(feature = "auto"))]
         let analysis_tools: &str = "match functions across two native images (native_match), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
         info.instructions = Some(format!(
-            "disrobe MCP server. Investigate a file on disk: open_target with a path inside a workspace root returns a target_id; then target_layout, list_functions, disassemble_function, decompile_function, call_path, read_bytes, search_bytes and locate answer questions about it without re-reading the file. Inline tools: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Nothing the server reads is executed. Workspace roots are the server's working directory plus --root and DISROBE_MCP_ROOTS; paths outside them are refused. The workspace tools (rename, annot) write only inside `.disrobe/` under the working directory."
+            "disrobe MCP server. Investigate a file on disk: open_target with a path inside a workspace root returns a target_id; then target_layout, list_functions, disassemble_function, decompile_function, call_path, read_bytes, search_bytes and locate answer questions about it without re-reading the file. Inline tools: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Nothing the server reads is executed. Workspace roots are the server's working directory plus --root and DISROBE_MCP_ROOTS; paths outside them are refused. The workspace tools (rename, annot) write only inside `.disrobe/` under the working directory. Under `disrobe mcp`, list_commands and run_command run allowlisted read-only CLI subcommands with --json, writing only under `.disrobe/mcp/`. Prompts triage, unpack_and_decompile, trace_feature and explain_function lay out a step-by-step workflow."
         ));
         info
     }
@@ -1191,14 +1213,23 @@ impl DisrobeMcp {
     pub fn new() -> Self {
         Self {
             workspace: target::Workspace::discover(&[]).ok().map(Arc::new),
+            commands: None,
         }
     }
 
     pub fn with_roots(extra_roots: &[PathBuf]) -> miette::Result<Self> {
-        let workspace: target::Workspace = target::Workspace::discover(extra_roots)
+        Self::with_options(ServerOptions {
+            roots: extra_roots.to_vec(),
+            commands: None,
+        })
+    }
+
+    pub fn with_options(options: ServerOptions) -> miette::Result<Self> {
+        let workspace: target::Workspace = target::Workspace::discover(&options.roots)
             .map_err(|message: String| miette::miette!("{message}"))?;
         Ok(Self {
             workspace: Some(Arc::new(workspace)),
+            commands: options.commands.map(Arc::new),
         })
     }
 }
@@ -1541,7 +1572,14 @@ pub fn run_stdio() -> miette::Result<()> {
 }
 
 pub fn run_stdio_with_roots(extra_roots: &[PathBuf]) -> miette::Result<()> {
-    let server: DisrobeMcp = DisrobeMcp::with_roots(extra_roots)?;
+    run_stdio_with(ServerOptions {
+        roots: extra_roots.to_vec(),
+        commands: None,
+    })
+}
+
+pub fn run_stdio_with(options: ServerOptions) -> miette::Result<()> {
+    let server: DisrobeMcp = DisrobeMcp::with_options(options)?;
     let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1616,6 +1654,8 @@ mod tests {
             "inspect_crash",
             "add_note",
             "list_notes",
+            "list_commands",
+            "run_command",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -1629,7 +1669,7 @@ mod tests {
             "missing WebAssembly lift tool"
         );
         let expected_count: usize =
-            31 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
+            33 + usize::from(cfg!(feature = "auto")) * 2 + usize::from(cfg!(feature = "wasm"));
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
