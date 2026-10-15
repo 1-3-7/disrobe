@@ -4,7 +4,7 @@
   "flutter_framework_revision": "ee80f08bbf97172ec030b8751ceab557177a34a6",
   "flutter_engine_revision": "83675ed27633283e7fc296c8bca22e841224c096",
   "dart_version": "3.12.2",
-  "dart_sdk_revision": "d684a576bc01167dca2374cbfab1a5088b762ada",
+  "dart_sdk_revision": "d684a576a6aa954ae107a03b2b4e1d61c3bebe93",
   "snapshot_compatibility_hash": "ace654289f5abc240509fc941453ebc5",
   "target": "android-arm64",
   "application_library": "package:disrobe_dart_fixture/main.dart",
