@@ -673,7 +673,80 @@ fn print_recon_summary(input: &Path, report: &ApkReconReport) {
     print_recon_secrets(&report.secrets);
     print_recon_endpoints(&report.endpoints);
     print_recon_protectors(&report.protector_walls);
+    print_recon_packers(&report.packers);
+    print_recon_react_native_assets(&report.react_native_assets);
     print_recon_signing(report);
+}
+
+fn print_recon_react_native_assets(assets: &[disrobe_pass_mobile::RnPackagedAsset]) {
+    if assets.is_empty() {
+        return;
+    }
+    let files: Vec<&disrobe_pass_mobile::RnAssetFile> = assets
+        .iter()
+        .flat_map(|packaged: &disrobe_pass_mobile::RnPackagedAsset| packaged.files.iter())
+        .collect();
+    let present: usize = files
+        .iter()
+        .filter(|file: &&&disrobe_pass_mobile::RnAssetFile| file.entry.is_some())
+        .count();
+    println!(
+        "  rn assets:    {} packager asset(s), {present} of {} resource file(s) present",
+        assets.len(),
+        files.len()
+    );
+    for packaged in assets {
+        let asset: &disrobe_pass_mobile::RnAsset = &packaged.asset;
+        println!(
+            "    - {}/{}.{} (module {})",
+            asset.http_server_location,
+            asset.name,
+            asset.file_type,
+            asset
+                .metro_module
+                .map_or_else(|| "?".to_owned(), |id: u64| id.to_string())
+        );
+        for file in &packaged.files {
+            match file.entry.as_deref() {
+                Some(entry) if entry == file.path => {
+                    println!("      {}", file.path);
+                }
+                Some(entry) => println!("      {} -> {entry}", file.path),
+                None => println!("      {} (missing)", file.path),
+            }
+        }
+    }
+}
+
+fn print_recon_packers(packers: &[disrobe_pass_mobile::PackerFinding]) {
+    if packers.is_empty() {
+        println!("  packers:      none named");
+        return;
+    }
+    println!("  packers:      {}", packers.len());
+    for finding in packers {
+        let anchors: Vec<&str> = finding
+            .anchors
+            .iter()
+            .map(|anchor: &disrobe_pass_mobile::PackerAnchor| anchor.value.as_str())
+            .collect();
+        println!(
+            "    - {} [{:?}]: {}",
+            finding.label,
+            finding.payload,
+            anchors.join(", ")
+        );
+        if let Some(path) = finding.payload_path.as_deref() {
+            println!("      payload:  {path}");
+        }
+        for dex in &finding.recovered {
+            println!(
+                "      recovered dex: {} ({} bytes, sha256 {})",
+                dex.source, dex.size, dex.sha256
+            );
+        }
+        println!("      note:     {}", finding.note);
+    }
 }
 
 fn print_native_lib(lib: &NativeLibrary) {

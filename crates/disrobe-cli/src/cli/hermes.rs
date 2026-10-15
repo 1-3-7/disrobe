@@ -1,11 +1,12 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_mobile::{
-    DecompileReport, DisassemblyReport, HERMES_LIFTED_VERSIONS, HermesModule,
-    decompile_hermes_module, disassemble_hermes, hermes_disasm_function, parse_hermes_module,
+    DecompileReport, DisassemblyReport, HERMES_DISASSEMBLED_VERSIONS, HermesModule,
+    HermesStructuring, RnAsset, decompile_hermes_module_with, disassemble_hermes,
+    hermes_disasm_function, hermes_react_native_assets, parse_hermes_module,
 };
 
 use super::emit::EmitSpec;
@@ -28,6 +29,13 @@ pub(crate) enum HermesCmd {
             help = "comma-separated emit kinds: source, disasm, ast, cfg, ir, manifest, sourcemap, symbols, strings, imports, signatures, report"
         )]
         emit: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = StructuringArg::Regions,
+            help = "control-flow layout: regions (if/else, loops, switch; labelled blocks only where those do not fit) or labeled-blocks (every function as labelled blocks and loops)"
+        )]
+        structuring: StructuringArg,
     },
     #[command(about = "disassemble a Hermes bundle into a per-function summary (no JS surface)")]
     Disasm {
@@ -58,7 +66,12 @@ pub(crate) enum HermesCmd {
 
 pub(crate) fn run(action: HermesCmd, format: OutputFormat) -> miette::Result<()> {
     match action {
-        HermesCmd::Decompile { input, out, emit } => decompile(input, out, emit),
+        HermesCmd::Decompile {
+            input,
+            out,
+            emit,
+            structuring,
+        } => decompile(input, out, emit, structuring),
         HermesCmd::Disasm {
             input,
             out,
@@ -68,7 +81,27 @@ pub(crate) fn run(action: HermesCmd, format: OutputFormat) -> miette::Result<()>
     }
 }
 
-fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> miette::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum StructuringArg {
+    Regions,
+    LabeledBlocks,
+}
+
+impl From<StructuringArg> for HermesStructuring {
+    fn from(arg: StructuringArg) -> Self {
+        match arg {
+            StructuringArg::Regions => Self::Regions,
+            StructuringArg::LabeledBlocks => Self::LabeledBlocks,
+        }
+    }
+}
+
+fn decompile(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    emit_kinds: Vec<String>,
+    structuring: StructuringArg,
+) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0450: cannot read input: {e}"))?;
     let stem: String = input
@@ -85,19 +118,34 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
     }
     let module: HermesModule = parse_hermes_module(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0451: hermes parse: {e}"))?;
-    let report: DecompileReport = decompile_hermes_module(&module);
+    let report: DecompileReport = decompile_hermes_module_with(&module, structuring.into());
 
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0452: cannot create out dir: {e}"))?;
     let source_path: PathBuf = out_dir.join(format!("{stem}.js"));
+    let functions_path: PathBuf = out_dir.join(format!("{stem}.functions.js"));
     let manifest_path: PathBuf = out_dir.join("manifest.json");
-    let source: String = render_decompiled_source(&module, &report);
-    std::fs::write(&source_path, source.as_bytes())
+    let program: String = render_program(&module, &report);
+    std::fs::write(&source_path, program.as_bytes())
+        .map_err(|e| miette::miette!("DR-CLI-0453: cannot write lifted source: {e}"))?;
+    let listing: String = render_decompiled_source(&module, &report);
+    std::fs::write(&functions_path, listing.as_bytes())
         .map_err(|e| miette::miette!("DR-CLI-0453: cannot write lifted source: {e}"))?;
 
     let if_funcs: usize = report.functions.iter().filter(|f| f.has_if).count();
     let loop_funcs: usize = report.functions.iter().filter(|f| f.has_loop).count();
     let try_funcs: usize = report.functions.iter().filter(|f| f.has_try_catch).count();
+    let assets: Vec<RnAsset> = hermes_react_native_assets(&module);
+    let asset_rows: Vec<serde_json::Value> = assets
+        .iter()
+        .map(|asset: &RnAsset| {
+            serde_json::json!({
+                "asset": asset,
+                "android_resource_paths": asset.android_resource_paths(),
+                "ios_resource_paths": asset.ios_resource_paths(),
+            })
+        })
+        .collect();
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.hermes.decompile/v1",
         "input": input.display().to_string(),
@@ -108,11 +156,15 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
         "string_count": module.strings.len(),
         "reconstructed_ops": report.total_reconstructed_ops,
         "fallback_ops": report.total_fallback_ops,
+        "structured_functions": report.structured_functions,
         "functions_with_if": if_funcs,
         "functions_with_loop": loop_funcs,
         "functions_with_try_catch": try_funcs,
         "raw_bytecode_size": module.raw_bytecode_size,
         "source_path": source_path.display().to_string(),
+        "functions_path": functions_path.display().to_string(),
+        "metro_modules": report.metro_modules,
+        "react_native_assets": asset_rows,
     });
     let manifest_bytes: Vec<u8> = serde_json::to_vec_pretty(&manifest)
         .map_err(|e| miette::miette!("DR-CLI-0455: serialize manifest: {e}"))?;
@@ -139,7 +191,24 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
         coverage, report.total_reconstructed_ops, report.total_fallback_ops
     );
     println!("  if/loop/try:  {if_funcs}/{loop_funcs}/{try_funcs}");
+    println!(
+        "  structured:   {} of {} bodied functions",
+        report.structured_functions, report.functions_with_body
+    );
     println!("  source:       {}", source_path.display());
+    println!("  functions:    {}", functions_path.display());
+    if !report.metro_modules.is_empty() {
+        println!(
+            "  metro:        {} module(s) registered with __d",
+            report.metro_modules.len()
+        );
+    }
+    if !assets.is_empty() {
+        println!(
+            "  rn assets:    {} packager asset record(s) in the manifest",
+            assets.len()
+        );
+    }
     println!("  manifest:     {}", manifest_path.display());
     Ok(())
 }
@@ -232,11 +301,11 @@ fn disasm_one_function(
     index: usize,
     format: OutputFormat,
 ) -> miette::Result<()> {
-    if !HERMES_LIFTED_VERSIONS.contains(&module.header.version) {
+    if !HERMES_DISASSEMBLED_VERSIONS.contains(&module.header.version) {
         return Err(miette::miette!(
             "DR-CLI-0876: Hermes bytecode version {} has no opcode table; per-function disassembly supports versions {:?}",
             module.header.version,
-            HERMES_LIFTED_VERSIONS
+            HERMES_DISASSEMBLED_VERSIONS
         ));
     }
     let total: usize = module.functions.len();
@@ -318,12 +387,31 @@ fn info(input: PathBuf) -> miette::Result<()> {
     Ok(())
 }
 
+fn render_program(module: &HermesModule, report: &DecompileReport) -> String {
+    use std::fmt::Write as _;
+    let mut out: String = String::with_capacity(report.program.len() + 256);
+    out.push_str("// disrobe hermes decompile: the module rebuilt as one runnable script.\n");
+    out.push_str(
+        "// an operation that was not recovered calls $unrecovered, which throws when reached.\n",
+    );
+    let _ = writeln!(
+        out,
+        "// hermes_version={}, functions={}, recovered_ops={}, unrecovered_ops={}\n",
+        module.header.version,
+        module.functions.len(),
+        report.total_reconstructed_ops,
+        report.total_fallback_ops
+    );
+    out.push_str(&report.program);
+    out
+}
+
 fn render_decompiled_source(module: &HermesModule, report: &DecompileReport) -> String {
     use std::fmt::Write as _;
     let mut out: String = String::with_capacity(report.functions.len() * 160 + 256);
-    out.push_str("// disrobe hermes decompile: reconstructed pseudo-JavaScript.\n");
+    out.push_str("// disrobe hermes decompile: every function listed on its own.\n");
     out.push_str(
-        "// register-VM lifting; unreconstructed opcodes shown in <Opcode>(args) disasm form.\n",
+        "// the runnable script beside this file nests each closure where it is created.\n",
     );
     let _ = writeln!(
         out,
@@ -376,7 +464,9 @@ fn apply_emit_stubs(
 #[cfg(test)]
 mod tests {
     use super::{resolve_function_index, validate_function_index};
-    use disrobe_pass_mobile::{HermesHeader, HermesModule, HermesStringKind, SmallFunctionHeader};
+    use disrobe_pass_mobile::{
+        HermesFunctionKind, HermesHeader, HermesModule, HermesStringKind, SmallFunctionHeader,
+    };
 
     #[test]
     fn an_empty_function_table_has_no_valid_index() {
@@ -408,6 +498,7 @@ mod tests {
             has_exception_handler: false,
             has_debug_info: false,
             overflowed: false,
+            kind: HermesFunctionKind::Normal,
         };
         let module: HermesModule = HermesModule {
             header: HermesHeader {
@@ -428,6 +519,8 @@ mod tests {
                 array_buffer_size: 0,
                 obj_key_buffer_size: 0,
                 obj_value_buffer_size: 0,
+                obj_shape_table_count: 0,
+                string_switch_imm_count: 0,
                 segment_id: 0,
                 cjs_module_count: 0,
                 function_source_count: 0,
@@ -444,6 +537,7 @@ mod tests {
             array_buffer: Vec::new(),
             obj_key_buffer: Vec::new(),
             obj_value_buffer: Vec::new(),
+            obj_shape_table: Vec::new(),
             big_int_table: Vec::new(),
             big_int_storage: Vec::new(),
             reg_exp_table: Vec::new(),
