@@ -3,6 +3,7 @@ use std::cell::{Cell, RefCell};
 use std::fs;
 use std::future::Future;
 use std::io::Read;
+#[cfg(not(target_os = "macos"))]
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -19,7 +20,9 @@ use boa_engine::{
     native_function::NativeFunction,
 };
 use disrobe_core::scratch::ScratchDir;
-use disrobe_testkit::{CommandSpec, ProcessMemoryLimit, ToolOutput, tool_output};
+#[cfg(not(target_os = "macos"))]
+use disrobe_testkit::ProcessMemoryLimit;
+use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const STEP_SLICE_COST: u32 = 256;
@@ -380,21 +383,19 @@ impl BoaWorker {
             BoaWorkerError::HarnessFailure(format!("write Boa worker request: {error}"))
         })?;
         let worker_filter: String = worker_test_filter(module_path!());
-        let spec: CommandSpec = CommandSpec::new(&self.executable, WORKER_BACKSTOP)
-            .args([
-                "--ignored".to_owned(),
-                "--exact".to_owned(),
-                worker_filter,
-                "--nocapture".to_owned(),
-                "--test-threads=1".to_owned(),
-            ])
-            .env(WORKER_REQUEST_ENV, &request_path)
-            .env(WORKER_RESPONSE_ENV, &response_path)
-            .memory_limit(ProcessMemoryLimit::new(
-                NonZeroUsize::new(WORKER_MEMORY_LIMIT_BYTES)
-                    .expect("Boa worker memory limit must be nonzero"),
-            ))
-            .capture_limits(WORKER_CAPTURE_LIMIT, WORKER_CAPTURE_LIMIT);
+        let spec: CommandSpec = with_enforceable_memory_limit(
+            CommandSpec::new(&self.executable, WORKER_BACKSTOP)
+                .args([
+                    "--ignored".to_owned(),
+                    "--exact".to_owned(),
+                    worker_filter,
+                    "--nocapture".to_owned(),
+                    "--test-threads=1".to_owned(),
+                ])
+                .env(WORKER_REQUEST_ENV, &request_path)
+                .env(WORKER_RESPONSE_ENV, &response_path)
+                .capture_limits(WORKER_CAPTURE_LIMIT, WORKER_CAPTURE_LIMIT),
+        );
         let output: ToolOutput = tool_output(spec)
             .map_err(|error| BoaWorkerError::HarnessFailure(format!("run Boa worker: {error}")))?;
         classify_worker_completion(&output)?;
@@ -483,6 +484,19 @@ impl BoaWorker {
         }
         Ok(stdout)
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+const fn with_enforceable_memory_limit(spec: CommandSpec) -> CommandSpec {
+    spec.memory_limit(ProcessMemoryLimit::new(
+        NonZeroUsize::new(WORKER_MEMORY_LIMIT_BYTES)
+            .expect("Boa worker memory limit must be nonzero"),
+    ))
+}
+
+#[cfg(target_os = "macos")]
+const fn with_enforceable_memory_limit(spec: CommandSpec) -> CommandSpec {
+    spec
 }
 
 fn worker_test_filter(module: &str) -> String {
