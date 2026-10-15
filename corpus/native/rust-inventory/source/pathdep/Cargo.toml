@@ -1,0 +1,8 @@
+[package]
+name = "pathdep"
+version = "1.4.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]

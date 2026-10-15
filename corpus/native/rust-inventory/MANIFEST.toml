@@ -1,0 +1,103 @@
+schema = "disrobe.nativelang.rust-inventory/v1"
+description = "Self-authored Rust program rustinv with registry (serde, regex, anyhow at pinned versions), git and path dependencies, built with two rustup toolchains for PE, ELF and Mach-O: release and dev profiles, stripped and unstripped, legacy and v0 symbol mangling, with and without cargo-auditable. The Rust binary inventory grade reads these artifacts and compares every recovered value with the references below; no artifact is ever executed."
+source = "source/workspace (workspace root, member rustinv), source/pathdep (path dependency outside the workspace root), source/gitdep (git dependency)"
+lockfile = "source/workspace/Cargo.lock"
+lockfile_sha256 = "6a20c363f4fc67b0b3845f8e112afe3b46e703f5cb839ab20a1ec02543fcc276"
+build_script = "build.sh"
+build_script_sha256 = "c436c75320b7063f184c8d5e6d0c70215ba053b2f40ffcc7a796fa150254e9e0"
+symbol_reference_script = "reference_symbols.py"
+symbol_reference_script_sha256 = "31ba1f570dec18c2a779d05d2aae45aa391e314cc79d55e41e534ad18b822725"
+build_command = "CARGO_AUDITABLE=<cargo-auditable.exe 0.7.7> RUST_AUDIT_INFO=<rust-audit-info.exe 0.5.4> bash build.sh <empty work directory>"
+build_environment = "Windows 11 x86-64 host, Git Bash. build.sh copies the sources into the work directory, commits source/gitdep into a local git repository as fixture <fixture@disrobe.invalid> at 2026-01-01T00:00:00Z (commit 099202bb092f765d9b545f79b658bd646bb0ce07, the revision Cargo.lock pins) and serves it to cargo as https://git.disrobe.invalid/gitdep.git through a git url.insteadOf rewrite, uses a fresh CARGO_HOME in the work directory, and builds every artifact with cargo --locked, without a rustc wrapper and without incremental compilation."
+path_prefix_map = "--remap-path-prefix maps the work CARGO_HOME to /usr/local/cargo, the copied sources to /build and the 1.96.1 rust-src directory (<sysroot>\\lib\\rustlib\\src\\rust) to /rustc/<commit>, so no build host path reaches an artifact; build.sh fails when one does"
+reproducibility = "Rebuilding in the same absolute work directory reproduces every artifact byte for byte (checked twice). pathdep sits outside the workspace root, so cargo hashes its absolute path into the -C metadata of pathdep and rustinv; another work directory changes symbol hashes and code layout, while every reference file below stays byte-identical (checked with a second work directory)."
+linkers = "PE: MSVC link.exe 14.44.35229 (Visual Studio Build Tools 2022, toolset 14.44.35207, Windows SDK 10.0.26100.0) with /Brepro and /PDBALTPATH:%_PDB%. ELF and Mach-O: the rust-lld of the 1.96.1 toolchain (LLD 22.1.2, sha256 21d542ef31ee7308dffb79f3e7ebf4ffa0f4a109874c95b8cc78190c36fccbbe) as ld.lld and ld64.lld, against empty libc stub archives and text stubs, with unresolved C library symbols left undefined; the ELF entry point is main. The ELF and Mach-O artifacts are complete rustc output but not runnable."
+tools = "cargo-auditable 0.7.7 (cargo install --locked, sha256 f0e8a8132a86fe7fd76d3d3e696e0dff7f9542414a4a12019627e4c0cef752f9); rust-audit-info 0.5.4 (cargo install --locked, sha256 f2e6713b9c0a56738135c89a387189678da1600c8ed9c119a979857233585103); llvm-nm from the 1.96.1 llvm-tools component (LLVM 22.1.2)"
+source_license = "MIT (self-authored rustinv, gitdep, pathdep)"
+dependency_licenses = "anyhow 1.0.102, regex 1.12.3, regex-automata 0.4.18, regex-syntax 0.8.11, serde 1.0.228, serde_core 1.0.228: MIT OR Apache-2.0; aho-corasick 1.1.5, memchr 2.8.3: Unlicense OR MIT"
+rust_runtime_license = "MIT OR Apache-2.0 (Rust standard library and its bundled dependencies)"
+msvc_runtime_license = "Microsoft Visual Studio and Windows SDK license terms for the static runtime start-up objects the PE artifacts link"
+
+[references]
+rustc = "reference/rustc-<toolchain>.txt is rustc +<toolchain> -vV, the oracle for the commit-hash and release recovered from /rustc/<commit>/library panic paths"
+crates = "source/workspace/Cargo.lock, written by cargo 1.96.1 generate-lockfile, is the oracle for crate names, versions and sources; path_crates below names the lock packages each artifact carries panic paths for (serde and the build-only proc-macro crates have none)"
+edges = "reference/<artifact>.audit-info.json is rust-audit-info 0.5.4 output for each cargo-auditable artifact, the oracle for packages, kinds, root and dependency edges"
+symbols = "reference/<artifact>.symbols.tsv is reference_symbols.py over llvm-nm 22.1.2 output for each artifact with a symbol table, the oracle for Rust symbol counts per crate"
+
+[[artifacts]]
+path = "bin/pe-1.95.0-release-auditable.exe"
+sha256 = "e2022bb37a711bfbb99267f8cf694598ac516d0236376089ba7a3ba4318e1bfe"
+toolchain = "1.95.0"
+target = "x86_64-pc-windows-msvc"
+container = "pe"
+profile = "release"
+mangling = "legacy"
+strip = "symbols"
+auditable = true
+command = "cargo-auditable auditable build --locked --bin rustinv --target x86_64-pc-windows-msvc --profile release (RUSTUP_TOOLCHAIN=1.95.0)"
+path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
+
+[[artifacts]]
+path = "bin/pe-1.95.0-dev.exe"
+sha256 = "06c91e42122503cf076d10ad0c0add47329675abacbdcf0a438d0bb080a8d693"
+toolchain = "1.95.0"
+target = "x86_64-pc-windows-msvc"
+container = "pe"
+profile = "dev"
+mangling = "legacy"
+strip = "none"
+auditable = false
+command = "cargo +1.95.0 build --locked --bin rustinv --target x86_64-pc-windows-msvc --profile dev"
+path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
+
+[[artifacts]]
+path = "bin/elf-1.96.1-release-auditable.elf"
+sha256 = "753a8ae98688837117fe1e27c28c0c881a4c000002b1954d57ae8040d3a558e8"
+toolchain = "1.96.1"
+target = "x86_64-unknown-linux-gnu"
+container = "elf"
+profile = "release"
+mangling = "legacy"
+strip = "debuginfo"
+auditable = true
+command = "cargo-auditable auditable build --locked --bin rustinv --target x86_64-unknown-linux-gnu --profile release (RUSTUP_TOOLCHAIN=1.96.1)"
+path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
+
+[[artifacts]]
+path = "bin/elf-1.96.1-release-stripped.elf"
+sha256 = "5c23c5cc735d7faaa37950d638fa65d9ce5a950acfb7903f4e9c0a589f127d23"
+toolchain = "1.96.1"
+target = "x86_64-unknown-linux-gnu"
+container = "elf"
+profile = "release"
+mangling = "legacy"
+strip = "symbols"
+auditable = false
+command = "cargo +1.96.1 build --locked --bin rustinv --target x86_64-unknown-linux-gnu --profile release"
+path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
+
+[[artifacts]]
+path = "bin/elf-1.96.1-dev-v0.elf"
+sha256 = "7c41560778414a938dd633b38d913f5f2ba27fd4dd1032126987d1821c7e61b7"
+toolchain = "1.96.1"
+target = "x86_64-unknown-linux-gnu"
+container = "elf"
+profile = "dev"
+mangling = "v0"
+strip = "debuginfo"
+auditable = false
+command = "cargo +1.96.1 build --locked --bin rustinv --target x86_64-unknown-linux-gnu --profile dev"
+path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]
+
+[[artifacts]]
+path = "bin/macho-1.96.1-release-auditable.macho"
+sha256 = "5bb3f12181ffe25c96e06778603e818160126c23820895a95b77c65918d1ba18"
+toolchain = "1.96.1"
+target = "x86_64-apple-darwin"
+container = "macho"
+profile = "release"
+mangling = "v0"
+strip = "debuginfo"
+auditable = true
+command = "cargo-auditable auditable build --locked --bin rustinv --target x86_64-apple-darwin --profile release (RUSTUP_TOOLCHAIN=1.96.1)"
+path_crates = ["aho-corasick", "anyhow", "gitdep", "memchr", "pathdep", "regex", "regex-automata", "regex-syntax", "rustinv", "serde_core"]

@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["rustinv"]
+
+[profile.release]
+opt-level = "s"
+debug = false
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = "s"
+debug = false
+panic = "abort"

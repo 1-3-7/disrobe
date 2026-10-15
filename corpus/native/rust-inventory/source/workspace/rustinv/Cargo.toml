@@ -1,0 +1,13 @@
+[package]
+name = "rustinv"
+version = "0.3.1"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+anyhow = "=1.0.102"
+regex = { version = "=1.12.3", default-features = false, features = ["std", "perf-literal"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+gitdep = { git = "https://git.disrobe.invalid/gitdep.git" }
+pathdep = { path = "../../pathdep" }

@@ -1,0 +1,26 @@
+# Rust symbols per crate, llvm-nm (LLVM version 22.1.2-rust-1.96.1-stable) through reference_symbols.py
+# total	legacy	v0	unattributed
+total	1923	755	12
+# crate	name	legacy	v0
+crate	__rustc	0	15
+crate	addr2line	0	11
+crate	adler2	0	1
+crate	aho_corasick	281	0
+crate	alloc	412	117
+crate	anyhow	101	0
+crate	core	489	303
+crate	gimli	0	26
+crate	gitdep	1	0
+crate	hashbrown	6	2
+crate	memchr	46	3
+crate	miniz_oxide	0	5
+crate	object	0	1
+crate	pathdep	1	0
+crate	regex	7	0
+crate	regex_automata	336	0
+crate	regex_syntax	228	0
+crate	rustc_demangle	0	40
+crate	rustinv	1	0
+crate	serde_core	8	0
+crate	std	6	217
+crate	std_detect	0	2
