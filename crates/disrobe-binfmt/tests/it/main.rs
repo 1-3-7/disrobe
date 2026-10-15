@@ -51,6 +51,9 @@ mod cython_stub_reference;
 #[path = "../debug_framework.rs"]
 mod debug_framework;
 
+#[path = "../electron_reference.rs"]
+mod electron_reference;
+
 #[path = "../elf_dynamic.rs"]
 mod elf_dynamic;
 

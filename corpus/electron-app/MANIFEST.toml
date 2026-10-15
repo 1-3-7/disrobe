@@ -1,0 +1,65 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-binfmt"
+generated = "2026-10-14"
+toolchain = "@electron/asar 4.3.1, @electron/fuses 2.1.3 (Node 24), LLVM clang and llvm-rc (x86_64-pc-windows-msvc, -nostdlib, lld /Brepro)"
+note = "benign authored stand-in for an Electron executable: a fuse wire and an INTEGRITY/ELECTRONASAR resource in a PE that contains no Chromium or Node code; nothing here is run"
+
+[provenance]
+generator = "make_fixtures.mjs with ELECTRON_TOOLS=<npm prefix holding @electron/asar and @electron/fuses> LLVM_BIN=<LLVM bin>; rerunning it reproduces every output byte for byte"
+steps = "@electron/asar createPackageWithOptions(app/, app.asar, { unpack: '*.node' }); SHA-256 of getRawHeader().headerString written to an INTEGRITY/ELECTRONASAR resource (llvm-rc) linked into src/fake_electron.c by clang; @electron/fuses flipFuses writes fuses_hardened.exe, fuses_mixed.exe and both slices of universal.bin; getCurrentFuseWire, listPackage and statFile write reference.json"
+
+[[fixture]]
+name = "fake_electron.c"
+path = "src/fake_electron.c"
+kind = "c-source"
+provenance = "self-authored"
+description = "a fuse wire with Electron's default FuseV1 states (version 1, nine fuses)"
+
+[[fixture]]
+name = "fake_electron.exe"
+path = "fake_electron.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "src/fake_electron.c"
+sha256 = "77eccac40d56594564d37d0693ccddfeecd72779e72a93151f9d775af34c0006"
+description = "default fuse wire plus the INTEGRITY/ELECTRONASAR resource declaring app.asar's header hash"
+
+[[fixture]]
+name = "fuses_hardened.exe"
+path = "fuses_hardened.exe"
+kind = "pe-exe"
+provenance = "real"
+sha256 = "15a114ccd548cf583eb1fa66a3c083820d43623cc0961415dc501bd6d013ec43"
+description = "fake_electron.exe after @electron/fuses disabled RunAsNode, NODE_OPTIONS and inspector arguments and enabled cookie encryption, ASAR integrity validation and OnlyLoadAppFromAsar"
+
+[[fixture]]
+name = "fuses_mixed.exe"
+path = "fuses_mixed.exe"
+kind = "pe-exe"
+provenance = "real"
+sha256 = "58c402e687f8e733a5c4fd6a2eff5dadb7dfdb0e9d769cabd1abef593644e6e6"
+description = "fake_electron.exe after @electron/fuses enabled the browser-process V8 snapshot and disabled file-protocol privileges and WebAssembly trap handlers"
+
+[[fixture]]
+name = "universal.bin"
+path = "universal.bin"
+kind = "macho-fat-stub"
+provenance = "real"
+sha256 = "a3de1ed7627713d6735194aca9268ac919b5da43266aadc03a7e804d22078955"
+description = "a fat header with x86_64 and arm64 slices each holding the fuse wire; @electron/fuses flipped both slices to the hardened configuration"
+
+[[fixture]]
+name = "app.asar"
+path = "app.asar"
+kind = "electron-asar"
+provenance = "real"
+sha256 = "91cd4ebf63b6227097b810a839e8270c2b75e85d05f07f24d067fe4923defafe"
+description = "app/ packed by @electron/asar with per-file SHA-256 integrity; addon.node is unpacked to app.asar.unpacked/"
+
+[[fixture]]
+name = "reference.json"
+path = "reference.json"
+kind = "reference-output"
+provenance = "real"
+sha256 = "d48a7b34e712048a2e456df2c2af364f35486174f9f6be7f919e7f7252186e9a"
+description = "what @electron/fuses and @electron/asar report for the files above: fuse bytes per binary, the archive header hash and size, every file's size, unpacked flag and integrity record"

@@ -6,18 +6,30 @@ use crate::error::{Error, Result};
 
 const ALIGNMENT_PREFIX: [u8; 4] = [0x04, 0x00, 0x00, 0x00];
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FileIntegrity {
+    pub algorithm: String,
+    pub hash: String,
+    #[serde(rename = "blockSize")]
+    pub block_size: u64,
+    pub blocks: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AsarEntry {
     pub path: String,
     pub offset: u64,
     pub size: u64,
     pub executable: bool,
+    pub integrity: Option<FileIntegrity>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AsarLayout {
     pub data_offset: usize,
+    pub header_json: std::ops::Range<usize>,
     pub entries: Vec<AsarEntry>,
+    pub unpacked: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +44,8 @@ struct RawNode {
     executable: Option<bool>,
     #[serde(default)]
     unpacked: Option<bool>,
+    #[serde(default)]
+    integrity: Option<FileIntegrity>,
 }
 
 pub fn parse(bytes: &[u8]) -> Result<AsarLayout> {
@@ -69,11 +83,14 @@ pub fn parse(bytes: &[u8]) -> Result<AsarLayout> {
     let header_json: &[u8] = &bytes[header_start..header_end];
     let root: RawNode = serde_json::from_slice(header_json)?;
     let mut entries: Vec<AsarEntry> = Vec::new();
+    let mut unpacked: Vec<String> = Vec::new();
     let mut path_stack: Vec<String> = Vec::new();
-    walk(&root, &mut path_stack, &mut entries);
+    walk(&root, &mut path_stack, &mut entries, &mut unpacked);
     Ok(AsarLayout {
         data_offset,
+        header_json: header_start..header_end,
         entries,
+        unpacked,
     })
 }
 
@@ -87,16 +104,22 @@ const fn align_up(value: usize, align: usize) -> usize {
     }
 }
 
-fn walk(node: &RawNode, path_stack: &mut Vec<String>, entries: &mut Vec<AsarEntry>) {
+fn walk(
+    node: &RawNode,
+    path_stack: &mut Vec<String>,
+    entries: &mut Vec<AsarEntry>,
+    unpacked: &mut Vec<String>,
+) {
     if let Some(children) = node.files.as_ref() {
         for (name, child) in children {
             path_stack.push(name.clone());
-            walk(child, path_stack, entries);
+            walk(child, path_stack, entries, unpacked);
             path_stack.pop();
         }
         return;
     }
     if node.unpacked.is_some_and(|value: bool| value) {
+        unpacked.push(path_stack.join("/"));
         return;
     }
     let Some(offset_str) = node.offset.as_deref() else {
@@ -113,6 +136,7 @@ fn walk(node: &RawNode, path_stack: &mut Vec<String>, entries: &mut Vec<AsarEntr
         offset,
         size,
         executable,
+        integrity: node.integrity.clone(),
     });
 }
 

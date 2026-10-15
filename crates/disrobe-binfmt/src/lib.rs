@@ -14,6 +14,7 @@ pub mod container;
 pub mod containers;
 pub mod coverage;
 pub(crate) mod debug;
+pub mod electron;
 pub mod elf_dynamic;
 pub mod error;
 pub mod external_wrap;

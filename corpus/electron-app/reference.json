@@ -1,0 +1,118 @@
+{
+ "fuses": {
+  "fake_electron.exe": {
+   "0": 49,
+   "1": 48,
+   "2": 49,
+   "3": 49,
+   "4": 48,
+   "5": 48,
+   "6": 48,
+   "7": 49,
+   "8": 49,
+   "version": "1"
+  },
+  "fuses_hardened.exe": {
+   "0": 48,
+   "1": 49,
+   "2": 48,
+   "3": 48,
+   "4": 49,
+   "5": 49,
+   "6": 48,
+   "7": 49,
+   "8": 49,
+   "version": "1"
+  },
+  "fuses_mixed.exe": {
+   "0": 49,
+   "1": 48,
+   "2": 49,
+   "3": 49,
+   "4": 48,
+   "5": 48,
+   "6": 49,
+   "7": 48,
+   "8": 48,
+   "version": "1"
+  },
+  "universal.bin": {
+   "0": 48,
+   "1": 49,
+   "2": 48,
+   "3": 48,
+   "4": 49,
+   "5": 49,
+   "6": 48,
+   "7": 49,
+   "8": 49,
+   "version": "1"
+  }
+ },
+ "archive": {
+  "header_sha256": "c2754b2d135d4894715d64fa790a1f1b55124b9f88299a82a6bc8dc7c1f78c4e",
+  "header_size": 1288,
+  "files": {
+   "addon.node": {
+    "size": 63,
+    "unpacked": true,
+    "integrity": {
+     "algorithm": "SHA256",
+     "hash": "109f110893b2ce92fc00cf99a525fe9c97d57034cf3b9006e3ee3f5b2b5a89fa",
+     "blockSize": 4194304,
+     "blocks": [
+      "109f110893b2ce92fc00cf99a525fe9c97d57034cf3b9006e3ee3f5b2b5a89fa"
+     ]
+    }
+   },
+   "assets/data.txt": {
+    "size": 37,
+    "unpacked": false,
+    "integrity": {
+     "algorithm": "SHA256",
+     "hash": "70af894c753e040f6c8073c71ab30c074e9aa19fac38a33c55b9f042a8774db7",
+     "blockSize": 4194304,
+     "blocks": [
+      "70af894c753e040f6c8073c71ab30c074e9aa19fac38a33c55b9f042a8774db7"
+     ]
+    }
+   },
+   "lib/util.js": {
+    "size": 81,
+    "unpacked": false,
+    "integrity": {
+     "algorithm": "SHA256",
+     "hash": "69403ecfb8be353d3774622003146cc83014bd5f559d7c05e9e1bf097a3ba350",
+     "blockSize": 4194304,
+     "blocks": [
+      "69403ecfb8be353d3774622003146cc83014bd5f559d7c05e9e1bf097a3ba350"
+     ]
+    }
+   },
+   "main.js": {
+    "size": 73,
+    "unpacked": false,
+    "integrity": {
+     "algorithm": "SHA256",
+     "hash": "4bba4ea01b8b772bdda746f641093483b2c2b33d0340230eee334d3ad4bb2cba",
+     "blockSize": 4194304,
+     "blocks": [
+      "4bba4ea01b8b772bdda746f641093483b2c2b33d0340230eee334d3ad4bb2cba"
+     ]
+    }
+   },
+   "package.json": {
+    "size": 83,
+    "unpacked": false,
+    "integrity": {
+     "algorithm": "SHA256",
+     "hash": "976898153893af30f752324ea136bcd358faaa11ca3aea867dfb379cd6da7054",
+     "blockSize": 4194304,
+     "blocks": [
+      "976898153893af30f752324ea136bcd358faaa11ca3aea867dfb379cd6da7054"
+     ]
+    }
+   }
+  }
+ }
+}
