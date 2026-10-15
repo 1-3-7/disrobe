@@ -1,17 +1,23 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use disrobe_pass_go::{GoAnalysis, GoItab, GoTypeRef, analyze};
+use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 
 const STRIPPED_GO126_TYPES: usize = 838;
 const STRIPPED_GO126_NAMED: usize = 838;
+const DWARF_GO126_TYPES: usize = 699;
+const DWARF_GO126_MATCHED: usize = 373;
 
 const PUBLISHED_HEADING: &str = "Go type-name recovery";
 const PUBLISHED_BAR: &str = "type names";
 const PUBLISHED_RATIO_GUARD: f64 = 0.85;
+const DWARF_ORACLE_TIMEOUT: Duration = Duration::from_mins(2);
+const DWARF_ORACLE_CAPTURE_BYTES: usize = 1 << 20;
 
 const TYPEMETA_SOURCE: &str = r#"package main
 
@@ -51,6 +57,52 @@ func main() {
 }
 "#;
 
+const DWARF_TYPE_ORACLE: &str = r#"package main
+
+import (
+	"debug/dwarf"
+	"debug/pe"
+	"fmt"
+	"os"
+)
+
+const attrGoRuntimeType dwarf.Attr = 0x2904
+
+func main() {
+	if len(os.Args) != 2 {
+		panic("expected binary path")
+	}
+	f, err := pe.Open(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	d, err := f.DWARF()
+	if err != nil {
+		panic(err)
+	}
+	r := d.Reader()
+	for {
+		e, err := r.Next()
+		if err != nil {
+			panic(err)
+		}
+		if e == nil {
+			return
+		}
+		addr, ok := e.Val(attrGoRuntimeType).(uint64)
+		if !ok || addr == 0 {
+			continue
+		}
+		name, ok := e.Val(dwarf.AttrName).(string)
+		if !ok || name == "" {
+			continue
+		}
+		fmt.Printf("%x\t%s\n", addr, name)
+	}
+}
+"#;
+
 fn recovered_type_names(analysis: &GoAnalysis) -> BTreeSet<String> {
     analysis
         .typemeta
@@ -73,6 +125,142 @@ fn recovered_itab_pairs(analysis: &GoAnalysis) -> BTreeSet<(String, String)> {
             ))
         })
         .collect()
+}
+
+fn dwarf_type_oracle(binary: &std::path::Path) -> BTreeMap<u64, String> {
+    let scratch: common::GoBuildScratch = common::new_scratch("dwarf_type_oracle");
+    common::write_module(
+        &scratch,
+        "disrobe.example/dwarf_type_oracle",
+        "package main\n",
+    );
+    common::write_file(&scratch, "dwarf.go", DWARF_TYPE_ORACLE);
+    let command: CommandSpec = CommandSpec::new("go", DWARF_ORACLE_TIMEOUT)
+        .capture_limits(DWARF_ORACLE_CAPTURE_BYTES, DWARF_ORACLE_CAPTURE_BYTES)
+        .args(["run", "dwarf.go"])
+        .arg(binary)
+        .current_dir(scratch.path().to_path_buf())
+        .env("CGO_ENABLED", "0")
+        .env("GO111MODULE", "on");
+    let output: ToolOutput = tool_output(command)
+        .unwrap_or_else(|error: ToolError| panic!("run Go DWARF type oracle: {error}"));
+    assert!(
+        output.success,
+        "Go DWARF type oracle failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("Go DWARF type oracle output is UTF-8")
+        .lines()
+        .map(|line: &str| {
+            let (offset, name): (&str, &str) = line
+                .split_once('\t')
+                .unwrap_or_else(|| panic!("invalid Go DWARF type oracle row: {line:?}"));
+            let offset: u64 = u64::from_str_radix(offset, 16)
+                .unwrap_or_else(|error| panic!("invalid Go DWARF type offset {offset:?}: {error}"));
+            (offset, name.to_owned())
+        })
+        .collect()
+}
+
+fn matched_dwarf_types(analysis: &GoAnalysis, oracle: &BTreeMap<u64, String>) -> usize {
+    oracle
+        .iter()
+        .filter(|(address, name): &(&u64, &String)| {
+            analysis
+                .typemeta
+                .types
+                .iter()
+                .any(|ty: &GoTypeRef| ty.va == **address && ty.name.as_deref() == Some(name))
+        })
+        .count()
+}
+
+#[test]
+fn typemeta_type_names_match_go_dwarf_runtime_type_oracle() {
+    assert!(
+        common::require_go(),
+        "the Go toolchain is required for the independent DWARF type-name oracle"
+    );
+    let binary: PathBuf = common::fixture_path(common::HELLO_NORMAL);
+    let offsets: BTreeMap<u64, String> = dwarf_type_oracle(&binary);
+    assert!(
+        offsets.len() > 600,
+        "Go DWARF runtime-type oracle is implausibly small: {} entries",
+        offsets.len()
+    );
+    let bytes: Vec<u8> = std::fs::read(&binary).expect("read unstripped Go fixture");
+    let analysis: GoAnalysis = analyze(&bytes).expect("analyze unstripped Go fixture");
+    assert_ne!(
+        analysis.moduledata.types_va, 0,
+        "the recovered moduledata must name the runtime.types base"
+    );
+    let oracle: BTreeMap<u64, String> = offsets
+        .into_iter()
+        .map(|(offset, name): (u64, String)| {
+            let address: u64 = analysis
+                .moduledata
+                .types_va
+                .checked_add(offset)
+                .unwrap_or_else(|| panic!("Go DWARF runtime-type offset {offset:#x} overflows"));
+            (address, name)
+        })
+        .collect();
+    let hit: usize = matched_dwarf_types(&analysis, &oracle);
+    let total: usize = oracle.len();
+    let missing: Vec<(u64, String)> = oracle
+        .iter()
+        .filter(|(address, name): &(&u64, &String)| {
+            !analysis
+                .typemeta
+                .types
+                .iter()
+                .any(|ty: &GoTypeRef| ty.va == **address && ty.name.as_deref() == Some(name))
+        })
+        .map(|(address, name): (&u64, &String)| (*address, name.clone()))
+        .collect();
+    eprintln!("go1.26.3/windows-amd64 DWARF type-name recovery {hit}/{total}");
+    assert_eq!(
+        total, DWARF_GO126_TYPES,
+        "the independent DW_AT_go_runtime_type population changed; missing={missing:?}"
+    );
+    assert_eq!(
+        hit, DWARF_GO126_MATCHED,
+        "the independently graded Go type-name numerator changed; missing={missing:?}"
+    );
+    let mut name_mutation: BTreeMap<u64, String> = oracle.clone();
+    let (address, name): (u64, String) = oracle
+        .iter()
+        .find(|(address, name): &(&u64, &String)| {
+            analysis
+                .typemeta
+                .types
+                .iter()
+                .any(|ty: &GoTypeRef| ty.va == **address && ty.name.as_deref() == Some(name))
+        })
+        .map(|(address, name): (&u64, &String)| (*address, name.clone()))
+        .expect("the DWARF runtime-type oracle must contain a recovered entry");
+    name_mutation.insert(address, format!("{name}.mutation"));
+    assert_eq!(
+        matched_dwarf_types(&analysis, &name_mutation),
+        hit.saturating_sub(1),
+        "a mutated independent DWARF type-name oracle must turn the grade red"
+    );
+    let mutated_address: u64 = address
+        .checked_add(1)
+        .expect("DWARF runtime-type address has room for mutation");
+    assert!(
+        !oracle.contains_key(&mutated_address),
+        "DWARF runtime-type address mutation must differ from the oracle"
+    );
+    let mut address_mutation: BTreeMap<u64, String> = oracle;
+    address_mutation.remove(&address);
+    address_mutation.insert(mutated_address, name);
+    assert_eq!(
+        matched_dwarf_types(&analysis, &address_mutation),
+        hit.saturating_sub(1),
+        "a mutated independent DWARF type address oracle must turn the grade red"
+    );
 }
 
 #[test]

@@ -479,7 +479,10 @@ pub fn parse_eq_type_names(text: &str) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     for line in text.lines() {
         for tok in line.split_whitespace() {
-            if let Some(rest) = tok.strip_prefix("type:.eq.") {
+            if let Some(rest) = tok
+                .strip_prefix("type:.eq.")
+                .or_else(|| tok.strip_prefix("type..eq."))
+            {
                 out.insert(normalize_type_name(rest));
             }
         }

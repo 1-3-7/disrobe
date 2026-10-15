@@ -1,0 +1,541 @@
+TEXT runtime.main.func2(SB) runtime/proc.go
+  proc.go:207		0x59cb0			f9400b90		MOVD 16(R28), R16		
+  proc.go:207		0x59cb4			eb3063ff		CMP R16, RSP			
+  proc.go:207		0x59cb8			54000169		BLS 11(PC)			
+  proc.go:207		0x59cbc			f81f0ffe		MOVD.W R30, -16(RSP)		
+  proc.go:207		0x59cc0			f81f83fd		MOVD R29, -8(RSP)		
+  proc.go:207		0x59cc4			d10023fd		SUB $8, RSP, R29		
+  proc.go:207		0x59cc8			f9400740		MOVD 8(R26), R0			
+  proc.go:208		0x59ccc			39400000		MOVBU (R0), R0			
+  proc.go:208		0x59cd0			36000040		TBZ $0, R0, 2(PC)		
+  proc.go:209		0x59cd4			940022f7		CALL runtime.unlockOSThread(SB)	
+  proc.go:211		0x59cd8			f85f83fd		MOVD -8(RSP), R29		
+  proc.go:211		0x59cdc			f84107fe		MOVD.P 16(RSP), R30		
+  proc.go:211		0x59ce0			d65f03c0		RET				
+  proc.go:207		0x59ce4			aa1e03e3		MOVD R30, R3			
+  proc.go:207		0x59ce8			9400c64a		CALL runtime.morestack.abi0(SB)	
+  proc.go:207		0x59cec			17fffff1		JMP runtime.main.func2(SB)	
+
+TEXT runtime.main.func1(SB) runtime/proc.go
+  proc.go:174		0x84040			f9400b90		MOVD 16(R28), R16			
+  proc.go:174		0x84044			eb3063ff		CMP R16, RSP				
+  proc.go:174		0x84048			54000189		BLS 12(PC)				
+  proc.go:174		0x8404c			f81d0ffe		MOVD.W R30, -48(RSP)			
+  proc.go:174		0x84050			f81f83fd		MOVD R29, -8(RSP)			
+  proc.go:174		0x84054			d10023fd		SUB $8, RSP, R29			
+  proc.go:175		0x84058			d00002e0		ADRP 385024(PC), R0			
+  proc.go:175		0x8405c			912c2000		ADD $2824, R0, R0			
+  proc.go:175		0x84060			aa1f03e1		MOVD ZR, R1				
+  proc.go:175		0x84064			92800002		MOVD $-1, R2				
+  proc.go:175		0x84068			97ff674a		CALL runtime.newm(SB)			
+  proc.go:176		0x8406c			f85f83fd		MOVD -8(RSP), R29			
+  proc.go:176		0x84070			f84307fe		MOVD.P 48(RSP), R30			
+  proc.go:176		0x84074			d65f03c0		RET					
+  proc.go:174		0x84078			aa1e03e3		MOVD R30, R3				
+  proc.go:174		0x8407c			94001d85		CALL runtime.morestack_noctxt.abi0(SB)	
+  proc.go:174		0x84080			17fffff0		JMP runtime.main.func1(SB)		
+  proc.go:174		0x84084			00000000		?					
+  proc.go:174		0x84088			00000000		?					
+  proc.go:174		0x8408c			00000000		?					
+
+TEXT main.Ledger.Summary(SB) fixture/main.go
+  main.go:22		0xab510			f9400b90		MOVD 16(R28), R16			
+  main.go:22		0xab514			eb3063ff		CMP R16, RSP				
+  main.go:22		0xab518			540003c9		BLS 30(PC)				
+  main.go:22		0xab51c			f81a0ffe		MOVD.W R30, -96(RSP)			
+  main.go:22		0xab520			f81f83fd		MOVD R29, -8(RSP)			
+  main.go:22		0xab524			d10023fd		SUB $8, RSP, R29			
+  main.go:22		0xab528			a90687e0		STP (R0, R1), 104(RSP)			
+  main.go:22		0xab52c			a9078fe2		STP (R2, R3), 120(RSP)			
+  main.go:22		0xab530			790113e4		MOVH R4, 136(RSP)			
+  main.go:23		0xab534			9100e3e2		ADD $56, RSP, R2			
+  main.go:23		0xab538			a9007c5f		STP (ZR, ZR), (R2)			
+  main.go:23		0xab53c			a9017c5f		STP (ZR, ZR), 16(R2)			
+  main.go:23		0xab540			a94687e0		LDP 104(RSP), (R0, R1)			
+  main.go:23		0xab544			97ff6c83		CALL runtime.convTstring(SB)		
+  main.go:23		0xab548			90000082		ADRP 65536(PC), R2			
+  main.go:23		0xab54c			91018042		ADD $96, R2, R2				
+  main.go:23		0xab550			a90383e2		STP (R2, R0), 56(RSP)			
+  main.go:23		0xab554			90000082		ADRP 65536(PC), R2			
+  main.go:23		0xab558			910a8042		ADD $672, R2, R2			
+  main.go:23		0xab55c			f00001a3		ADRP 225280(PC), R3			
+  main.go:23		0xab560			912ea063		ADD $2984, R3, R3			
+  main.go:23		0xab564			a9048fe2		STP (R2, R3), 72(RSP)			
+  main.go:23		0xab568			b0000160		ADRP 184320(PC), R0			
+  main.go:23		0xab56c			91052c00		ADD $331, R0, R0			
+  main.go:23		0xab570			d28000a1		MOVD $5, R1				
+  main.go:23		0xab574			9100e3e2		ADD $56, RSP, R2			
+  main.go:23		0xab578			b27f03e3		ORR $2, ZR, R3				
+  main.go:23		0xab57c			aa0303e4		MOVD R3, R4				
+  main.go:23		0xab580			97fff23c		CALL fmt.Sprintf(SB)			
+  main.go:23		0xab584			f85f83fd		MOVD -8(RSP), R29			
+  main.go:23		0xab588			f84607fe		MOVD.P 96(RSP), R30			
+  main.go:23		0xab58c			d65f03c0		RET					
+  main.go:22		0xab590			a90087e0		STP (R0, R1), 8(RSP)			
+  main.go:22		0xab594			a9018fe2		STP (R2, R3), 24(RSP)			
+  main.go:22		0xab598			790053e4		MOVH R4, 40(RSP)			
+  main.go:22		0xab59c			aa1e03e3		MOVD R30, R3				
+  main.go:22		0xab5a0			97ff803c		CALL runtime.morestack_noctxt.abi0(SB)	
+  main.go:22		0xab5a4			a94087e0		LDP 8(RSP), (R0, R1)			
+  main.go:22		0xab5a8			a9418fe2		LDP 24(RSP), (R2, R3)			
+  main.go:22		0xab5ac			794053e4		MOVHU 40(RSP), R4			
+  main.go:22		0xab5b0			17ffffd8		JMP main.Ledger.Summary(SB)		
+  main.go:22		0xab5b4			00000000		?					
+  main.go:22		0xab5b8			00000000		?					
+  main.go:22		0xab5bc			00000000		?					
+
+TEXT main.(*Ledger).Add(SB) fixture/main.go
+  main.go:26		0xab5c0			f9400b90		MOVD 16(R28), R16			
+  main.go:26		0xab5c4			eb3063ff		CMP R16, RSP				
+  main.go:26		0xab5c8			54000229		BLS 17(PC)				
+  main.go:26		0xab5cc			f81f0ffe		MOVD.W R30, -16(RSP)			
+  main.go:26		0xab5d0			f81f83fd		MOVD R29, -8(RSP)			
+  main.go:26		0xab5d4			d10023fd		SUB $8, RSP, R29			
+  main.go:26		0xab5d8			f90013e1		MOVD R1, 32(RSP)			
+  main.go:27		0xab5dc			f9000c02		MOVD R2, 24(R0)				
+  main.go:27		0xab5e0			79004003		MOVH R3, 32(R0)				
+  main.go:27		0xab5e4			d00007bb		ADRP 1007616(PC), R27			
+  main.go:27		0xab5e8			b948d362		MOVWU 2256(R27), R2			
+  main.go:27		0xab5ec			34000082		CBZW R2, 4(PC)				
+  main.go:27		0xab5f0			f9400802		MOVD 16(R0), R2				
+  main.go:27		0xab5f4			97ff87e7		CALL runtime.gcWriteBarrier2(SB)	
+  main.go:27		0xab5f8			a9000b21		STP (R1, R2), (R25)			
+  main.go:27		0xab5fc			f9000801		MOVD R1, 16(R0)				
+  main.go:28		0xab600			f85f83fd		MOVD -8(RSP), R29			
+  main.go:28		0xab604			f84107fe		MOVD.P 16(RSP), R30			
+  main.go:28		0xab608			d65f03c0		RET					
+  main.go:26		0xab60c			a90087e0		STP (R0, R1), 8(RSP)			
+  main.go:26		0xab610			f9000fe2		MOVD R2, 24(RSP)			
+  main.go:26		0xab614			790043e3		MOVH R3, 32(RSP)			
+  main.go:26		0xab618			aa1e03e3		MOVD R30, R3				
+  main.go:26		0xab61c			97ff801d		CALL runtime.morestack_noctxt.abi0(SB)	
+  main.go:26		0xab620			a94087e0		LDP 8(RSP), (R0, R1)			
+  main.go:26		0xab624			f9400fe2		MOVD 24(RSP), R2			
+  main.go:26		0xab628			794043e3		MOVHU 32(RSP), R3			
+  main.go:26		0xab62c			17ffffe5		JMP main.(*Ledger).Add(SB)		
+
+TEXT main.Ledger.Deliver(SB) fixture/main.go
+  main.go:30		0xab630			f9400b90		MOVD 16(R28), R16			
+  main.go:30		0xab634			eb3063ff		CMP R16, RSP				
+  main.go:30		0xab638			54000269		BLS 19(PC)				
+  main.go:30		0xab63c			f81b0ffe		MOVD.W R30, -80(RSP)			
+  main.go:30		0xab640			f81f83fd		MOVD R29, -8(RSP)			
+  main.go:30		0xab644			d10023fd		SUB $8, RSP, R29			
+  main.go:30		0xab648			f90043e5		MOVD R5, 128(RSP)			
+  main.go:30		0xab64c			a90587e0		STP (R0, R1), 88(RSP)			
+  main.go:30		0xab650			a9068fe2		STP (R2, R3), 104(RSP)			
+  main.go:30		0xab654			7900f3e4		MOVH R4, 120(RSP)			
+  main.go:31		0xab658			f9402fe7		MOVD 88(RSP), R7			
+  main.go:31		0xab65c			aa1f03e0		MOVD ZR, R0				
+  main.go:31		0xab660			aa0103e2		MOVD R1, R2				
+  main.go:31		0xab664			f00001a3		ADRP 225280(PC), R3			
+  main.go:31		0xab668			912f0063		ADD $3008, R3, R3			
+  main.go:31		0xab66c			b24003e4		ORR $1, ZR, R4				
+  main.go:31		0xab670			aa0703e1		MOVD R7, R1				
+  main.go:31		0xab674			97ff1c3f		CALL runtime.concatstring3(SB)		
+  main.go:31		0xab678			f85f83fd		MOVD -8(RSP), R29			
+  main.go:31		0xab67c			f84507fe		MOVD.P 80(RSP), R30			
+  main.go:31		0xab680			d65f03c0		RET					
+  main.go:30		0xab684			a90087e0		STP (R0, R1), 8(RSP)			
+  main.go:30		0xab688			a9018fe2		STP (R2, R3), 24(RSP)			
+  main.go:30		0xab68c			790053e4		MOVH R4, 40(RSP)			
+  main.go:30		0xab690			a9031be5		STP (R5, R6), 48(RSP)			
+  main.go:30		0xab694			790083e7		MOVH R7, 64(RSP)			
+  main.go:30		0xab698			aa1e03e3		MOVD R30, R3				
+  main.go:30		0xab69c			97ff7ffd		CALL runtime.morestack_noctxt.abi0(SB)	
+  main.go:30		0xab6a0			a94087e0		LDP 8(RSP), (R0, R1)			
+  main.go:30		0xab6a4			a9418fe2		LDP 24(RSP), (R2, R3)			
+  main.go:30		0xab6a8			794053e4		MOVHU 40(RSP), R4			
+  main.go:30		0xab6ac			a9431be5		LDP 48(RSP), (R5, R6)			
+  main.go:30		0xab6b0			794083e7		MOVHU 64(RSP), R7			
+  main.go:30		0xab6b4			17ffffdf		JMP main.Ledger.Deliver(SB)		
+  main.go:30		0xab6b8			00000000		?					
+  main.go:30		0xab6bc			00000000		?					
+
+TEXT main.ParcelDestination(SB) fixture/main.go
+  main.go:34		0xab6c0			f90007e0		MOVD R0, 8(RSP)		
+  main.go:35		0xab6c4			d65f03c0		RET			
+  main.go:35		0xab6c8			00000000		?			
+  main.go:35		0xab6cc			00000000		?			
+
+TEXT main.ParcelPriority(SB) fixture/main.go
+  main.go:38		0xab6d0			f90007e0		MOVD R0, 8(RSP)		
+  main.go:39		0xab6d4			aa0203e0		MOVD R2, R0		
+  main.go:39		0xab6d8			d65f03c0		RET			
+  main.go:39		0xab6dc			00000000		?			
+
+TEXT main.LedgerOwner(SB) fixture/main.go
+  main.go:42		0xab6e0			a90087e0		STP (R0, R1), 8(RSP)	
+  main.go:42		0xab6e4			a9018fe2		STP (R2, R3), 24(RSP)	
+  main.go:42		0xab6e8			790053e4		MOVH R4, 40(RSP)	
+  main.go:43		0xab6ec			f94007e0		MOVD 8(RSP), R0		
+  main.go:43		0xab6f0			d65f03c0		RET			
+  main.go:43		0xab6f4			00000000		?			
+  main.go:43		0xab6f8			00000000		?			
+  main.go:43		0xab6fc			00000000		?			
+
+TEXT main.LedgerEntries(SB) fixture/main.go
+  main.go:47		0xab700			aa0203e0		MOVD R2, R0		
+  main.go:47		0xab704			aa0303e1		MOVD R3, R1		
+  main.go:47		0xab708			aa0403e2		MOVD R4, R2		
+  main.go:47		0xab70c			d65f03c0		RET			
+
+TEXT main.TypeParcelEqual(SB) fixture/main.go
+  main.go:50		0xab710			f9400b90		MOVD 16(R28), R16			
+  main.go:50		0xab714			eb3063ff		CMP R16, RSP				
+  main.go:50		0xab718			54000289		BLS 20(PC)				
+  main.go:50		0xab71c			f81f0ffe		MOVD.W R30, -16(RSP)			
+  main.go:50		0xab720			f81f83fd		MOVD R29, -8(RSP)			
+  main.go:50		0xab724			d10023fd		SUB $8, RSP, R29			
+  main.go:50		0xab728			f9000fe0		MOVD R0, 24(RSP)			
+  main.go:50		0xab72c			f9001be3		MOVD R3, 48(RSP)			
+  main.go:51		0xab730			eb01009f		CMP R1, R4				
+  main.go:51		0xab734			54000121		BNE 9(PC)				
+  main.go:51		0xab738			d3403ca4		UBFX $0, R5, $16, R4			
+  main.go:51		0xab73c			d3403c45		UBFX $0, R2, $16, R5			
+  main.go:51		0xab740			6b0400bf		CMPW R4, R5				
+  main.go:51		0xab744			540000a1		BNE 5(PC)				
+  main.go:51		0xab748			aa0103e2		MOVD R1, R2				
+  main.go:51		0xab74c			aa0303e1		MOVD R3, R1				
+  main.go:51		0xab750			97fda0b4		CALL runtime.memequal(SB)		
+  main.go:51		0xab754			14000002		JMP 2(PC)				
+  main.go:51		0xab758			aa1f03e0		MOVD ZR, R0				
+  main.go:51		0xab75c			f85f83fd		MOVD -8(RSP), R29			
+  main.go:51		0xab760			f84107fe		MOVD.P 16(RSP), R30			
+  main.go:51		0xab764			d65f03c0		RET					
+  main.go:50		0xab768			a90087e0		STP (R0, R1), 8(RSP)			
+  main.go:50		0xab76c			790033e2		MOVH R2, 24(RSP)			
+  main.go:50		0xab770			a90213e3		STP (R3, R4), 32(RSP)			
+  main.go:50		0xab774			790063e5		MOVH R5, 48(RSP)			
+  main.go:50		0xab778			aa1e03e3		MOVD R30, R3				
+  main.go:50		0xab77c			97ff7fc5		CALL runtime.morestack_noctxt.abi0(SB)	
+  main.go:50		0xab780			a94087e0		LDP 8(RSP), (R0, R1)			
+  main.go:50		0xab784			794033e2		MOVHU 24(RSP), R2			
+  main.go:50		0xab788			a94213e3		LDP 32(RSP), (R3, R4)			
+  main.go:50		0xab78c			794063e5		MOVHU 48(RSP), R5			
+  main.go:50		0xab790			17ffffe0		JMP main.TypeParcelEqual(SB)		
+  main.go:50		0xab794			00000000		?					
+  main.go:50		0xab798			00000000		?					
+  main.go:50		0xab79c			00000000		?					
+
+TEXT main.TypeLedgerEqual(SB) fixture/main.go
+  main.go:54		0xab7a0			f9400b90		MOVD 16(R28), R16			
+  main.go:54		0xab7a4			eb3063ff		CMP R16, RSP				
+  main.go:54		0xab7a8			54000209		BLS 16(PC)				
+  main.go:54		0xab7ac			f81e0ffe		MOVD.W R30, -32(RSP)			
+  main.go:54		0xab7b0			f81f83fd		MOVD R29, -8(RSP)			
+  main.go:54		0xab7b4			d10023fd		SUB $8, RSP, R29			
+  main.go:54		0xab7b8			a90287e0		STP (R0, R1), 40(RSP)			
+  main.go:54		0xab7bc			a9038fe2		STP (R2, R3), 56(RSP)			
+  main.go:54		0xab7c0			790093e4		MOVH R4, 72(RSP)			
+  main.go:54		0xab7c4			a9051be5		STP (R5, R6), 80(RSP)			
+  main.go:54		0xab7c8			a90623e7		STP (R7, R8), 96(RSP)			
+  main.go:54		0xab7cc			7900e3e9		MOVH R9, 112(RSP)			
+  main.go:55		0xab7d0			9100a3e0		ADD $40, RSP, R0			
+  main.go:55		0xab7d4			910143e1		ADD $80, RSP, R1			
+  main.go:55		0xab7d8			940000e6		CALL type:.eq.main.Ledger(SB)		
+  main.go:55		0xab7dc			f85f83fd		MOVD -8(RSP), R29			
+  main.go:55		0xab7e0			f84207fe		MOVD.P 32(RSP), R30			
+  main.go:55		0xab7e4			d65f03c0		RET					
+  main.go:54		0xab7e8			a90087e0		STP (R0, R1), 8(RSP)			
+  main.go:54		0xab7ec			a9018fe2		STP (R2, R3), 24(RSP)			
+  main.go:54		0xab7f0			790053e4		MOVH R4, 40(RSP)			
+  main.go:54		0xab7f4			a9031be5		STP (R5, R6), 48(RSP)			
+  main.go:54		0xab7f8			a90423e7		STP (R7, R8), 64(RSP)			
+  main.go:54		0xab7fc			7900a3e9		MOVH R9, 80(RSP)			
+  main.go:54		0xab800			aa1e03e3		MOVD R30, R3				
+  main.go:54		0xab804			97ff7fa3		CALL runtime.morestack_noctxt.abi0(SB)	
+  main.go:54		0xab808			a94087e0		LDP 8(RSP), (R0, R1)			
+  main.go:54		0xab80c			a9418fe2		LDP 24(RSP), (R2, R3)			
+  main.go:54		0xab810			794053e4		MOVHU 40(RSP), R4			
+  main.go:54		0xab814			a9431be5		LDP 48(RSP), (R5, R6)			
+  main.go:54		0xab818			a94423e7		LDP 64(RSP), (R7, R8)			
+  main.go:54		0xab81c			7940a3e9		MOVHU 80(RSP), R9			
+  main.go:54		0xab820			17ffffe0		JMP main.TypeLedgerEqual(SB)		
+  main.go:54		0xab824			00000000		?					
+  main.go:54		0xab828			00000000		?					
+  main.go:54		0xab82c			00000000		?					
+
+TEXT main.main(SB) fixture/main.go
+  main.go:58		0xab830			f9400b90		MOVD 16(R28), R16			
+  main.go:58		0xab834			d105c3f1		SUB $368, RSP, R17			
+  main.go:58		0xab838			eb10023f		CMP R16, R17				
+  main.go:58		0xab83c			540015a9		BLS 173(PC)				
+  main.go:58		0xab840			d107c3f4		SUB $496, RSP, R20			
+  main.go:58		0xab844			a93ffa9d		STP (R29, R30), -8(R20)			
+  main.go:58		0xab848			9100029f		MOVD R20, RSP				
+  main.go:58		0xab84c			d10023fd		SUB $8, RSP, R29			
+  main.go:59		0xab850			900001db		ADRP 229376(PC), R27			
+  main.go:59		0xab854			912f037b		ADD $3008, R27, R27			
+  main.go:59		0xab858			a9401764		LDP (R27), (R4, R5)			
+  main.go:59		0xab85c			900001db		ADRP 229376(PC), R27			
+  main.go:59		0xab860			912f437b		ADD $3024, R27, R27			
+  main.go:59		0xab864			a9401f66		LDP (R27), (R6, R7)			
+  main.go:59		0xab868			900001db		ADRP 229376(PC), R27			
+  main.go:59		0xab86c			f945f368		MOVD 3040(R27), R8			
+  main.go:59		0xab870			a90917e4		STP (R4, R5), 144(RSP)			
+  main.go:59		0xab874			a90a1fe6		STP (R6, R7), 160(RSP)			
+  main.go:59		0xab878			f9005be8		MOVD R8, 176(RSP)			
+  main.go:60		0xab87c			910243e0		ADD $144, RSP, R0			
+  main.go:60		0xab880			b0000161		ADRP 184320(PC), R1			
+  main.go:60		0xab884			91054021		ADD $336, R1, R1			
+  main.go:60		0xab888			d28000a2		MOVD $5, R2				
+  main.go:60		0xab88c			b2400be3		ORR $7, ZR, R3				
+  main.go:60		0xab890			97ffff4c		CALL main.(*Ledger).Add(SB)		
+  main.go:61		0xab894			a94917e4		LDP 144(RSP), (R4, R5)			
+  main.go:61		0xab898			a94a1fe6		LDP 160(RSP), (R6, R7)			
+  main.go:61		0xab89c			f9405be8		MOVD 176(RSP), R8			
+  main.go:61		0xab8a0			a91317e4		STP (R4, R5), 304(RSP)			
+  main.go:61		0xab8a4			a9141fe6		STP (R6, R7), 320(RSP)			
+  main.go:61		0xab8a8			f900abe8		MOVD R8, 336(RSP)			
+  main.go:63		0xab8ac			910383e4		ADD $224, RSP, R4			
+  main.go:63		0xab8b0			a9007c9f		STP (ZR, ZR), (R4)			
+  main.go:63		0xab8b4			a9017c9f		STP (ZR, ZR), 16(R4)			
+  main.go:63		0xab8b8			f900109f		MOVD ZR, 32(R4)				
+  main.go:63		0xab8bc			a95317e4		LDP 304(RSP), (R4, R5)			
+  main.go:63		0xab8c0			a9541fe6		LDP 320(RSP), (R6, R7)			
+  main.go:63		0xab8c4			f940abe8		MOVD 336(RSP), R8			
+  main.go:63		0xab8c8			a90e17e4		STP (R4, R5), 224(RSP)			
+  main.go:63		0xab8cc			a90f1fe6		STP (R6, R7), 240(RSP)			
+  main.go:63		0xab8d0			f90083e8		MOVD R8, 256(RSP)			
+  main.go:63		0xab8d4			a94e07e0		LDP 224(RSP), (R0, R1)			
+  main.go:63		0xab8d8			a94f0fe2		LDP 240(RSP), (R2, R3)			
+  main.go:63		0xab8dc			794203e4		MOVHU 256(RSP), R4			
+  main.go:63		0xab8e0			794163e7		MOVHU 176(RSP), R7			
+  main.go:63		0xab8e4			a94a1be5		LDP 160(RSP), (R5, R6)			
+  main.go:63		0xab8e8			97ffff52		CALL main.Ledger.Deliver(SB)		
+  main.go:63		0xab8ec			f9006fe0		MOVD R0, 216(RSP)			
+  main.go:63		0xab8f0			f90047e1		MOVD R1, 136(RSP)			
+  main.go:64		0xab8f4			a94907e0		LDP 144(RSP), (R0, R1)			
+  main.go:64		0xab8f8			a94a0fe2		LDP 160(RSP), (R2, R3)			
+  main.go:64		0xab8fc			794163e4		MOVHU 176(RSP), R4			
+  main.go:64		0xab900			97ffff04		CALL main.Ledger.Summary(SB)		
+  main.go:64		0xab904			f9006be0		MOVD R0, 208(RSP)			
+  main.go:64		0xab908			f90043e1		MOVD R1, 128(RSP)			
+  main.go:65		0xab90c			a94917e4		LDP 144(RSP), (R4, R5)			
+  main.go:65		0xab910			a94a1fe6		LDP 160(RSP), (R6, R7)			
+  main.go:65		0xab914			f9405be8		MOVD 176(RSP), R8			
+  main.go:65		0xab918			a91097e4		STP (R4, R5), 264(RSP)			
+  main.go:65		0xab91c			a9119fe6		STP (R6, R7), 280(RSP)			
+  main.go:65		0xab920			f90097e8		MOVD R8, 296(RSP)			
+  main.go:65		0xab924			90000100		ADRP 131072(PC), R0			
+  main.go:65		0xab928			91340000		ADD $3328, R0, R0			
+  main.go:65		0xab92c			910423e1		ADD $264, RSP, R1			
+  main.go:65		0xab930			97ffb0cc		CALL reflect.TypeOf(SB)			
+  main.go:65		0xab934			f9407004		MOVD 224(R0), R4			
+  main.go:65		0xab938			aa0103e0		MOVD R1, R0				
+  main.go:65		0xab93c			d63f0080		CALL (R4)				
+  main.go:65		0xab940			f90067e0		MOVD R0, 200(RSP)			
+  main.go:65		0xab944			f9003fe1		MOVD R1, 120(RSP)			
+  main.go:66		0xab948			a94a07e0		LDP 160(RSP), (R0, R1)			
+  main.go:66		0xab94c			794163e2		MOVHU 176(RSP), R2			
+  main.go:66		0xab950			97ffff5c		CALL main.ParcelDestination(SB)		
+  main.go:66		0xab954			f90063e0		MOVD R0, 192(RSP)			
+  main.go:66		0xab958			f9003be1		MOVD R1, 112(RSP)			
+  main.go:67		0xab95c			a94a07e0		LDP 160(RSP), (R0, R1)			
+  main.go:67		0xab960			794163e2		MOVHU 176(RSP), R2			
+  main.go:67		0xab964			97ffff5b		CALL main.ParcelPriority(SB)		
+  main.go:67		0xab968			7900cfe0		MOVH R0, 102(RSP)			
+  main.go:68		0xab96c			a94907e0		LDP 144(RSP), (R0, R1)			
+  main.go:68		0xab970			a94a0fe2		LDP 160(RSP), (R2, R3)			
+  main.go:68		0xab974			794163e4		MOVHU 176(RSP), R4			
+  main.go:68		0xab978			97ffff5a		CALL main.LedgerOwner(SB)		
+  main.go:68		0xab97c			f9005fe0		MOVD R0, 184(RSP)			
+  main.go:68		0xab980			f90037e1		MOVD R1, 104(RSP)			
+  main.go:69		0xab984			a94907e0		LDP 144(RSP), (R0, R1)			
+  main.go:69		0xab988			a94a0fe2		LDP 160(RSP), (R2, R3)			
+  main.go:69		0xab98c			794163e4		MOVHU 176(RSP), R4			
+  main.go:69		0xab990			97ffff5c		CALL main.LedgerEntries(SB)		
+  main.go:70		0xab994			aa1f03e0		MOVD ZR, R0				
+  main.go:70		0xab998			aa1f03e1		MOVD ZR, R1				
+  main.go:70		0xab99c			aa1f03e2		MOVD ZR, R2				
+  main.go:70		0xab9a0			aa1f03e3		MOVD ZR, R3				
+  main.go:70		0xab9a4			aa1f03e4		MOVD ZR, R4				
+  main.go:70		0xab9a8			aa1f03e5		MOVD ZR, R5				
+  main.go:70		0xab9ac			97ffff59		CALL main.TypeParcelEqual(SB)		
+  main.go:70		0xab9b0			390197e0		MOVB R0, 101(RSP)			
+  main.go:71		0xab9b4			aa1f03e0		MOVD ZR, R0				
+  main.go:71		0xab9b8			aa1f03e1		MOVD ZR, R1				
+  main.go:71		0xab9bc			aa1f03e2		MOVD ZR, R2				
+  main.go:71		0xab9c0			aa1f03e3		MOVD ZR, R3				
+  main.go:71		0xab9c4			aa1f03e4		MOVD ZR, R4				
+  main.go:71		0xab9c8			aa1f03e5		MOVD ZR, R5				
+  main.go:71		0xab9cc			aa1f03e6		MOVD ZR, R6				
+  main.go:71		0xab9d0			aa1f03e7		MOVD ZR, R7				
+  main.go:71		0xab9d4			aa1f03e8		MOVD ZR, R8				
+  main.go:71		0xab9d8			aa1f03e9		MOVD ZR, R9				
+  main.go:71		0xab9dc			97ffff71		CALL main.TypeLedgerEqual(SB)		
+  main.go:71		0xab9e0			390193e0		MOVB R0, 100(RSP)			
+  main.go:62		0xab9e4			910563e4		ADD $344, RSP, R4			
+  main.go:62		0xab9e8			a9007c9f		STP (ZR, ZR), (R4)			
+  main.go:62		0xab9ec			a9017c9f		STP (ZR, ZR), 16(R4)			
+  main.go:62		0xab9f0			a9027c9f		STP (ZR, ZR), 32(R4)			
+  main.go:62		0xab9f4			a9037c9f		STP (ZR, ZR), 48(R4)			
+  main.go:62		0xab9f8			a9047c9f		STP (ZR, ZR), 64(R4)			
+  main.go:62		0xab9fc			a9057c9f		STP (ZR, ZR), 80(R4)			
+  main.go:62		0xaba00			a9067c9f		STP (ZR, ZR), 96(R4)			
+  main.go:62		0xaba04			a9077c9f		STP (ZR, ZR), 112(R4)			
+  main.go:62		0xaba08			a9087c9f		STP (ZR, ZR), 128(R4)			
+  main.go:63		0xaba0c			f9406fe0		MOVD 216(RSP), R0			
+  main.go:63		0xaba10			f94047e1		MOVD 136(RSP), R1			
+  main.go:63		0xaba14			97ff6b4f		CALL runtime.convTstring(SB)		
+  main.go:63		0xaba18			90000084		ADRP 65536(PC), R4			
+  main.go:63		0xaba1c			91018084		ADD $96, R4, R4				
+  main.go:63		0xaba20			a91583e4		STP (R4, R0), 344(RSP)			
+  main.go:64		0xaba24			f9406be0		MOVD 208(RSP), R0			
+  main.go:64		0xaba28			f94043e1		MOVD 128(RSP), R1			
+  main.go:64		0xaba2c			97ff6b49		CALL runtime.convTstring(SB)		
+  main.go:64		0xaba30			90000084		ADRP 65536(PC), R4			
+  main.go:64		0xaba34			91018084		ADD $96, R4, R4				
+  main.go:64		0xaba38			a91683e4		STP (R4, R0), 360(RSP)			
+  main.go:65		0xaba3c			f94067e0		MOVD 200(RSP), R0			
+  main.go:65		0xaba40			f9403fe1		MOVD 120(RSP), R1			
+  main.go:65		0xaba44			97ff6b43		CALL runtime.convTstring(SB)		
+  main.go:65		0xaba48			90000084		ADRP 65536(PC), R4			
+  main.go:65		0xaba4c			91018084		ADD $96, R4, R4				
+  main.go:65		0xaba50			a91783e4		STP (R4, R0), 376(RSP)			
+  main.go:66		0xaba54			f94063e0		MOVD 192(RSP), R0			
+  main.go:66		0xaba58			f9403be1		MOVD 112(RSP), R1			
+  main.go:66		0xaba5c			97ff6b3d		CALL runtime.convTstring(SB)		
+  main.go:66		0xaba60			90000084		ADRP 65536(PC), R4			
+  main.go:66		0xaba64			91018084		ADD $96, R4, R4				
+  main.go:66		0xaba68			a91883e4		STP (R4, R0), 392(RSP)			
+  main.go:67		0xaba6c			7940cfe0		MOVHU 102(RSP), R0			
+  main.go:67		0xaba70			97fdf75c		CALL runtime.convT16(SB)		
+  main.go:67		0xaba74			90000084		ADRP 65536(PC), R4			
+  main.go:67		0xaba78			91058084		ADD $352, R4, R4			
+  main.go:67		0xaba7c			a91983e4		STP (R4, R0), 408(RSP)			
+  main.go:68		0xaba80			f9405fe0		MOVD 184(RSP), R0			
+  main.go:68		0xaba84			f94037e1		MOVD 104(RSP), R1			
+  main.go:68		0xaba88			97ff6b32		CALL runtime.convTstring(SB)		
+  main.go:68		0xaba8c			90000084		ADRP 65536(PC), R4			
+  main.go:68		0xaba90			91018084		ADD $96, R4, R4				
+  main.go:68		0xaba94			a91a83e4		STP (R4, R0), 424(RSP)			
+  main.go:69		0xaba98			b24003e0		ORR $1, ZR, R0				
+  main.go:69		0xaba9c			97ff6b0d		CALL runtime.convT64(SB)		
+  main.go:69		0xabaa0			90000084		ADRP 65536(PC), R4			
+  main.go:69		0xabaa4			910a8084		ADD $672, R4, R4			
+  main.go:69		0xabaa8			a91b83e4		STP (R4, R0), 440(RSP)			
+  main.go:70		0xabaac			394197e4		MOVBU 101(RSP), R4			
+  main.go:70		0xabab0			f00001c5		ADRP 241664(PC), R5			
+  main.go:70		0xabab4			910000a5		ADD $0, R5, R5				
+  main.go:70		0xabab8			8b040ca4		ADD R4<<3, R5, R4			
+  main.go:70		0xababc			90000086		ADRP 65536(PC), R6			
+  main.go:70		0xabac0			911180c6		ADD $1120, R6, R6			
+  main.go:70		0xabac4			a91c93e6		STP (R6, R4), 456(RSP)			
+  main.go:71		0xabac8			394193e4		MOVBU 100(RSP), R4			
+  main.go:71		0xabacc			8b040ca4		ADD R4<<3, R5, R4			
+  main.go:71		0xabad0			a91d93e6		STP (R6, R4), 472(RSP)			
+  main.go:62		0xabad4			910563e0		ADD $344, RSP, R0			
+  main.go:62		0xabad8			d2800121		MOVD $9, R1				
+  main.go:62		0xabadc			aa0103e2		MOVD R1, R2				
+  main.go:62		0xabae0			97fff144		CALL fmt.Println(SB)			
+  main.go:73		0xabae4			a97ffbfd		LDP -8(RSP), (R29, R30)			
+  main.go:73		0xabae8			9107c3ff		ADD $496, RSP, RSP			
+  main.go:73		0xabaec			d65f03c0		RET					
+  main.go:58		0xabaf0			aa1e03e3		MOVD R30, R3				
+  main.go:58		0xabaf4			97ff7ee7		CALL runtime.morestack_noctxt.abi0(SB)	
+  main.go:58		0xabaf8			17ffff4e		JMP main.main(SB)			
+  main.go:58		0xabafc			00000000		?					
+
+TEXT type:.eq.main.Parcel(SB) <autogenerated>
+  <autogenerated>:1	0xabb00			f9400b90		MOVD 16(R28), R16			
+  <autogenerated>:1	0xabb04			eb3063ff		CMP R16, RSP				
+  <autogenerated>:1	0xabb08			54000289		BLS 20(PC)				
+  <autogenerated>:1	0xabb0c			f81f0ffe		MOVD.W R30, -16(RSP)			
+  <autogenerated>:1	0xabb10			f81f83fd		MOVD R29, -8(RSP)			
+  <autogenerated>:1	0xabb14			d10023fd		SUB $8, RSP, R29			
+  <autogenerated>:1	0xabb18			a9401023		LDP (R1), (R3, R4)			
+  <autogenerated>:1	0xabb1c			a9400805		LDP (R0), (R5, R2)			
+  <autogenerated>:1	0xabb20			eb02009f		CMP R2, R4				
+  <autogenerated>:1	0xabb24			54000121		BNE 9(PC)				
+  <autogenerated>:1	0xabb28			79402004		MOVHU 16(R0), R4			
+  <autogenerated>:1	0xabb2c			79402026		MOVHU 16(R1), R6			
+  <autogenerated>:1	0xabb30			6b0400df		CMPW R4, R6				
+  <autogenerated>:1	0xabb34			540000a1		BNE 5(PC)				
+  <autogenerated>:1	0xabb38			aa0503e0		MOVD R5, R0				
+  <autogenerated>:1	0xabb3c			aa0303e1		MOVD R3, R1				
+  <autogenerated>:1	0xabb40			97fd9fb8		CALL runtime.memequal(SB)		
+  <autogenerated>:1	0xabb44			14000002		JMP 2(PC)				
+  <autogenerated>:1	0xabb48			aa1f03e0		MOVD ZR, R0				
+  <autogenerated>:1	0xabb4c			f85f83fd		MOVD -8(RSP), R29			
+  <autogenerated>:1	0xabb50			f84107fe		MOVD.P 16(RSP), R30			
+  <autogenerated>:1	0xabb54			d65f03c0		RET					
+  <autogenerated>:1	0xabb58			a90087e0		STP (R0, R1), 8(RSP)			
+  <autogenerated>:1	0xabb5c			aa1e03e3		MOVD R30, R3				
+  <autogenerated>:1	0xabb60			97ff7ecc		CALL runtime.morestack_noctxt.abi0(SB)	
+  <autogenerated>:1	0xabb64			a94087e0		LDP 8(RSP), (R0, R1)			
+  <autogenerated>:1	0xabb68			17ffffe6		JMP type:.eq.main.Parcel(SB)		
+  <autogenerated>:1	0xabb6c			00000000		?					
+
+TEXT type:.eq.main.Ledger(SB) <autogenerated>
+  <autogenerated>:1	0xabb70			f9400b90		MOVD 16(R28), R16			
+  <autogenerated>:1	0xabb74			eb3063ff		CMP R16, RSP				
+  <autogenerated>:1	0xabb78			54000409		BLS 32(PC)				
+  <autogenerated>:1	0xabb7c			f81d0ffe		MOVD.W R30, -48(RSP)			
+  <autogenerated>:1	0xabb80			f81f83fd		MOVD R29, -8(RSP)			
+  <autogenerated>:1	0xabb84			d10023fd		SUB $8, RSP, R29			
+  <autogenerated>:1	0xabb88			a9401003		LDP (R0), (R3, R4)			
+  <autogenerated>:1	0xabb8c			a9401825		LDP (R1), (R5, R6)			
+  <autogenerated>:1	0xabb90			eb0400df		CMP R4, R6				
+  <autogenerated>:1	0xabb94			540002a1		BNE 21(PC)				
+  <autogenerated>:1	0xabb98			a9411c26		LDP 16(R1), (R6, R7)			
+  <autogenerated>:1	0xabb9c			a9410808		LDP 16(R0), (R8, R2)			
+  <autogenerated>:1	0xabba0			eb0200ff		CMP R2, R7				
+  <autogenerated>:1	0xabba4			54000221		BNE 17(PC)				
+  <autogenerated>:1	0xabba8			79404007		MOVHU 32(R0), R7			
+  <autogenerated>:1	0xabbac			79404029		MOVHU 32(R1), R9			
+  <autogenerated>:1	0xabbb0			6b07013f		CMPW R7, R9				
+  <autogenerated>:1	0xabbb4			540001a1		BNE 13(PC)				
+  <autogenerated>:1	0xabbb8			f9000be4		MOVD R4, 16(RSP)			
+  <autogenerated>:1	0xabbbc			f90013e3		MOVD R3, 32(RSP)			
+  <autogenerated>:1	0xabbc0			f9000fe5		MOVD R5, 24(RSP)			
+  <autogenerated>:1	0xabbc4			aa0803e0		MOVD R8, R0				
+  <autogenerated>:1	0xabbc8			aa0603e1		MOVD R6, R1				
+  <autogenerated>:1	0xabbcc			97fd9f95		CALL runtime.memequal(SB)		
+  <autogenerated>:1	0xabbd0			360000c0		TBZ $0, R0, 6(PC)			
+  <autogenerated>:1	0xabbd4			f9400fe0		MOVD 24(RSP), R0			
+  <autogenerated>:1	0xabbd8			f94013e1		MOVD 32(RSP), R1			
+  <autogenerated>:1	0xabbdc			f9400be2		MOVD 16(RSP), R2			
+  <autogenerated>:1	0xabbe0			97fd9f90		CALL runtime.memequal(SB)		
+  <autogenerated>:1	0xabbe4			14000002		JMP 2(PC)				
+  <autogenerated>:1	0xabbe8			aa1f03e0		MOVD ZR, R0				
+  <autogenerated>:1	0xabbec			f85f83fd		MOVD -8(RSP), R29			
+  <autogenerated>:1	0xabbf0			f84307fe		MOVD.P 48(RSP), R30			
+  <autogenerated>:1	0xabbf4			d65f03c0		RET					
+  <autogenerated>:1	0xabbf8			a90087e0		STP (R0, R1), 8(RSP)			
+  <autogenerated>:1	0xabbfc			aa1e03e3		MOVD R30, R3				
+  <autogenerated>:1	0xabc00			97ff7ea4		CALL runtime.morestack_noctxt.abi0(SB)	
+  <autogenerated>:1	0xabc04			a94087e0		LDP 8(RSP), (R0, R1)			
+  <autogenerated>:1	0xabc08			17ffffda		JMP type:.eq.main.Ledger(SB)		
+  <autogenerated>:1	0xabc0c			00000000		?					
+
+TEXT type:.eq.[1]main.Parcel(SB) <autogenerated>
+  <autogenerated>:1	0xabc10			f9400b90		MOVD 16(R28), R16			
+  <autogenerated>:1	0xabc14			eb3063ff		CMP R16, RSP				
+  <autogenerated>:1	0xabc18			54000289		BLS 20(PC)				
+  <autogenerated>:1	0xabc1c			f81f0ffe		MOVD.W R30, -16(RSP)			
+  <autogenerated>:1	0xabc20			f81f83fd		MOVD R29, -8(RSP)			
+  <autogenerated>:1	0xabc24			d10023fd		SUB $8, RSP, R29			
+  <autogenerated>:1	0xabc28			a9401023		LDP (R1), (R3, R4)			
+  <autogenerated>:1	0xabc2c			a9400805		LDP (R0), (R5, R2)			
+  <autogenerated>:1	0xabc30			eb04005f		CMP R4, R2				
+  <autogenerated>:1	0xabc34			54000121		BNE 9(PC)				
+  <autogenerated>:1	0xabc38			79402004		MOVHU 16(R0), R4			
+  <autogenerated>:1	0xabc3c			79402026		MOVHU 16(R1), R6			
+  <autogenerated>:1	0xabc40			6b0400df		CMPW R4, R6				
+  <autogenerated>:1	0xabc44			540000a1		BNE 5(PC)				
+  <autogenerated>:1	0xabc48			aa0503e0		MOVD R5, R0				
+  <autogenerated>:1	0xabc4c			aa0303e1		MOVD R3, R1				
+  <autogenerated>:1	0xabc50			97fd9f74		CALL runtime.memequal(SB)		
+  <autogenerated>:1	0xabc54			14000002		JMP 2(PC)				
+  <autogenerated>:1	0xabc58			aa1f03e0		MOVD ZR, R0				
+  <autogenerated>:1	0xabc5c			f85f83fd		MOVD -8(RSP), R29			
+  <autogenerated>:1	0xabc60			f84107fe		MOVD.P 16(RSP), R30			
+  <autogenerated>:1	0xabc64			d65f03c0		RET					
+  <autogenerated>:1	0xabc68			a90087e0		STP (R0, R1), 8(RSP)			
+  <autogenerated>:1	0xabc6c			aa1e03e3		MOVD R30, R3				
+  <autogenerated>:1	0xabc70			97ff7e88		CALL runtime.morestack_noctxt.abi0(SB)	
+  <autogenerated>:1	0xabc74			a94087e0		LDP 8(RSP), (R0, R1)			
+  <autogenerated>:1	0xabc78			17ffffe6		JMP type:.eq.[1]main.Parcel(SB)		
+  <autogenerated>:1	0xabc7c			00000000		?					
