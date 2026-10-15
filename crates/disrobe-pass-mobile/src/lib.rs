@@ -16,6 +16,7 @@
 use std::io::Read as _;
 
 pub mod android_attrs;
+pub mod apk_packers;
 pub mod apk_recon;
 pub mod apk_signing;
 pub mod arsc;
@@ -34,6 +35,10 @@ pub mod res_decode;
 pub mod xamarin;
 
 pub use android_attrs::framework_attr_name;
+pub use apk_packers::{
+    AnchorKind, ApkPacker, PackerAnchor, PackerFinding, PackerScanError, PayloadState,
+    RecoveredDex, detect_packers,
+};
 pub use apk_recon::{
     ApkReconReport, AppProtector, ArscReconSummary, NativeLibrary, ProtectorArtifact,
     ProtectorArtifactKind, ProtectorWall, ResolvedResource, RouteTarget, RoutedChild,
@@ -115,18 +120,23 @@ pub use flutter::{
 };
 pub use hermes::{
     BigIntTableEntry, BufferKind, DeclineCount, DecompileReport, DecompiledFunction,
-    DisassemblyReport, FunctionDisasm, HERMES_LIFT_VERSION, HERMES_LIFTED_VERSIONS, HERMES_MAGIC,
-    HERMES_MAGIC_LE_BYTES, HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesExceptionEntry,
-    HermesHeader, HermesModule, HermesStringKind, JsLiftReport, LiteralValue, OpcodeCount,
-    RecoveredRegExp, RegExpTableEntry, SmallFunctionHeader, StructureDecline,
+    DisassemblyReport, FunctionDisasm, HERMES_DISASSEMBLED_VERSIONS, HERMES_LIFT_VERSION,
+    HERMES_LIFTED_VERSIONS, HERMES_MAGIC, HERMES_MAGIC_LE_BYTES, HERMES_MAX_VERSION,
+    HERMES_MIN_VERSION, HERMES_MODERN_VERSIONS, HERMES_SHAPE_TABLE_VERSION, HermesExceptionEntry,
+    HermesFunctionKind, HermesHeader, HermesModule, HermesStringKind, JsLiftReport, LiteralFormat,
+    LiteralValue, MetroModule, ObjectShape, OpcodeCount, RecoveredRegExp, RegExpTableEntry,
+    SmallFunctionHeader, StructureDecline, Structuring as HermesStructuring,
     bigint_literal as hermes_bigint_literal, builtin_name as hermes_builtin_name,
-    decode_literals as decode_hermes_literals, decompile_function as decompile_hermes_function,
-    decompile_module as decompile_hermes_module, disassemble as disassemble_hermes,
+    decode_literals as decode_hermes_literals, decode_literals_in as decode_hermes_literals_in,
+    decompile_function as decompile_hermes_function,
+    decompile_functions as decompile_hermes_functions, decompile_module as decompile_hermes_module,
+    decompile_module_with as decompile_hermes_module_with, disassemble as disassemble_hermes,
     disassemble_function_instructions as hermes_disasm_function,
     get_template_object_builtin as hermes_get_template_object_builtin, header_size_for_version,
     is_template_object_builtin, lift_to_js_surface as hermes_lift_to_js_surface,
     parse as parse_hermes_module, parse_header as parse_hermes_header,
-    recover_regexp as recover_hermes_regexp, recover_regexps as recover_hermes_regexps,
+    react_native_assets as hermes_react_native_assets, recover_regexp as recover_hermes_regexp,
+    recover_regexps as recover_hermes_regexps,
 };
 pub use ios::{
     FatArchEntry, IpaEntry, IpaExtractionReport, MACHO_FAT_MAGIC_64_BE, MACHO_FAT_MAGIC_BE,
@@ -136,6 +146,12 @@ pub use nativescript::{NativeScriptBundle, NativeScriptReport, extract_nativescr
 pub use pass::{
     AndroidDexEntry, AndroidDexReport, DetectedKind, HermesSummary, MobilePass, MobilePassOutput,
     detect_kind, extract_android_bundle_children, extract_android_dex_children,
+};
+pub use react_native::assets::{
+    RnAsset, RnAssetFile, RnPackagedAsset,
+    locate_android_assets as locate_react_native_android_assets,
+    locate_ios_assets as locate_react_native_ios_assets,
+    source_assets as react_native_source_assets,
 };
 pub use react_native::{
     RnBundleEntry, RnBundleFormat, RnBundlePlatform, RnExtractionReport, classify_bundle_path,

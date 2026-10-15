@@ -1,54 +1,56 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Arguments;
+use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-use super::literals::{BufferKind, LiteralValue, decode_literals, render_key, render_value};
+use super::lift::{
+    self, CLOSURE_MARK, EnvRefName, FunctionInput, Helper, MetroModule, ModuleScope, Outcome,
+    lift_function, render_dispatcher,
+};
 use super::opcodes::{OPCODES_HBC96, OpcodeSpec, Operand, opcode_label_in, opcode_specs};
-use super::structure::{StructureDecline, structure_function};
-use super::{HERMES_LIFTED_VERSIONS, HermesExceptionEntry, HermesModule, SmallFunctionHeader};
 
-const MAX_RENDERED_CALL_ARGS: u64 = 256;
-const CALL_FRAME_THIS_SLOT: u32 = 7;
-
-const UNRECOVERED_ARG: &str = "<arg?>";
-
-const MAX_DECODED_INSTRUCTIONS: usize = 1 << 20;
-
-const MAX_REG_EXPR_BYTES: usize = 4096;
-
-const MAX_RENDER_BYTES: usize = 1 << 20;
-
-const MAX_SWITCH_CASES: u64 = 4096;
-
-const MAX_INLINE_CLOSURE_BYTES: usize = 1 << 16;
-
-const MAX_INLINE_CLOSURE_DEPTH: usize = 8;
-
-macro_rules! push_text {
-    ($output:expr, $($arg:tt)*) => {
-        push_format(&mut $output, format_args!($($arg)*))
-    };
-}
-
-macro_rules! push_line {
-    ($output:expr, $($arg:tt)*) => {
-        push_format_line(&mut $output, format_args!($($arg)*))
-    };
-}
-
-fn push_format(output: &mut String, args: Arguments<'_>) {
-    match std::fmt::write(output, args) {
-        Ok(()) => {}
-        Err(error) => unreachable!("string formatting failed: {error:?}"),
+pub(crate) fn lift_specs(version: u32) -> Option<&'static [OpcodeSpec]> {
+    if HERMES_LIFTED_VERSIONS.contains(&version) {
+        opcode_specs(version)
+    } else {
+        None
     }
 }
 
-fn push_format_line(output: &mut String, args: Arguments<'_>) {
-    push_format(output, args);
-    output.push('\n');
+fn lifted_instructions(
+    module: &HermesModule,
+    code: &[u8],
+    specs: &'static [OpcodeSpec],
+    exceptions: &[HermesExceptionEntry],
+) -> Vec<Instruction> {
+    let instructions: Vec<Instruction> = decode_instructions(code, specs);
+    if !super::modern::uses_modern_instructions(module.header.version) {
+        return instructions;
+    }
+    let handlers: BTreeSet<usize> = exceptions
+        .iter()
+        .filter_map(|entry: &HermesExceptionEntry| usize::try_from(entry.target).ok())
+        .collect();
+    super::modern::normalize(module, &handlers, instructions)
 }
+
+pub(crate) fn decode_for_lift(
+    module: &HermesModule,
+    index: usize,
+    specs: &'static [OpcodeSpec],
+) -> Vec<Instruction> {
+    let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
+    lifted_instructions(module, module.function_code(index), specs, &exceptions)
+}
+use super::structure::{StructureDecline, Structured, Structuring, structure_function};
+use super::{
+    HERMES_LIFTED_VERSIONS, HermesExceptionEntry, HermesFunctionKind, HermesModule,
+    SmallFunctionHeader,
+};
+
+const MAX_DECODED_INSTRUCTIONS: usize = 1 << 20;
+const MAX_SWITCH_CASES: u64 = 4096;
 
 const OPCODE_SLOTS: usize = 256;
 
@@ -268,7 +270,7 @@ pub(crate) fn is_conditional_jump(name: &str) -> bool {
 
 #[must_use]
 pub(crate) fn is_switch(name: &str) -> bool {
-    matches!(name, "SwitchImm")
+    matches!(name, "SwitchImm" | "StringSwitchImm")
 }
 
 #[must_use]
@@ -281,6 +283,15 @@ pub(crate) fn is_terminator(name: &str) -> bool {
 
 #[must_use]
 fn switch_case_targets(image: &[u8], code_base: usize, inst: &Instruction) -> Vec<(i64, usize)> {
+    if inst.name == "StringSwitchImm" {
+        return string_switch_entries(image, code_base, inst)
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, target)): (usize, (u32, usize))| {
+                (i64::try_from(index).unwrap_or(i64::MAX), target)
+            })
+            .collect();
+    }
     if !is_switch(&inst.name) {
         return Vec::new();
     }
@@ -445,320 +456,56 @@ pub(crate) fn build_cfg(
     }
 }
 
-struct LiftCtx<'a> {
-    module: &'a HermesModule,
-    code_base: usize,
-    regs: BTreeMap<u32, String>,
-    env_levels: BTreeMap<u32, u32>,
-    owned_env_regs: BTreeSet<u32>,
-    materialized: BTreeSet<u32>,
-    window_consumed: BTreeSet<u32>,
-    declared: BTreeSet<u32>,
-    inline_bodies: &'a BTreeMap<u32, String>,
-    own_env_slots: BTreeSet<u64>,
-    frame_size: u32,
-    reconstructed: usize,
-    fallback: usize,
-    unaccounted: usize,
-    histogram: OpcodeHistogram,
+#[must_use]
+fn uint_of(v: Option<&OperandValue>) -> u64 {
+    match v {
+        Some(OperandValue::UInt(u)) => *u,
+        _ => 0,
+    }
 }
 
-impl<'a> LiftCtx<'a> {
-    fn new(
-        module: &'a HermesModule,
-        code_base: usize,
-        materialized: BTreeSet<u32>,
-        window_consumed: BTreeSet<u32>,
-        inline_bodies: &'a BTreeMap<u32, String>,
-        frame_size: u32,
-    ) -> Self {
-        LiftCtx {
-            module,
-            code_base,
-            regs: BTreeMap::new(),
-            env_levels: BTreeMap::new(),
-            owned_env_regs: BTreeSet::new(),
-            materialized,
-            window_consumed,
-            declared: BTreeSet::new(),
-            inline_bodies,
-            own_env_slots: BTreeSet::new(),
-            frame_size,
-            reconstructed: 0,
-            fallback: 0,
-            unaccounted: 0,
-            histogram: OpcodeHistogram::new(),
-        }
-    }
+const STRING_SWITCH_CASE_SIZE: usize = 8;
 
-    fn tally(&mut self, opcode: u8, before_reconstructed: usize, before_fallback: usize) {
-        let declined: bool = self.fallback > before_fallback;
-        let reconstructed: bool = self.reconstructed > before_reconstructed;
-        let slot: &mut OpcodeTally = self.histogram.slot_mut(opcode);
-        if declined {
-            slot.declined = slot.declined.saturating_add(1);
-        } else if reconstructed {
-            slot.reconstructed = slot.reconstructed.saturating_add(1);
-        } else {
-            slot.unaccounted = slot.unaccounted.saturating_add(1);
-            self.unaccounted = self.unaccounted.saturating_add(1);
-        }
+#[must_use]
+pub(crate) fn string_switch_entries(
+    image: &[u8],
+    code_base: usize,
+    inst: &Instruction,
+) -> Vec<(u32, usize)> {
+    let table_offset: u64 = uint_of(inst.operands.get(2));
+    let count: u64 = uint_of(inst.operands.get(4));
+    if count > MAX_SWITCH_CASES {
+        return Vec::new();
     }
-
-    fn closure_expr(&self, fid: u32, prefix: &str) -> String {
-        if let Some(body) = self.inline_bodies.get(&fid)
-            && body.len() <= MAX_INLINE_CLOSURE_BYTES
-            && body_keyword_matches(body, prefix)
-        {
-            return body.clone();
-        }
-        let nm: String = self.func_name(fid);
-        format!("{prefix} {nm}() {{ /* fn #{fid} */ }}")
-    }
-
-    fn is_materialized(&self, r: u32) -> bool {
-        self.materialized.contains(&r)
-    }
-
-    fn var_name(r: u32) -> String {
-        format!("v{r}")
-    }
-
-    fn materialize_assignment(&mut self, r: u32, rhs: &str) -> String {
-        let name: String = Self::var_name(r);
-        let stmt: String = if self.declared.insert(r) {
-            format!("var {name} = {rhs};")
-        } else {
-            format!("{name} = {rhs};")
-        };
-        self.env_levels.remove(&r);
-        self.owned_env_regs.remove(&r);
-        self.regs.insert(r, name);
-        stmt
-    }
-
-    fn set_env(&mut self, reg: u32, level: u32, owned: bool) {
-        self.env_levels.insert(reg, level);
-        if owned {
-            self.owned_env_regs.insert(reg);
-        } else {
-            self.owned_env_regs.remove(&reg);
-        }
-    }
-
-    fn env_level(&self, reg: u32) -> u32 {
-        self.env_levels.get(&reg).copied().unwrap_or(0)
-    }
-
-    fn owns_env(&self, reg: u32) -> bool {
-        self.owned_env_regs.contains(&reg)
-    }
-
-    fn reg_expr(&self, r: u32) -> String {
-        if self.is_materialized(r)
-            && let Some(expr) = self.regs.get(&r)
-        {
-            return expr.clone();
-        }
-        self.regs
-            .get(&r)
-            .cloned()
-            .unwrap_or_else(|| format!("r{r}"))
-    }
-
-    fn set_reg(&mut self, r: u32, expr: String) {
-        self.env_levels.remove(&r);
-        self.owned_env_regs.remove(&r);
-        if expr.len() > MAX_REG_EXPR_BYTES {
-            self.materialized.insert(r);
-        }
-        self.regs.insert(r, expr);
-    }
-
-    fn set_reg_closure(&mut self, r: u32, expr: String) {
-        self.env_levels.remove(&r);
-        self.owned_env_regs.remove(&r);
-        self.regs.insert(r, expr);
-    }
-
-    fn string_lit(&self, id: u32) -> String {
-        match self.module.string_by_global_id(id) {
-            Some(s) => js_string_literal(s),
-            None => format!("$str{id}"),
-        }
-    }
-
-    fn ident_or_string(&self, id: u32) -> String {
-        match self.module.string_by_global_id(id) {
-            Some(s) => s.to_owned(),
-            None => format!("$str{id}"),
-        }
-    }
-
-    fn func_name(&self, id: u32) -> String {
-        self.module
-            .functions
-            .get(id as usize)
-            .and_then(|f: &SmallFunctionHeader| {
-                self.module
-                    .string_by_global_id(f.function_name_id)
-                    .map(str::to_owned)
-            })
-            .filter(|s: &String| !s.is_empty())
-            .unwrap_or_else(|| format!("$func{id}"))
-    }
-
-    fn object_literal(&self, num_literals: usize, key_idx: usize, val_idx: usize) -> String {
-        let keys: Vec<LiteralValue> = decode_literals(
-            &self.module.obj_key_buffer,
-            key_idx,
-            num_literals,
-            BufferKind::Key,
-        );
-        let vals: Vec<LiteralValue> = decode_literals(
-            &self.module.obj_value_buffer,
-            val_idx,
-            num_literals,
-            BufferKind::Value,
-        );
-        if keys.is_empty() {
-            return "{}".to_owned();
-        }
-        let resolve_ident = |id: u32| self.string_or_ident_name(id);
-        let resolve_str = |id: u32| self.string_lit_by_id(id);
-        let mut out: String = String::with_capacity(keys.len().saturating_mul(8).saturating_add(2));
-        out.push_str("{ ");
-        for (i, key) in keys.iter().enumerate() {
-            if i > 0 {
-                out.push_str(", ");
-            }
-            let key_text: String = render_object_key(key, &resolve_ident);
-            out.push_str(&key_text);
-            out.push_str(": ");
-            match vals.get(i) {
-                Some(v) => out.push_str(&render_value(v, &resolve_str)),
-                None => out.push_str("undefined"),
-            }
-        }
-        out.push_str(" }");
-        out
-    }
-
-    fn array_literal(&self, num_elems: usize, val_idx: usize) -> String {
-        let vals: Vec<LiteralValue> = decode_literals(
-            &self.module.array_buffer,
-            val_idx,
-            num_elems,
-            BufferKind::Value,
-        );
-        if vals.is_empty() {
-            return "[]".to_owned();
-        }
-        let resolve_str = |id: u32| self.string_lit_by_id(id);
-        let mut out: String = String::with_capacity(vals.len().saturating_mul(4).saturating_add(2));
-        out.push('[');
-        for (i, v) in vals.iter().enumerate() {
-            if i > 0 {
-                out.push_str(", ");
-            }
-            out.push_str(&render_value(v, &resolve_str));
-        }
-        out.push(']');
-        out
-    }
-
-    fn string_lit_by_id(&self, id: u32) -> String {
-        match self.module.string_by_global_id(id) {
-            Some(s) => js_string_literal(s),
-            None => format!("$str{id}"),
-        }
-    }
-
-    fn string_or_ident_name(&self, id: u32) -> String {
-        match self.module.string_by_global_id(id) {
-            Some(s) if !s.is_empty() => s.to_owned(),
-            _ => format!("$str{id}"),
-        }
-    }
-
-    fn raw_string(&self, id: u32) -> String {
-        self.module
-            .string_by_global_id(id)
-            .map(str::to_owned)
-            .unwrap_or_default()
-    }
-
-    fn bigint_lit(&self, id: u32) -> String {
-        let Some(id_usize): Option<usize> = usize::try_from(id).ok() else {
-            return format!("$bigint{id}n");
-        };
-        let Some(entry): Option<&super::BigIntTableEntry> = self.module.big_int_table.get(id_usize)
+    let Some(aligned_base): Option<usize> = usize::try_from(table_offset)
+        .ok()
+        .and_then(|offset: usize| inst.offset.checked_add(offset))
+        .and_then(|relative: usize| code_base.checked_add(relative))
+        .and_then(|absolute: usize| absolute.checked_add(3))
+        .map(|base: usize| base & !3usize)
+    else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, usize)> = Vec::new();
+    for index in 0..usize::try_from(count).unwrap_or(0) {
+        let Some(at): Option<usize> = index
+            .checked_mul(STRING_SWITCH_CASE_SIZE)
+            .and_then(|delta: usize| aligned_base.checked_add(delta))
         else {
-            return format!("$bigint{id}n");
+            break;
         };
-        let Some(start): Option<usize> = usize::try_from(entry.offset).ok() else {
-            return format!("$bigint{id}n");
+        let Some(raw): Option<&[u8]> = image.get(at..at + STRING_SWITCH_CASE_SIZE) else {
+            break;
         };
-        let Some(length): Option<usize> = usize::try_from(entry.length).ok() else {
-            return format!("$bigint{id}n");
-        };
-        let Some(end): Option<usize> = start.checked_add(length) else {
-            return format!("$bigint{id}n");
-        };
-        match self.module.big_int_storage.get(start..end) {
-            Some(slice) if !slice.is_empty() => super::bigint::bigint_literal(slice),
-            _ => format!("$bigint{id}n"),
-        }
+        let label: u32 = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        let relative: i64 = i64::from(i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]));
+        out.push((label, relative_target(inst.offset, relative)));
     }
-
-    fn regexp_literal(&self, pattern_id: u32, flags_id: u32, index: u32) -> String {
-        let recovered_index: usize = match usize::try_from(index) {
-            Ok(index) => index,
-            Err(_) => return format!("/(?:regexp #{index})/"),
-        };
-        let recovered: Option<super::regex::RecoveredRegExp> = super::regex::recover_regexp(
-            &self.module.reg_exp_table,
-            &self.module.reg_exp_storage,
-            recovered_index,
-        );
-        let stored_pattern: String = self.raw_string(pattern_id);
-        let pattern: String = if stored_pattern.is_empty() {
-            match recovered.as_ref().filter(|r| !r.pattern.is_empty()) {
-                Some(rx) => rx.pattern.clone(),
-                None => return format!("/(?:regexp #{index})/"),
-            }
-        } else {
-            stored_pattern
-        };
-        let stored_flags: String = self.raw_string(flags_id);
-        let flags: String = if stored_flags.is_empty() {
-            recovered.map(|r| r.flags).unwrap_or_default()
-        } else {
-            stored_flags
-        };
-        format!("/{pattern}/{flags}")
-    }
-
-    fn switch_cases(
-        &self,
-        inst_offset: usize,
-        table_offset: u64,
-        min_val: u64,
-        max_val: u64,
-    ) -> Vec<(i64, usize)> {
-        switch_table_entries(
-            &self.module.raw_image,
-            self.code_base,
-            inst_offset,
-            table_offset,
-            min_val,
-            max_val,
-        )
-    }
+    out
 }
 
 #[must_use]
-fn switch_table_entries(
+pub(crate) fn switch_table_entries(
     image: &[u8],
     code_base: usize,
     inst_offset: usize,
@@ -828,159 +575,6 @@ fn switch_table_entries(
     cases
 }
 
-#[must_use]
-fn render_object_key<F>(key: &LiteralValue, resolve_ident: &F) -> String
-where
-    F: Fn(u32) -> String,
-{
-    match key {
-        LiteralValue::StringId(id) => {
-            let name: String = resolve_ident(*id);
-            if is_valid_js_identifier(&name) {
-                name
-            } else {
-                js_string_literal(&name)
-            }
-        }
-        other => render_key(other, resolve_ident),
-    }
-}
-
-#[must_use]
-fn is_valid_js_identifier(s: &str) -> bool {
-    let mut chars: core::str::Chars<'_> = s.chars();
-    match chars.next() {
-        Some(c) if c == '_' || c == '$' || c.is_ascii_alphabetic() => {}
-        _ => return false,
-    }
-    chars.all(|c: char| c == '_' || c == '$' || c.is_ascii_alphanumeric())
-}
-
-#[must_use]
-fn body_keyword_matches(body: &str, prefix: &str) -> bool {
-    let trimmed: &str = body.trim_start();
-    match prefix {
-        "function*" => trimmed.starts_with("function*"),
-        "async function" => trimmed.starts_with("async function"),
-        _ => trimmed.starts_with("function") && !trimmed.starts_with("function*"),
-    }
-}
-
-#[must_use]
-fn captured_var(level: u32, slot: u64) -> String {
-    if level == 0 {
-        format!("cvar{slot}")
-    } else {
-        format!("cvar{level}_{slot}")
-    }
-}
-
-#[must_use]
-fn js_string_literal(s: &str) -> String {
-    let mut out: String = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                push_text!(out, "\\x{:02x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-#[must_use]
-fn reg_of(v: Option<&OperandValue>) -> u32 {
-    match v {
-        Some(OperandValue::Reg(r)) => *r,
-        _ => 0,
-    }
-}
-
-#[must_use]
-fn uint_of(v: Option<&OperandValue>) -> u64 {
-    match v {
-        Some(OperandValue::UInt(u)) => *u,
-        _ => 0,
-    }
-}
-
-#[must_use]
-fn strid_of(v: Option<&OperandValue>) -> u32 {
-    match v {
-        Some(OperandValue::StringId(s)) => *s,
-        _ => 0,
-    }
-}
-
-#[must_use]
-fn binop_symbol(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "Add" | "AddN" => "+",
-        "Sub" | "SubN" => "-",
-        "Mul" | "MulN" => "*",
-        "Div" | "DivN" => "/",
-        "Mod" => "%",
-        "Eq" => "==",
-        "Neq" => "!=",
-        "StrictEq" => "===",
-        "StrictNeq" => "!==",
-        "Less" => "<",
-        "LessEq" => "<=",
-        "Greater" => ">",
-        "GreaterEq" => ">=",
-        "LShift" => "<<",
-        "RShift" => ">>",
-        "URshift" => ">>>",
-        "BitAnd" => "&",
-        "BitOr" => "|",
-        "BitXor" => "^",
-        "InstanceOf" => "instanceof",
-        "IsIn" => "in",
-        _ => return None,
-    })
-}
-
-#[must_use]
-fn unop_symbol(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "Negate" => "-",
-        "Not" => "!",
-        "BitNot" => "~",
-        "TypeOf" => "typeof ",
-        "Inc" => "++",
-        "Dec" => "--",
-        _ => return None,
-    })
-}
-
-#[must_use]
-fn jump_condition(name: &str) -> Option<(&'static str, bool)> {
-    let base: &str = name.trim_end_matches("Long").trim_end_matches('N');
-    Some(match base {
-        "JLess" => ("<", false),
-        "JNotLess" => ("<", true),
-        "JLessEqual" => ("<=", false),
-        "JNotLessEqual" => ("<=", true),
-        "JGreater" => (">", false),
-        "JNotGreater" => (">", true),
-        "JGreaterEqual" => (">=", false),
-        "JNotGreaterEqual" => (">=", true),
-        "JEqual" => ("==", false),
-        "JNotEqual" => ("==", true),
-        "JStrictEqual" => ("===", false),
-        "JStrictNotEqual" => ("===", true),
-        _ => return None,
-    })
-}
-
 #[derive(Debug, Clone)]
 pub(crate) enum BlockStmt {
     Line(String),
@@ -1001,857 +595,26 @@ pub(crate) enum BlockStmt {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiftedBlock {
-    pub start: usize,
     pub stmts: Vec<BlockStmt>,
-}
-
-fn lift_block(
-    ctx: &mut LiftCtx<'_>,
-    instructions: &[Instruction],
-    block: &BasicBlock,
-    cfg: &Cfg,
-) -> LiftedBlock {
-    let (s, e): (usize, usize) = block.instr_range;
-    let mut stmts: Vec<BlockStmt> = Vec::new();
-    for inst in &instructions[s..e] {
-        lift_instruction(ctx, inst, instructions, cfg, &mut stmts);
-    }
-    LiftedBlock {
-        start: block.start,
-        stmts,
-    }
-}
-
-fn lift_instruction(
-    ctx: &mut LiftCtx<'_>,
-    inst: &Instruction,
-    instructions: &[Instruction],
-    cfg: &Cfg,
-    stmts: &mut Vec<BlockStmt>,
-) {
-    let before_reconstructed: usize = ctx.reconstructed;
-    let before_fallback: usize = ctx.fallback;
-    lift_instruction_inner(ctx, inst, instructions, cfg, stmts);
-    ctx.tally(inst.opcode, before_reconstructed, before_fallback);
-    flush_materialized_value(ctx, inst, stmts);
-}
-
-fn flush_materialized_value(ctx: &mut LiftCtx<'_>, inst: &Instruction, stmts: &mut Vec<BlockStmt>) {
-    let name: &str = &inst.name;
-    if is_call_like(name) {
-        return;
-    }
-    if !(is_value_producer(name) || matches!(name, "Mov" | "MovLong")) {
-        return;
-    }
-    let Some(d): Option<u32> = inst_dest(inst) else {
-        return;
-    };
-    if !ctx.is_materialized(d) {
-        return;
-    }
-    let rhs: String = ctx.reg_expr(d);
-    if rhs == LiftCtx::var_name(d) {
-        return;
-    }
-    let stmt: String = ctx.materialize_assignment(d, &rhs);
-    stmts.push(BlockStmt::Line(stmt));
-}
-
-fn lift_instruction_inner(
-    ctx: &mut LiftCtx<'_>,
-    inst: &Instruction,
-    instructions: &[Instruction],
-    cfg: &Cfg,
-    stmts: &mut Vec<BlockStmt>,
-) {
-    let ops: &[OperandValue] = &inst.operands;
-    let name: &str = &inst.name;
-
-    if let Some(sym) = binop_symbol(name) {
-        let d: u32 = reg_of(ops.first());
-        let a: String = ctx.reg_expr(reg_of(ops.get(1)));
-        let b: String = ctx.reg_expr(reg_of(ops.get(2)));
-        ctx.set_reg(d, format!("({a} {sym} {b})"));
-        ctx.reconstructed += 1;
-        return;
-    }
-    if let Some(sym) = unop_symbol(name) {
-        let d: u32 = reg_of(ops.first());
-        let a: String = ctx.reg_expr(reg_of(ops.get(1)));
-        let expr: String = if matches!(name, "Inc" | "Dec") {
-            format!("({a} {} 1)", if name == "Inc" { "+" } else { "-" })
-        } else {
-            format!("{sym}{a}")
-        };
-        ctx.set_reg(d, expr);
-        ctx.reconstructed += 1;
-        return;
-    }
-
-    match name {
-        "LoadConstUInt8" => {
-            let d: u32 = reg_of(ops.first());
-            ctx.set_reg(d, uint_of(ops.get(1)).to_string());
-            ctx.reconstructed += 1;
-        }
-        "LoadConstInt" => {
-            let d: u32 = reg_of(ops.first());
-            let v: i64 = match ops.get(1) {
-                Some(OperandValue::Imm(i)) => *i,
-                _ => 0,
-            };
-            ctx.set_reg(d, v.to_string());
-            ctx.reconstructed += 1;
-        }
-        "LoadConstDouble" => {
-            let d: u32 = reg_of(ops.first());
-            let bits: u64 = match ops.get(1) {
-                Some(OperandValue::Float(f)) => *f,
-                _ => 0,
-            };
-            let v: f64 = f64::from_bits(bits);
-            ctx.set_reg(d, format_f64(v));
-            ctx.reconstructed += 1;
-        }
-        "LoadConstZero" => {
-            ctx.set_reg(reg_of(ops.first()), "0".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "LoadConstString" | "LoadConstStringLongIndex" => {
-            let d: u32 = reg_of(ops.first());
-            let lit: String = ctx.string_lit(strid_of(ops.get(1)));
-            ctx.set_reg(d, lit);
-            ctx.reconstructed += 1;
-        }
-        "LoadConstUndefined" | "LoadConstEmpty" => {
-            ctx.set_reg(reg_of(ops.first()), "undefined".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "LoadConstNull" => {
-            ctx.set_reg(reg_of(ops.first()), "null".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "LoadConstTrue" => {
-            ctx.set_reg(reg_of(ops.first()), "true".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "LoadConstFalse" => {
-            ctx.set_reg(reg_of(ops.first()), "false".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "LoadParam" | "LoadParamLong" => {
-            let d: u32 = reg_of(ops.first());
-            let idx: u64 = uint_of(ops.get(1));
-            let expr: String = if idx == 0 {
-                "this".to_owned()
-            } else {
-                format!("arg{}", idx - 1)
-            };
-            ctx.set_reg(d, expr);
-            ctx.reconstructed += 1;
-        }
-        "LoadThisNS" | "CoerceThisNS" => {
-            ctx.set_reg(reg_of(ops.first()), "this".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "Mov" | "MovLong" => {
-            let d: u32 = reg_of(ops.first());
-            let source_reg: u32 = reg_of(ops.get(1));
-            let src: String = ctx.reg_expr(source_reg);
-            let source_env: Option<(u32, bool)> = ctx
-                .env_levels
-                .get(&source_reg)
-                .copied()
-                .map(|level: u32| (level, ctx.owns_env(source_reg)));
-            ctx.set_reg(d, src);
-            if let Some((level, owned)) = source_env {
-                ctx.set_env(d, level, owned);
-            }
-            ctx.reconstructed += 1;
-        }
-        "CreateEnvironment" => {
-            let d: u32 = reg_of(ops.first());
-            ctx.set_reg(d, "$env".to_owned());
-            ctx.set_env(d, 0, true);
-            ctx.reconstructed += 1;
-        }
-        "CreateInnerEnvironment" => {
-            let d: u32 = reg_of(ops.first());
-            let parent: u32 = reg_of(ops.get(1));
-            ctx.set_reg(d, "$env".to_owned());
-            ctx.set_env(d, ctx.env_level(parent), true);
-            ctx.reconstructed += 1;
-        }
-        "GetEnvironment" => {
-            let d: u32 = reg_of(ops.first());
-            let levels: u32 = uint_of(ops.get(1)) as u32;
-            ctx.set_reg(d, "$env".to_owned());
-            ctx.set_env(d, levels, false);
-            ctx.reconstructed += 1;
-        }
-        "LoadFromEnvironment" | "LoadFromEnvironmentL" => {
-            let d: u32 = reg_of(ops.first());
-            let env_reg: u32 = reg_of(ops.get(1));
-            let slot: u64 = uint_of(ops.get(2));
-            let level: u32 = ctx.env_level(env_reg);
-            if ctx.owns_env(env_reg) {
-                ctx.own_env_slots.insert(slot);
-            }
-            ctx.set_reg(d, captured_var(level, slot));
-            ctx.reconstructed += 1;
-        }
-        "StoreToEnvironment"
-        | "StoreToEnvironmentL"
-        | "StoreNPToEnvironment"
-        | "StoreNPToEnvironmentL" => {
-            let env_reg: u32 = reg_of(ops.first());
-            let slot: u64 = uint_of(ops.get(1));
-            let value: String = ctx.reg_expr(reg_of(ops.get(2)));
-            let level: u32 = ctx.env_level(env_reg);
-            if ctx.owns_env(env_reg) {
-                ctx.own_env_slots.insert(slot);
-            }
-            let name: String = captured_var(level, slot);
-            stmts.push(BlockStmt::Line(format!("{name} = {value};")));
-            ctx.reconstructed += 1;
-        }
-        "GetGlobalObject" => {
-            ctx.set_reg(reg_of(ops.first()), "globalThis".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "IteratorBegin" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("{src}[Symbol.iterator]()"));
-            ctx.reconstructed += 1;
-        }
-        "IteratorNext" => {
-            let d: u32 = reg_of(ops.first());
-            let it: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("{it}.next().value"));
-            ctx.reconstructed += 1;
-        }
-        "IteratorClose" => {
-            let it: String = ctx.reg_expr(reg_of(ops.first()));
-            stmts.push(BlockStmt::Line(format!("{it}.return?.();")));
-            ctx.reconstructed += 1;
-        }
-        "GetPNameList" => {
-            let d: u32 = reg_of(ops.first());
-            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let index_reg: u32 = reg_of(ops.get(2));
-            let size_reg: u32 = reg_of(ops.get(3));
-            let list_stmt: String = ctx.materialize_assignment(d, &format!("Object.keys({obj})"));
-            stmts.push(BlockStmt::Line(list_stmt));
-            let list: String = ctx.reg_expr(d);
-            let index_stmt: String = ctx.materialize_assignment(index_reg, "0");
-            stmts.push(BlockStmt::Line(index_stmt));
-            let size_stmt: String =
-                ctx.materialize_assignment(size_reg, &format!("({list} ? {list}.length : 0)"));
-            stmts.push(BlockStmt::Line(size_stmt));
-            ctx.reconstructed += 1;
-        }
-        "GetNextPName" => {
-            let d: u32 = reg_of(ops.first());
-            let props: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let index: String = ctx.reg_expr(reg_of(ops.get(3)));
-            let size: String = ctx.reg_expr(reg_of(ops.get(4)));
-            let next: String = format!("({index} < {size} ? {props}[{index}++] : undefined)");
-            let next_stmt: String = ctx.materialize_assignment(d, &next);
-            stmts.push(BlockStmt::Line(next_stmt));
-            ctx.reconstructed += 1;
-        }
-        "StartGenerator" | "CompleteGenerator" => {
-            ctx.reconstructed += 1;
-        }
-        "SaveGenerator" | "SaveGeneratorLong" => {
-            stmts.push(BlockStmt::Line("yield;".to_owned()));
-            ctx.reconstructed += 1;
-        }
-        "ResumeGenerator" => {
-            let d: u32 = reg_of(ops.first());
-            ctx.set_reg(d, "$resumed".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "CreateGenerator" | "CreateGeneratorLongIndex" => {
-            let d: u32 = reg_of(ops.first());
-            let fid: u32 = match ops.get(2) {
-                Some(OperandValue::FunctionId(f)) => *f,
-                _ => 0,
-            };
-            let nm: String = ctx.func_name(fid);
-            ctx.set_reg(d, format!("function* {nm}() {{ /* fn #{fid} */ }}"));
-            ctx.reconstructed += 1;
-        }
-        "ToNumber" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("+{src}"));
-            ctx.reconstructed += 1;
-        }
-        "ToNumeric" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, src);
-            ctx.reconstructed += 1;
-        }
-        "ToInt32" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("({src} | 0)"));
-            ctx.reconstructed += 1;
-        }
-        "AddEmptyString" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("(\"\" + {src})"));
-            ctx.reconstructed += 1;
-        }
-        "GetNewTarget" => {
-            ctx.set_reg(reg_of(ops.first()), "new.target".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "ReifyArguments" | "GetArgumentsLength" | "GetArgumentsPropByVal" => {
-            let d: u32 = reg_of(ops.first());
-            let expr: String = match name {
-                "GetArgumentsLength" => "arguments.length".to_owned(),
-                "GetArgumentsPropByVal" => {
-                    let key: String = ctx.reg_expr(reg_of(ops.get(1)));
-                    format!("arguments[{key}]")
-                }
-                _ => "arguments".to_owned(),
-            };
-            ctx.set_reg(d, expr);
-            ctx.reconstructed += 1;
-        }
-        "DirectEval" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("eval({src})"));
-            ctx.reconstructed += 1;
-        }
-        "DeclareGlobalVar" | "ThrowIfHasRestrictedGlobalProperty" => {
-            let nm: String = ctx.ident_or_string(strid_of(ops.first()));
-            stmts.push(BlockStmt::Line(format!("var {nm};")));
-            ctx.reconstructed += 1;
-        }
-        "ThrowIfEmpty" => {
-            let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, src);
-            ctx.reconstructed += 1;
-        }
-        "CallDirect" | "CallDirectLongIndex" => {
-            let d: u32 = reg_of(ops.first());
-            let argc: u64 = uint_of(ops.get(1)).saturating_sub(1);
-            let fid: u32 = match ops.get(2) {
-                Some(OperandValue::FunctionId(f)) => *f,
-                _ => 0,
-            };
-            let callee: String = ctx.func_name(fid);
-            let args: String = unrecovered_arg_list(argc);
-            ctx.set_reg(d, format!("{callee}({args})"));
-            ctx.reconstructed += 1;
-        }
-        "GetByIdShort" | "GetById" | "GetByIdLong" | "TryGetById" | "TryGetByIdLong" => {
-            let d: u32 = reg_of(ops.first());
-            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let prop: String = ctx.ident_or_string(strid_of(ops.get(3)));
-            ctx.set_reg(d, format!("{obj}.{prop}"));
-            ctx.reconstructed += 1;
-        }
-        "PutById"
-        | "PutByIdLong"
-        | "TryPutById"
-        | "TryPutByIdLong"
-        | "PutNewOwnById"
-        | "PutNewOwnByIdLong"
-        | "PutNewOwnByIdShort"
-        | "PutNewOwnNEById"
-        | "PutNewOwnNEByIdLong" => {
-            let obj: String = ctx.reg_expr(reg_of(ops.first()));
-            let val: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let prop: String = ctx.ident_or_string(strid_of(ops.get(2)).max(strid_of(ops.get(3))));
-            stmts.push(BlockStmt::Line(format!("{obj}.{prop} = {val};")));
-            ctx.reconstructed += 1;
-        }
-        "GetBuiltinClosure" => {
-            let d: u32 = reg_of(ops.first());
-            let builtin_id: u64 = uint_of(ops.get(1));
-            let version: u32 = ctx.module.header.version;
-            ctx.set_reg(d, super::builtins::builtin_name(version, builtin_id));
-            ctx.reconstructed += 1;
-        }
-        "Debugger" => {
-            stmts.push(BlockStmt::Line("debugger;".to_owned()));
-            ctx.reconstructed += 1;
-        }
-        "AsyncBreakCheck" | "ProfilePoint" | "Unreachable" => {
-            stmts.push(BlockStmt::Line(format!("{};", fallback_disasm(inst))));
-            ctx.fallback += 1;
-        }
-        "GetByVal" => {
-            let d: u32 = reg_of(ops.first());
-            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let key: String = ctx.reg_expr(reg_of(ops.get(2)));
-            ctx.set_reg(d, format!("{obj}[{key}]"));
-            ctx.reconstructed += 1;
-        }
-        "PutByVal" => {
-            let obj: String = ctx.reg_expr(reg_of(ops.first()));
-            let key: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let val: String = ctx.reg_expr(reg_of(ops.get(2)));
-            stmts.push(BlockStmt::Line(format!("{obj}[{key}] = {val};")));
-            ctx.reconstructed += 1;
-        }
-        "PutOwnByIndex" | "PutOwnByIndexL" => {
-            let obj: String = ctx.reg_expr(reg_of(ops.first()));
-            let val: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let idx: u64 = uint_of(ops.get(2));
-            stmts.push(BlockStmt::Line(format!("{obj}[{idx}] = {val};")));
-            ctx.reconstructed += 1;
-        }
-        "PutOwnByVal" => {
-            let obj: String = ctx.reg_expr(reg_of(ops.first()));
-            let val: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let key: String = ctx.reg_expr(reg_of(ops.get(2)));
-            stmts.push(BlockStmt::Line(format!("{obj}[{key}] = {val};")));
-            ctx.reconstructed += 1;
-        }
-        "PutOwnGetterSetterByVal" => {
-            let obj: String = ctx.reg_expr(reg_of(ops.first()));
-            let key: String = ctx.reg_expr(reg_of(ops.get(1)));
-            stmts.push(BlockStmt::Line(format!(
-                "Object.defineProperty({obj}, {key}, {{ get, set }});"
-            )));
-            ctx.reconstructed += 1;
-        }
-        "DelById" | "DelByIdLong" => {
-            let d: u32 = reg_of(ops.first());
-            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let prop: String = ctx.ident_or_string(strid_of(ops.get(2)));
-            let expr: String = format!("delete {obj}.{prop}");
-            if reg_read_later(d, inst, instructions) {
-                ctx.set_reg(d, expr);
-            } else {
-                stmts.push(BlockStmt::Line(format!("{expr};")));
-                ctx.set_reg(d, format!("r{d}"));
-            }
-            ctx.reconstructed += 1;
-        }
-        "DelByVal" => {
-            let d: u32 = reg_of(ops.first());
-            let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let key: String = ctx.reg_expr(reg_of(ops.get(2)));
-            let expr: String = format!("delete {obj}[{key}]");
-            if reg_read_later(d, inst, instructions) {
-                ctx.set_reg(d, expr);
-            } else {
-                stmts.push(BlockStmt::Line(format!("{expr};")));
-                ctx.set_reg(d, format!("r{d}"));
-            }
-            ctx.reconstructed += 1;
-        }
-        "NewObjectWithParent" => {
-            let d: u32 = reg_of(ops.first());
-            let parent: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("Object.create({parent})"));
-            ctx.reconstructed += 1;
-        }
-        "NewObject" => {
-            ctx.set_reg(reg_of(ops.first()), "{}".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "NewObjectWithBuffer" | "NewObjectWithBufferLong" => {
-            let d: u32 = reg_of(ops.first());
-            let num_literals: usize = uint_of(ops.get(2)) as usize;
-            let key_idx: usize = uint_of(ops.get(3)) as usize;
-            let val_idx: usize = uint_of(ops.get(4)) as usize;
-            let lit: String = ctx.object_literal(num_literals, key_idx, val_idx);
-            ctx.set_reg(d, lit);
-            ctx.reconstructed += 1;
-        }
-        "NewArray" => {
-            ctx.set_reg(reg_of(ops.first()), "[]".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "NewArrayWithBuffer" | "NewArrayWithBufferLong" => {
-            let d: u32 = reg_of(ops.first());
-            let num_elems: usize = uint_of(ops.get(2)) as usize;
-            let val_idx: usize = uint_of(ops.get(3)) as usize;
-            let lit: String = ctx.array_literal(num_elems, val_idx);
-            ctx.set_reg(d, lit);
-            ctx.reconstructed += 1;
-        }
-        "CreateThis" => {
-            ctx.set_reg(reg_of(ops.first()), "this".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "SelectObject" => {
-            let d: u32 = reg_of(ops.first());
-            let a: String = ctx.reg_expr(reg_of(ops.get(2)));
-            ctx.set_reg(d, a);
-            ctx.reconstructed += 1;
-        }
-        "CreateClosure"
-        | "CreateClosureLongIndex"
-        | "CreateGeneratorClosure"
-        | "CreateGeneratorClosureLongIndex"
-        | "CreateAsyncClosure"
-        | "CreateAsyncClosureLongIndex" => {
-            let d: u32 = reg_of(ops.first());
-            let fid: u32 = match ops.get(2) {
-                Some(OperandValue::FunctionId(f)) => *f,
-                _ => 0,
-            };
-            let prefix: &str = if name.contains("Async") {
-                "async function"
-            } else if name.contains("Generator") {
-                "function*"
-            } else {
-                "function"
-            };
-            let closure: String = ctx.closure_expr(fid, prefix);
-            ctx.set_reg_closure(d, closure);
-            ctx.reconstructed += 1;
-        }
-        "CreateRegExp" => {
-            let d: u32 = reg_of(ops.first());
-            let pattern_id: u32 = strid_of(ops.get(1));
-            let flags_id: u32 = strid_of(ops.get(2));
-            let index: u32 = uint_of(ops.get(3)) as u32;
-            let literal: String = ctx.regexp_literal(pattern_id, flags_id, index);
-            ctx.set_reg(d, literal);
-            ctx.reconstructed += 1;
-        }
-        "SwitchImm" => {
-            let scrutinee: String = ctx.reg_expr(reg_of(ops.first()));
-            let table_offset: u64 = uint_of(ops.get(1));
-            let default: usize = match ops.get(2) {
-                Some(OperandValue::Target(t)) => *t,
-                _ => 0,
-            };
-            let min_val: u64 = uint_of(ops.get(3));
-            let max_val: u64 = uint_of(ops.get(4));
-            let cases: Vec<(i64, usize)> =
-                ctx.switch_cases(inst.offset, table_offset, min_val, max_val);
-            stmts.push(BlockStmt::Switch {
-                scrutinee,
-                cases,
-                default,
-            });
-            ctx.reconstructed += 1;
-        }
-        "CallBuiltin" | "CallBuiltinLong" => {
-            let d: u32 = reg_of(ops.first());
-            let builtin_id: u64 = uint_of(ops.get(1));
-            let argc: u64 = uint_of(ops.get(2)).saturating_sub(1);
-            let version: u32 = ctx.module.header.version;
-            if super::builtins::is_template_object_builtin(version, builtin_id) {
-                ctx.set_reg(d, "`${/* template */}`".to_owned());
-                ctx.reconstructed += 1;
-                return;
-            }
-            let callee: String = super::builtins::builtin_name(version, builtin_id);
-            let args: String = unrecovered_arg_list(argc);
-            ctx.set_reg(d, format!("{callee}({args})"));
-            ctx.reconstructed += 1;
-        }
-        "LoadConstBigInt" | "LoadConstBigIntLongIndex" => {
-            let d: u32 = reg_of(ops.first());
-            let bid: u32 = match ops.get(1) {
-                Some(OperandValue::BigIntId(b)) => *b,
-                _ => 0,
-            };
-            ctx.set_reg(d, ctx.bigint_lit(bid));
-            ctx.reconstructed += 1;
-        }
-        "Call" | "CallLong" | "Construct" | "ConstructLong" => {
-            let d: u32 = reg_of(ops.first());
-            let callee: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let argc: u64 = uint_of(ops.get(2)).saturating_sub(1);
-            let new_kw: &str = if name.starts_with("Construct") {
-                "new "
-            } else {
-                ""
-            };
-            let args: String = match recover_call_arguments(ctx, argc) {
-                Some(recovered) => recovered.join(", "),
-                None => unrecovered_arg_list(argc),
-            };
-            let call_expr: String = format!("{new_kw}{callee}({args})");
-            emit_call_result(ctx, d, call_expr, inst, instructions, stmts);
-            ctx.reconstructed += 1;
-        }
-        "Call1" | "Call2" | "Call3" | "Call4" => {
-            let d: u32 = reg_of(ops.first());
-            let callee: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let args: Vec<String> = ops[3..]
-                .iter()
-                .map(|o: &OperandValue| match o {
-                    OperandValue::Reg(r) => ctx.reg_expr(*r),
-                    _ => "?".to_owned(),
-                })
-                .collect();
-            let call_expr: String = format!("{callee}({})", args.join(", "));
-            emit_call_result(ctx, d, call_expr, inst, instructions, stmts);
-            ctx.reconstructed += 1;
-        }
-        "Ret" => {
-            let v: String = ctx.reg_expr(reg_of(ops.first()));
-            stmts.push(BlockStmt::Return(v));
-            ctx.reconstructed += 1;
-        }
-        "Throw" => {
-            let v: String = ctx.reg_expr(reg_of(ops.first()));
-            stmts.push(BlockStmt::Throw(v));
-            ctx.reconstructed += 1;
-        }
-        "Catch" => {
-            let d: u32 = reg_of(ops.first());
-            ctx.set_reg(d, "$exc".to_owned());
-            ctx.reconstructed += 1;
-        }
-        "Jmp" | "JmpLong" => {
-            if let Some(OperandValue::Target(t)) = ops.first() {
-                ctx.reconstructed += 1;
-                stmts.push(BlockStmt::Jump(*t));
-            }
-        }
-        "JmpTrue" | "JmpTrueLong" => {
-            let cond: String = ctx.reg_expr(reg_of(ops.get(1)));
-            push_cond_jump(ops, cond, inst, instructions, cfg, stmts);
-            ctx.reconstructed += 1;
-        }
-        "JmpFalse" | "JmpFalseLong" => {
-            let cond: String = format!("!{}", ctx.reg_expr(reg_of(ops.get(1))));
-            push_cond_jump(ops, cond, inst, instructions, cfg, stmts);
-            ctx.reconstructed += 1;
-        }
-        "JmpUndefined" | "JmpUndefinedLong" => {
-            let cond: String = format!("{} === undefined", ctx.reg_expr(reg_of(ops.get(1))));
-            push_cond_jump(ops, cond, inst, instructions, cfg, stmts);
-            ctx.reconstructed += 1;
-        }
-        _ if jump_condition(name).is_some() => {
-            let (sym, negate): (&'static str, bool) = jump_condition(name).unwrap_or(("==", false));
-            let a: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let b: String = ctx.reg_expr(reg_of(ops.get(2)));
-            let raw: String = format!("{a} {sym} {b}");
-            let cond: String = if negate { format!("!({raw})") } else { raw };
-            push_cond_jump(ops, cond, inst, instructions, cfg, stmts);
-            ctx.reconstructed += 1;
-        }
-        _ => {
-            stmts.push(BlockStmt::Line(format!("{};", fallback_disasm(inst))));
-            ctx.fallback += 1;
-        }
-    }
-}
-
-fn push_cond_jump(
-    ops: &[OperandValue],
-    cond: String,
-    inst: &Instruction,
-    instructions: &[Instruction],
-    cfg: &Cfg,
-    stmts: &mut Vec<BlockStmt>,
-) {
-    let target: usize = match ops.first() {
-        Some(OperandValue::Target(t)) => *t,
-        _ => 0,
-    };
-    let next_off: Option<usize> = next_offset_after(inst, instructions);
-    let fallthrough: Option<usize> =
-        next_off.filter(|o: &usize| cfg.offset_to_block.contains_key(o));
-    stmts.push(BlockStmt::CondJump {
-        cond,
-        target,
-        fallthrough,
-    });
-}
-
-#[must_use]
-fn reg_read_later(d: u32, inst: &Instruction, instructions: &[Instruction]) -> bool {
-    const WINDOW: usize = 64;
-    let Some(pos): Option<usize> = instructions
-        .iter()
-        .position(|i: &Instruction| i.offset == inst.offset)
-    else {
-        return true;
-    };
-    let end: usize = (pos + 1 + WINDOW).min(instructions.len());
-    for later in &instructions[pos + 1..end] {
-        if inst_read_regs(later).contains(&d) {
-            return true;
-        }
-        if inst_dest(later) == Some(d) {
-            return false;
-        }
-    }
-    false
-}
-
-#[must_use]
-fn writes_first_operand(name: &str) -> bool {
-    !(is_terminator(name)
-        || name.starts_with("Put")
-        || name.starts_with("Store")
-        || name.starts_with("Def")
-        || matches!(name, "Throw" | "Ret" | "Catch" | "Debugger"))
-}
-
-#[must_use]
-fn next_offset_after(inst: &Instruction, instructions: &[Instruction]) -> Option<usize> {
-    let end: usize = inst.offset + inst.size;
-    instructions
-        .iter()
-        .find(|i: &&Instruction| i.offset == end)
-        .map(|i: &Instruction| i.offset)
-}
-
-#[must_use]
-fn call_window_registers(frame_size: u32, argc: u64) -> Option<Vec<u32>> {
-    if argc == 0 {
-        return Some(Vec::new());
-    }
-    if argc > MAX_RENDERED_CALL_ARGS {
-        return None;
-    }
-    let argc: usize = usize::try_from(argc).ok()?;
-    let this_reg: u32 = frame_size.checked_sub(CALL_FRAME_THIS_SLOT)?;
-    if (this_reg as usize) < argc {
-        return None;
-    }
-    let mut window: Vec<u32> = Vec::with_capacity(argc);
-    for offset in 1..=argc {
-        window.push(this_reg - offset as u32);
-    }
-    Some(window)
-}
-
-fn recover_call_arguments(ctx: &LiftCtx<'_>, argc: u64) -> Option<Vec<String>> {
-    if argc == 0 {
-        return Some(Vec::new());
-    }
-    let window: Vec<u32> = call_window_registers(ctx.frame_size, argc)?;
-    let args: Vec<String> = window.iter().map(|r: &u32| ctx.reg_expr(*r)).collect();
-    if args
-        .iter()
-        .any(|a: &String| a.starts_with('r') && a[1..].chars().all(|c: char| c.is_ascii_digit()))
-    {
-        return None;
-    }
-    Some(args)
-}
-
-#[must_use]
-fn call_window_consumed(instructions: &[Instruction], frame_size: u32) -> BTreeSet<u32> {
-    let mut consumed: BTreeSet<u32> = BTreeSet::new();
-    for inst in instructions {
-        if !matches!(
-            &*inst.name,
-            "Call" | "CallLong" | "Construct" | "ConstructLong"
-        ) {
-            continue;
-        }
-        let argc: u64 = uint_of(inst.operands.get(2)).saturating_sub(1);
-        if let Some(window) = call_window_registers(frame_size, argc) {
-            for r in window {
-                consumed.insert(r);
-            }
-        }
-    }
-    consumed
-}
-
-fn emit_call_result(
-    ctx: &mut LiftCtx<'_>,
-    d: u32,
-    call_expr: String,
-    inst: &Instruction,
-    instructions: &[Instruction],
-    stmts: &mut Vec<BlockStmt>,
-) {
-    if ctx.is_materialized(d) {
-        let stmt: String = ctx.materialize_assignment(d, &call_expr);
-        stmts.push(BlockStmt::Line(stmt));
-        return;
-    }
-    if reg_read_later(d, inst, instructions) || ctx.window_consumed.contains(&d) {
-        ctx.set_reg(d, call_expr);
-    } else {
-        stmts.push(BlockStmt::Line(format!("{call_expr};")));
-        ctx.set_reg(d, format!("r{d}"));
-    }
-}
-
-#[must_use]
-fn unrecovered_arg_list(argc: u64) -> String {
-    if argc == 0 {
-        return String::new();
-    }
-    let rendered: u64 = argc.min(MAX_RENDERED_CALL_ARGS);
-    let mut out: String = String::with_capacity(rendered as usize * (UNRECOVERED_ARG.len() + 2));
-    for i in 0..rendered {
-        if i > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(UNRECOVERED_ARG);
-    }
-    if argc > rendered {
-        push_text!(out, ", /* +{} more */", argc - rendered);
-    }
-    out
-}
-
-#[must_use]
-fn format_f64(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
-    }
 }
 
 #[must_use]
 fn fallback_disasm(inst: &Instruction) -> String {
-    let mut out: String = String::new();
-    push_text!(out, "{}(", inst.name);
-    for (i, op) in inst.operands.iter().enumerate() {
-        if i > 0 {
-            out.push_str(", ");
-        }
-        match op {
-            OperandValue::Reg(r) => {
-                push_text!(out, "r{r}");
-            }
-            OperandValue::UInt(u) => {
-                push_text!(out, "{u}");
-            }
-            OperandValue::Imm(i) => {
-                push_text!(out, "{i}");
-            }
-            OperandValue::Float(f) => {
-                push_text!(out, "{}", f64::from_bits(*f));
-            }
-            OperandValue::Target(t) => {
-                push_text!(out, "@{t}");
-            }
-            OperandValue::StringId(s) => {
-                push_text!(out, "str#{s}");
-            }
-            OperandValue::FunctionId(f) => {
-                push_text!(out, "fn#{f}");
-            }
-            OperandValue::BigIntId(b) => {
-                push_text!(out, "bigint#{b}");
-            }
-        }
-    }
-    out.push(')');
-    out
+    let rendered: Vec<String> = inst
+        .operands
+        .iter()
+        .map(|op: &OperandValue| match op {
+            OperandValue::Reg(r) => format!("r{r}"),
+            OperandValue::UInt(u) => u.to_string(),
+            OperandValue::Imm(i) => i.to_string(),
+            OperandValue::Float(f) => f64::from_bits(*f).to_string(),
+            OperandValue::Target(t) => format!("@{t}"),
+            OperandValue::StringId(s) => format!("str#{s}"),
+            OperandValue::FunctionId(f) => format!("fn#{f}"),
+            OperandValue::BigIntId(b) => format!("bigint#{b}"),
+        })
+        .collect();
+    format!("{}({})", inst.name, rendered.join(", "))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1897,6 +660,8 @@ pub struct DecompileReport {
     pub unaccounted_opcodes: Vec<OpcodeCount>,
     pub functions: Vec<DecompiledFunction>,
     pub regexps: Vec<super::regex::RecoveredRegExp>,
+    pub program: String,
+    pub metro_modules: Vec<MetroModule>,
 }
 
 #[must_use]
@@ -1915,419 +680,23 @@ pub fn disassemble_function_instructions(module: &HermesModule, index: usize) ->
 }
 
 #[must_use]
-pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunction {
-    let Some(specs): Option<&'static [OpcodeSpec]> = opcode_specs(module.header.version) else {
-        return declined_function(module, index);
-    };
-    let empty: BTreeMap<u32, String> = BTreeMap::new();
-    decompile_function_inlined(module, index, &empty, specs)
-}
-
-#[must_use]
-fn decompile_function_inlined(
-    module: &HermesModule,
-    index: usize,
-    inline_bodies: &BTreeMap<u32, String>,
-    specs: &'static [OpcodeSpec],
-) -> DecompiledFunction {
-    decompile_function_tallied(module, index, inline_bodies, specs).0
-}
-
-#[must_use]
-fn decompile_function_tallied(
-    module: &HermesModule,
-    index: usize,
-    inline_bodies: &BTreeMap<u32, String>,
-    specs: &'static [OpcodeSpec],
-) -> (DecompiledFunction, OpcodeHistogram) {
-    let header: SmallFunctionHeader =
-        module
-            .functions
-            .get(index)
-            .copied()
-            .unwrap_or(SmallFunctionHeader {
-                offset: 0,
-                param_count: 0,
-                bytecode_size_bytes: 0,
-                function_name_id: 0,
-                info_offset: 0,
-                frame_size: 0,
-                env_size: 0,
-                highest_read_cache_index: 0,
-                highest_write_cache_index: 0,
-                prohibit_invoke: 0,
-                strict_mode: false,
-                has_exception_handler: false,
-                has_debug_info: false,
-                overflowed: false,
-            });
-    let name: String = module
-        .string_by_global_id(header.function_name_id)
-        .filter(|s: &&str| !s.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("$func{index}"));
-    let code: &[u8] = module.function_code(index);
-    let code_base: usize = usize::try_from(header.offset).unwrap_or(0);
-    let instructions: Vec<Instruction> = decode_instructions(code, specs);
-    let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
-    let cfg: Cfg = build_cfg(&instructions, &module.raw_image, code_base, &exceptions);
-
-    let window_consumed: BTreeSet<u32> = call_window_consumed(&instructions, header.frame_size);
-    let materialized: BTreeSet<u32> = compute_materialized(&instructions, &cfg, &exceptions);
-    let mut ctx: LiftCtx<'_> = LiftCtx::new(
-        module,
-        code_base,
-        materialized,
-        window_consumed,
-        inline_bodies,
-        header.frame_size,
-    );
-    let lifted: Vec<LiftedBlock> = cfg
-        .blocks
-        .iter()
-        .map(|b: &BasicBlock| lift_block(&mut ctx, &instructions, b, &cfg))
-        .collect();
-
-    let (body, structure_decline): (String, Option<StructureDecline>) =
-        match structure_function(&lifted, &cfg, &exceptions) {
-            Ok(structured) if !structured.contains("goto ") => (structured, None),
-            Ok(_) => {
-                let reason: StructureDecline = StructureDecline::IncompleteCover;
-                let mut fallback: String = format!(
-                    "  /* unstructured ({}): edges below are goto form, not JavaScript */\n",
-                    reason.as_str()
-                );
-                fallback.push_str(&render_structured(&lifted, &cfg, &instructions));
-                (fallback, Some(reason))
-            }
-            Err(reason) => {
-                let mut fallback: String = format!(
-                    "  /* unstructured ({}): edges below are goto form, not JavaScript */\n",
-                    reason.as_str()
-                );
-                fallback.push_str(&render_structured(&lifted, &cfg, &instructions));
-                (fallback, Some(reason))
-            }
-        };
-    let has_loop: bool = cfg_has_back_edge(&cfg);
-    let has_if: bool = lifted
-        .iter()
-        .flat_map(|b: &LiftedBlock| b.stmts.iter())
-        .any(|s: &BlockStmt| matches!(s, BlockStmt::CondJump { .. }));
-    let has_try_catch: bool = header.has_exception_handler
-        || instructions.iter().any(|i: &Instruction| i.name == "Catch");
-    let is_generator: bool = instructions.iter().any(|i: &Instruction| {
-        matches!(
-            &*i.name,
-            "StartGenerator"
-                | "SaveGenerator"
-                | "SaveGeneratorLong"
-                | "ResumeGenerator"
-                | "CompleteGenerator"
-        )
-    });
-
-    let params: Vec<String> = (0..header.param_count.saturating_sub(1))
-        .map(|p: u32| format!("arg{p}"))
-        .collect();
-    let strict: &str = if header.strict_mode {
-        "\n  \"use strict\";"
-    } else {
-        ""
-    };
-    let fn_keyword: &str = if is_generator {
-        "function*"
-    } else {
-        "function"
-    };
-    let own_env: String = if ctx.own_env_slots.is_empty() {
-        String::new()
-    } else {
-        let names: Vec<String> = ctx
-            .own_env_slots
-            .iter()
-            .map(|slot: &u64| captured_var(0, *slot))
-            .collect();
-        format!("  var {};\n", names.join(", "))
-    };
-    let source: String = format!(
-        "{fn_keyword} {name}({}) {{{strict}\n{own_env}{body}}}",
-        params.join(", ")
-    );
-
-    let decompiled: DecompiledFunction = DecompiledFunction {
-        index,
-        name,
-        param_count: header.param_count,
-        frame_size: header.frame_size,
-        bytecode_size: header.bytecode_size_bytes,
-        instruction_count: instructions.len(),
-        block_count: cfg.blocks.len(),
-        reconstructed_ops: ctx.reconstructed,
-        fallback_ops: ctx.fallback,
-        unaccounted_ops: ctx.unaccounted,
-        has_if,
-        has_loop,
-        has_try_catch,
-        is_generator,
-        structured: structure_decline.is_none(),
-        structure_decline,
-        source,
-    };
-    (decompiled, ctx.histogram)
-}
-
-#[must_use]
-fn cfg_has_back_edge(cfg: &Cfg) -> bool {
-    cfg.blocks
-        .iter()
-        .enumerate()
-        .any(|(i, b): (usize, &BasicBlock)| b.successors.iter().any(|s: &usize| *s <= i))
-}
-
-#[must_use]
-fn is_value_producer(name: &str) -> bool {
-    writes_first_operand(name)
-        && !is_call_like(name)
-        && name != "Mov"
-        && name != "MovLong"
-        && !name.starts_with("Jmp")
-}
-
-#[must_use]
-fn is_call_like(name: &str) -> bool {
-    matches!(
-        name,
-        "Call"
-            | "CallLong"
-            | "Construct"
-            | "ConstructLong"
-            | "Call1"
-            | "Call2"
-            | "Call3"
-            | "Call4"
-            | "CallBuiltin"
-            | "CallBuiltinLong"
-            | "CallDirect"
-            | "CallDirectLongIndex"
-    )
-}
-
-#[must_use]
-fn inst_dest(inst: &Instruction) -> Option<u32> {
-    if !writes_first_operand(&inst.name) {
-        return None;
-    }
-    match inst.operands.first() {
-        Some(OperandValue::Reg(r)) => Some(*r),
-        _ => None,
-    }
-}
-
-fn inst_read_regs(inst: &Instruction) -> Vec<u32> {
-    let writes_dest: bool = writes_first_operand(&inst.name);
-    inst.operands
-        .iter()
-        .enumerate()
-        .filter_map(|(i, o): (usize, &OperandValue)| match o {
-            OperandValue::Reg(r) if !(i == 0 && writes_dest) => Some(*r),
-            _ => None,
-        })
-        .collect()
-}
-
-#[must_use]
-fn back_edge_regions(instructions: &[Instruction]) -> Vec<(usize, usize)> {
-    let mut regions: Vec<(usize, usize)> = Vec::new();
-    let offset_to_index: BTreeMap<usize, usize> = instructions
-        .iter()
-        .enumerate()
-        .map(|(i, inst): (usize, &Instruction)| (inst.offset, i))
-        .collect();
-    for (li, inst) in instructions.iter().enumerate() {
-        if !is_terminator(&inst.name) {
-            continue;
-        }
-        for t in instruction_targets(inst) {
-            if t <= inst.offset
-                && let Some(hi) = offset_to_index.get(&t)
-            {
-                regions.push((*hi, li));
-            }
-        }
-    }
-    regions
-}
-
-#[must_use]
-fn allocates_fresh_identity(name: &str) -> bool {
-    matches!(
-        name,
-        "NewArray"
-            | "NewArrayWithBuffer"
-            | "NewArrayWithBufferLong"
-            | "NewObject"
-            | "NewObjectWithBuffer"
-            | "NewObjectWithBufferLong"
-            | "NewObjectWithParent"
-            | "CreateRegExp"
-    )
-}
-
-#[must_use]
-fn mutates_receiver_in_place(name: &str) -> bool {
-    name.starts_with("PutOwn") || name.starts_with("Del") || matches!(name, "PutByVal")
-}
-
-#[must_use]
-fn mutated_then_read_again(instructions: &[Instruction], from: usize, reg: u32) -> bool {
-    let mut mutated: bool = false;
-    for later in &instructions[from..] {
-        let receiver: Option<u32> = match later.operands.first() {
-            Some(OperandValue::Reg(r)) => Some(*r),
-            _ => None,
-        };
-        if mutated && inst_read_regs(later).contains(&reg) {
-            return true;
-        }
-        if receiver == Some(reg) && mutates_receiver_in_place(&later.name) {
-            mutated = true;
-        }
-        if inst_dest(later) == Some(reg) {
-            break;
-        }
-    }
-    false
-}
-
-#[must_use]
-fn compute_materialized(
-    instructions: &[Instruction],
-    cfg: &Cfg,
-    exception_entries: &[HermesExceptionEntry],
-) -> BTreeSet<u32> {
-    let mut materialized: BTreeSet<u32> = BTreeSet::new();
-
-    let mut writing_blocks: BTreeMap<u32, BTreeSet<usize>> = BTreeMap::new();
-    let mut ever_read: BTreeSet<u32> = BTreeSet::new();
-    for (index, block) in cfg.blocks.iter().enumerate() {
-        let (first, last): (usize, usize) = block.instr_range;
-        let Some(window): Option<&[Instruction]> = instructions.get(first..last) else {
-            continue;
-        };
-        for inst in window {
-            if let Some(d) = inst_dest(inst) {
-                writing_blocks.entry(d).or_default().insert(index);
-            }
-            for r in inst_read_regs(inst) {
-                ever_read.insert(r);
-            }
-        }
-    }
-    for (reg, blocks) in &writing_blocks {
-        if blocks.len() > 1 && ever_read.contains(reg) {
-            materialized.insert(*reg);
-        }
-    }
-
-    let mut protected_by_target: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
-    for entry in exception_entries {
-        protected_by_target
-            .entry(entry.target)
-            .or_default()
-            .push((entry.start, entry.end));
-    }
-    for (target, ranges) in &protected_by_target {
-        let mut protected_writes: BTreeSet<u32> = BTreeSet::new();
-        let mut handler_writes: BTreeSet<u32> = BTreeSet::new();
-        for inst in instructions {
-            let Some(offset): Option<u32> = u32::try_from(inst.offset).ok() else {
-                continue;
-            };
-            let Some(d): Option<u32> = inst_dest(inst) else {
-                continue;
-            };
-            if ranges
-                .iter()
-                .any(|(start, end): &(u32, u32)| *start <= offset && offset < *end)
-            {
-                protected_writes.insert(d);
-            } else if offset >= *target {
-                handler_writes.insert(d);
-            }
-        }
-        for reg in protected_writes.intersection(&handler_writes) {
-            materialized.insert(*reg);
-        }
-    }
-
-    for (i, inst) in instructions.iter().enumerate() {
-        if !allocates_fresh_identity(&inst.name) {
-            continue;
-        }
-        let Some(d): Option<u32> = inst_dest(inst) else {
-            continue;
-        };
-        if mutated_then_read_again(instructions, i + 1, d) {
-            materialized.insert(d);
-        }
-    }
-
-    for (header, latch) in back_edge_regions(instructions) {
-        let region: &[Instruction] = &instructions[header..=latch];
-        let mut written: BTreeSet<u32> = BTreeSet::new();
-        let mut read: BTreeSet<u32> = BTreeSet::new();
-        for inst in region {
-            if let Some(d) = inst_dest(inst) {
-                written.insert(d);
-            }
-            for r in inst_read_regs(inst) {
-                read.insert(r);
-            }
-        }
-        for r in &written {
-            if read.contains(r) {
-                materialized.insert(*r);
-            }
-        }
-    }
-
-    for (i, inst) in instructions.iter().enumerate() {
-        if !is_call_like(&inst.name) {
-            continue;
-        }
-        let Some(d): Option<u32> = inst_dest(inst) else {
-            continue;
-        };
-        let is_construct: bool = matches!(&*inst.name, "Construct" | "ConstructLong");
-        let mut read_count: usize = 0;
-        for later in &instructions[i + 1..] {
-            if inst_read_regs(later).contains(&d) {
-                read_count += 1;
-            }
-            let redefined: bool = inst_dest(later) == Some(d);
-            let passthrough: bool = matches!(&*later.name, "SelectObject" | "Mov" | "MovLong")
-                && inst_read_regs(later).contains(&d);
-            if redefined && !passthrough {
-                break;
-            }
-        }
-        let threshold: usize = if is_construct { 1 } else { 2 };
-        if read_count >= threshold {
-            materialized.insert(d);
-        }
-    }
-
-    materialized
-}
-
-#[must_use]
 pub(crate) fn negate_cond(cond: &str) -> String {
     if let Some(inner) = cond.strip_prefix("!(")
         && let Some(inner) = inner.strip_suffix(')')
         && is_balanced(inner)
     {
         return inner.to_owned();
+    }
+    if let Some(operand) = cond.strip_prefix('!')
+        && operand
+            .chars()
+            .next()
+            .is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && operand
+            .chars()
+            .all(|c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.'))
+    {
+        return operand.to_owned();
     }
     format!("!({cond})")
 }
@@ -2350,326 +719,6 @@ fn is_balanced(s: &str) -> bool {
     depth == 0
 }
 
-struct SingleLoop {
-    header: usize,
-    latch: usize,
-    enter_cond: String,
-    continue_cond: String,
-    exit: usize,
-}
-
-#[must_use]
-fn detect_single_loop(lifted: &[LiftedBlock], cfg: &Cfg) -> Option<SingleLoop> {
-    let mut back_edges: Vec<(usize, usize)> = Vec::new();
-    for (bi, block) in cfg.blocks.iter().enumerate() {
-        for succ in &block.successors {
-            if *succ <= bi {
-                back_edges.push((*succ, bi));
-            }
-        }
-    }
-    let [(header, latch)]: [(usize, usize); 1] = back_edges.as_slice().try_into().ok()?;
-    if header == 0 {
-        return None;
-    }
-
-    let preheader: usize = header - 1;
-    let (pre_cond, pre_target, pre_fallthrough): (&String, usize, usize) =
-        match lifted.get(preheader)?.stmts.last()? {
-            BlockStmt::CondJump {
-                cond,
-                target,
-                fallthrough: Some(ft),
-            } => (
-                cond,
-                *cfg.offset_to_block.get(target)?,
-                *cfg.offset_to_block.get(ft)?,
-            ),
-            _ => return None,
-        };
-    let (latch_cond, latch_target, latch_fallthrough): (&String, usize, usize) =
-        match lifted.get(latch)?.stmts.last()? {
-            BlockStmt::CondJump {
-                cond,
-                target,
-                fallthrough: Some(ft),
-            } => (
-                cond,
-                *cfg.offset_to_block.get(target)?,
-                *cfg.offset_to_block.get(ft)?,
-            ),
-            _ => return None,
-        };
-
-    let enter_cond: String = if pre_fallthrough == header {
-        negate_cond(pre_cond)
-    } else if pre_target == header {
-        pre_cond.clone()
-    } else {
-        return None;
-    };
-    let pre_exit: usize = if pre_fallthrough == header {
-        pre_target
-    } else {
-        pre_fallthrough
-    };
-
-    let continue_cond: String = if latch_target == header {
-        latch_cond.clone()
-    } else if latch_fallthrough == header {
-        negate_cond(latch_cond)
-    } else {
-        return None;
-    };
-    let latch_exit: usize = if latch_target == header {
-        latch_fallthrough
-    } else {
-        latch_target
-    };
-
-    if pre_exit != latch_exit || pre_exit <= latch {
-        return None;
-    }
-    for body in header..=latch {
-        for (bi, block) in cfg.blocks.iter().enumerate() {
-            if (bi < header || bi > latch)
-                && bi != preheader
-                && block.successors.contains(&body)
-                && body == header
-            {
-                return None;
-            }
-        }
-    }
-
-    Some(SingleLoop {
-        header,
-        latch,
-        enter_cond,
-        continue_cond,
-        exit: pre_exit,
-    })
-}
-
-#[must_use]
-fn render_structured(lifted: &[LiftedBlock], cfg: &Cfg, _instructions: &[Instruction]) -> String {
-    let block_index: BTreeMap<usize, usize> = lifted
-        .iter()
-        .enumerate()
-        .map(|(i, b): (usize, &LiftedBlock)| (b.start, i))
-        .collect();
-    if let Some(loop_info) = detect_single_loop(lifted, cfg)
-        && let Some(rendered) = render_with_loop(lifted, &block_index, &loop_info)
-    {
-        return rendered;
-    }
-    let mut out: String = String::new();
-    for (bi, block) in lifted.iter().enumerate() {
-        if out.len() >= MAX_RENDER_BYTES {
-            let omitted: usize = lifted.len() - bi;
-            push_line!(out, "  /* ... {omitted} blocks omitted */");
-            break;
-        }
-        let is_loop_head: bool = cfg
-            .blocks
-            .iter()
-            .enumerate()
-            .any(|(j, b): (usize, &BasicBlock)| j >= bi && b.successors.contains(&bi));
-        if is_loop_head && block.stmts.len() > 1 {
-            push_line!(out, "  L{bi}: for (;;) {{");
-            render_block_stmts(&mut out, block, &block_index, "    ");
-            push_line!(out, "  }}");
-        } else {
-            if cfg.blocks.len() > 1 {
-                push_line!(out, "  // L{bi} @ {:#06x}", block.start);
-            }
-            render_block_stmts(&mut out, block, &block_index, "  ");
-        }
-    }
-    out
-}
-
-#[must_use]
-fn render_with_loop(
-    lifted: &[LiftedBlock],
-    block_index: &BTreeMap<usize, usize>,
-    loop_info: &SingleLoop,
-) -> Option<String> {
-    let mut out: String = String::new();
-    let preheader: usize = loop_info.header.checked_sub(1)?;
-
-    for block in &lifted[..preheader] {
-        render_block_stmts(&mut out, block, block_index, "  ");
-    }
-
-    let pre_block: &LiftedBlock = lifted.get(preheader)?;
-    render_block_body(&mut out, pre_block, block_index, "  ", true);
-
-    push_line!(out, "  if ({}) {{", loop_info.enter_cond);
-    push_line!(out, "    do {{");
-    for bi in loop_info.header..=loop_info.latch {
-        let body_block: &LiftedBlock = lifted.get(bi)?;
-        let drop_terminator: bool = bi == loop_info.latch;
-        render_block_body(&mut out, body_block, block_index, "      ", drop_terminator);
-    }
-    push_line!(out, "    }} while ({});", loop_info.continue_cond);
-    push_line!(out, "  }}");
-
-    for block in &lifted[loop_info.exit..] {
-        render_block_stmts(&mut out, block, block_index, "  ");
-    }
-    Some(out)
-}
-
-fn render_block_body(
-    out: &mut String,
-    block: &LiftedBlock,
-    block_index: &BTreeMap<usize, usize>,
-    indent: &str,
-    drop_trailing_condjump: bool,
-) {
-    let limit: usize = if drop_trailing_condjump
-        && matches!(block.stmts.last(), Some(BlockStmt::CondJump { .. }))
-    {
-        block.stmts.len() - 1
-    } else {
-        block.stmts.len()
-    };
-    let trimmed: LiftedBlock = LiftedBlock {
-        start: block.start,
-        stmts: block.stmts[..limit].to_vec(),
-    };
-    render_block_stmts(out, &trimmed, block_index, indent);
-}
-
-fn render_block_stmts(
-    mut out: &mut String,
-    block: &LiftedBlock,
-    block_index: &BTreeMap<usize, usize>,
-    indent: &str,
-) {
-    for (si, stmt) in block.stmts.iter().enumerate() {
-        if out.len() >= MAX_RENDER_BYTES {
-            let omitted: usize = block.stmts.len() - si;
-            push_line!(out, "{indent}/* ... {omitted} ops omitted */");
-            break;
-        }
-        match stmt {
-            BlockStmt::Line(s) => {
-                push_line!(out, "{indent}{s}");
-            }
-            BlockStmt::Return(v) => {
-                if v == "undefined" {
-                    push_line!(out, "{indent}return;");
-                } else {
-                    push_line!(out, "{indent}return {v};");
-                }
-            }
-            BlockStmt::Throw(v) => {
-                push_line!(out, "{indent}throw {v};");
-            }
-            BlockStmt::Jump(t) => {
-                let label: String = block_index
-                    .get(t)
-                    .map_or_else(|| format!("@{t:#06x}"), |b: &usize| format!("L{b}"));
-                push_line!(out, "{indent}// goto {label}");
-            }
-            BlockStmt::CondJump {
-                cond,
-                target,
-                fallthrough,
-            } => {
-                let tlabel: String = block_index
-                    .get(target)
-                    .map_or_else(|| format!("@{target:#06x}"), |b: &usize| format!("L{b}"));
-                let flabel: String = fallthrough
-                    .and_then(|f: usize| block_index.get(&f))
-                    .map_or_else(String::new, |b: &usize| format!(" else goto L{b};"));
-                push_line!(out, "{indent}if ({cond}) goto {tlabel};{flabel}");
-            }
-            BlockStmt::Switch {
-                scrutinee,
-                cases,
-                default,
-            } => {
-                push_line!(out, "{indent}switch ({scrutinee}) {{");
-                for (value, target) in cases {
-                    let tlabel: String = block_index
-                        .get(target)
-                        .map_or_else(|| format!("@{target:#06x}"), |b: &usize| format!("L{b}"));
-                    push_line!(out, "{indent}  case {value}: goto {tlabel};");
-                }
-                let dlabel: String = block_index
-                    .get(default)
-                    .map_or_else(|| format!("@{default:#06x}"), |b: &usize| format!("L{b}"));
-                push_line!(out, "{indent}  default: goto {dlabel};");
-                push_line!(out, "{indent}}}");
-            }
-        }
-    }
-}
-
-#[must_use]
-fn closure_targets(module: &HermesModule, index: usize, specs: &'static [OpcodeSpec]) -> Vec<u32> {
-    let code: &[u8] = module.function_code(index);
-    let mut targets: Vec<u32> = Vec::new();
-    for inst in decode_instructions(code, specs) {
-        if !inst.name.starts_with("Create") || !inst.name.contains("Closure") {
-            continue;
-        }
-        if let Some(OperandValue::FunctionId(fid)) = inst.operands.get(2) {
-            targets.push(*fid);
-        }
-    }
-    targets
-}
-
-fn inlined_closure_bodies(
-    module: &HermesModule,
-    index: usize,
-    visiting: &mut BTreeSet<usize>,
-    cache: &mut BTreeMap<usize, String>,
-    depth: usize,
-    specs: &'static [OpcodeSpec],
-) -> BTreeMap<u32, String> {
-    let mut bodies: BTreeMap<u32, String> = BTreeMap::new();
-    if depth >= MAX_INLINE_CLOSURE_DEPTH {
-        return bodies;
-    }
-    for fid in closure_targets(module, index, specs) {
-        let Some(child): Option<usize> = usize::try_from(fid).ok() else {
-            continue;
-        };
-        if child >= module.functions.len() || child == index || visiting.contains(&child) {
-            continue;
-        }
-        let source: String = inlined_source(module, child, visiting, cache, depth + 1, specs);
-        bodies.insert(fid, source);
-    }
-    bodies
-}
-
-fn inlined_source(
-    module: &HermesModule,
-    index: usize,
-    visiting: &mut BTreeSet<usize>,
-    cache: &mut BTreeMap<usize, String>,
-    depth: usize,
-    specs: &'static [OpcodeSpec],
-) -> String {
-    if let Some(cached) = cache.get(&index) {
-        return cached.clone();
-    }
-    visiting.insert(index);
-    let child_bodies: BTreeMap<u32, String> =
-        inlined_closure_bodies(module, index, visiting, cache, depth, specs);
-    let decompiled: DecompiledFunction =
-        decompile_function_inlined(module, index, &child_bodies, specs);
-    visiting.remove(&index);
-    cache.insert(index, decompiled.source.clone());
-    decompiled.source
-}
-
 #[must_use]
 fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction {
     let header: Option<&SmallFunctionHeader> = module.functions.get(index);
@@ -2682,8 +731,8 @@ fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction 
     DecompiledFunction {
         index,
         source: format!(
-            "/* hbc v{version}: no opcode table, bodies are not lifted at this bytecode version \
-             (lifting covers v{HERMES_LIFTED_VERSIONS:?}) */"
+            "/* hbc v{version}: bodies are not lifted at this bytecode version (lifting covers \
+             v{HERMES_LIFTED_VERSIONS:?}) */"
         ),
         name,
         param_count: header.map_or(0, |h: &SmallFunctionHeader| h.param_count),
@@ -2703,36 +752,832 @@ fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction 
     }
 }
 
+const MAX_INLINE_CLOSURE_BYTES: usize = 1 << 16;
+const MAX_INLINE_CLOSURE_DEPTH: usize = 8;
+const MAX_PROGRAM_DEPTH: usize = 512;
+const MAX_PROGRAM_BYTES: usize = 1 << 29;
+
+#[derive(Debug, Clone)]
+struct Rendered {
+    decompiled: DecompiledFunction,
+    histogram: OpcodeHistogram,
+    helpers: BTreeSet<Helper>,
+    signature_name: String,
+    keyword: &'static str,
+    params: String,
+    strict: bool,
+    declarations: Vec<String>,
+    body: String,
+    merged_generator: Option<u32>,
+    prelude: Option<String>,
+}
+
+fn empty_header() -> SmallFunctionHeader {
+    SmallFunctionHeader {
+        offset: 0,
+        param_count: 0,
+        bytecode_size_bytes: 0,
+        function_name_id: 0,
+        info_offset: 0,
+        frame_size: 0,
+        env_size: 0,
+        highest_read_cache_index: 0,
+        highest_write_cache_index: 0,
+        prohibit_invoke: 0,
+        strict_mode: false,
+        has_exception_handler: false,
+        has_debug_info: false,
+        overflowed: false,
+        kind: HermesFunctionKind::Normal,
+    }
+}
+
+fn function_name(module: &HermesModule, header: &SmallFunctionHeader, index: usize) -> String {
+    module
+        .string_by_global_id(header.function_name_id)
+        .filter(|s: &&str| !s.is_empty())
+        .map_or_else(|| format!("$func{index}"), str::to_owned)
+}
+
+fn render_function(
+    module: &HermesModule,
+    scope: &ModuleScope,
+    index: usize,
+    specs: &'static [OpcodeSpec],
+) -> Rendered {
+    let header: SmallFunctionHeader = module
+        .functions
+        .get(index)
+        .copied()
+        .unwrap_or_else(empty_header);
+    let name: String = function_name(module, &header, index);
+    let code: &[u8] = module.function_code(index);
+    let code_base: usize = usize::try_from(header.offset).unwrap_or(0);
+    let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
+    let instructions: Vec<Instruction> = lifted_instructions(module, code, specs, &exceptions);
+    let mut cfg: Cfg = build_cfg(&instructions, &module.raw_image, code_base, &exceptions);
+    let async_body: bool =
+        u32::try_from(index).is_ok_and(|fid: u32| scope.async_bodies.contains(&fid));
+    link_generator_resumes(&mut cfg, &instructions, async_body);
+    let merged_generator: Option<u32> = wrapper_target(&instructions, &cfg);
+    let own_fid: u32 = u32::try_from(index).unwrap_or(u32::MAX);
+    let lift_header: SmallFunctionHeader = SmallFunctionHeader {
+        frame_size: lift::call_frame_size(module, &header),
+        env_size: scope
+            .env_sizes
+            .get(&own_fid)
+            .copied()
+            .unwrap_or(header.env_size),
+        ..header
+    };
+    let input: FunctionInput<'_> = FunctionInput {
+        module,
+        scope,
+        index,
+        header: &lift_header,
+        instructions: &instructions,
+        cfg: &cfg,
+        exceptions: &exceptions,
+        code_base,
+        merged_generator,
+    };
+    let mut histogram: OpcodeHistogram = OpcodeHistogram::new();
+    let signature_name: String = module
+        .string_by_global_id(header.function_name_id)
+        .filter(|declared: &&str| lift::is_binding_identifier(declared))
+        .map_or_else(String::new, str::to_owned);
+    let params: String = (0..header.param_count.saturating_sub(1))
+        .map(|p: u32| scope.param_name_of(index, p))
+        .collect::<Vec<String>>()
+        .join(", ");
+    let has_try_catch: bool = header.has_exception_handler
+        || instructions.iter().any(|i: &Instruction| i.name == "Catch");
+    let is_generator: bool = instructions.iter().any(|i: &Instruction| {
+        matches!(
+            &*i.name,
+            "StartGenerator"
+                | "SaveGenerator"
+                | "SaveGeneratorLong"
+                | "ResumeGenerator"
+                | "CompleteGenerator"
+        )
+    });
+    let has_loop: bool = cfg_has_back_edge(&cfg);
+    let keyword: &'static str = if is_generator {
+        "function*"
+    } else {
+        "function"
+    };
+    let Some(lifted) = lift_function(&input) else {
+        for inst in &instructions {
+            let slot: &mut OpcodeTally = histogram.slot_mut(inst.opcode);
+            slot.declined = slot.declined.saturating_add(1);
+        }
+        let body: String = format!(
+            "  throw new Error(\"hermes: fn #{index} uses more registers than the lifter tracks\");\n"
+        );
+        let decompiled: DecompiledFunction = DecompiledFunction {
+            index,
+            name,
+            param_count: header.param_count,
+            frame_size: header.frame_size,
+            bytecode_size: header.bytecode_size_bytes,
+            instruction_count: instructions.len(),
+            block_count: cfg.blocks.len(),
+            reconstructed_ops: 0,
+            fallback_ops: instructions.len(),
+            unaccounted_ops: 0,
+            has_if: false,
+            has_loop,
+            has_try_catch,
+            is_generator,
+            structured: false,
+            structure_decline: Some(StructureDecline::RegisterBudgetExceeded),
+            source: String::new(),
+        };
+        return Rendered {
+            decompiled,
+            histogram,
+            helpers: BTreeSet::new(),
+            signature_name,
+            keyword,
+            params,
+            strict: header.strict_mode,
+            declarations: Vec::new(),
+            body,
+            merged_generator: None,
+            prelude: None,
+        };
+    };
+    let mut reconstructed: usize = 0;
+    let mut fallback: usize = 0;
+    for (inst, outcome) in instructions.iter().zip(&lifted.outcomes) {
+        let slot: &mut OpcodeTally = histogram.slot_mut(inst.opcode);
+        match outcome {
+            Outcome::Reconstructed => {
+                reconstructed += 1;
+                slot.reconstructed = slot.reconstructed.saturating_add(1);
+            }
+            Outcome::Declined => {
+                fallback += 1;
+                slot.declined = slot.declined.saturating_add(1);
+            }
+        }
+    }
+    let has_if: bool = lifted
+        .blocks
+        .iter()
+        .flat_map(|b: &LiftedBlock| b.stmts.iter())
+        .any(|s: &BlockStmt| matches!(s, BlockStmt::CondJump { .. }));
+    let structured_body: Result<Structured, StructureDecline> = match structure_function(
+        &lifted.blocks,
+        &cfg,
+        &exceptions,
+        &lifted.handler_of_block,
+        scope.structuring,
+    ) {
+        Ok(structured) if !structured.body.contains("goto ") => Ok(structured),
+        Ok(_) => Err(StructureDecline::IncompleteCover),
+        Err(reason) => Err(reason),
+    };
+    let mut declared: Vec<String> = lifted
+        .var_regs
+        .iter()
+        .map(|reg: &u32| scope.reg_name(*reg))
+        .collect();
+    let own: u32 = u32::try_from(index).unwrap_or(u32::MAX);
+    if scope.is_boxed(own) {
+        declared.push(ModuleScope::boxed_env_name(own));
+    } else if !scope.is_hosted_elsewhere(own) {
+        for slot in 0..lifted.env_slots {
+            declared.push(scope.env_name(EnvRefName::Owned(own), u64::from(slot)));
+        }
+    }
+    for hosted in scope.hosted_by(own) {
+        let size: u32 = scope
+            .env_sizes
+            .get(&hosted)
+            .copied()
+            .unwrap_or(0)
+            .min(1 << 16);
+        for slot in 0..size {
+            declared.push(scope.env_name(EnvRefName::Owned(hosted), u64::from(slot)));
+        }
+    }
+    let (body, structure_decline): (String, Option<StructureDecline>) = match structured_body {
+        Ok(structured) => {
+            if structured.exit_selector {
+                declared.push("$exit".to_owned());
+            }
+            if structured.exception_binding {
+                declared.push("$exc".to_owned());
+            }
+            if structured.handler_test {
+                declared.push("$test".to_owned());
+            }
+            (structured.body, None)
+        }
+        Err(reason) => {
+            if lifted.handler_of_block.iter().any(Option::is_some) {
+                declared.push("$exc".to_owned());
+            }
+            let mut body: String = format!(
+                "  /* unstructured ({}): dispatcher form */\n",
+                reason.as_str()
+            );
+            body.push_str(&render_dispatcher(
+                &lifted.blocks,
+                &cfg,
+                &lifted.handler_of_block,
+                "  ",
+            ));
+            (body, Some(reason))
+        }
+    };
+    let prelude: Option<String> = merged_generator
+        .filter(|_| lifted.var_regs.is_empty())
+        .and_then(|inner: u32| wrapper_prelude(&lifted.blocks, inner));
+    let decompiled: DecompiledFunction = DecompiledFunction {
+        index,
+        name,
+        param_count: header.param_count,
+        frame_size: header.frame_size,
+        bytecode_size: header.bytecode_size_bytes,
+        instruction_count: instructions.len(),
+        block_count: cfg.blocks.len(),
+        reconstructed_ops: reconstructed,
+        fallback_ops: fallback,
+        unaccounted_ops: 0,
+        has_if,
+        has_loop,
+        has_try_catch,
+        is_generator,
+        structured: structure_decline.is_none(),
+        structure_decline,
+        source: String::new(),
+    };
+    Rendered {
+        decompiled,
+        histogram,
+        helpers: lifted.helpers,
+        signature_name,
+        keyword,
+        params,
+        strict: header.strict_mode,
+        declarations: declared,
+        merged_generator: prelude.as_ref().and(merged_generator),
+        prelude,
+        body,
+    }
+}
+
+fn link_generator_resumes(cfg: &mut Cfg, instructions: &[Instruction], async_body: bool) {
+    let mut return_edges: Vec<(usize, usize)> = Vec::new();
+    for (index, block) in cfg.blocks.iter().enumerate() {
+        let (start, end): (usize, usize) = block.instr_range;
+        let Some(last) = end.checked_sub(1).and_then(|l: usize| instructions.get(l)) else {
+            continue;
+        };
+        if !matches!(
+            &*last.name,
+            "JmpTrue" | "JmpTrueLong" | "JmpFalse" | "JmpFalseLong"
+        ) {
+            continue;
+        }
+        let dead_offset: Option<usize> = (start..end)
+            .filter(|position: &usize| instructions[*position].name == "ResumeGenerator")
+            .find_map(|position: usize| {
+                if async_body {
+                    lift::resume_return_offset(instructions, position)
+                } else {
+                    lift::resume_return_path(instructions, cfg, position)
+                }
+            });
+        if let Some(dead) = dead_offset.and_then(|offset: usize| cfg.offset_to_block.get(&offset)) {
+            return_edges.push((index, *dead));
+        }
+    }
+    for (index, dead) in return_edges {
+        cfg.blocks[index]
+            .successors
+            .retain(|succ: &usize| *succ != dead);
+    }
+    for block in &mut cfg.blocks {
+        let (start, end): (usize, usize) = block.instr_range;
+        if end < start + 2 {
+            continue;
+        }
+        let save: &Instruction = &instructions[end - 2];
+        if !matches!(&*save.name, "SaveGenerator" | "SaveGeneratorLong")
+            || instructions[end - 1].name != "Ret"
+        {
+            continue;
+        }
+        if let Some(OperandValue::Target(target)) = save.operands.first()
+            && let Some(resume) = cfg.offset_to_block.get(target)
+            && block.successors.is_empty()
+        {
+            block.successors.push(*resume);
+        }
+    }
+}
+
+fn wrapper_target(instructions: &[Instruction], cfg: &Cfg) -> Option<u32> {
+    if cfg.blocks.len() != 1 {
+        return None;
+    }
+    let mut target: Option<(u32, u32)> = None;
+    for inst in instructions {
+        let name: &str = &inst.name;
+        match name {
+            "CreateGenerator" | "CreateGeneratorLongIndex" => {
+                let Some(OperandValue::FunctionId(fid)) = inst.operands.get(2) else {
+                    return None;
+                };
+                let Some(OperandValue::Reg(dest)) = inst.operands.first() else {
+                    return None;
+                };
+                if target.is_some() {
+                    return None;
+                }
+                target = Some((*fid, *dest));
+            }
+            "CreateEnvironment"
+            | "LoadParam"
+            | "LoadParamLong"
+            | "Mov"
+            | "MovLong"
+            | "StoreToEnvironment"
+            | "StoreToEnvironmentL"
+            | "StoreNPToEnvironment"
+            | "StoreNPToEnvironmentL"
+            | "GetEnvironment"
+            | "CreateClosure"
+            | "CreateClosureLongIndex"
+            | "LoadThisNS"
+            | "ReifyArguments"
+            | "Ret" => {}
+            _ if name.starts_with("LoadConst") => {}
+            _ => return None,
+        }
+    }
+    let (fid, dest): (u32, u32) = target?;
+    let last: &Instruction = instructions.last()?;
+    (last.name == "Ret" && last.operands.first() == Some(&OperandValue::Reg(dest))).then_some(fid)
+}
+
+fn wrapper_prelude(blocks: &[LiftedBlock], inner: u32) -> Option<String> {
+    let [block] = blocks else {
+        return None;
+    };
+    let (last, lines): (&BlockStmt, &[BlockStmt]) = block.stmts.split_last()?;
+    if !matches!(last, BlockStmt::Return(value) if *value == lift::closure_marker(inner)) {
+        return None;
+    }
+    let mut prelude: String = String::new();
+    for line in lines {
+        let BlockStmt::Line(text) = line else {
+            return None;
+        };
+        prelude.push_str("  ");
+        prelude.push_str(text);
+        prelude.push('\n');
+    }
+    Some(prelude)
+}
+
+fn template(own: &Rendered, inner: Option<&Rendered>) -> String {
+    let merged: Option<(&String, &Rendered)> =
+        own.prelude
+            .as_ref()
+            .zip(inner)
+            .and_then(|(prelude, inner): (&String, &Rendered)| {
+                own.merged_generator
+                    .is_some_and(|fid: u32| fid as usize == inner.decompiled.index)
+                    .then_some((prelude, inner))
+            });
+    let (keyword, declarations, body): (&str, Vec<String>, String) = match merged {
+        Some((prelude, inner)) => {
+            let mut declarations: Vec<String> = own.declarations.clone();
+            for name in &inner.declarations {
+                if !declarations.contains(name) {
+                    declarations.push(name.clone());
+                }
+            }
+            (
+                "function*",
+                declarations,
+                format!("{prelude}{}", inner.body),
+            )
+        }
+        None => (own.keyword, own.declarations.clone(), own.body.clone()),
+    };
+    let name: String = if own.signature_name.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", own.signature_name)
+    };
+    let strict: &str = if own.strict {
+        "\n  \"use strict\";"
+    } else {
+        ""
+    };
+    let declarations: String = if declarations.is_empty() {
+        String::new()
+    } else {
+        format!("  var {};\n", declarations.join(", "))
+    };
+    format!(
+        "{keyword}{name}({}) {{{strict}\n{declarations}{body}}}",
+        own.params
+    )
+}
+
+#[must_use]
+fn cfg_has_back_edge(cfg: &Cfg) -> bool {
+    cfg.blocks
+        .iter()
+        .enumerate()
+        .any(|(i, b): (usize, &BasicBlock)| b.successors.iter().any(|s: &usize| *s <= i))
+}
+
+const MAX_NAME_SCAN_FUNCTIONS: usize = 4096;
+
+fn references_name(templates: &[String], root: usize, name: &str) -> bool {
+    let mut pending: Vec<usize> = vec![root];
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    while let Some(index) = pending.pop() {
+        if !seen.insert(index) || seen.len() > MAX_NAME_SCAN_FUNCTIONS {
+            continue;
+        }
+        let Some(text) = templates.get(index) else {
+            continue;
+        };
+        let body: &str = text
+            .find('{')
+            .map_or(text.as_str(), |at: usize| &text[at..]);
+        if bare_identifier_in(body, name) {
+            return true;
+        }
+        pending.extend(
+            markers(text)
+                .into_iter()
+                .map(|(_, _, fid): (usize, usize, u32)| fid as usize),
+        );
+    }
+    false
+}
+
+fn bare_identifier_in(text: &str, name: &str) -> bool {
+    let continues = |c: char| -> bool { c.is_ascii_alphanumeric() || c == '_' || c == '$' };
+    text.match_indices(name).any(|(at, _): (usize, &str)| {
+        let before: Option<char> = text[..at].chars().next_back();
+        let after: Option<char> = text[at + name.len()..].chars().next();
+        !before.is_some_and(|c: char| continues(c) || c == '.') && !after.is_some_and(continues)
+    })
+}
+
+fn markers(text: &str) -> Vec<(usize, usize, u32)> {
+    let mut out: Vec<(usize, usize, u32)> = Vec::new();
+    let mut search: usize = 0;
+    while let Some(found) = text[search..].find(CLOSURE_MARK) {
+        let start: usize = search + found;
+        let body_start: usize = start + CLOSURE_MARK.len_utf8();
+        let Some(close) = text[body_start..].find(CLOSURE_MARK) else {
+            break;
+        };
+        let body_end: usize = body_start + close;
+        let end: usize = body_end + CLOSURE_MARK.len_utf8();
+        if let Some(fid) = text[body_start..body_end]
+            .strip_prefix('F')
+            .and_then(|digits: &str| digits.parse::<u32>().ok())
+        {
+            out.push((start, end, fid));
+        }
+        search = end;
+    }
+    out
+}
+
+fn placeholder(name: &str, fid: u32) -> String {
+    if lift::is_binding_identifier(name) {
+        format!("function {name}() {{ /* fn #{fid} */ }}")
+    } else {
+        format!("function () {{ /* fn #{fid} */ }}")
+    }
+}
+
+fn line_indent(out: &str) -> String {
+    let line_start: usize = out.rfind('\n').map_or(0, |p: usize| p + 1);
+    out[line_start..]
+        .chars()
+        .take_while(|c: &char| *c == ' ')
+        .collect()
+}
+
+struct Expander<'a> {
+    templates: &'a [String],
+    names: &'a [String],
+    sizes: Vec<Option<usize>>,
+    cache: BTreeMap<u32, String>,
+}
+
+impl Expander<'_> {
+    fn subtree_size(&mut self, fid: u32, visiting: &mut BTreeSet<u32>) -> usize {
+        let index: usize = fid as usize;
+        if let Some(Some(size)) = self.sizes.get(index) {
+            return *size;
+        }
+        let Some(text) = self.templates.get(index) else {
+            return 0;
+        };
+        if !visiting.insert(fid) {
+            return usize::MAX;
+        }
+        let mut size: usize = text.len();
+        for (_, _, child) in markers(text) {
+            size = size.saturating_add(self.subtree_size(child, visiting));
+            if size > MAX_PROGRAM_BYTES {
+                size = usize::MAX;
+                break;
+            }
+        }
+        visiting.remove(&fid);
+        if let Some(slot) = self.sizes.get_mut(index) {
+            *slot = Some(size);
+        }
+        size
+    }
+
+    fn expand_capped(&mut self, fid: u32, depth: usize, visiting: &mut BTreeSet<u32>) -> String {
+        if let Some(cached) = self.cache.get(&fid) {
+            return cached.clone();
+        }
+        let Some(text) = self.templates.get(fid as usize) else {
+            return String::new();
+        };
+        let text: String = text.clone();
+        visiting.insert(fid);
+        let mut out: String = String::with_capacity(text.len());
+        let mut cursor: usize = 0;
+        for (start, end, child) in markers(&text) {
+            out.push_str(&text[cursor..start]);
+            cursor = end;
+            let fits: bool = depth < MAX_INLINE_CLOSURE_DEPTH
+                && !visiting.contains(&child)
+                && (child as usize) < self.templates.len()
+                && self.subtree_size(child, &mut BTreeSet::new()) <= MAX_INLINE_CLOSURE_BYTES;
+            if fits {
+                let indent: String = line_indent(&out);
+                let expanded: String = self.expand_capped(child, depth + 1, visiting);
+                out.push_str(&expanded.replace('\n', &format!("\n{indent}")));
+            } else {
+                out.push_str(&placeholder(
+                    self.names.get(child as usize).map_or("", String::as_str),
+                    child,
+                ));
+            }
+        }
+        out.push_str(&text[cursor..]);
+        visiting.remove(&fid);
+        if depth > 0 {
+            self.cache.insert(fid, out.clone());
+        }
+        out
+    }
+
+    fn expand_full(
+        &self,
+        text: &str,
+        depth: usize,
+        visiting: &mut BTreeSet<u32>,
+        out: &mut String,
+    ) {
+        let mut cursor: usize = 0;
+        for (start, end, child) in markers(text) {
+            out.push_str(&text[cursor..start]);
+            cursor = end;
+            let allowed: bool = depth < MAX_PROGRAM_DEPTH
+                && out.len() < MAX_PROGRAM_BYTES
+                && !visiting.contains(&child)
+                && (child as usize) < self.templates.len();
+            if allowed {
+                let indent: String = line_indent(out);
+                let mut child_out: String = String::new();
+                visiting.insert(child);
+                self.expand_full(
+                    &self.templates[child as usize],
+                    depth + 1,
+                    visiting,
+                    &mut child_out,
+                );
+                visiting.remove(&child);
+                out.push_str(&child_out.replace('\n', &format!("\n{indent}")));
+            } else {
+                out.push_str(&placeholder(
+                    self.names.get(child as usize).map_or("", String::as_str),
+                    child,
+                ));
+            }
+        }
+        out.push_str(&text[cursor..]);
+    }
+}
+
+fn helper_prelude(helpers: &BTreeSet<Helper>) -> String {
+    let mut out: String = String::new();
+    for helper in helpers {
+        out.push_str(helper.definition());
+        out.push('\n');
+    }
+    out
+}
+
+fn global_declarations(scope: &ModuleScope) -> String {
+    let names: Vec<&str> = scope
+        .declared_globals
+        .iter()
+        .map(String::as_str)
+        .filter(|name: &&str| lift::is_binding_identifier(name))
+        .collect();
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("var {};\n", names.join(", "))
+    }
+}
+
+#[must_use]
+pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunction {
+    decompile_functions(module, index..index.saturating_add(1))
+        .pop()
+        .unwrap_or_else(|| declined_function(module, index))
+}
+
+#[must_use]
+pub fn decompile_functions(module: &HermesModule, range: Range<usize>) -> Vec<DecompiledFunction> {
+    let Some(specs): Option<&'static [OpcodeSpec]> = lift_specs(module.header.version) else {
+        return range
+            .map(|index: usize| declined_function(module, index))
+            .collect();
+    };
+    let decode = |i: usize| -> Vec<Instruction> { decode_for_lift(module, i, specs) };
+    let scope: ModuleScope = ModuleScope::analyze(module, &decode, false);
+    range
+        .map(|index: usize| standalone_function(module, &scope, index, specs))
+        .collect()
+}
+
+fn standalone_function(
+    module: &HermesModule,
+    scope: &ModuleScope,
+    index: usize,
+    specs: &'static [OpcodeSpec],
+) -> DecompiledFunction {
+    let own: Rendered = render_function(module, scope, index, specs);
+    let inner: Option<Rendered> = own
+        .merged_generator
+        .map(|fid: u32| render_function(module, scope, fid as usize, specs));
+    let text: String = template(&own, inner.as_ref());
+    let mut source: String = String::with_capacity(text.len());
+    let mut cursor: usize = 0;
+    for (start, end, child) in markers(&text) {
+        source.push_str(&text[cursor..start]);
+        let name: String = module
+            .functions
+            .get(child as usize)
+            .map_or_else(String::new, |h: &SmallFunctionHeader| {
+                function_name(module, h, child as usize)
+            });
+        source.push_str(&placeholder(&name, child));
+        cursor = end;
+    }
+    source.push_str(&text[cursor..]);
+    let mut decompiled: DecompiledFunction = own.decompiled;
+    decompiled.source = listing_source(source, &decompiled.name, index);
+    decompiled
+}
+
+fn listing_source(source: String, name: &str, index: usize) -> String {
+    let keyword: &str = if source.starts_with("function*(") {
+        "function*"
+    } else if source.starts_with("function(") {
+        "function"
+    } else {
+        return source;
+    };
+    let label: String = if lift::is_binding_identifier(name) {
+        name.to_owned()
+    } else {
+        format!("$func{index}")
+    };
+    format!("{keyword} {label}{}", &source[keyword.len()..])
+}
+
 #[must_use]
 pub fn decompile_module(module: &HermesModule) -> DecompileReport {
-    let specs: Option<&'static [OpcodeSpec]> = opcode_specs(module.header.version);
+    decompile_module_with(module, Structuring::Regions)
+}
+
+#[must_use]
+pub fn decompile_module_with(module: &HermesModule, structuring: Structuring) -> DecompileReport {
+    let specs: Option<&'static [OpcodeSpec]> = lift_specs(module.header.version);
     let lift_supported: bool = specs.is_some();
-    let histogram_specs: &'static [OpcodeSpec] = specs.unwrap_or(OPCODES_HBC96);
+    let histogram_specs: &'static [OpcodeSpec] =
+        opcode_specs(module.header.version).unwrap_or(OPCODES_HBC96);
     let mut functions: Vec<DecompiledFunction> = Vec::with_capacity(module.functions.len());
+    let mut histogram: OpcodeHistogram = OpcodeHistogram::new();
+    let mut program: String = String::new();
+    let mut metro_modules: Vec<MetroModule> = Vec::new();
+    if let Some(specs) = specs {
+        let decode = |i: usize| -> Vec<Instruction> { decode_for_lift(module, i, specs) };
+        let mut scope: ModuleScope = ModuleScope::analyze(module, &decode, true);
+        scope.structuring = structuring;
+        metro_modules.clone_from(&scope.metro_modules);
+        let rendered: Vec<Rendered> = (0..module.functions.len())
+            .map(|i: usize| render_function(module, &scope, i, specs))
+            .collect();
+        let mut templates: Vec<String> = rendered
+            .iter()
+            .map(|own: &Rendered| {
+                let inner: Option<&Rendered> = own
+                    .merged_generator
+                    .and_then(|fid: u32| rendered.get(fid as usize));
+                template(own, inner)
+            })
+            .collect();
+        for (index, own) in rendered.iter().enumerate() {
+            let name: &str = &own.signature_name;
+            if index == scope.global_index as usize
+                || name.is_empty()
+                || !references_name(&templates, index, name)
+            {
+                continue;
+            }
+            let Some(text) = templates.get_mut(index) else {
+                continue;
+            };
+            for keyword in ["function*", "function"] {
+                let named: String = format!("{keyword} {name}(");
+                if text.starts_with(&named) {
+                    *text = format!("({{ {name}: {keyword} ({} }}).{name}", &text[named.len()..]);
+                    break;
+                }
+            }
+        }
+        let names: Vec<String> = rendered
+            .iter()
+            .map(|r: &Rendered| r.decompiled.name.clone())
+            .collect();
+        let mut helpers: BTreeSet<Helper> = BTreeSet::new();
+        for r in &rendered {
+            helpers.extend(r.helpers.iter().copied());
+            histogram.merge(&r.histogram);
+        }
+        let mut expander: Expander<'_> = Expander {
+            templates: &templates,
+            names: &names,
+            sizes: vec![None; templates.len()],
+            cache: BTreeMap::new(),
+        };
+        let global: usize = scope.global_index as usize;
+        let prelude: String = format!(
+            "{}{}",
+            helper_prelude(&helpers),
+            global_declarations(&scope)
+        );
+        for (index, r) in rendered.into_iter().enumerate() {
+            let fid: u32 = u32::try_from(index).unwrap_or(u32::MAX);
+            let mut visiting: BTreeSet<u32> = BTreeSet::new();
+            let source: String = expander.expand_capped(fid, 0, &mut visiting);
+            let mut decompiled: DecompiledFunction = r.decompiled;
+            decompiled.source = listing_source(source, &decompiled.name, index);
+            functions.push(decompiled);
+        }
+        if let Some(global_template) = templates.get(global) {
+            let anonymous: String = global_template.strip_prefix("function global").map_or_else(
+                || global_template.clone(),
+                |rest: &str| format!("function {rest}"),
+            );
+            let mut body: String = String::with_capacity(anonymous.len());
+            let mut visiting: BTreeSet<u32> = BTreeSet::new();
+            visiting.insert(scope.global_index);
+            expander.expand_full(&anonymous, 0, &mut visiting, &mut body);
+            program = format!("{prelude}({body}).call(this);\n");
+        }
+    } else {
+        for i in 0..module.functions.len() {
+            functions.push(declined_function(module, i));
+        }
+    }
     let mut total_reconstructed: usize = 0;
     let mut total_fallback: usize = 0;
-    let mut total_unaccounted: usize = 0;
     let mut with_body: usize = 0;
     let mut structured_functions: usize = 0;
     let mut declines: BTreeMap<StructureDecline, usize> = BTreeMap::new();
-    let mut cache: BTreeMap<usize, String> = BTreeMap::new();
-    let mut histogram: OpcodeHistogram = OpcodeHistogram::new();
-    for i in 0..module.functions.len() {
-        let f: DecompiledFunction = if let Some(specs) = specs {
-            let mut visiting: BTreeSet<usize> = BTreeSet::new();
-            visiting.insert(i);
-            let child_bodies: BTreeMap<u32, String> =
-                inlined_closure_bodies(module, i, &mut visiting, &mut cache, 0, specs);
-            let (decompiled, tally): (DecompiledFunction, OpcodeHistogram) =
-                decompile_function_tallied(module, i, &child_bodies, specs);
-            histogram.merge(&tally);
-            decompiled
-        } else {
-            declined_function(module, i)
-        };
+    for f in &functions {
         total_reconstructed += f.reconstructed_ops;
         total_fallback += f.fallback_ops;
-        total_unaccounted += f.unaccounted_ops;
         if f.instruction_count > 0 {
             with_body += 1;
             if f.structured {
@@ -2742,7 +1587,6 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
         if let Some(reason) = f.structure_decline {
             *declines.entry(reason).or_insert(0) += 1;
         }
-        functions.push(f);
     }
     let regexps: Vec<super::regex::RecoveredRegExp> =
         super::regex::recover_regexps(&module.reg_exp_table, &module.reg_exp_storage);
@@ -2753,7 +1597,7 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
         functions_with_body: with_body,
         total_reconstructed_ops: total_reconstructed,
         total_fallback_ops: total_fallback,
-        total_unaccounted_ops: total_unaccounted,
+        total_unaccounted_ops: 0,
         structured_functions,
         structure_declines: declines
             .into_iter()
@@ -2768,6 +1612,8 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
             .counts(|tally: &OpcodeTally| tally.unaccounted, histogram_specs),
         functions,
         regexps,
+        program,
+        metro_modules,
     }
 }
 
@@ -2781,28 +1627,6 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
 mod tests {
     use super::*;
     use crate::hermes::{HERMES_LIFT_VERSION, HERMES_MAGIC, HermesHeader, HermesStringKind};
-
-    #[test]
-    fn call_window_rejects_argc_above_render_cap() {
-        assert!(call_window_registers(u32::MAX, MAX_RENDERED_CALL_ARGS + 1).is_none());
-        let at_cap: Option<Vec<u32>> = call_window_registers(u32::MAX, MAX_RENDERED_CALL_ARGS);
-        assert_eq!(
-            at_cap.map(|w: Vec<u32>| w.len()),
-            Some(MAX_RENDERED_CALL_ARGS as usize)
-        );
-    }
-
-    #[test]
-    fn the_call_argument_window_sits_where_the_frame_layout_puts_it() {
-        assert_eq!(call_window_registers(36, 2), Some(vec![28, 27]));
-        assert_eq!(call_window_registers(17, 1), Some(vec![9]));
-        assert_eq!(call_window_registers(15, 1), Some(vec![7]));
-        assert_eq!(call_window_registers(15, 0), Some(Vec::new()));
-        for frame_size in 0u32..=7 {
-            assert_eq!(call_window_registers(frame_size, 1), None);
-        }
-        assert_eq!(call_window_registers(9, 3), None);
-    }
 
     fn opcode_byte(name: &str) -> u8 {
         OPCODES_HBC96
@@ -2836,6 +1660,8 @@ mod tests {
             array_buffer_size: 0,
             obj_key_buffer_size: 0,
             obj_value_buffer_size: 0,
+            obj_shape_table_count: 0,
+            string_switch_imm_count: 0,
             segment_id: 0,
             cjs_module_count: 0,
             function_source_count: 0,
@@ -2857,6 +1683,7 @@ mod tests {
             has_exception_handler: false,
             has_debug_info: false,
             overflowed: false,
+            kind: HermesFunctionKind::Normal,
         };
         let _ = HERMES_MAGIC;
         HermesModule {
@@ -2871,6 +1698,7 @@ mod tests {
             array_buffer: Vec::new(),
             obj_key_buffer: Vec::new(),
             obj_value_buffer: Vec::new(),
+            obj_shape_table: Vec::new(),
             big_int_table: Vec::new(),
             big_int_storage: Vec::new(),
             reg_exp_table: Vec::new(),
@@ -3001,10 +1829,11 @@ mod tests {
             f.source.len()
         );
         assert!(
-            f.source.contains("more */"),
-            "expected truncation marker; src: {}",
+            f.source.contains("$unrecovered(\"call\""),
+            "a call whose argument window cannot fit the frame is refused by name; src: {}",
             f.source
         );
+        assert_eq!(f.fallback_ops, 1, "src: {}", f.source);
         assert!(
             !f.source.contains("a0"),
             "huge argc must not fabricate arg names; src: {}",
@@ -3026,7 +1855,11 @@ mod tests {
         let module: HermesModule = module_with(&["main"], &[], code, 1);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(f.source.len() < 8192, "src bytes: {}", f.source.len());
-        assert!(f.source.contains("new "), "src: {}", f.source);
+        assert!(
+            f.source.contains("$unrecovered(\"ConstructLong\""),
+            "src: {}",
+            f.source
+        );
     }
 
     #[test]
@@ -3199,83 +2032,6 @@ mod tests {
     }
 
     #[test]
-    fn buffer_literal_capacity_ignores_oversized_raw_count() {
-        let mut key_buffer: Vec<u8> = Vec::new();
-        key_buffer.push(0x50 | 1);
-        key_buffer.extend_from_slice(&0u16.to_le_bytes());
-        let mut value_buffer: Vec<u8> = Vec::new();
-        value_buffer.push(0x70 | 1);
-        value_buffer.extend_from_slice(&7i32.to_le_bytes());
-        let mut array_buffer: Vec<u8> = Vec::new();
-        array_buffer.push(0x70 | 1);
-        array_buffer.extend_from_slice(&7i32.to_le_bytes());
-
-        let module: HermesModule = module_with_buffers(
-            &["a"],
-            &[],
-            Vec::new(),
-            1,
-            key_buffer,
-            value_buffer,
-            array_buffer,
-        );
-        let no_inline: BTreeMap<u32, String> = BTreeMap::new();
-        let ctx: LiftCtx<'_> =
-            LiftCtx::new(&module, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
-
-        let bomb_count: usize = u32::MAX as usize;
-        let obj: String = ctx.object_literal(bomb_count, 0, 0);
-        assert_eq!(obj, "{ a: 7 }", "decoded output unchanged by raw count");
-        assert!(
-            obj.capacity() <= 64,
-            "object capacity must follow decoded keys.len(), not raw count: {}",
-            obj.capacity()
-        );
-
-        let arr: String = ctx.array_literal(bomb_count, 0);
-        assert_eq!(arr, "[7]", "decoded output unchanged by raw count");
-        assert!(
-            arr.capacity() <= 64,
-            "array capacity must follow decoded vals.len(), not raw count: {}",
-            arr.capacity()
-        );
-
-        let empty: HermesModule = module_with_buffers(
-            &["a"],
-            &[],
-            Vec::new(),
-            1,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let empty_ctx: LiftCtx<'_> =
-            LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
-        assert_eq!(empty_ctx.object_literal(bomb_count, 0, 0), "{}");
-        assert_eq!(empty_ctx.array_literal(bomb_count, 0), "[]");
-    }
-
-    #[test]
-    fn an_over_long_expression_is_materialized_instead_of_dropped() {
-        let no_inline: BTreeMap<u32, String> = BTreeMap::new();
-        let empty: HermesModule = module_with_buffers(
-            &["a"],
-            &[],
-            Vec::new(),
-            1,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let mut ctx: LiftCtx<'_> =
-            LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
-        let long: String = "x + ".repeat(MAX_REG_EXPR_BYTES) + "x";
-        ctx.set_reg(3, long.clone());
-        assert!(ctx.is_materialized(3));
-        assert_eq!(ctx.reg_expr(3), long);
-    }
-
-    #[test]
     fn decompile_create_regexp_exact_pattern() {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("CreateRegExp"));
@@ -3326,7 +2082,7 @@ mod tests {
         let module: HermesModule = module_with(&[], &[], code, 1);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
-            f.source.contains("template"),
+            f.source.contains("$getTemplateObject("),
             "expected template literal marker; src: {}",
             f.source
         );
@@ -3348,12 +2104,12 @@ mod tests {
         let module: HermesModule = module_with(&["outer"], &[], code, 1);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
-            f.source.contains("cvar3 = 42;"),
+            f.source.contains("c0_3 = 42;"),
             "expected captured-var store; src: {}",
             f.source
         );
         assert!(
-            f.source.contains("return cvar3;"),
+            f.source.contains("return c0_3;"),
             "expected captured-var load; src: {}",
             f.source
         );
@@ -3372,26 +2128,10 @@ mod tests {
         let module: HermesModule = module_with(&["f"], &[], code, 1);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
-            f.source.contains("return cvar2_5;"),
+            f.source.contains("return $envUp2_5;"),
             "expected level-2 captured var; src: {}",
             f.source
         );
-        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
-    }
-
-    #[test]
-    fn captured_level_zero_environment_does_not_declare_a_shadowing_local() {
-        let mut code: Vec<u8> = Vec::new();
-        code.push(opcode_byte("GetEnvironment"));
-        code.extend_from_slice(&[0u8, 0u8]);
-        code.push(opcode_byte("LoadFromEnvironment"));
-        code.extend_from_slice(&[1u8, 0u8, 5u8]);
-        code.push(opcode_byte("Ret"));
-        code.push(1u8);
-        let module: HermesModule = module_with(&["inner"], &[], code, 1);
-        let f: DecompiledFunction = decompile_function(&module, 0);
-        assert!(f.source.contains("return cvar5;"), "src: {}", f.source);
-        assert!(!f.source.contains("var cvar5;"), "src: {}", f.source);
         assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
     }
 
@@ -3409,7 +2149,7 @@ mod tests {
         let module: HermesModule = module_with(&["iter"], &[], code, 2);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
-            f.source.contains("arg0[Symbol.iterator]().next().value"),
+            f.source.contains("arg0[Symbol.iterator]()") && f.source.contains(" = r3.value;"),
             "expected iterator protocol; src: {}",
             f.source
         );
@@ -3430,7 +2170,7 @@ mod tests {
         let module: HermesModule = module_with(&["loop"], &[], code, 2);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
-            f.source.contains("Object.keys(arg0)"),
+            f.source.contains("for (var $key in arg0)"),
             "expected for-in prop list; src: {}",
             f.source
         );
@@ -3543,7 +2283,7 @@ mod tests {
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert_eq!(f.structure_decline, None, "src: {}", f.source);
         assert!(
-            f.source.contains("while (v0 < arg0) {"),
+            f.source.contains("while (r0 < arg0) {"),
             "a loop whose only exit test sits at the header is a while loop, so that is the form \
              recovery must produce rather than an infinite loop with an inner break; src: {}",
             f.source
@@ -3563,7 +2303,7 @@ mod tests {
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert_eq!(f.structure_decline, None, "src: {}", f.source);
         assert!(
-            f.source.contains("do {") && f.source.contains("} while (v0 < arg0);"),
+            f.source.contains("do {") && f.source.contains("} while (r0 < arg0);"),
             "a loop whose only exit test sits after the body is a do-while; src: {}",
             f.source
         );
@@ -3584,7 +2324,7 @@ mod tests {
             f.source
         );
         assert!(
-            !f.source.contains("while (v0 < arg0) {"),
+            !f.source.contains("while (r0 < arg0) {"),
             "resugaring this shape into a head guard would drop the pre-test half of the body; \
              src: {}",
             f.source
@@ -3596,15 +2336,29 @@ mod tests {
     fn decompile_generator_function() {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("StartGenerator"));
-        code.push(opcode_byte("LoadConstUInt8"));
+        code.push(opcode_byte("ResumeGenerator"));
         code.extend_from_slice(&[0u8, 1u8]);
+        code.push(opcode_byte("JmpTrue"));
+        code.extend_from_slice(&[19u8, 1u8]);
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[2u8, 1u8]);
         code.push(opcode_byte("SaveGenerator"));
+        code.push(4u8);
+        code.push(opcode_byte("Ret"));
         code.push(2u8);
         code.push(opcode_byte("ResumeGenerator"));
-        code.extend_from_slice(&[1u8, 2u8]);
+        code.extend_from_slice(&[3u8, 4u8]);
+        code.push(opcode_byte("JmpTrue"));
+        code.extend_from_slice(&[9u8, 4u8]);
         code.push(opcode_byte("CompleteGenerator"));
         code.push(opcode_byte("Ret"));
-        code.push(1u8);
+        code.push(3u8);
+        code.push(opcode_byte("CompleteGenerator"));
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        code.push(opcode_byte("CompleteGenerator"));
+        code.push(opcode_byte("Ret"));
+        code.push(3u8);
         let module: HermesModule = module_with(&["gen"], &[], code, 1);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(f.is_generator, "expected generator flag; src: {}", f.source);
@@ -3614,26 +2368,20 @@ mod tests {
             f.source
         );
         assert!(
-            f.source.contains("yield;"),
-            "expected yield point; src: {}",
+            f.source.contains("r3 = yield 1;") && f.source.contains("return r3;"),
+            "the save/return/resume triple is one yield whose sent value lands in the resume \
+             register; src: {}",
             f.source
         );
         assert_eq!(
             f.fallback_ops, 0,
-            "StartGenerator and CompleteGenerator carry no statement of their own: the first is \
-             expressed by the function* keyword and the second by the function ending, so both are \
-             recovered rather than declined; src: {}",
+            "StartGenerator and CompleteGenerator carry no statement of their own and a resume \
+             whose return request only returns is the native yield; src: {}",
             f.source
         );
         assert!(
-            !f.source.contains("StartGenerator(") && !f.source.contains("CompleteGenerator("),
-            "a raw opcode mnemonic rendered as a call is not JavaScript and would throw if run; \
-             src: {}",
-            f.source
-        );
-        assert!(
-            f.source.contains("$resumed"),
-            "ResumeGenerator value should still be recovered; src: {}",
+            !f.source.contains("StartGenerator") && !f.source.contains("Resume"),
+            "a raw opcode mnemonic is not JavaScript; src: {}",
             f.source
         );
     }
@@ -3664,111 +2412,6 @@ mod tests {
             f.source
         );
         assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
-    }
-
-    #[test]
-    fn decompile_variadic_call_marks_args_unrecovered() {
-        let mut code: Vec<u8> = Vec::new();
-        code.push(opcode_byte("GetGlobalObject"));
-        code.push(1u8);
-        code.push(opcode_byte("GetByIdShort"));
-        code.extend_from_slice(&[2u8, 1u8, 0u8, 0u8]);
-        let argc_with_this: u8 = 4;
-        code.push(opcode_byte("Call"));
-        code.extend_from_slice(&[0u8, 2u8, argc_with_this]);
-        code.push(opcode_byte("Ret"));
-        code.push(0u8);
-        let module: HermesModule = module_with(&["f"], &[], code.clone(), 1);
-
-        let decoded: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
-        let call: &Instruction = decoded
-            .iter()
-            .find(|i: &&Instruction| i.name == "Call")
-            .expect("Call decoded");
-        let raw_argc: u64 = match call.operands.get(2) {
-            Some(OperandValue::UInt(u)) => *u,
-            other => panic!("expected UInt argc operand, got {other:?}"),
-        };
-        assert_eq!(raw_argc, u64::from(argc_with_this));
-        let expected_displayed_args: u64 = raw_argc - 1;
-        let callee_reg: u32 = match call.operands.get(1) {
-            Some(OperandValue::Reg(r)) => *r,
-            other => panic!("expected callee register operand, got {other:?}"),
-        };
-        assert_eq!(callee_reg, 2);
-
-        let f: DecompiledFunction = decompile_function(&module, 0);
-        let placeholder_count: usize = f.source.matches(UNRECOVERED_ARG).count();
-        assert_eq!(
-            placeholder_count, expected_displayed_args as usize,
-            "expected {expected_displayed_args} unrecovered-arg markers matching raw argc; src: {}",
-            f.source
-        );
-        assert!(
-            !f.source.contains("a0") && !f.source.contains("a1"),
-            "variadic Call must not fabricate a0/a1 argument names; src: {}",
-            f.source
-        );
-        assert!(
-            f.source.contains("globalThis.f("),
-            "callee should be recovered even when args are not; src: {}",
-            f.source
-        );
-    }
-
-    #[test]
-    fn decompile_construct_marks_args_unrecovered() {
-        let mut code: Vec<u8> = Vec::new();
-        code.push(opcode_byte("GetGlobalObject"));
-        code.push(1u8);
-        code.push(opcode_byte("GetByIdShort"));
-        code.extend_from_slice(&[2u8, 1u8, 0u8, 0u8]);
-        code.push(opcode_byte("Construct"));
-        code.extend_from_slice(&[0u8, 2u8, 3u8]);
-        code.push(opcode_byte("Ret"));
-        code.push(0u8);
-        let module: HermesModule = module_with(&["Ctor"], &[], code, 1);
-        let f: DecompiledFunction = decompile_function(&module, 0);
-        assert!(
-            f.source.contains("new globalThis.Ctor("),
-            "expected new with recovered callee; src: {}",
-            f.source
-        );
-        assert_eq!(
-            f.source.matches(UNRECOVERED_ARG).count(),
-            2,
-            "expected 2 unrecovered-arg markers (argc 3 minus this); src: {}",
-            f.source
-        );
-        assert!(
-            !f.source.contains("a0"),
-            "must not fabricate arg names; src: {}",
-            f.source
-        );
-    }
-
-    #[test]
-    fn decompile_call_direct_marks_args_unrecovered() {
-        let mut code: Vec<u8> = Vec::new();
-        code.push(opcode_byte("CallDirect"));
-        code.push(0u8);
-        code.push(3u8);
-        code.extend_from_slice(&0u16.to_le_bytes());
-        code.push(opcode_byte("Ret"));
-        code.push(0u8);
-        let module: HermesModule = module_with(&[], &[], code, 1);
-        let f: DecompiledFunction = decompile_function(&module, 0);
-        assert_eq!(
-            f.source.matches(UNRECOVERED_ARG).count(),
-            2,
-            "CallDirect args must be explicitly unrecovered; src: {}",
-            f.source
-        );
-        assert!(
-            !f.source.contains("a0"),
-            "CallDirect must not fabricate arg names; src: {}",
-            f.source
-        );
     }
 
     #[test]
@@ -3823,7 +2466,7 @@ mod tests {
         let module: HermesModule = module_with(&["mk"], &[], code, 2);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
-            f.source.contains("Object.create(arg0)"),
+            f.source.contains("{ __proto__: arg0 }"),
             "expected Object.create; src: {}",
             f.source
         );
@@ -3903,149 +2546,6 @@ mod tests {
     }
 
     #[test]
-    fn opcode_table_coverage_excludes_only_instrumentation() {
-        let mut unhandled: Vec<&str> = Vec::new();
-        for spec in OPCODES_HBC96 {
-            let n: &str = spec.name;
-            let handled: bool = binop_symbol(n).is_some()
-                || unop_symbol(n).is_some()
-                || jump_condition(n).is_some()
-                || HANDLED_OPCODES.contains(&n);
-            if !handled {
-                unhandled.push(n);
-            }
-        }
-        assert!(
-            unhandled.is_empty(),
-            "every non-jump opcode must resugar or be a documented no-op; missing: {unhandled:?}"
-        );
-    }
-
-    const HANDLED_OPCODES: &[&str] = &[
-        "LoadConstUInt8",
-        "LoadConstInt",
-        "LoadConstDouble",
-        "LoadConstZero",
-        "LoadConstString",
-        "LoadConstStringLongIndex",
-        "LoadConstUndefined",
-        "LoadConstEmpty",
-        "LoadConstNull",
-        "LoadConstTrue",
-        "LoadConstFalse",
-        "LoadConstBigInt",
-        "LoadConstBigIntLongIndex",
-        "LoadParam",
-        "LoadParamLong",
-        "LoadThisNS",
-        "CoerceThisNS",
-        "Mov",
-        "MovLong",
-        "CreateEnvironment",
-        "CreateInnerEnvironment",
-        "GetEnvironment",
-        "LoadFromEnvironment",
-        "LoadFromEnvironmentL",
-        "StoreToEnvironment",
-        "StoreToEnvironmentL",
-        "StoreNPToEnvironment",
-        "StoreNPToEnvironmentL",
-        "GetGlobalObject",
-        "IteratorBegin",
-        "IteratorNext",
-        "IteratorClose",
-        "GetPNameList",
-        "GetNextPName",
-        "GetByIdShort",
-        "GetById",
-        "GetByIdLong",
-        "TryGetById",
-        "TryGetByIdLong",
-        "PutById",
-        "PutByIdLong",
-        "TryPutById",
-        "TryPutByIdLong",
-        "PutNewOwnById",
-        "PutNewOwnByIdLong",
-        "PutNewOwnByIdShort",
-        "PutNewOwnNEById",
-        "PutNewOwnNEByIdLong",
-        "GetBuiltinClosure",
-        "Debugger",
-        "AsyncBreakCheck",
-        "ProfilePoint",
-        "Unreachable",
-        "GetByVal",
-        "PutByVal",
-        "PutOwnByIndex",
-        "PutOwnByIndexL",
-        "PutOwnByVal",
-        "PutOwnGetterSetterByVal",
-        "DelById",
-        "DelByIdLong",
-        "DelByVal",
-        "NewObjectWithParent",
-        "NewObject",
-        "NewObjectWithBuffer",
-        "NewObjectWithBufferLong",
-        "NewArray",
-        "NewArrayWithBuffer",
-        "NewArrayWithBufferLong",
-        "CreateThis",
-        "SelectObject",
-        "CreateClosure",
-        "CreateClosureLongIndex",
-        "CreateGeneratorClosure",
-        "CreateGeneratorClosureLongIndex",
-        "CreateAsyncClosure",
-        "CreateAsyncClosureLongIndex",
-        "CreateRegExp",
-        "SwitchImm",
-        "CallBuiltin",
-        "CallBuiltinLong",
-        "StartGenerator",
-        "CompleteGenerator",
-        "SaveGenerator",
-        "SaveGeneratorLong",
-        "ResumeGenerator",
-        "CreateGenerator",
-        "CreateGeneratorLongIndex",
-        "ToNumber",
-        "ToNumeric",
-        "ToInt32",
-        "AddEmptyString",
-        "GetNewTarget",
-        "ReifyArguments",
-        "GetArgumentsLength",
-        "GetArgumentsPropByVal",
-        "DirectEval",
-        "DeclareGlobalVar",
-        "ThrowIfHasRestrictedGlobalProperty",
-        "ThrowIfEmpty",
-        "CallDirect",
-        "CallDirectLongIndex",
-        "Call",
-        "CallLong",
-        "Construct",
-        "ConstructLong",
-        "Call1",
-        "Call2",
-        "Call3",
-        "Call4",
-        "Ret",
-        "Throw",
-        "Catch",
-        "Jmp",
-        "JmpLong",
-        "JmpTrue",
-        "JmpTrueLong",
-        "JmpFalse",
-        "JmpFalseLong",
-        "JmpUndefined",
-        "JmpUndefinedLong",
-    ];
-
-    #[test]
     fn all_families_oracle_low_fallback() {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("CreateEnvironment"));
@@ -4072,10 +2572,10 @@ mod tests {
             f.source
         );
         for expected in [
-            "cvar2 = arg0;",
+            "c0_2 = arg0;",
             "[Symbol.iterator]()",
-            ".next().value",
-            "delete arg0[",
+            ".call(r2)",
+            "delete r1[",
         ] {
             assert!(
                 f.source.contains(expected),
@@ -4272,7 +2772,7 @@ mod tests {
         code.push(opcode_byte("Ret"));
         code.push(1u8);
         let mut module: HermesModule = module_with(&["add"], &[], code, 2);
-        let uncovered: u32 = 90;
+        let uncovered: u32 = 87;
         assert!(!HERMES_LIFTED_VERSIONS.contains(&uncovered));
         module.header.version = uncovered;
         let report: DecompileReport = decompile_module(&module);
@@ -4287,7 +2787,7 @@ mod tests {
             Some(StructureDecline::UnsupportedBytecodeVersion)
         );
         assert!(
-            report.functions[0].source.contains("hbc v90")
+            report.functions[0].source.contains("hbc v87")
                 && report.functions[0].source.contains("not lifted"),
             "a version the opcode table does not cover states so; src: {}",
             report.functions[0].source
@@ -4300,5 +2800,162 @@ mod tests {
         assert_eq!(lifted.functions_with_body, 1);
         assert_eq!(lifted.structured_functions, 1);
         assert!(lifted.structure_declines.is_empty());
+    }
+
+    #[test]
+    fn the_call_window_sits_where_the_frame_layout_puts_it() {
+        assert_eq!(lift::call_window(36, 3), Some(vec![29, 28, 27]));
+        assert_eq!(lift::call_window(17, 2), Some(vec![10, 9]));
+        assert_eq!(lift::call_window(15, 1), Some(vec![8]));
+        assert_eq!(lift::call_window(15, 0), None);
+        for frame_size in 0u32..7 {
+            assert_eq!(lift::call_window(frame_size, 1), None);
+        }
+        assert_eq!(lift::call_window(9, 4), None);
+        assert!(lift::call_window(u32::MAX, 4097).is_none());
+        assert_eq!(
+            lift::call_window(u32::MAX, 4096).map(|w: Vec<u32>| w.len()),
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn an_oversized_literal_count_follows_the_decoded_buffer() {
+        let mut array_buffer: Vec<u8> = Vec::new();
+        array_buffer.push(0x70 | 1);
+        array_buffer.extend_from_slice(&7i32.to_le_bytes());
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("NewArrayWithBuffer"));
+        code.push(0u8);
+        code.extend_from_slice(&u16::MAX.to_le_bytes());
+        code.extend_from_slice(&u16::MAX.to_le_bytes());
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule =
+            module_with_buffers(&["a"], &[], code, 1, Vec::new(), Vec::new(), array_buffer);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(f.source.contains("return [7];"), "src: {}", f.source);
+        assert!(f.source.len() < 512, "src bytes: {}", f.source.len());
+    }
+
+    #[test]
+    fn a_call_with_a_frame_window_recovers_this_and_every_argument() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadParam"));
+        code.extend_from_slice(&[0u8, 1u8]);
+        code.push(opcode_byte("LoadConstUndefined"));
+        code.push(9u8);
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[8u8, 4u8]);
+        code.push(opcode_byte("LoadConstUInt8"));
+        code.extend_from_slice(&[7u8, 5u8]);
+        code.push(opcode_byte("Call"));
+        code.extend_from_slice(&[1u8, 0u8, 3u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let module: HermesModule = module_with(&["f"], &[], code, 2);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(f.source.contains("return arg0(4, 5);"), "src: {}", f.source);
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn a_construct_without_its_create_this_pair_is_declined_by_name() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("GetGlobalObject"));
+        code.push(0u8);
+        code.push(opcode_byte("Construct"));
+        code.extend_from_slice(&[1u8, 0u8, 1u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let module: HermesModule = module_with(&["main"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(f.fallback_ops, 1, "src: {}", f.source);
+        assert!(
+            f.source.contains("$unrecovered(\"Construct\""),
+            "src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn a_direct_call_is_declined_by_name_rather_than_guessed() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("LoadConstUndefined"));
+        code.push(9u8);
+        code.push(opcode_byte("CallDirect"));
+        code.push(0u8);
+        code.push(1u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcode_byte("Ret"));
+        code.push(0u8);
+        let module: HermesModule = module_with(&["main"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert_eq!(f.fallback_ops, 1, "src: {}", f.source);
+        assert!(
+            f.source.contains("$unrecovered(\"CallDirect\""),
+            "src: {}",
+            f.source
+        );
+    }
+
+    #[test]
+    fn only_the_documented_opcodes_decline_when_lifted_alone() {
+        const DECLINED_BY_DESIGN: &[&str] = &[
+            "Unreachable",
+            "CreateInnerEnvironment",
+            "CreateThis",
+            "SelectObject",
+            "Construct",
+            "ConstructLong",
+            "CallDirect",
+            "CallDirectLongIndex",
+            "ProfilePoint",
+            "ResumeGenerator",
+            "GetBuiltinClosure",
+            "CallBuiltin",
+            "CallBuiltinLong",
+        ];
+        const DECLINED_ON_ZEROED_OPERANDS: &[&str] = &[
+            "StoreToEnvironment",
+            "StoreToEnvironmentL",
+            "StoreNPToEnvironment",
+            "StoreNPToEnvironmentL",
+            "LoadFromEnvironment",
+            "LoadFromEnvironmentL",
+            "Call",
+            "CallLong",
+            "LoadConstBigInt",
+            "LoadConstBigIntLongIndex",
+            "SaveGenerator",
+            "SaveGeneratorLong",
+        ];
+        let mut declined: Vec<&str> = Vec::new();
+        for (byte, spec) in OPCODES_HBC96.iter().enumerate() {
+            let mut code: Vec<u8> = vec![u8::try_from(byte).expect("the table has 192 rows")];
+            for operand in spec.operands {
+                code.extend(std::iter::repeat_n(0u8, operand.width()));
+            }
+            code.push(opcode_byte("Ret"));
+            code.push(0u8);
+            let module: HermesModule = module_with(&["probe"], &["s"], code, 1);
+            let f: DecompiledFunction = decompile_function(&module, 0);
+            if f.fallback_ops > 0 {
+                declined.push(spec.name);
+            }
+        }
+        let unexpected: Vec<&&str> = declined
+            .iter()
+            .filter(|name: &&&str| {
+                !DECLINED_BY_DESIGN.contains(name) && !DECLINED_ON_ZEROED_OPERANDS.contains(name)
+            })
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "only the opcodes the lifter refuses by design, or whose zeroed operands name no \
+             environment, no argument window, no bigint entry or no resume point, may decline \
+             when lifted alone; unexpected {unexpected:?}"
+        );
     }
 }

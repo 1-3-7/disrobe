@@ -20,7 +20,7 @@ pub enum Error {
     #[error("DR-MOB-0005: Hermes magic mismatch: expected c61fbc03c103191f, got {0:#018x}")]
     HermesBadMagic(u64),
 
-    #[error("DR-MOB-0006: Hermes version {0} not in supported range 60..=96")]
+    #[error("DR-MOB-0006: Hermes version {0} not in supported range 60..=96, 98, 99")]
     HermesUnsupportedVersion(u32),
 
     #[error(

@@ -7,7 +7,7 @@ const TAG_FALSE: u8 = 2 << 4;
 const TAG_NUMBER: u8 = 3 << 4;
 const TAG_LONG_STRING: u8 = 4 << 4;
 const TAG_SHORT_STRING: u8 = 5 << 4;
-const TAG_BYTE_STRING: u8 = 6 << 4;
+const TAG_BYTE_STRING_OR_UNDEFINED: u8 = 6 << 4;
 const TAG_INTEGER: u8 = 7 << 4;
 
 const MAX_DECODED_LITERALS: usize = 1 << 20;
@@ -16,6 +16,7 @@ const MAX_DECODED_LITERALS: usize = 1 << 20;
 #[serde(rename_all = "kebab-case", tag = "kind", content = "value")]
 pub enum LiteralValue {
     Null,
+    Undefined,
     PrivateName,
     Bool(bool),
     Number(f64),
@@ -29,8 +30,36 @@ pub enum BufferKind {
     Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralFormat {
+    ByteStrings,
+    Undefined,
+}
+
+impl LiteralFormat {
+    #[must_use]
+    pub const fn for_version(version: u32) -> Self {
+        if version >= super::HERMES_SHAPE_TABLE_VERSION {
+            Self::Undefined
+        } else {
+            Self::ByteStrings
+        }
+    }
+}
+
 #[must_use]
 pub fn decode_literals(
+    buffer: &[u8],
+    start: usize,
+    count: usize,
+    kind: BufferKind,
+) -> Vec<LiteralValue> {
+    decode_literals_in(LiteralFormat::ByteStrings, buffer, start, count, kind)
+}
+
+#[must_use]
+pub fn decode_literals_in(
+    format: LiteralFormat,
     buffer: &[u8],
     start: usize,
     count: usize,
@@ -63,7 +92,7 @@ pub fn decode_literals(
             if out.len() >= MAX_DECODED_LITERALS {
                 return out;
             }
-            let value: LiteralValue = match decode_element(buffer, &mut idx, ty, kind) {
+            let value: LiteralValue = match decode_element(buffer, &mut idx, ty, kind, format) {
                 Some(v) => v,
                 None => return out,
             };
@@ -79,6 +108,7 @@ fn decode_element(
     idx: &mut usize,
     ty: u8,
     kind: BufferKind,
+    format: LiteralFormat,
 ) -> Option<LiteralValue> {
     match ty {
         TAG_NULL_OR_PRIVATE_NAME => Some(match kind {
@@ -87,10 +117,13 @@ fn decode_element(
         }),
         TAG_TRUE => Some(LiteralValue::Bool(true)),
         TAG_FALSE => Some(LiteralValue::Bool(false)),
-        TAG_BYTE_STRING => {
-            let raw: [u8; 1] = read_n::<1>(buffer, idx)?;
-            Some(LiteralValue::StringId(u32::from(raw[0])))
-        }
+        TAG_BYTE_STRING_OR_UNDEFINED => match format {
+            LiteralFormat::ByteStrings => {
+                let raw: [u8; 1] = read_n::<1>(buffer, idx)?;
+                Some(LiteralValue::StringId(u32::from(raw[0])))
+            }
+            LiteralFormat::Undefined => Some(LiteralValue::Undefined),
+        },
         TAG_NUMBER => {
             let raw: [u8; 8] = read_n::<8>(buffer, idx)?;
             Some(LiteralValue::Number(f64::from_le_bytes(raw)))
@@ -130,6 +163,7 @@ where
 {
     match value {
         LiteralValue::Null => "null".to_owned(),
+        LiteralValue::Undefined => "undefined".to_owned(),
         LiteralValue::PrivateName => "#private".to_owned(),
         LiteralValue::Bool(b) => b.to_string(),
         LiteralValue::Number(n) => render_number(*n),
@@ -148,6 +182,7 @@ where
         LiteralValue::Integer(i) => i.to_string(),
         LiteralValue::Number(n) => render_number(*n),
         LiteralValue::PrivateName | LiteralValue::Null => "#private".to_owned(),
+        LiteralValue::Undefined => "undefined".to_owned(),
         LiteralValue::Bool(b) => b.to_string(),
     }
 }
@@ -221,8 +256,34 @@ mod tests {
     }
 
     #[test]
+    fn from_v98_tag_six_is_an_undefined_value_and_reads_no_payload() {
+        let buf: Vec<u8> = vec![TAG_BYTE_STRING_OR_UNDEFINED | 2, TAG_TRUE | 1];
+        let out: Vec<LiteralValue> = decode_literals_in(
+            LiteralFormat::for_version(98),
+            &buf,
+            0,
+            3,
+            BufferKind::Value,
+        );
+        assert_eq!(
+            out,
+            vec![
+                LiteralValue::Undefined,
+                LiteralValue::Undefined,
+                LiteralValue::Bool(true)
+            ],
+            "hbc v98 reuses tag 6 for undefined, which carries no payload byte"
+        );
+        assert_eq!(
+            LiteralFormat::for_version(96),
+            LiteralFormat::ByteStrings,
+            "v96 and earlier keep tag 6 as a one-byte string index"
+        );
+    }
+
+    #[test]
     fn byte_string_tag_reads_a_one_byte_string_index() {
-        let buf: Vec<u8> = vec![TAG_BYTE_STRING | 3, 24, 25, 26];
+        let buf: Vec<u8> = vec![TAG_BYTE_STRING_OR_UNDEFINED | 3, 24, 25, 26];
         let out: Vec<LiteralValue> = decode_literals(&buf, 0, 3, BufferKind::Key);
         assert_eq!(
             out,

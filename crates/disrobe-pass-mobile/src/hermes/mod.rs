@@ -6,35 +6,48 @@ use serde::{Deserialize, Serialize};
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
 use crate::error::{Error, Result};
 
+pub mod assets;
 pub mod bigint;
 pub mod builtins;
 pub mod decompile;
+mod lift;
 pub mod literals;
+mod modern;
 pub(crate) mod opcodes;
 pub mod regex;
 pub mod structure;
 
+pub use assets::react_native_assets;
 pub use bigint::bigint_literal;
 pub use builtins::{builtin_name, get_template_object_builtin, is_template_object_builtin};
 pub use decompile::{
     DeclineCount, DecompileReport, DecompiledFunction, OpcodeCount, decompile_function,
-    decompile_module, disassemble_function_instructions,
+    decompile_functions, decompile_module, decompile_module_with,
+    disassemble_function_instructions,
 };
-pub use literals::{BufferKind, LiteralValue, decode_literals};
+pub use lift::MetroModule;
+pub use literals::{BufferKind, LiteralFormat, LiteralValue, decode_literals, decode_literals_in};
 pub use regex::{RecoveredRegExp, recover_regexp, recover_regexps};
-pub use structure::StructureDecline;
+pub use structure::{StructureDecline, Structuring};
 
 pub const HERMES_MAGIC: u64 = 0x1f19_03c1_03bc_1fc6;
 pub const HERMES_MAGIC_LE_BYTES: [u8; 8] = HERMES_MAGIC.to_le_bytes();
 
 pub const HERMES_MIN_VERSION: u32 = 60;
 pub const HERMES_MAX_VERSION: u32 = 96;
+pub const HERMES_SHAPE_TABLE_VERSION: u32 = 98;
+pub const HERMES_MODERN_VERSIONS: [u32; 2] = [98, 99];
 pub const HERMES_LIFT_VERSION: u32 = 96;
-pub const HERMES_LIFTED_VERSIONS: [u32; 8] = [62, 71, 74, 76, 83, 84, 89, 96];
+pub const HERMES_LIFTED_VERSIONS: [u32; 13] = [62, 71, 74, 76, 83, 84, 85, 89, 90, 94, 96, 98, 99];
+pub const HERMES_DISASSEMBLED_VERSIONS: [u32; 13] =
+    [62, 71, 74, 76, 83, 84, 85, 89, 90, 94, 96, 98, 99];
 
 const SMALL_STRING_INVALID_LENGTH: u32 = 0xff;
 const HERMES_HEADER_TOTAL_SIZE: usize = 128;
 const HERMES_LARGE_FUNCTION_HEADER_SIZE: usize = 30;
+const HERMES_V98_LARGE_FUNCTION_HEADER_SIZE: usize = 37;
+const HERMES_V99_LARGE_FUNCTION_HEADER_SIZE: usize = 36;
+const OBJECT_SHAPE_ENTRY_SIZE: usize = 8;
 const HERMES_EXCEPTION_ENTRY_SIZE: usize = 12;
 const HERMES_MAX_EXCEPTION_ENTRIES: usize = 1 << 20;
 
@@ -64,11 +77,40 @@ pub struct HermesHeader {
     pub array_buffer_size: u32,
     pub obj_key_buffer_size: u32,
     pub obj_value_buffer_size: u32,
+    pub obj_shape_table_count: u32,
+    pub string_switch_imm_count: u32,
     pub segment_id: u32,
     pub cjs_module_count: u32,
     pub function_source_count: u32,
     pub debug_info_offset: u32,
     pub flags: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HermesFunctionKind {
+    Normal,
+    Generator,
+    Async,
+    Reserved,
+}
+
+impl HermesFunctionKind {
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits & 0b11 {
+            0 => Self::Normal,
+            1 => Self::Generator,
+            2 => Self::Async,
+            _ => Self::Reserved,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectShape {
+    pub key_buffer_offset: u32,
+    pub property_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +129,7 @@ pub struct SmallFunctionHeader {
     pub has_exception_handler: bool,
     pub has_debug_info: bool,
     pub overflowed: bool,
+    pub kind: HermesFunctionKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +148,7 @@ pub struct HermesModule {
     pub obj_key_buffer: Vec<u8>,
     #[serde(skip)]
     pub obj_value_buffer: Vec<u8>,
+    pub obj_shape_table: Vec<ObjectShape>,
     pub big_int_table: Vec<BigIntTableEntry>,
     #[serde(skip)]
     pub big_int_storage: Vec<u8>,
@@ -170,8 +214,8 @@ impl HermesModule {
         if !header.has_exception_handler {
             return Ok(Vec::new());
         }
-        let base: usize =
-            exception_table_base(header).ok_or(Error::HermesExceptionTableMalformed { index })?;
+        let base: usize = exception_table_base(header, self.header.version)
+            .ok_or(Error::HermesExceptionTableMalformed { index })?;
         let mut reader: ByteReader<'_> = ByteReader::new(&self.raw_image);
         reader
             .seek(base)
@@ -205,10 +249,25 @@ impl HermesModule {
     }
 }
 
-fn exception_table_base(header: &SmallFunctionHeader) -> Option<usize> {
+fn large_function_header_size(version: u32) -> usize {
+    match version {
+        HERMES_SHAPE_TABLE_VERSION => HERMES_V98_LARGE_FUNCTION_HEADER_SIZE,
+        v if v > HERMES_SHAPE_TABLE_VERSION => HERMES_V99_LARGE_FUNCTION_HEADER_SIZE,
+        _ => HERMES_LARGE_FUNCTION_HEADER_SIZE,
+    }
+}
+
+fn exception_table_base(header: &SmallFunctionHeader, version: u32) -> Option<usize> {
+    if version >= HERMES_SHAPE_TABLE_VERSION {
+        if !header.overflowed {
+            return None;
+        }
+        let large_offset: usize = usize::try_from(header.info_offset).ok()?;
+        let after_header: usize = large_offset.checked_add(large_function_header_size(version))?;
+        return Some(align_up(after_header, 4));
+    }
     if header.overflowed {
-        let raw: u64 = (u64::from(header.info_offset) << 16) | u64::from(header.offset);
-        let large_offset: usize = usize::try_from(raw).ok()?;
+        let large_offset: usize = usize::try_from(header.info_offset).ok()?;
         let after_header: usize = large_offset.checked_add(HERMES_LARGE_FUNCTION_HEADER_SIZE)?;
         Some(align_up(after_header, 4))
     } else {
@@ -227,10 +286,11 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
         header.identifier_count.to_string()
     });
     dbg_kv("hbc.reg_exp_count", || header.reg_exp_count.to_string());
-    if header.version < HERMES_MIN_VERSION || header.version > HERMES_MAX_VERSION {
+    let classic: bool = (HERMES_MIN_VERSION..=HERMES_MAX_VERSION).contains(&header.version);
+    if !classic && !HERMES_MODERN_VERSIONS.contains(&header.version) {
         dbg_line(|| {
             format!(
-                "wall: hbc version {} outside supported [{HERMES_MIN_VERSION}, {HERMES_MAX_VERSION}]",
+                "wall: hbc version {} outside supported [{HERMES_MIN_VERSION}, {HERMES_MAX_VERSION}] and {HERMES_MODERN_VERSIONS:?}",
                 header.version
             )
         });
@@ -251,12 +311,14 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
     let obj_key_buffer_size: usize = header_field_usize(header.obj_key_buffer_size, bytes.len())?;
     let obj_value_buffer_size: usize =
         header_field_usize(header.obj_value_buffer_size, bytes.len())?;
+    let obj_shape_table_count: usize =
+        header_field_usize(header.obj_shape_table_count, bytes.len())?;
     let big_int_count: usize = header_field_usize(header.big_int_count, bytes.len())?;
     let big_int_storage_size: usize = header_field_usize(header.big_int_storage_size, bytes.len())?;
     let reg_exp_count: usize = header_field_usize(header.reg_exp_count, bytes.len())?;
     let reg_exp_storage_size: usize = header_field_usize(header.reg_exp_storage_size, bytes.len())?;
     let functions: Vec<SmallFunctionHeader> =
-        parse_small_function_table(bytes, &mut cursor, function_count)?;
+        parse_small_function_table(bytes, &mut cursor, function_count, header.version)?;
     cursor = align_up(cursor, 4);
     let string_kinds: Vec<HermesStringKind> =
         parse_string_kind_table(bytes, &mut cursor, string_kind_count, string_count)?;
@@ -361,6 +423,9 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
     buffer_cursor = align_up(buffer_cursor, 4);
     let obj_value_buffer: Vec<u8> = take_buffer(bytes, &mut buffer_cursor, obj_value_buffer_size)?;
     buffer_cursor = align_up(buffer_cursor, 4);
+    let obj_shape_table: Vec<ObjectShape> =
+        parse_object_shape_table(bytes, &mut buffer_cursor, obj_shape_table_count)?;
+    buffer_cursor = align_up(buffer_cursor, 4);
     let (big_int_table, big_int_storage): (Vec<BigIntTableEntry>, Vec<u8>) = parse_big_int_section(
         bytes,
         &mut buffer_cursor,
@@ -392,6 +457,7 @@ pub fn parse(bytes: &[u8]) -> Result<HermesModule> {
         array_buffer,
         obj_key_buffer,
         obj_value_buffer,
+        obj_shape_table,
         big_int_table,
         big_int_storage,
         reg_exp_table,
@@ -418,6 +484,30 @@ fn take_buffer(bytes: &[u8], cursor: &mut usize, size: usize) -> Result<Vec<u8>>
     }
     *cursor = end;
     Ok(bytes[start..end].to_vec())
+}
+
+fn parse_object_shape_table(
+    bytes: &[u8],
+    cursor: &mut usize,
+    count: usize,
+) -> Result<Vec<ObjectShape>> {
+    let table: Vec<u8> = take_buffer(
+        bytes,
+        cursor,
+        count
+            .checked_mul(OBJECT_SHAPE_ENTRY_SIZE)
+            .ok_or(Error::HermesHeaderCountsExceedInput {
+                declared: usize::MAX,
+                available: bytes.len(),
+            })?,
+    )?;
+    Ok(table
+        .chunks_exact(OBJECT_SHAPE_ENTRY_SIZE)
+        .map(|entry: &[u8]| ObjectShape {
+            key_buffer_offset: u32::from_le_bytes(slice_4(entry, 0)),
+            property_count: u32::from_le_bytes(slice_4(entry, 4)),
+        })
+        .collect())
 }
 
 fn parse_big_int_section(
@@ -506,6 +596,7 @@ fn parse_reg_exp_section(
 }
 
 const SMALL_FUNCTION_HEADER_SIZE: usize = 16;
+const V98_SMALL_FUNCTION_HEADER_SIZE: usize = 12;
 const STRING_KIND_ENTRY_SIZE: usize = 4;
 const SMALL_STRING_ENTRY_SIZE: usize = 4;
 const OVERFLOW_STRING_ENTRY_SIZE: usize = 8;
@@ -547,7 +638,15 @@ fn checked_declared_size(header: &HermesHeader) -> Option<usize> {
     let array_buffer_size: usize = usize::try_from(header.array_buffer_size).ok()?;
     let obj_key_buffer_size: usize = usize::try_from(header.obj_key_buffer_size).ok()?;
     let obj_value_buffer_size: usize = usize::try_from(header.obj_value_buffer_size).ok()?;
-    let functions: usize = function_count.checked_mul(SMALL_FUNCTION_HEADER_SIZE)?;
+    let shape_table: usize = usize::try_from(header.obj_shape_table_count)
+        .ok()?
+        .checked_mul(OBJECT_SHAPE_ENTRY_SIZE)?;
+    let function_header_size: usize = if header.version >= HERMES_SHAPE_TABLE_VERSION {
+        V98_SMALL_FUNCTION_HEADER_SIZE
+    } else {
+        SMALL_FUNCTION_HEADER_SIZE
+    };
+    let functions: usize = function_count.checked_mul(function_header_size)?;
     let kinds: usize = string_kind_count.checked_mul(STRING_KIND_ENTRY_SIZE)?;
     let identifiers: usize = identifier_count.checked_mul(IDENTIFIER_HASH_ENTRY_SIZE)?;
     let strings: usize = string_count.checked_mul(SMALL_STRING_ENTRY_SIZE)?;
@@ -563,6 +662,7 @@ fn checked_declared_size(header: &HermesHeader) -> Option<usize> {
         .checked_add(array_buffer_size)?
         .checked_add(obj_key_buffer_size)?
         .checked_add(obj_value_buffer_size)?
+        .checked_add(shape_table)?
         .checked_add(big_int_table)?
         .checked_add(big_int_storage_size)?
         .checked_add(reg_exp_table)?
@@ -652,8 +752,17 @@ pub fn parse_header(bytes: &[u8]) -> Result<HermesHeader> {
     cursor += 4;
     let obj_key_buffer_size: u32 = u32::from_le_bytes(slice_4(bytes, cursor));
     cursor += 4;
-    let obj_value_buffer_size: u32 = u32::from_le_bytes(slice_4(bytes, cursor));
-    cursor += 4;
+    let (obj_value_buffer_size, obj_shape_table_count, string_switch_imm_count): (u32, u32, u32) =
+        if version >= HERMES_SHAPE_TABLE_VERSION {
+            let shapes: u32 = u32::from_le_bytes(slice_4(bytes, cursor));
+            let switches: u32 = u32::from_le_bytes(slice_4(bytes, cursor + 4));
+            cursor += 8;
+            (0, shapes, switches)
+        } else {
+            let values: u32 = u32::from_le_bytes(slice_4(bytes, cursor));
+            cursor += 4;
+            (values, 0, 0)
+        };
     let segment_id: u32 = u32::from_le_bytes(slice_4(bytes, cursor));
     cursor += 4;
     let cjs_module_count: u32 = u32::from_le_bytes(slice_4(bytes, cursor));
@@ -686,6 +795,8 @@ pub fn parse_header(bytes: &[u8]) -> Result<HermesHeader> {
         array_buffer_size,
         obj_key_buffer_size,
         obj_value_buffer_size,
+        obj_shape_table_count,
+        string_switch_imm_count,
         segment_id,
         cjs_module_count,
         function_source_count,
@@ -711,6 +822,120 @@ struct ResolvedFunctionFields {
     highest_write_cache_index: u8,
 }
 
+fn resolve_v98_large_function_header(
+    bytes: &[u8],
+    base: usize,
+    version: u32,
+) -> Option<ResolvedFunctionFields> {
+    let size: usize = large_function_header_size(version);
+    let end: usize = base.checked_add(size)?;
+    if end > bytes.len() {
+        return None;
+    }
+    let caches: usize = base + 32;
+    let write_cache: u8 = bytes[caches + 1];
+    Some(ResolvedFunctionFields {
+        offset: u32::from_le_bytes(slice_4(bytes, base)),
+        param_count: u32::from_le_bytes(slice_4(bytes, base + 4)),
+        bytecode_size_bytes: u32::from_le_bytes(slice_4(bytes, base + 12)),
+        function_name_id: u32::from_le_bytes(slice_4(bytes, base + 16)),
+        info_offset: u32::try_from(base).ok()?,
+        frame_size: u32::from_le_bytes(slice_4(bytes, base + 28)),
+        env_size: 0,
+        highest_read_cache_index: bytes[caches],
+        highest_write_cache_index: write_cache,
+    })
+}
+
+fn parse_v98_function_table(
+    bytes: &[u8],
+    cursor: &mut usize,
+    count: usize,
+    version: u32,
+) -> Result<Vec<SmallFunctionHeader>> {
+    const V98_SFH_SIZE: usize = 12;
+    let need: usize = count
+        .checked_mul(V98_SFH_SIZE)
+        .ok_or(Error::HermesFunctionOob { index: 0, count })?;
+    let table_end: usize = cursor
+        .checked_add(need)
+        .ok_or(Error::HermesFunctionOob { index: 0, count })?;
+    if bytes.len() < table_end {
+        return Err(Error::HermesFunctionOob { index: 0, count });
+    }
+    let mut out: Vec<SmallFunctionHeader> = Vec::with_capacity(count);
+    for i in 0..count {
+        let base: usize = *cursor + i * V98_SFH_SIZE;
+        let word0: u32 = u32::from_le_bytes(slice_4(bytes, base));
+        let word1: u32 = u32::from_le_bytes(slice_4(bytes, base + 4));
+        let frame_size: u32 = u32::from(bytes[base + 8]);
+        let read_cache: u8 = bytes[base + 9];
+        let write_cache: u8 = if version == HERMES_SHAPE_TABLE_VERSION {
+            bytes[base + 10] & 0b0011_1111
+        } else {
+            bytes[base + 10] & 0b0111_1111
+        };
+        let small_flags: u8 = bytes[base + 11];
+        let offset: u32 = word0 & 0x01ff_ffff;
+        let param_count: u32 = (word0 >> 25) & 0x1f;
+        let bytecode_size_bytes: u32 = word1 & 0x3fff;
+        let function_name_id: u32 = (word1 >> 14) & 0xff;
+        let overflowed: bool = (small_flags & 0b0010_0000) != 0;
+        let large_offset: usize = usize::try_from((function_name_id << 24) | offset)
+            .map_err(|_| Error::HermesFunctionOob { index: i, count })?;
+        let flag_byte: u8 = if overflowed {
+            let flags_at: usize = large_offset
+                .checked_add(large_function_header_size(version) - 1)
+                .ok_or(Error::HermesFunctionOob { index: i, count })?;
+            *bytes
+                .get(flags_at)
+                .ok_or(Error::HermesFunctionOob { index: i, count })?
+        } else {
+            small_flags
+        };
+        let prohibit_invoke: u8 = flag_byte & 0b0000_0011;
+        let strict_mode: bool = (flag_byte & 0b0000_0100) != 0;
+        let has_exception_handler: bool = (flag_byte & 0b0000_1000) != 0;
+        let has_debug_info: bool = (flag_byte & 0b0001_0000) != 0;
+        let kind: HermesFunctionKind = HermesFunctionKind::from_bits(flag_byte >> 6);
+        let resolved: ResolvedFunctionFields = if overflowed {
+            resolve_v98_large_function_header(bytes, large_offset, version)
+                .ok_or(Error::HermesFunctionOob { index: i, count })?
+        } else {
+            ResolvedFunctionFields {
+                offset,
+                param_count,
+                bytecode_size_bytes,
+                function_name_id,
+                info_offset: 0,
+                frame_size,
+                env_size: 0,
+                highest_read_cache_index: read_cache,
+                highest_write_cache_index: write_cache,
+            }
+        };
+        out.push(SmallFunctionHeader {
+            offset: resolved.offset,
+            param_count: resolved.param_count,
+            bytecode_size_bytes: resolved.bytecode_size_bytes,
+            function_name_id: resolved.function_name_id,
+            info_offset: resolved.info_offset,
+            frame_size: resolved.frame_size,
+            env_size: resolved.env_size,
+            highest_read_cache_index: resolved.highest_read_cache_index,
+            highest_write_cache_index: resolved.highest_write_cache_index,
+            prohibit_invoke,
+            strict_mode,
+            has_exception_handler,
+            has_debug_info,
+            overflowed,
+            kind,
+        });
+    }
+    *cursor = table_end;
+    Ok(out)
+}
+
 fn resolve_large_function_header(bytes: &[u8], base: usize) -> Option<ResolvedFunctionFields> {
     let end: usize = base.checked_add(HERMES_LARGE_FUNCTION_HEADER_SIZE)?;
     if end > bytes.len() {
@@ -733,8 +958,12 @@ fn parse_small_function_table(
     bytes: &[u8],
     cursor: &mut usize,
     count: usize,
+    version: u32,
 ) -> Result<Vec<SmallFunctionHeader>> {
     const SFH_SIZE: usize = 16;
+    if version >= HERMES_SHAPE_TABLE_VERSION {
+        return parse_v98_function_table(bytes, cursor, count, version);
+    }
     let need: usize = count
         .checked_mul(SFH_SIZE)
         .ok_or(Error::HermesFunctionOob { index: 0, count })?;
@@ -809,6 +1038,7 @@ fn parse_small_function_table(
             has_exception_handler,
             has_debug_info,
             overflowed,
+            kind: HermesFunctionKind::Normal,
         });
     }
     *cursor = table_end;
@@ -1092,6 +1322,40 @@ fn align_up(n: usize, align: usize) -> usize {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_overflowed_function_reads_its_handlers_after_the_large_header() {
+        let large_at: u32 = 0x0254_aa48;
+        let header: SmallFunctionHeader = SmallFunctionHeader {
+            offset: 0x00c2_5eb3,
+            param_count: 1,
+            bytecode_size_bytes: 350,
+            function_name_id: 0,
+            info_offset: large_at,
+            frame_size: 8,
+            env_size: 0,
+            highest_read_cache_index: 0,
+            highest_write_cache_index: 0,
+            prohibit_invoke: 0,
+            strict_mode: true,
+            has_exception_handler: true,
+            has_debug_info: true,
+            overflowed: true,
+            kind: HermesFunctionKind::Normal,
+        };
+        assert_eq!(
+            exception_table_base(&header, 96),
+            Some(0x0254_aa68),
+            "a resolved large header carries its own position as its info offset, and the \
+             handler table follows it at the next four-byte boundary"
+        );
+        let small: SmallFunctionHeader = SmallFunctionHeader {
+            overflowed: false,
+            info_offset: 0x1001,
+            ..header
+        };
+        assert_eq!(exception_table_base(&small, 96), Some(0x1004));
+    }
 
     #[test]
     fn utf16_strings_keep_surrogate_pairs_and_mark_lone_halves() {

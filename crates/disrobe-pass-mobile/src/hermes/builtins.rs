@@ -189,10 +189,186 @@ const NATIVE_BUILTINS_HBC96: &[&str] = &[
     "String.fromCharCode",
 ];
 
+const NATIVE_BUILTINS_HBC98: &[&str] = &[
+    "globalThis.Symbol",
+    "globalThis.eval",
+    "Array.isArray",
+    "Date.UTC",
+    "Date.parse",
+    "JSON.parse",
+    "JSON.stringify",
+    "Math.abs",
+    "Math.acos",
+    "Math.asin",
+    "Math.atan",
+    "Math.atan2",
+    "Math.ceil",
+    "Math.cos",
+    "Math.exp",
+    "Math.floor",
+    "Math.hypot",
+    "Math.imul",
+    "Math.log",
+    "Math.max",
+    "Math.min",
+    "Math.pow",
+    "Math.round",
+    "Math.sin",
+    "Math.sqrt",
+    "Math.tan",
+    "Math.trunc",
+    "Object.create",
+    "Object.defineProperties",
+    "Object.defineProperty",
+    "Object.freeze",
+    "Object.getOwnPropertyDescriptor",
+    "Object.getOwnPropertyNames",
+    "Object.getPrototypeOf",
+    "Object.isExtensible",
+    "Object.isFrozen",
+    "Object.keys",
+    "Object.seal",
+    "String.fromCharCode",
+];
+
+const PRIVATE_BUILTINS_V98: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "getMethod",
+    "throwTypeError",
+    "throwReferenceError",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "applyArguments",
+    "applyWithNewTarget",
+    "exportAll",
+    "exponentiationOperator",
+    "initRegexNamedGroups",
+    "functionPrototypeApply",
+    "functionPrototypeCall",
+    "spawnAsync",
+    "makeAsyncIterator",
+];
+
+const PRIVATE_BUILTINS_V99: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "getMethod",
+    "throwTypeError",
+    "throwReferenceError",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "applyArguments",
+    "applyWithNewTarget",
+    "exportAll",
+    "exponentiationOperator",
+    "initRegexNamedGroups",
+    "setFunctionName",
+    "functionPrototypeApply",
+    "functionPrototypeCall",
+    "spawnAsync",
+    "makeAsyncIterator",
+    "awaitAsyncGenerator",
+];
+
+const PRIVATE_BUILTINS_V04: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "throwTypeError",
+    "generatorSetDelegated",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "exportAll",
+    "exponentiationOperator",
+];
+
+const PRIVATE_BUILTINS_V07: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "getMethod",
+    "throwTypeError",
+    "generatorSetDelegated",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "exportAll",
+    "exponentiationOperator",
+];
+
+const PRIVATE_BUILTINS_V08: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "getMethod",
+    "throwTypeError",
+    "generatorSetDelegated",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "exportAll",
+    "exponentiationOperator",
+    "spawnAsync",
+];
+
+const PRIVATE_BUILTINS_V90: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "getMethod",
+    "throwTypeError",
+    "generatorSetDelegated",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "exportAll",
+    "exponentiationOperator",
+    "initRegexNamedGroups",
+    "spawnAsync",
+];
+
+const PRIVATE_BUILTINS_V13: &[&str] = &[
+    "silentSetPrototypeOf",
+    "requireFast",
+    "getTemplateObject",
+    "ensureObject",
+    "getMethod",
+    "throwTypeError",
+    "generatorSetDelegated",
+    "copyDataProperties",
+    "copyRestArgs",
+    "arraySpread",
+    "apply",
+    "exportAll",
+    "exponentiationOperator",
+    "initRegexNamedGroups",
+    "getOriginalNativeErrorConstructor",
+    "spawnAsync",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BuiltinTable {
     pub version: u32,
     pub methods: &'static [&'static str],
+    pub private: &'static [&'static str],
     pub template_object_id: u64,
     pub upstream_tag: &'static str,
 }
@@ -201,50 +377,93 @@ pub(crate) const BUILTIN_TABLES: &[BuiltinTable] = &[
     BuiltinTable {
         version: 62,
         methods: NATIVE_BUILTINS_HBC62,
+        private: &[],
         template_object_id: 8,
         upstream_tag: "v0.2.1",
     },
     BuiltinTable {
         version: 71,
         methods: NATIVE_BUILTINS_HBC71,
+        private: &[],
         template_object_id: 8,
         upstream_tag: "v0.3.0",
     },
     BuiltinTable {
         version: 74,
         methods: NATIVE_BUILTINS_HBC76,
+        private: PRIVATE_BUILTINS_V04,
         template_object_id: 42,
         upstream_tag: "v0.4.0",
     },
     BuiltinTable {
         version: 76,
         methods: NATIVE_BUILTINS_HBC76,
+        private: PRIVATE_BUILTINS_V07,
         template_object_id: 42,
         upstream_tag: "v0.7.2",
     },
     BuiltinTable {
         version: 83,
         methods: NATIVE_BUILTINS_HBC76,
+        private: PRIVATE_BUILTINS_V08,
         template_object_id: 42,
         upstream_tag: "v0.8.0",
     },
     BuiltinTable {
         version: 84,
         methods: NATIVE_BUILTINS_HBC76,
+        private: PRIVATE_BUILTINS_V08,
         template_object_id: 42,
         upstream_tag: "v0.11.0",
     },
     BuiltinTable {
+        version: 85,
+        methods: NATIVE_BUILTINS_HBC76,
+        private: PRIVATE_BUILTINS_V08,
+        template_object_id: 42,
+        upstream_tag: "hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111",
+    },
+    BuiltinTable {
         version: 89,
         methods: NATIVE_BUILTINS_HBC96,
+        private: PRIVATE_BUILTINS_V08,
         template_object_id: 39,
         upstream_tag: "v0.12.0",
     },
     BuiltinTable {
+        version: 90,
+        methods: NATIVE_BUILTINS_HBC96,
+        private: PRIVATE_BUILTINS_V90,
+        template_object_id: 39,
+        upstream_tag: "hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97",
+    },
+    BuiltinTable {
+        version: 94,
+        methods: NATIVE_BUILTINS_HBC96,
+        private: PRIVATE_BUILTINS_V13,
+        template_object_id: 39,
+        upstream_tag: "hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5",
+    },
+    BuiltinTable {
         version: 96,
         methods: NATIVE_BUILTINS_HBC96,
+        private: PRIVATE_BUILTINS_V13,
         template_object_id: 39,
         upstream_tag: "v0.13.0",
+    },
+    BuiltinTable {
+        version: 98,
+        methods: NATIVE_BUILTINS_HBC98,
+        private: PRIVATE_BUILTINS_V98,
+        template_object_id: 41,
+        upstream_tag: "hermes-v250829098.0.19",
+    },
+    BuiltinTable {
+        version: 99,
+        methods: NATIVE_BUILTINS_HBC98,
+        private: PRIVATE_BUILTINS_V99,
+        template_object_id: 41,
+        upstream_tag: "hermes-v260318099.0.4",
     },
 ];
 
@@ -275,8 +494,13 @@ pub fn builtin_name(version: u32, id: u64) -> String {
     {
         return (*name).to_owned();
     }
-    if get_template_object_builtin(version) == Some(id) {
-        return "$getTemplateObject".to_owned();
+    if let Some(table) = builtin_table(version)
+        && let Some(private_index) = usize::try_from(id)
+            .ok()
+            .and_then(|index: usize| index.checked_sub(methods.len()))
+        && let Some(name) = table.private.get(private_index)
+    {
+        return format!("HermesBuiltin.{name}");
     }
     format!("$builtin{id}")
 }
@@ -397,6 +621,8 @@ mod tests {
 
     #[test]
     fn the_template_object_builtin_carries_the_id_its_own_release_gives_it() {
+        assert_eq!(get_template_object_builtin(99), Some(41));
+        assert_eq!(get_template_object_builtin(98), Some(41));
         assert_eq!(get_template_object_builtin(96), Some(39));
         assert_eq!(get_template_object_builtin(89), Some(39));
         assert_eq!(get_template_object_builtin(84), Some(42));
@@ -444,16 +670,16 @@ mod tests {
                          is numbered after the public one",
                         table.upstream_tag
                     );
-                    assert_eq!(builtin_name(version, id), "$getTemplateObject");
+                    assert_eq!(builtin_name(version, id), "HermesBuiltin.getTemplateObject");
                     private_releases += 1;
                 }
             }
         }
         assert_eq!(
             (public_releases, private_releases),
-            (2, 6),
-            "hbc v62 and v71 reach getTemplateObject as a public builtin and the six later graded \
-             releases reach it as a private one; a split of any other shape means a table was \
+            (2, 11),
+            "hbc v62 and v71 reach getTemplateObject as a public builtin and the eleven later \
+             graded releases reach it as a private one; a split of any other shape means a table was \
              copied from the wrong release"
         );
 
@@ -483,7 +709,7 @@ mod tests {
 
     #[test]
     fn a_version_with_no_builtin_table_never_prints_a_name_from_another_release() {
-        for absent in [0u32, 60, 61, 63, 70, 75, 82, 90, 95, u32::MAX] {
+        for absent in [0u32, 60, 61, 63, 70, 75, 82, 87, 95, u32::MAX] {
             assert!(builtin_methods(absent).is_none(), "hbc v{absent}");
             assert_eq!(
                 builtin_name(absent, 1),
