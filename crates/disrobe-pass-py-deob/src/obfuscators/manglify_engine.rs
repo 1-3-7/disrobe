@@ -896,18 +896,18 @@ fn python_chr_of(token: &str, radix: u32) -> Result<char, Fault> {
         .ok_or(Fault::Raises)
 }
 
-const fn rot13(c: char) -> char {
+fn rot13(c: char) -> char {
     match c {
-        'A'..='Z' => (((c as u8 - b'A' + 13) % 26) + b'A') as char,
-        'a'..='z' => (((c as u8 - b'a' + 13) % 26) + b'a') as char,
+        'A'..='Z' => char::from(((c as u8 - b'A' + 13) % 26) + b'A'),
+        'a'..='z' => char::from(((c as u8 - b'a' + 13) % 26) + b'a'),
         _ => c,
     }
 }
 
-const fn atbash(c: char) -> char {
+fn atbash(c: char) -> char {
     match c {
-        'a'..='z' => (b'a' + b'z' - c as u8) as char,
-        'A'..='Z' => (b'A' + b'Z' - c as u8) as char,
+        'a'..='z' => char::from(b'a' + b'z' - c as u8),
+        'A'..='Z' => char::from(b'A' + b'Z' - c as u8),
         _ => c,
     }
 }
