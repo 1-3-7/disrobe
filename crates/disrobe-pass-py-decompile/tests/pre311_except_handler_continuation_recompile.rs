@@ -15,6 +15,7 @@ use crate::common::band::{
 };
 
 const CPYTHON_310: &[&str] = &["3.10"];
+const CPYTHON_38: &[&str] = &["3.8"];
 const HANDLER_CONTINUES_WITH_LOAD_FAST: &str = concat!(
     "def recover(value):\n",
     "    try:\n",
@@ -32,6 +33,20 @@ const TYPED_HANDLER_CONTINUES_IN_INFINITE_LOOP: &str = concat!(
     "            return None\n",
     "        except KeyError:\n",
     "            continue\n",
+);
+const NAMED_HANDLER_RETURN_IN_INFINITE_LOOP: &str = concat!(
+    "def consume(self):\n",
+    "    read = self.read\n",
+    "    dispatch = self.dispatch\n",
+    "    try:\n",
+    "        while True:\n",
+    "            key = read(1)\n",
+    "            if not key:\n",
+    "                raise EOFError\n",
+    "            assert isinstance(key, bytes)\n",
+    "            dispatch[key[0]](self)\n",
+    "    except Stop as stopinst:\n",
+    "        return stopinst.value\n",
 );
 
 #[test]
@@ -82,5 +97,33 @@ fn typed_handler_continue_after_pop_except_recompiles_on_310() {
     assert!(
         source.contains("except KeyError:") && source.contains("continue"),
         "recovered source lost the typed handler continue:\n{source}"
+    );
+}
+
+#[test]
+fn named_handler_return_in_infinite_loop_recompiles_or_refuses_on_38() {
+    let band: Vec<BandInterpreter> = resolve_band(CPYTHON_38, &[]);
+    assert_eq!(
+        band.len(),
+        1,
+        "CPython 3.8 is required to prove a named handler return after an infinite loop"
+    );
+    let scratch: PathBuf = band_scratch("pre311-named-handler-return-in-loop");
+    let (outcome, source): (BandOutcome, String) = recompile_equiv_inline(
+        &band[0],
+        NAMED_HANDLER_RETURN_IN_INFINITE_LOOP,
+        "pre311_named_handler_return_in_infinite_loop",
+        &scratch,
+    );
+    let named_refusal: bool = source.contains("def consume(")
+        && source.contains(
+            "decompile-error: ast builder desync at offset 0: try statement has neither an exception handler nor a finally clause",
+        )
+        && source.contains("\n    pass");
+    assert!(
+        matches!(outcome, BandOutcome::RecompileEquiv) || named_refusal,
+        "CPython 3.8 named handler return after an infinite loop must recompile equivalently \
+         or refuse the affected code object, never emit invalid or wrong source: \
+         {outcome:?}\n--- recovered:\n{source}"
     );
 }

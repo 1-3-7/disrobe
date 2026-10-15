@@ -21,18 +21,19 @@ use common::band_gate::{
     population_disagreements, resolve_band_interpreter,
 };
 use common::stdlib_measure::{
-    BandReach, HarnessRun, MEASURE_HARNESS, Measurement, PublishedBar, REACH_HARNESS,
-    bar_disagreements, find_disrobe, interpreter_release, interpreter_stdlib, interpreter_version,
-    manifest_dir, parse_measurement, parse_reach, population_line, recovery_document,
-    run_measure_bounded, run_reach, workspace_target,
+    BandReach, FAMILY_HARNESS, FailureFamily, HarnessRun, MEASURE_HARNESS, Measurement,
+    PublishedBar, REACH_HARNESS, bar_disagreements, find_disrobe, interpreter_release,
+    interpreter_stdlib, interpreter_version, manifest_dir, parse_family_report, parse_measurement,
+    parse_reach, population_line, recovery_document, run_family, run_measure_bounded, run_reach,
+    workspace_target,
 };
 
 const BAND_LABEL: &str = "CPython 3.8 (154 of the pinned modules)";
 const BAND_LABEL_PREFIX: &str = "CPython 3.8 (";
 const BAND_POPULATION: &str = "cpython-38-band";
 
-const OBJECT_PCT_FLOOR: f64 = 90.38;
-const BAND_OBJECTS_OK: u64 = 4_599;
+const OBJECT_PCT_FLOOR: f64 = 96.16;
+const BAND_OBJECTS_OK: u64 = 4_893;
 const BAND_CODE_OBJECTS: u64 = 5_088;
 const BAND_MODULES: u64 = 154;
 const BAND_MODULES_EXACT_FLOOR: u64 = 96;
@@ -528,5 +529,99 @@ fn arbitrary_recompile_equivalence_gate_38() {
         m.code_objects,
         m.modules,
         m.cpython_version
+    );
+}
+
+#[test]
+fn failure_family_harness_38_charges_the_enforced_population() {
+    let Some(disrobe): Option<PathBuf> = find_disrobe() else {
+        panic!(
+            "disrobe binary not found under {}/(release|debug); build it first \
+             (cargo build --release -p disrobe-cli --bin disrobe) - the failure-family harness \
+             measures the real CLI, it cannot run without it",
+            workspace_target().display()
+        );
+    };
+    let Some(python): Option<PathBuf> = resolve_band_interpreter(&CPYTHON_38, &graded()) else {
+        panic!("CPython {BAND_CPYTHON} is required to account for the 3.8 failure families");
+    };
+    let Some(release): Option<String> = interpreter_release(&python) else {
+        panic!(
+            "could not read the release of the interpreter at {}",
+            python.display()
+        );
+    };
+    assert_eq!(
+        release, BAND_CPYTHON,
+        "the failure-family harness resolved CPython {release}, not the {BAND_CPYTHON} this band names",
+    );
+    let Some(lib): Option<PathBuf> = interpreter_stdlib(&python) else {
+        panic!(
+            "could not resolve the stdlib Lib directory of {}",
+            python.display()
+        );
+    };
+    let harness: PathBuf = common::stdlib_measure::authorized_harness(FAMILY_HARNESS);
+    let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
+    assert!(
+        harness.is_file(),
+        "failure-family harness missing at {}",
+        harness.display()
+    );
+    assert!(
+        modules.is_file(),
+        "pinned module list missing at {}",
+        modules.display()
+    );
+
+    let run: HarnessRun = run_family(&python, &disrobe, &lib, &modules);
+    println!("=== CPYTHON 3.8 FAILURE FAMILIES ===");
+    println!("interpreter : {} ({release})", python.display());
+    println!("disrobe     : {}", disrobe.display());
+    println!("--- family table (stderr) ---\n{}", run.stderr);
+    assert!(
+        run.success,
+        "the failure-family harness exited {:?}; it must run on CPython {BAND_CPYTHON} and \
+         account for every failed code object\nstdout:\n{}\nstderr:\n{}",
+        run.code, run.stdout, run.stderr
+    );
+
+    let report = parse_family_report(&run.stdout).unwrap_or_else(|error: String| panic!("{error}"));
+    assert_eq!(
+        report.cpython_version, BAND_CPYTHON,
+        "the failure-family harness ran on CPython {}, not {BAND_CPYTHON}",
+        report.cpython_version
+    );
+    let measured: BandPopulation = BandPopulation {
+        objects_ok: report.objects_ok,
+        code_objects: report.code_objects,
+        modules: report.modules,
+    };
+    let disagreements: Vec<String> = population_disagreements(&measured, &enforced_bar());
+    assert!(
+        disagreements.is_empty(),
+        "the failure-family harness must walk the exact 3.8 band population ({} / {} over {} \
+         modules), and it measured {} / {} over {} modules: {disagreements:?}",
+        BAND_OBJECTS_OK,
+        BAND_CODE_OBJECTS,
+        BAND_MODULES,
+        report.objects_ok,
+        report.code_objects,
+        report.modules
+    );
+    let charged: u64 = report
+        .families
+        .iter()
+        .map(|family: &FailureFamily| family.objects)
+        .sum();
+    assert_eq!(
+        report.failing_objects,
+        BAND_CODE_OBJECTS - BAND_OBJECTS_OK,
+        "the failure-family harness reported a shortfall inconsistent with the enforced 3.8 band"
+    );
+    assert_eq!(
+        charged, report.failing_objects,
+        "the failure-family harness charged {charged} code objects but reported {} failures",
+        report.failing_objects
     );
 }

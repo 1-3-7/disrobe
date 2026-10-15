@@ -474,7 +474,21 @@ pub(crate) fn parse_reach(stdout: &str) -> Result<BandReach, String> {
 #[must_use]
 pub(crate) fn run_family(python: &Path, disrobe: &Path, lib: &Path, modules: &Path) -> HarnessRun {
     let harness: PathBuf = authorized_harness(FAMILY_HARNESS);
+    let launcher: &str = concat!(
+        "import builtins, runpy, sys\n",
+        "if sys.version_info < (3, 10):\n",
+        "    original_zip = builtins.zip\n",
+        "    def checked_zip(*iterables, **options):\n",
+        "        if options == {'strict': True} and all(hasattr(item, '__len__') for item in iterables) and len({len(item) for item in iterables}) <= 1:\n",
+        "            return original_zip(*iterables)\n",
+        "        return original_zip(*iterables, **options)\n",
+        "    builtins.zip = checked_zip\n",
+        "sys.argv = sys.argv[1:]\n",
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n",
+    );
     let output: std::process::Output = Command::new(python)
+        .arg("-c")
+        .arg(launcher)
         .arg(&harness)
         .arg("--disrobe")
         .arg(disrobe)

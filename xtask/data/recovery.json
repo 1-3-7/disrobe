@@ -10,11 +10,11 @@
       "bars": [
         {
           "label": "fixed 574-module core population",
-          "value": 95.18,
-          "num": 17396,
+          "value": 96.5,
+          "num": 17637,
           "den": 18276,
           "modules": 574,
-          "detail": "17396 / 18276 code objects across 574 CPython 3.14.5 core modules, excluding idlelib and turtledemo. The comparator checks normalized opcode streams and three argument-count fields; it omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. The percentage is truncated to two decimal places. The committed full_modules_314.txt list defines the population.",
+          "detail": "17637 / 18276 code objects across 574 CPython 3.14.5 core modules, excluding idlelib and turtledemo. The comparator checks normalized opcode streams and three argument-count fields; it omits jump targets, most operands, and __annotate__ objects, and does not penalize additional recovered objects. The percentage is truncated to two decimal places. The committed full_modules_314.txt list defines the population.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py over crates/disrobe-pass-py-decompile/tests/harness/full_modules_314.txt (574 modules, 18276 code objects, CPython 3.14.5)",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/full_stdlib_recompile_gate.rs",
@@ -47,10 +47,10 @@
       "bars": [
         {
           "label": "CPython 3.8 (154 of the pinned modules)",
-          "value": 90.38,
-          "num": 4599,
+          "value": 96.16,
+          "num": 4893,
           "den": 5088,
-          "detail": "4599 / 5088 code objects over 154 modules on CPython 3.8.20. It was measured on Linux x86-64 in CI. 46 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "4893 / 5088 code objects over 154 modules on CPython 3.8.20. It was measured on Windows x86_64. 46 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.8.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_38.rs",
