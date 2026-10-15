@@ -72,3 +72,48 @@ benches/ghidra-cleaner-input/snapshots/** -text
 benches/ghidra-unpack/snapshots/** -text
 benches/perf/golden.txt -text
 crates/disrobe-lift-x86/tests/corpus/** -text
+crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py text eol=lf
+crates/disrobe-pass-py-decompile/tests/harness/py_failure_families.py text eol=lf
+crates/disrobe-pass-py-decompile/tests/harness/py_band_bytecode_reach.py text eol=lf
+crates/disrobe-pass-py-decompile/tests/harness/py_tier_differential.py text eol=lf
+crates/disrobe-pass-pickle/tests/roundtrip_harness.py -text
+crates/disrobe-lift-x86/tests/pypcode_oracle.py text eol=lf
+crates/disrobe-lift-x86/tests/unicorn_oracle.py text eol=lf
+crates/disrobe-pass-shell/tests/xlm_reference_driver.py text eol=lf
+corpus/r/describe.R text eol=lf
+corpus/python/sourcedefender/legacy_bytecode.py text eol=lf
+corpus/php/oparray/emit_dzoa.php text eol=lf
+corpus/php/oparray/src/arithmetic.php text eol=lf
+corpus/php/oparray/src/closure_bodies.php text eol=lf
+corpus/php/oparray/src/closures.php text eol=lf
+corpus/php/oparray/src/control_flow.php text eol=lf
+corpus/php/oparray/src/do_while.php text eol=lf
+corpus/php/oparray/src/dynamic_members.php text eol=lf
+corpus/php/oparray/src/functions.php text eol=lf
+corpus/php/oparray/src/generators.php text eol=lf
+corpus/php/oparray/src/goto_forward.php text eol=lf
+corpus/php/oparray/src/goto_shapes.php text eol=lf
+corpus/php/oparray/src/interpolation.php text eol=lf
+corpus/php/oparray/src/keyed_foreach.php text eol=lf
+corpus/php/oparray/src/match_optimized.php text eol=lf
+corpus/php/oparray/src/members.php text eol=lf
+corpus/php/oparray/src/nullsafe.php text eol=lf
+corpus/php/oparray/src/nullsafe_calls.php text eol=lf
+corpus/php/oparray/src/objects.php text eol=lf
+corpus/php/oparray/src/references.php text eol=lf
+corpus/php/oparray/src/spaceship.php text eol=lf
+corpus/php/oparray/src/switch_linear.php text eol=lf
+corpus/php/oparray/src/switch_optimized.php text eol=lf
+corpus/php/oparray/src/type_checks.php text eol=lf
+corpus/php/oparray/src/unset_cv.php text eol=lf
+corpus/php/oparray/src/variable_variable.php text eol=lf
+corpus/php/oparray/src/versioned.php text eol=lf
+crates/disrobe-pass-php/tests/fixtures/oparray_fetch_is/fetch_is.php text eol=lf
+crates/disrobe-pass-php/tests/fixtures/oparray_callable/callable_convert.php text eol=lf
+crates/disrobe-pass-php/tests/fixtures/oparray_variadic/variadic.php text eol=lf
+corpus/ruby/mri/yarv/recompile_oracle.rb text eol=lf
+corpus/ruby/hello.rb text eol=lf
+corpus/ruby/greeter.rb text eol=lf
+corpus/ruby/megafile/edge_cases.rb text eol=lf
+corpus/ruby/mri/yarv/literals.rb text eol=lf
+corpus/ruby/mri/yarv/opassign.rb text eol=lf
