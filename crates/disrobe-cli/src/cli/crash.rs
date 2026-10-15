@@ -1,6 +1,9 @@
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use disrobe_dataforensics::crash::{CrashLimits, CrashReport, Location, ThreadReport, inspect};
+use disrobe_dataforensics::crash::{
+    Access, CrashLimits, CrashReport, Location, ThreadReport, inspect,
+};
 
 use crate::cli::output::{self, OutputFormat};
 
@@ -86,28 +89,35 @@ fn render(report: &CrashReport, registers: bool) {
             fault.code
         );
         if let Some(reason) = fault.reason {
-            line.push_str(&format!(" {reason}"));
+            let _ = write!(line, " {reason}");
         }
         if let Some(access) = fault.access {
-            line.push_str(&format!(" {access:?}").to_lowercase());
+            let label: &str = match access {
+                Access::Read => "read",
+                Access::Write => "write",
+                Access::Execute => "execute",
+            };
+            let _ = write!(line, " {label}");
         }
         if let Some(address) = fault.data_address {
-            line.push_str(&format!(
+            let _ = write!(
+                line,
                 " at data 0x{address:x}{}",
                 place(fault.data_location.as_ref())
-            ));
+            );
         }
         if let Some(address) = fault.instruction_address {
-            line.push_str(&format!(
+            let _ = write!(
+                line,
                 " by instruction 0x{address:x}{}",
                 place(fault.instruction_location.as_ref())
-            ));
+            );
         }
         if let Some(thread) = fault.thread_id {
-            line.push_str(&format!(" on thread {thread}"));
+            let _ = write!(line, " on thread {thread}");
         }
         if let Some(sender) = fault.sender {
-            line.push_str(&format!(" sent by pid {} uid {}", sender.pid, sender.uid));
+            let _ = write!(line, " sent by pid {} uid {}", sender.pid, sender.uid);
         }
         println!("{line}");
     }
