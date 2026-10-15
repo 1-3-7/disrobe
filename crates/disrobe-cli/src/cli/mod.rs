@@ -148,6 +148,8 @@ pub(crate) mod report_html;
 pub(crate) mod resources;
 #[cfg(feature = "ruby")]
 pub(crate) mod ruby;
+#[cfg(feature = "nativelang")]
+pub(crate) mod rust;
 pub(crate) mod sarif;
 pub(crate) mod scan;
 pub(crate) mod self_update;

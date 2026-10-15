@@ -106,6 +106,8 @@ use cli::rename;
 use cli::report::{self, ReportFormat};
 #[cfg(feature = "ruby")]
 use cli::ruby::{self, RubyCmd};
+#[cfg(feature = "nativelang")]
+use cli::rust::{self as rust_cmd, RustCmd};
 use cli::scan;
 use cli::self_update as self_update_cmd;
 use cli::semdiff;
@@ -839,6 +841,14 @@ enum Cmd {
     Go {
         #[command(subcommand)]
         action: GoCmd,
+    },
+    #[cfg(feature = "nativelang")]
+    #[command(
+        about = "Rust binary inventory: rustc release, crates and versions, cargo-auditable dependency graph, per-crate symbol counts (PE / ELF / Mach-O)"
+    )]
+    Rust {
+        #[command(subcommand)]
+        action: RustCmd,
     },
     #[cfg(feature = "swift")]
     #[command(
@@ -2242,6 +2252,8 @@ fn main() -> miette::Result<()> {
         Cmd::Plugin { action } => plugin::run(action),
         #[cfg(feature = "go")]
         Cmd::Go { action } => go::run(action),
+        #[cfg(feature = "nativelang")]
+        Cmd::Rust { action } => rust_cmd::run(action),
         #[cfg(feature = "swift")]
         Cmd::Swift { action } => swift::run(action),
         #[cfg(feature = "as3")]

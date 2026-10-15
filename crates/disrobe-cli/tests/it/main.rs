@@ -467,6 +467,9 @@ mod report_forensic_e2e;
 #[path = "../resources_cli.rs"]
 mod resources_cli;
 
+#[path = "../rust_inventory_cli.rs"]
+mod rust_inventory_cli;
+
 #[path = "../sarif_emit.rs"]
 mod sarif_emit;
 
