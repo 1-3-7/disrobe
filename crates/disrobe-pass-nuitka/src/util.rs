@@ -1,12 +1,6 @@
 use disrobe_core::debug::{DebugLog, guard_secret_shaped};
 
-pub(crate) fn debug_log() -> DebugLog {
-    DebugLog::for_scope("nuitka")
-}
-
-pub(crate) fn dbg_enabled() -> bool {
-    debug_log().on()
-}
+disrobe_core::debug_scope!("nuitka", enabled, line);
 
 pub(crate) fn pe_overlay_offset(image: &[u8]) -> Option<usize> {
     if image.len() < 0x40 || &image[0..2] != b"MZ" {
@@ -71,10 +65,6 @@ pub(crate) fn pe_data_section_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>
         }
     }
     (!ranges.is_empty()).then_some(ranges)
-}
-
-pub(crate) fn dbg_line(msg: impl FnOnce() -> String) {
-    debug_log().line(msg);
 }
 
 pub(crate) fn dbg_guarded(label: &str, value: &str) {
