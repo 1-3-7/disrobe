@@ -68,6 +68,10 @@ whose contents are not valid UTF-8 are all covered.
 
 The pass is validated against a go1.26.3 fixture, and the test suite gates type-name recovery at >= <!-- m:go_typename_pct -->85%<!-- /m --> on that fixture; <!-- m:go_typename_count -->838 of 838<!-- /m --> type names (100%) are recovered at HEAD, a count the gate now pins by equality, since the `typelinks` and `moduledata` tables survive `-s -w` stripping. Big-endian recovery has its own oracle: a cross-built stripped linux/s390x binary is parsed as a big-endian ELF and its named type and itab pairs are recovered by back-searching the metadata tables, graded against the build (`go_bigendian_recovery.rs`).
 
+An independent grade over the unstripped PE fixture compares descriptor addresses and names with Go's `DW_AT_go_runtime_type` records. Typelinks recovery matches 373 of 699 DWARF runtime types. This denominator is broader than the 838-of-838 typelinks-internal figure above.
+
+The committed Go-version matrix additionally checks Go 1.17, 1.18, 1.20, and the current toolchain on linux/amd64, linux/amd64 PIE, and linux/arm64. Its unstripped ELF binaries carry the matching `go tool nm` and `go tool objdump` records; recovery must retain the reported user method names and the `Parcel` and `Ledger` type and field names from each build.
+
 ## Limits
 
 - The deliverable is symbols, types, and embedded data, not source bodies.
