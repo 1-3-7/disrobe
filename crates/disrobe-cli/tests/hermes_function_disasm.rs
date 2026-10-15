@@ -237,10 +237,15 @@ fn a_version_without_an_opcode_table_is_refused_before_decode() {
     let output: Output = run_disasm(&input, &["--function", "0"]);
     assert!(!output.status.success());
     let stderr: String = String::from_utf8(output.stderr).expect("UTF-8 refusal");
-    assert!(stderr.contains("DR-CLI-0876"), "{stderr}");
-    assert!(stderr.contains("version 75"), "{stderr}");
+    let unwrapped: String = stderr
+        .split_whitespace()
+        .filter(|word: &&str| *word != "│")
+        .collect::<Vec<&str>>()
+        .join(" ");
+    assert!(unwrapped.contains("DR-CLI-0876"), "{stderr}");
+    assert!(unwrapped.contains("version 75"), "{stderr}");
     assert!(
-        stderr.contains("[62, 71, 74, 76, 83, 84, 89, 96]"),
+        unwrapped.contains("[62, 71, 74, 76, 83, 84, 85, 89, 90, 94, 96, 98, 99]"),
         "{stderr}"
     );
 }
