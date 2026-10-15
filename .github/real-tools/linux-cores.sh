@@ -25,7 +25,8 @@ for program in segv abort threads stack; do
   input="corpus/crash/linux/src/$program.c"
   test -f "$REPO/$input"
   binary="$RUNNER_TEMP/$program"
-  gcc -O0 -g -pthread -fno-omit-frame-pointer -o "$binary" "$REPO/$input"
+  gcc -O0 -g -pthread -fno-omit-frame-pointer -ffile-prefix-map="$REPO"=. -ffile-prefix-map="$RUNNER_TEMP"=/tmp \
+    -o "$binary" "$REPO/$input"
   rm -f "$cores"/core."$program".*
   ( cd "$RUNNER_TEMP" && ulimit -c unlimited && "$binary" ) || true
   core="$(ls "$cores"/core."$program".* 2>/dev/null | head -n 1 || true)"

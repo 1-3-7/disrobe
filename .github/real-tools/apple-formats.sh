@@ -54,8 +54,10 @@ classes="$REPO/corpus/apple/src/classes"
 build="$RUNNER_TEMP/classes"
 mkdir -p "$build"
 command="clang -target arm64-apple-ios15.0 -fobjc-arc -c Legacy.m; swiftc -target arm64-apple-ios15.0 -emit-library -module-name Fixture Views.swift Legacy.o -o Fixture.dylib"
-if xcrun -sdk iphoneos clang -target arm64-apple-ios15.0 -fobjc-arc -O1 -c "$classes/Legacy.m" -o "$build/Legacy.o" \
-  && xcrun -sdk iphoneos swiftc -target arm64-apple-ios15.0 -O -emit-library -module-name Fixture \
+if xcrun -sdk iphoneos clang -target arm64-apple-ios15.0 -fobjc-arc -O1 -ffile-prefix-map="$REPO"=. \
+    -c "$classes/Legacy.m" -o "$build/Legacy.o" \
+  && xcrun -sdk iphoneos swiftc -target arm64-apple-ios15.0 -O -file-prefix-map "$REPO"=. \
+    -file-prefix-map "$RUNNER_TEMP"=/tmp -emit-library -module-name Fixture \
     "$classes/Views.swift" "$build/Legacy.o" -o "$OUT/files/Fixture.dylib" \
   && test -s "$OUT/files/Fixture.dylib"; then
   xcrun nm -m "$OUT/files/Fixture.dylib" > "$OUT/files/Fixture.dylib.nm.txt"
