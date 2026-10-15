@@ -103,3 +103,25 @@ fn ms_x64_xmm_saves_are_frame_management_only_at_the_frame_edges() {
     let live: String = refusal(&live_restore, Abi::MsX64);
     assert!(live.contains("is read afterwards"), "{live}");
 }
+
+#[test]
+fn a_callee_saved_pop_before_a_ms_x64_tail_jump_is_frame_management() {
+    let restore_then_tail_jump: [u8; 13] = [
+        0x57, 0x48, 0x89, 0xcf, 0x48, 0x89, 0xf9, 0x5f, 0xe9, 0xf3, 0x0f, 0x00, 0x00,
+    ];
+    assert!(
+        plan(&restore_then_tail_jump, Abi::MsX64)
+            .expect("push rdi; mov rdi, rcx; mov rcx, rdi; pop rdi; jmp 0x2000")
+            .is_empty()
+    );
+    let sysv: String = refusal(&restore_then_tail_jump, Abi::SysV);
+    assert!(sysv.contains("after the register changed"), "{sysv}");
+    let argument_restored: [u8; 13] = [
+        0x51, 0x48, 0x89, 0xd1, 0x48, 0x89, 0xc8, 0x59, 0xe9, 0xf3, 0x0f, 0x00, 0x00,
+    ];
+    let argument: String = refusal(&argument_restored, Abi::MsX64);
+    assert!(
+        argument.contains("after the register changed"),
+        "{argument}"
+    );
+}

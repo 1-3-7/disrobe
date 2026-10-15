@@ -64,7 +64,7 @@ const MAX_CALLEE_FUNCTIONS: usize = 64;
 
 const MAX_CALLEE_BYTES: usize = 1 << 16;
 
-const fn volatile_gprs(abi: Abi) -> &'static [Reg] {
+pub(super) const fn volatile_gprs(abi: Abi) -> &'static [Reg] {
     match abi {
         Abi::SysV => &SYSV_VOLATILE,
         Abi::MsX64 => &MS_X64_VOLATILE,
@@ -648,7 +648,8 @@ impl Context<'_> {
                 |call: &&ResolvedCall| consumed_call_integer_registers(&call.signature),
             ),
             CallTarget::NoreturnLibrary(_) | CallTarget::RustPanicBoundsCheck => Ok(args.to_vec()),
-            CallTarget::DirectTrap(_) => Ok(Vec::new()),
+            CallTarget::Register => Ok(args.iter().take(1).copied().collect()),
+            CallTarget::Slot(_) | CallTarget::DirectTrap(_) => Ok(Vec::new()),
         }
     }
 
@@ -750,6 +751,50 @@ fn successors(items: &[Item], first_at: &BTreeMap<u64, usize>, index: usize) -> 
     }
 }
 
+fn refuse_pointer_calls_beside_fp_arguments(items: &[Item], abi: Abi) -> Result<()> {
+    let argument_registers: u8 = match abi {
+        Abi::MsX64 => 4,
+        Abi::SysV => 8,
+        Abi::Aapcs64 => return Ok(()),
+    };
+    let Some(open): Option<&Item> = items.iter().find(|item: &&Item| {
+        matches!(
+            &item.kind,
+            ItemKind::Stmt(Stmt::Call {
+                target: CallTarget::Slot(_) | CallTarget::Register,
+                ..
+            })
+        )
+    }) else {
+        return Ok(());
+    };
+    let touches_fp_argument = |item: &&Item| -> bool {
+        let mut registers: Vec<u8> = Vec::new();
+        match &item.kind {
+            ItemKind::Stmt(stmt) => {
+                fp_reads(stmt, &mut registers);
+                registers.extend(fp_writes(stmt));
+            }
+            ItemKind::Branch { flags, .. } => {
+                registers.extend(flag_operand_xmms(flags).into_iter().map(super::Xmm::index));
+            }
+            ItemKind::Jmp { .. } | ItemKind::Switch { .. } | ItemKind::Ret => {}
+        }
+        registers
+            .iter()
+            .any(|index: &u8| *index < argument_registers)
+    };
+    items
+        .iter()
+        .find(touches_fp_argument)
+        .map_or(Ok(()), |fp: &Item| {
+            Err(Error::LlvmIr(format!(
+                "the call through a pointer at {:#x} has no known signature and the function uses a floating-point argument register at {:#x}; a floating-point argument the call IR cannot carry may be passed",
+                open.address, fp.address
+            )))
+        })
+}
+
 pub(super) fn refuse_reads_after_calls(
     items: &[Item],
     abi: Abi,
@@ -767,6 +812,7 @@ pub(super) fn refuse_reads_after_calls(
         .iter()
         .map(|call: &ResolvedCall| (call.target, call))
         .collect();
+    refuse_pointer_calls_beside_fp_arguments(items, abi)?;
     let context: Context<'_> = Context {
         abi,
         resolved: &resolved,

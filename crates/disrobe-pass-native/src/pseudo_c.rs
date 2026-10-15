@@ -37,13 +37,17 @@ pub(crate) mod aarch64;
 mod aarch64_callsite;
 mod call_clobber;
 mod dividend_high;
+mod frame_escape;
 pub use aarch64::SCALAR_FP_LOWERED_MNEMONICS as AARCH64_SCALAR_FP_LOWERED_MNEMONICS;
 pub mod fp_semantics;
 mod idiom;
 mod invariant_branches;
+mod outgoing_args;
 mod return_channel;
 mod spill;
+mod stack_depth;
 mod stack_transfer;
+mod vector_zero;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -119,6 +123,15 @@ pub enum Reg {
     X86Stack5,
     X86Stack6,
     X86Stack7,
+    X86Out0,
+    X86Out1,
+    X86Out2,
+    X86Out3,
+    X86Out4,
+    X86Out5,
+    X86Out6,
+    X86Out7,
+    X86Scratch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1410,6 +1423,8 @@ enum VecStmt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CallTarget {
     Address(u64),
+    Slot(u64),
+    Register,
     DirectTrap(DirectTrap),
     NoreturnLibrary(&'static NoreturnLibraryFunction),
     RustPanicBoundsCheck,
@@ -2820,6 +2835,9 @@ struct ObjectTransferFacts {
     msvc_cookie_load_sites: BTreeSet<u64>,
     msvc_cookie_check_sites: BTreeSet<u64>,
     callee_clobbers: BTreeMap<u64, call_clobber::CalleeClobbers>,
+    import_slots: BTreeMap<u64, ImportSlot>,
+    guard_dispatch_slot: Option<u64>,
+    linked_image: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2893,6 +2911,72 @@ fn is_direct_transfer(insn: &DisasmInsn) -> bool {
         && parse_branch_target(&insn.operands).is_some()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportSlot {
+    name: String,
+    register_arity: Option<usize>,
+}
+
+const MS_X64_CRT_LIBRARY_PREFIXES: [&str; 4] =
+    ["api-ms-win-crt-", "ucrtbase", "msvcrt", "vcruntime"];
+
+fn import_register_arity(database: &SigDb, library: &str, name: &str) -> Option<usize> {
+    let lowered: String = library.to_ascii_lowercase();
+    let prototype: &disrobe_typerec::Prototype = if MS_X64_CRT_LIBRARY_PREFIXES
+        .iter()
+        .any(|prefix: &&str| lowered.starts_with(prefix))
+    {
+        database.lookup("libc", name, TypeRecAbi::SysV)?
+    } else {
+        database.lookup(&lowered, name, TypeRecAbi::Win64)?
+    };
+    let integer_only: bool = prototype
+        .params
+        .iter()
+        .all(|parameter: &disrobe_typerec::Param| {
+            !matches!(parameter.ty, Ty::Float(_) | Ty::Struct(_))
+        });
+    (integer_only && !prototype.varargs && prototype.param_count() <= Abi::MsX64.arg_order().len())
+        .then(|| prototype.param_count())
+}
+
+const MAX_IMPORT_SLOTS: usize = 65_536;
+
+fn pe_import_slots(image: &[u8]) -> BTreeMap<u64, ImportSlot> {
+    let Ok(pe): core::result::Result<goblin::pe::PE<'_>, goblin::error::Error> =
+        goblin::pe::PE::parse(image)
+    else {
+        return BTreeMap::new();
+    };
+    let database: SigDb = SigDb::builtin();
+    pe.imports
+        .iter()
+        .filter(|import| !import.name.is_empty())
+        .take(MAX_IMPORT_SLOTS)
+        .map(|import| {
+            (
+                pe.image_base.wrapping_add(import.offset as u64),
+                ImportSlot {
+                    name: import.name.to_string(),
+                    register_arity: import_register_arity(&database, import.dll, &import.name),
+                },
+            )
+        })
+        .collect()
+}
+
+fn rip_relative_transfer_slot(insn: &DisasmInsn) -> Option<u64> {
+    if !matches!(insn.mnemonic.as_str(), "call" | "jmp") {
+        return None;
+    }
+    let decoded: iced_x86::Instruction = decode_one_x86(64, insn.address, &insn.bytes)?;
+    (decoded.op_count() == 1
+        && decoded.op0_kind() == iced_x86::OpKind::Memory
+        && decoded.is_ip_rel_memory_operand()
+        && decoded.memory_size().size() == 8)
+        .then(|| decoded.ip_rel_memory_address())
+}
+
 fn leaves_unconditionally(insn: &DisasmInsn) -> bool {
     matches!(insn.mnemonic.as_str(), "call" | "jmp")
 }
@@ -2905,7 +2989,22 @@ fn object_transfer_facts(
 ) -> ObjectTransferFacts {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
-    let mut facts: ObjectTransferFacts = ObjectTransferFacts::default();
+    let mut facts: ObjectTransferFacts = ObjectTransferFacts {
+        linked_image: object::File::parse(object).is_ok_and(|file: object::File<'_>| {
+            matches!(
+                file.kind(),
+                object::ObjectKind::Executable | object::ObjectKind::Dynamic
+            )
+        }),
+        ..ObjectTransferFacts::default()
+    };
+    if insns
+        .iter()
+        .any(|insn: &DisasmInsn| rip_relative_transfer_slot(insn).is_some())
+    {
+        facts.import_slots = pe_import_slots(object);
+        facts.guard_dispatch_slot = pe_guard_dispatch_slot(object);
+    }
     let transfers: Vec<&DisasmInsn> = insns
         .iter()
         .filter(|insn: &&DisasmInsn| is_direct_transfer(insn))
@@ -3344,48 +3443,62 @@ fn msvc_cookie_guard_sequence_sites(
         else {
             continue;
         };
-        if saved_register != cookie_register
-            || saved_cookie.base != Some(Reg::Rsp)
-            || saved_cookie.index.is_some()
-        {
+        let Some(cookie_base): Option<Reg> = saved_cookie
+            .base
+            .filter(|base: &Reg| matches!(base, Reg::Rsp | Reg::Rbp))
+        else {
+            continue;
+        };
+        if saved_register != cookie_register || saved_cookie.index.is_some() {
             continue;
         }
-        let mut check: Option<(usize, RegRef)> = None;
+        let mut checks: Vec<usize> = Vec::new();
+        let mut other_access: bool = false;
         for (index, candidate) in insns.iter().enumerate().skip(load_index + 3) {
             if let Some((register, memory)) = mov_reg_mem(candidate)
                 && memory == saved_cookie
             {
-                check = Some((index, register));
-                break;
+                let checked: bool = register.reg == Reg::Rcx
+                    && insns
+                        .get(index + 1)
+                        .is_some_and(|mix: &DisasmInsn| xor_register_rsp(mix, register))
+                    && insns.get(index + 2).is_some_and(|call: &DisasmInsn| {
+                        cookie_check_sites.contains(&call.address)
+                    });
+                if checked {
+                    checks.push(index);
+                } else {
+                    other_access = true;
+                }
+                continue;
             }
-            if candidate.mnemonic.starts_with('j') || candidate.mnemonic == "ret" {
-                break;
-            }
+            other_access |= candidate.mnemonic != "lea"
+                && base_relative_accesses(candidate, cookie_base).any(
+                    |(disp, bytes): (i64, i64)| {
+                        disp < saved_cookie.disp.saturating_add(8)
+                            && disp.saturating_add(bytes) > saved_cookie.disp
+                    },
+                );
         }
-        let Some((check_index, check_register)): Option<(usize, RegRef)> = check else {
+        let Some(&first_check): Option<&usize> = checks.first() else {
             continue;
         };
-        let Some(mix): Option<&DisasmInsn> = insns.get(check_index + 1) else {
-            continue;
-        };
-        let Some(call): Option<&DisasmInsn> = insns.get(check_index + 2) else {
-            continue;
-        };
-        if check_register.reg != Reg::Rcx
-            || !xor_register_rsp(mix, check_register)
-            || !cookie_check_sites.contains(&call.address)
-        {
+        if other_access {
             continue;
         }
         sequence_sites.extend([
             load.address,
             insns[load_index + 1].address,
             insns[load_index + 2].address,
-            insns[check_index].address,
-            mix.address,
-            call.address,
         ]);
-        if let Some((spill, reload)) = msvc_cookie_home_pair(insns, load_index, check_index) {
+        for &check_index in &checks {
+            sequence_sites.extend(
+                insns[check_index..check_index + 3]
+                    .iter()
+                    .map(|insn: &DisasmInsn| insn.address),
+            );
+        }
+        if let Some((spill, reload)) = msvc_cookie_home_pair(insns, load_index, first_check) {
             sequence_sites.insert(spill);
             sequence_sites.insert(reload);
         }
@@ -3598,6 +3711,32 @@ fn pe_security_cookie_va(image: &[u8]) -> Option<u64> {
     let cookie: u64 =
         disrobe_bytes::read_u64_le_at(image, at + LOAD_CONFIG64_SECURITY_COOKIE_OFFSET).ok()?;
     (cookie != 0).then_some(cookie)
+}
+
+const LOAD_CONFIG64_GUARD_DISPATCH_OFFSET: usize = 0x78;
+
+fn pe_guard_dispatch_slot(image: &[u8]) -> Option<u64> {
+    let pe: crate::packers::pe_sections::PeImage =
+        crate::packers::pe_sections::parse_pe_image(image).ok()?;
+    if !pe.is_pe32_plus {
+        return None;
+    }
+    let directory: &crate::packers::pe_sections::DataDirectory =
+        pe.data_directories.get(LOAD_CONFIG_DIRECTORY_INDEX)?;
+    let declared: usize = directory.size as usize;
+    if directory.virtual_address == 0 || declared < LOAD_CONFIG64_GUARD_DISPATCH_OFFSET + 8 {
+        return None;
+    }
+    let at: usize = pe
+        .file_offset_for_rva(directory.virtual_address, image.len())
+        .ok()?;
+    let structure_size: usize = disrobe_bytes::read_u32_le_at(image, at).ok()? as usize;
+    if structure_size < LOAD_CONFIG64_GUARD_DISPATCH_OFFSET + 8 {
+        return None;
+    }
+    let slot: u64 =
+        disrobe_bytes::read_u64_le_at(image, at + LOAD_CONFIG64_GUARD_DISPATCH_OFFSET).ok()?;
+    (slot != 0).then_some(slot)
 }
 
 fn rip_relative_target(insn: &DisasmInsn) -> Option<u64> {
@@ -4439,7 +4578,13 @@ fn proven_program_integer64_tail_targets(
             .relocated_branch_targets
             .get(&insn.address)
             .copied();
-        if insn.mnemonic != "jmp" && relocated_target.is_none() {
+        let leaves_by_condition: bool = transfers.linked_image
+            && insn.mnemonic.starts_with('j')
+            && parse_branch_target(&insn.operands).is_some_and(|target: u64| {
+                target < function.address
+                    || target.saturating_sub(function.address) >= function.code.len() as u64
+            });
+        if insn.mnemonic != "jmp" && relocated_target.is_none() && !leaves_by_condition {
             continue;
         }
         let Some(target): Option<u64> = parse_branch_target(&insn.operands) else {
@@ -4455,11 +4600,42 @@ fn proven_program_integer64_tail_targets(
         let Some(callee): Option<&&ProgramFunction> = by_addr.get(&sibling_address) else {
             continue;
         };
-        if straight_line_integer64_return_is_proven(object, callee, abi) {
+        if straight_line_integer64_return_is_proven(object, callee, abi)
+            || register_argument_integer_callee_recovers(object, callee, abi)
+        {
             proven.insert(sibling_address);
         }
     }
     proven
+}
+
+fn register_argument_integer_callee_recovers(
+    object: &[u8],
+    callee: &ProgramFunction,
+    abi: Abi,
+) -> bool {
+    if abi != Abi::MsX64 {
+        return false;
+    }
+    let Ok(recovery): Result<LeafRecovery> =
+        recover_leaf_function_in_object(object, &callee.code, callee.address, abi, &[])
+    else {
+        return false;
+    };
+    let register_slots: usize = abi.arg_order().len();
+    recovery.returns_fp.is_none()
+        && recovery.sret.is_none()
+        && recovery
+            .signature
+            .parameter_bindings()
+            .iter()
+            .all(|binding: &ParameterBinding| match binding {
+                ParameterBinding::Integer { register, .. } => !is_x86_stack_argument_reg(*register),
+                ParameterBinding::UnobservedMsX64 { slot } => usize::from(*slot) < register_slots,
+                ParameterBinding::FloatingPoint { .. }
+                | ParameterBinding::StackFloatingPoint { .. }
+                | ParameterBinding::Vector { .. } => false,
+            })
 }
 
 fn recover_program_function(
@@ -4588,6 +4764,9 @@ fn resolve_relocated_call_target(
                 continue;
             };
             let sym: object::Symbol<'_, '_> = file.symbol_by_index(sym_index).ok()?;
+            if sym.is_undefined() {
+                return None;
+            }
             let effective: i64 = reloc_effective_addend(&reloc, section_data, offset, 4).ok()?;
             let sym_addr: i64 = i64::try_from(sym.address()).ok()?;
             let resolved: i64 = sym_addr.checked_add(effective)?.checked_add(4)?;
@@ -4666,9 +4845,9 @@ fn drop_resolved_sibling_externs(source: &str, resolved_names: &[String]) -> Str
 }
 
 struct LeafItems {
-    insns: Vec<DisasmInsn>,
     items: Vec<Item>,
     return_width: Width,
+    frame_shape: FrameShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4828,11 +5007,12 @@ fn classify_direct_jump_exit(
     instruction_index: usize,
     items: &[Item],
     proven_integer64_tail_targets: &BTreeSet<u64>,
-    base: u64,
-    function_end: u64,
+    function: std::ops::Range<u64>,
     target: u64,
     relocated_branch: bool,
+    entry_stack_at_jump: bool,
 ) -> Result<DirectJumpExit> {
+    let function_end: u64 = function.end;
     let insn: &DisasmInsn = insns.get(instruction_index).ok_or_else(|| {
         Error::LlvmIr("direct jump index is outside the decoded instruction stream".to_owned())
     })?;
@@ -4855,7 +5035,7 @@ fn classify_direct_jump_exit(
             });
     if !proven_integer64_tail_targets.contains(&target)
         || instruction_end > function_end
-        || (base..function_end).contains(&target)
+        || function.contains(&target)
     {
         return Ok(DirectJumpExit::Internal);
     }
@@ -4870,14 +5050,16 @@ fn classify_direct_jump_exit(
             .range(instruction_end..function_end)
             .next()
             .is_some();
-        if padding_has_entry || !entry_stack_state_is_preserved {
+        if padding_has_entry || !(entry_stack_state_is_preserved || entry_stack_at_jump) {
             return Ok(DirectJumpExit::Internal);
         }
         return Ok(DirectJumpExit::TailCall {
             synthetic_return: instruction_end,
         });
     }
-    if relocated_branch || !insns.iter().all(instruction_keeps_the_entry_stack) {
+    if relocated_branch
+        || !(entry_stack_at_jump || insns.iter().all(instruction_keeps_the_entry_stack))
+    {
         return Ok(DirectJumpExit::Internal);
     }
     Ok(DirectJumpExit::TailCall {
@@ -4897,6 +5079,39 @@ fn disassemble_x86_64_lift_input(base: u64, machine_code: &[u8]) -> Result<Vec<D
     Ok(insns)
 }
 
+const RIP_RELATIVE_OPERAND: &str = "[rel ";
+
+fn integer_or_immediate_operand(operand: &str) -> bool {
+    parse_reg(operand.trim()).is_some() || parse_imm(operand.trim()).is_some()
+}
+
+fn absolute_rip_relative_integer_operands(insns: &mut [DisasmInsn]) {
+    for insn in insns {
+        let operands: Vec<&str> = insn.operands.split(',').collect();
+        let memory: Vec<usize> = operands
+            .iter()
+            .enumerate()
+            .filter(|(_, operand): &(usize, &&str)| operand.contains(RIP_RELATIVE_OPERAND))
+            .map(|(position, _): (usize, &&str)| position)
+            .collect();
+        let position: usize = match memory.as_slice() {
+            [only] => *only,
+            _ => continue,
+        };
+        if insn.mnemonic == "lea"
+            || !operands
+                .iter()
+                .enumerate()
+                .all(|(other, operand): (usize, &&str)| {
+                    other == position || integer_or_immediate_operand(operand)
+                })
+        {
+            continue;
+        }
+        insn.operands = insn.operands.replacen(RIP_RELATIVE_OPERAND, "[", 1);
+    }
+}
+
 fn refuse_high_byte_registers(insns: &[DisasmInsn]) -> Result<()> {
     for insn in insns {
         if let Some(register) = insn
@@ -4913,54 +5128,6 @@ fn refuse_high_byte_registers(insns: &[DisasmInsn]) -> Result<()> {
     Ok(())
 }
 
-const MS_X64_HOME_AREA_BYTES: i64 = 0x20;
-
-fn rsp_slot_displacement(operand: &str) -> Option<i64> {
-    let mem: MemRef = parse_memory_operand(operand, Width::W64)?;
-    (mem.base == Some(Reg::Rsp) && mem.index.is_none()).then_some(mem.disp)
-}
-
-fn refuse_unread_ms_x64_stack_argument_stores(insns: &[DisasmInsn]) -> Result<()> {
-    let (Some(first), Some(last)): (Option<&DisasmInsn>, Option<&DisasmInsn>) =
-        (insns.first(), insns.last())
-    else {
-        return Ok(());
-    };
-    let start: u64 = first.address;
-    let end: u64 = last.address.saturating_add(last.bytes.len() as u64);
-    let transfers_out: bool = insns.iter().any(|insn: &DisasmInsn| {
-        parse_branch_target(&insn.operands).is_some_and(|target: u64| {
-            insn.mnemonic == "call" || (insn.mnemonic == "jmp" && !(start..end).contains(&target))
-        })
-    });
-    if !transfers_out {
-        return Ok(());
-    }
-    let mut stored: BTreeSet<i64> = BTreeSet::new();
-    let mut read: BTreeSet<i64> = BTreeSet::new();
-    for insn in insns {
-        let plain_store: bool = matches!(insn.mnemonic.as_str(), "mov" | "movq" | "movd");
-        for (position, operand) in insn.operands.split(',').enumerate() {
-            let Some(displacement): Option<i64> = rsp_slot_displacement(operand) else {
-                continue;
-            };
-            if position == 0 && plain_store {
-                stored.insert(displacement);
-            } else {
-                read.insert(displacement);
-            }
-        }
-    }
-    stored
-        .difference(&read)
-        .find(|displacement: &&i64| **displacement >= MS_X64_HOME_AREA_BYTES)
-        .map_or(Ok(()), |displacement: &i64| {
-            Err(Error::LlvmIr(format!(
-                "a store to [rsp+{displacement:#x}] is never read back, so it is an outgoing stack argument of a direct call or tail jump that the call IR cannot carry"
-            )))
-        })
-}
-
 fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
@@ -4975,10 +5142,12 @@ fn build_leaf_items(
     if machine_code.is_empty() {
         return Err(Error::LlvmIr("empty machine code".to_owned()));
     }
-    let insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
-    if abi == Abi::MsX64 {
-        refuse_unread_ms_x64_stack_argument_stores(&insns)?;
+    let mut insns: Vec<DisasmInsn> = disassemble_x86_64_lift_input(base, machine_code)?;
+    if object_facts.transfers.linked_image {
+        absolute_rip_relative_integer_operands(&mut insns);
     }
+    let push_frame: Option<stack_depth::PushFrame> = stack_depth::plan_push_frame(&insns, abi);
+    let zeroed_vectors: Vec<u16> = vector_zero::zeroed_vectors_before(&insns);
     let pop_moves: BTreeMap<u64, Stmt> = stack_transfer::plan_stack_transfers(&insns, abi, &[])?;
     let fed_sign_extensions: BTreeSet<u64> = dividend_high::division_fed_sign_extensions(&insns)?;
     let entry_flags: CfgEntryFlags = cfg_entry_flags(&insns, consts)?;
@@ -5072,6 +5241,20 @@ fn build_leaf_items(
             .stack_guard_sequence_sites
             .contains(&insn.address)
         {
+            mark_instruction_modelled(&mut coverage, instruction_index);
+            continue;
+        }
+        if let Some(slots) = zeroed_vectors
+            .get(instruction_index)
+            .and_then(|zeroed: &u16| vector_zero::zero_store_slots(insn, *zeroed))
+        {
+            items.extend(slots.into_iter().map(|addr: MemRef| Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Store {
+                    addr,
+                    src: Source::Imm(0),
+                }),
+            }));
             mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
@@ -5235,6 +5418,79 @@ fn build_leaf_items(
             mark_instruction_modelled(&mut coverage, instruction_index);
             continue;
         }
+        if insn.mnemonic == "call"
+            && let Some(slot) = rip_relative_transfer_slot(insn)
+        {
+            let import: Option<&ImportSlot> = object_facts.transfers.import_slots.get(&slot);
+            flags = None;
+            if let Some(NoreturnCallSite::Library(evidence)) =
+                import.and_then(|import: &ImportSlot| relocated_noreturn_evidence(&import.name))
+            {
+                let function: &'static NoreturnLibraryFunction = evidence.function();
+                dividend_high = None;
+                saw_ret = true;
+                items.push(Item {
+                    address: insn.address,
+                    kind: ItemKind::Stmt(Stmt::Call {
+                        target: CallTarget::NoreturnLibrary(function),
+                        args: noreturn_argument_registers(function, abi),
+                        name: None,
+                    }),
+                });
+                items.push(Item {
+                    address: insn.address,
+                    kind: ItemKind::Ret,
+                });
+                mark_instruction_modelled(&mut coverage, instruction_index);
+                continue;
+            }
+            return_width = Width::W64;
+            let call: Stmt = if object_facts.transfers.guard_dispatch_slot == Some(slot) {
+                Stmt::Call {
+                    target: CallTarget::Register,
+                    args: std::iter::once(Reg::Rax)
+                        .chain(abi.arg_order().iter().copied())
+                        .collect(),
+                    name: None,
+                }
+            } else {
+                let registers: &[Reg] = abi.arg_order();
+                let arity: usize = import
+                    .and_then(|import: &ImportSlot| import.register_arity)
+                    .unwrap_or(registers.len())
+                    .min(registers.len());
+                Stmt::Call {
+                    target: CallTarget::Slot(slot),
+                    args: registers.get(..arity).unwrap_or(registers).to_vec(),
+                    name: import.map(|import: &ImportSlot| import.name.clone()),
+                }
+            };
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(call),
+            });
+            mark_instruction_modelled(&mut coverage, instruction_index);
+            continue;
+        }
+        if insn.mnemonic == "call"
+            && let Some(pointer) = parse_reg(insn.operands.trim())
+                .filter(|pointer: &RegRef| pointer.width == Width::W64 && pointer.reg != Reg::Rsp)
+        {
+            return_width = Width::W64;
+            flags = None;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Call {
+                    target: CallTarget::Register,
+                    args: std::iter::once(pointer.reg)
+                        .chain(abi.arg_order().iter().copied())
+                        .collect(),
+                    name: None,
+                }),
+            });
+            mark_instruction_modelled(&mut coverage, instruction_index);
+            continue;
+        }
         if let Some(trap) = x86_direct_trap(&insn.bytes, insn.address) {
             flags = None;
             dividend_high = None;
@@ -5290,10 +5546,14 @@ fn build_leaf_items(
                     instruction_index,
                     &items,
                     object_facts.proven_integer64_tail_targets,
-                    base,
-                    function_end,
+                    base..function_end,
                     target,
                     relocated_branch,
+                    push_frame
+                        .as_ref()
+                        .is_some_and(|frame: &stack_depth::PushFrame| {
+                            frame.depth_at(insn.address) == Some(0)
+                        }),
                 )? {
                     return_width = Width::W64;
                     flags = None;
@@ -5346,10 +5606,16 @@ fn build_leaf_items(
                 &mut next_sel,
                 insn.address,
             )?;
-            if resolved_relocated_target.is_some()
+            if (resolved_relocated_target.is_some()
+                || (object_facts.transfers.linked_image && !relocated_branch))
                 && object_facts.proven_integer64_tail_targets.contains(&target)
                 && !(base..function_end).contains(&target)
-                && insns.iter().all(instruction_keeps_the_entry_stack)
+                && (insns.iter().all(instruction_keeps_the_entry_stack)
+                    || push_frame
+                        .as_ref()
+                        .is_some_and(|frame: &stack_depth::PushFrame| {
+                            frame.depth_at(insn.address) == Some(0)
+                        }))
             {
                 let instruction_len: u64 =
                     u64::try_from(insn.bytes.len()).map_err(|_: std::num::TryFromIntError| {
@@ -5397,6 +5663,18 @@ fn build_leaf_items(
             continue;
         }
         if let Some(new_flags) = lift_flag_setter(&insn.mnemonic, &insn.operands) {
+            flags = Some(new_flags);
+            flags_mark = items.len();
+            mark_instruction_modelled(&mut coverage, instruction_index);
+            continue;
+        }
+        if insn.mnemonic == "test"
+            && let Some((setup, new_flags)) = lift_scratch_test(&insn.operands)
+        {
+            items.extend(setup.into_iter().map(|stmt: Stmt| Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(stmt),
+            }));
             flags = Some(new_flags);
             flags_mark = items.len();
             mark_instruction_modelled(&mut coverage, instruction_index);
@@ -5667,10 +5945,19 @@ fn build_leaf_items(
     }
     fuse_parity_equality_idioms(&mut items, &insns);
     idiom::fuse_constant_division_idioms(&mut items);
+    let frame_shape: FrameShape = match &push_frame {
+        Some(frame) => {
+            stack_depth::rebase_items_to_the_body_frame(&mut items, frame)?;
+            frame.shape()
+        }
+        None => classify_frame(&insns, abi),
+    };
+    frame_escape::refuse_frame_addresses_that_escape(&items, abi, frame_shape)?;
+    outgoing_args::carry_ms_x64_outgoing_stack_arguments(&mut items, &insns, abi, frame_shape)?;
     Ok(LeafItems {
-        insns,
         items,
         return_width,
+        frame_shape,
     })
 }
 
@@ -5741,9 +6028,9 @@ fn recover_leaf_function_calls_with_tail_proofs(
         coverage,
     } = context;
     let LeafItems {
-        insns,
         mut items,
         mut return_width,
+        frame_shape,
     } = build_leaf_items(
         machine_code,
         base,
@@ -5761,7 +6048,6 @@ fn recover_leaf_function_calls_with_tail_proofs(
         &object_facts.transfers.callee_clobbers,
         &|address: u64| address,
     )?;
-    let frame_shape: FrameShape = classify_frame(&insns, abi);
     let rewrote_items: bool = rewrite_incoming_stack_items(&mut items, base, frame_shape)?;
     let mut structured: Structured = structure_items(&items, base)?;
     if !calls.is_empty() {
@@ -9018,20 +9304,35 @@ fn resolved_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec
         match binding {
             ParameterBinding::Integer { register, .. } => {
                 if is_x86_stack_argument_reg(*register) {
-                    return Err(Error::LlvmIr(
-                        "resolved call requires an outgoing x86-64 stack argument that the call IR cannot carry"
-                            .to_owned(),
-                    ));
+                    let outgoing: Option<Reg> = if abi == Abi::MsX64 {
+                        x86_stack_argument_index(*register).and_then(x86_outgoing_argument_reg)
+                    } else {
+                        None
+                    };
+                    let Some(outgoing): Option<Reg> = outgoing else {
+                        return Err(Error::LlvmIr(
+                            "resolved call requires an outgoing x86-64 stack argument that the call IR cannot carry"
+                                .to_owned(),
+                        ));
+                    };
+                    registers.push(outgoing);
+                    continue;
                 }
                 registers.push(*register);
             }
             ParameterBinding::UnobservedMsX64 { slot } if abi == Abi::MsX64 => {
-                let Some(register): Option<&Reg> = argument_order.get(usize::from(*slot)) else {
+                let index: usize = usize::from(*slot);
+                let register: Option<Reg> = argument_order.get(index).copied().or_else(|| {
+                    index
+                        .checked_sub(argument_order.len())
+                        .and_then(x86_outgoing_argument_reg)
+                });
+                let Some(register): Option<Reg> = register else {
                     return Err(Error::LlvmIr(
                         "resolved call has an invalid microsoft x64 parameter slot".to_owned(),
                     ));
                 };
-                registers.push(*register);
+                registers.push(register);
             }
             ParameterBinding::FloatingPoint { .. }
             | ParameterBinding::StackFloatingPoint { .. }
@@ -9158,7 +9459,16 @@ fn annotate_calls_block_with_abi(
                             "resolved call signature uses a different ABI".to_owned(),
                         ));
                     }
-                    *args = resolved_call_integer_registers(&resolved.signature)?;
+                    let carried: Vec<Reg> = resolved_call_integer_registers(&resolved.signature)?;
+                    if let Some(missing) = carried.iter().find(|reg: &&Reg| {
+                        is_x86_outgoing_argument_reg(**reg) && !args.contains(reg)
+                    }) {
+                        return Err(Error::LlvmIr(format!(
+                            "resolved callee {address:#x} reads outgoing stack argument `{}` that this call site never stores",
+                            reg_var(*missing)
+                        )));
+                    }
+                    *args = carried;
                     name.clone_from(&resolved.name);
                 }
             }
@@ -9814,6 +10124,15 @@ fn classify_frame_with_verified_switch_dispatch(
             stack_pointer_break,
         };
     }
+    if abi == Abi::MsX64 && stack_pointer_break.is_none() && ms_x64_frameless_leaf(&real) {
+        return FrameShape {
+            base: Some(Reg::Rsp),
+            rbp_is_frame: false,
+            red_zone: false,
+            stack_extent: Some(StackFrameExtent::x86(0, 0, MS_X64_HOME_BYTES)),
+            stack_pointer_break,
+        };
+    }
     FrameShape {
         base: None,
         rbp_is_frame: false,
@@ -9821,6 +10140,80 @@ fn classify_frame_with_verified_switch_dispatch(
         stack_extent: None,
         stack_pointer_break,
     }
+}
+
+fn base_relative_displacement_of(operand: &str, register: Reg) -> Option<i64> {
+    let open: usize = operand.find('[')?;
+    let close: usize = operand.rfind(']')?;
+    let (base, _, disp): AddrTerms = parse_addr_terms(operand.get(open..=close)?)?;
+    (base == Some(register)).then_some(disp)
+}
+
+fn rsp_relative_displacements_of(operand: &str) -> Option<i64> {
+    base_relative_displacement_of(operand, Reg::Rsp)
+}
+
+fn base_relative_displacements(insn: &DisasmInsn, register: Reg) -> impl Iterator<Item = i64> + '_ {
+    insn.operands
+        .split(',')
+        .filter_map(move |operand: &str| base_relative_displacement_of(operand, register))
+}
+
+fn operand_access_bytes(operand: &str, operands: &str) -> i64 {
+    let keyword: &str = operand.split_whitespace().next().unwrap_or("");
+    match keyword {
+        "byte" => 1,
+        "word" => 2,
+        "dword" => 4,
+        "qword" => 8,
+        "xmmword" => 16,
+        "ymmword" => 32,
+        "zmmword" => 64,
+        _ => operands
+            .split(',')
+            .filter(|other: &&str| !other.contains('['))
+            .find_map(|other: &str| {
+                parse_reg(other.trim())
+                    .map(|register: RegRef| i64::from(register.width.bits() / 8))
+                    .or_else(|| parse_xmm(other.trim()).map(|_: Xmm| 16))
+            })
+            .unwrap_or(64),
+    }
+}
+
+fn base_relative_accesses(
+    insn: &DisasmInsn,
+    register: Reg,
+) -> impl Iterator<Item = (i64, i64)> + '_ {
+    insn.operands.split(',').filter_map(move |operand: &str| {
+        base_relative_displacement_of(operand, register)
+            .map(|disp: i64| (disp, operand_access_bytes(operand, &insn.operands)))
+    })
+}
+
+fn rsp_relative_displacements(insn: &DisasmInsn) -> impl Iterator<Item = i64> + '_ {
+    base_relative_displacements(insn, Reg::Rsp)
+}
+
+fn ms_x64_frameless_leaf(real: &[&DisasmInsn]) -> bool {
+    real.iter()
+        .any(|insn: &&DisasmInsn| rsp_relative_displacements(insn).next().is_some())
+        && real.iter().all(|insn: &&DisasmInsn| {
+            !writes_stack_pointer(insn)
+                && !matches!(
+                    insn.mnemonic.as_str(),
+                    "push"
+                        | "pop"
+                        | "pushf"
+                        | "pushfq"
+                        | "popf"
+                        | "popfq"
+                        | "leave"
+                        | "enter"
+                        | "call"
+                )
+                && rsp_relative_displacements(insn).all(|disp: i64| disp >= RETURN_ADDRESS_BYTES)
+        })
 }
 
 fn frame_pointer_red_zone_stays_private(
@@ -14879,6 +15272,45 @@ fn lift_flag_setter(mnemonic: &str, operands: &str) -> Option<Flags> {
     }
 }
 
+fn lift_scratch_test(operands: &str) -> Option<(Vec<Stmt>, Flags)> {
+    let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+    let (lhs, rhs): (&str, &str) = (lhs.trim(), rhs.trim());
+    let rhs_reg: Option<RegRef> = parse_reg(rhs);
+    let (loaded, width): (Source, Width) = match (parse_reg(lhs), rhs_reg) {
+        (Some(left), Some(right)) if left != right && left.width == right.width => {
+            (Source::Reg(left), left.width)
+        }
+        (Some(_), _) => return None,
+        (None, _) => {
+            let mem: MemRef = parse_mem_access(lhs, rhs_reg.map(|reg: RegRef| reg.width))?;
+            (Source::Mem(mem), mem.width)
+        }
+    };
+    let scratch: RegRef = RegRef {
+        reg: Reg::X86Scratch,
+        width,
+    };
+    let mut setup: Vec<Stmt> = vec![Stmt::Assign {
+        dest: scratch,
+        src: loaded,
+    }];
+    let flags: Flags = match rhs_reg {
+        Some(right) => {
+            setup.push(Stmt::BinAssign {
+                dest: scratch,
+                op: BinOp::And,
+                src: Source::Reg(right),
+            });
+            Flags::Test { operand: scratch }
+        }
+        None => Flags::TestImm {
+            operand: scratch,
+            mask: parse_imm(rhs)?,
+        },
+    };
+    Some((setup, flags))
+}
+
 fn snapshot_repair(
     items: &mut Vec<Item>,
     kind: CondKind,
@@ -17833,7 +18265,7 @@ fn parse_mem_access(token: &str, reg_width: Option<Width>) -> Option<MemRef> {
         (keyword_width, rest.trim())
     };
     let (base, index, disp): AddrTerms = parse_addr_terms(bracketed)?;
-    if base.is_none() && index.is_none() {
+    if base.is_none() && index.is_none() && disp <= 0 {
         return None;
     }
     Some(MemRef {
@@ -17870,6 +18302,15 @@ const fn reg_var(reg: Reg) -> &'static str {
         Reg::X86Stack5 => "r_x86_stack5",
         Reg::X86Stack6 => "r_x86_stack6",
         Reg::X86Stack7 => "r_x86_stack7",
+        Reg::X86Out0 => "r_x86_out0",
+        Reg::X86Out1 => "r_x86_out1",
+        Reg::X86Out2 => "r_x86_out2",
+        Reg::X86Out3 => "r_x86_out3",
+        Reg::X86Out4 => "r_x86_out4",
+        Reg::X86Out5 => "r_x86_out5",
+        Reg::X86Out6 => "r_x86_out6",
+        Reg::X86Out7 => "r_x86_out7",
+        Reg::X86Scratch => "r_x86_scratch",
         Reg::A64X1 => "r_a64_x1",
         Reg::A64X2 => "r_a64_x2",
         Reg::A64X3 => "r_a64_x3",
@@ -18348,6 +18789,20 @@ fn apply_index_extend(cx: &mut Cx<'_>, expr: CExpr, extend: IndexExtend) -> CExp
 
 fn addr_expr(base: Option<Reg>, index: Option<IndexOperand>, disp: i64) -> String {
     c_render(|cx| {
+        if base.is_none()
+            && index.is_none()
+            && let Ok(absolute) = u64::try_from(disp)
+        {
+            let address: CExpr = CExpr::Int {
+                value: absolute,
+                radix: Radix::Hex,
+                suffix: IntSuffix {
+                    unsigned: true,
+                    long: LongSuffix::LongLong,
+                },
+            };
+            return c_cast(cx, "uint64_t", address);
+        }
         let mut terms: Vec<CExpr> = Vec::new();
         if let Some(b) = base {
             terms.push(cx.var(reg_var(b)));
@@ -18519,6 +18974,58 @@ fn slot_typed_rvalue(mem: &MemRef, plan: &AggregatePlan) -> Option<String> {
         };
         c_cast(cx, "uint64_t", narrowed)
     }))
+}
+
+const MAX_IMPORT_LABEL_BYTES: usize = 128;
+
+fn sanitized_import_label(name: &str) -> String {
+    name.chars()
+        .take(MAX_IMPORT_LABEL_BYTES)
+        .map(|c: char| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '?' | '$' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn block_has_slot_call(body: &Block) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::Stmt(Stmt::Call {
+            target: CallTarget::Slot(_) | CallTarget::Register,
+            ..
+        }) => true,
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_has_slot_call(then_body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|other: &Block| block_has_slot_call(other))
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_has_slot_call(body),
+        Node::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case: &SwitchCase| block_has_slot_call(&case.body))
+                || block_has_slot_call(default)
+        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => false,
+    })
 }
 
 fn call_display_name(target: u64, name: Option<&str>) -> String {
@@ -19724,6 +20231,34 @@ const fn x86_stack_argument_reg(index: usize) -> Option<Reg> {
     }
 }
 
+const fn x86_outgoing_argument_reg(index: usize) -> Option<Reg> {
+    match index {
+        0 => Some(Reg::X86Out0),
+        1 => Some(Reg::X86Out1),
+        2 => Some(Reg::X86Out2),
+        3 => Some(Reg::X86Out3),
+        4 => Some(Reg::X86Out4),
+        5 => Some(Reg::X86Out5),
+        6 => Some(Reg::X86Out6),
+        7 => Some(Reg::X86Out7),
+        _ => None,
+    }
+}
+
+const fn is_x86_outgoing_argument_reg(reg: Reg) -> bool {
+    matches!(
+        reg,
+        Reg::X86Out0
+            | Reg::X86Out1
+            | Reg::X86Out2
+            | Reg::X86Out3
+            | Reg::X86Out4
+            | Reg::X86Out5
+            | Reg::X86Out6
+            | Reg::X86Out7
+    )
+}
+
 const fn x86_stack_argument_index(reg: Reg) -> Option<usize> {
     match reg {
         Reg::X86Stack0 => Some(0),
@@ -20653,6 +21188,7 @@ struct FrameScanState {
     bounds: BTreeMap<Reg, u64>,
     misuse: bool,
     stack_pointer_escape: bool,
+    address_taken: Vec<i64>,
     indexed_refusal: Option<&'static str>,
 }
 
@@ -20863,11 +21399,15 @@ impl FrameScan {
         match src {
             Source::Reg(r) => self.note_reg(r.reg, state),
             Source::Imm(_) => {}
-            Source::Lea { base, index, .. } => {
-                if base.is_some_and(|b: Reg| self.is_stack_reg(b))
-                    || index.is_some_and(|idx: IndexOperand| self.is_stack_reg(idx.reg))
-                {
+            Source::Lea { base, index, disp } => {
+                if index.is_some_and(|idx: IndexOperand| self.is_stack_reg(idx.reg)) {
                     state.misuse = true;
+                } else if base.is_some_and(|b: Reg| self.is_stack_reg(b)) {
+                    if index.is_none() && *base == self.frame_base {
+                        state.address_taken.push(*disp);
+                    } else {
+                        state.misuse = true;
+                    }
                 }
             }
             Source::Mem(mem) => self.note_mem(mem, state),
@@ -21176,8 +21716,9 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
         ));
     }
     check_indexed_regions(&state)?;
+    let address_taken: Vec<i64> = state.address_taken;
     let slots: Vec<(i64, Width)> = state.slots;
-    if slots.is_empty() {
+    if slots.is_empty() && address_taken.is_empty() {
         return Ok(None);
     }
     let Some(base): Option<Reg> = shape.base else {
@@ -21216,15 +21757,39 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
                 .to_owned(),
         ));
     }
+    let owned: Option<(i64, i64)> = if address_taken.is_empty() {
+        None
+    } else {
+        let owned_region: Option<(i64, i64)> = shape
+            .stack_extent
+            .filter(|_: &StackFrameExtent| !shape.red_zone)
+            .and_then(|extent: StackFrameExtent| Some((extent.owned_start?, extent.private_end)));
+        let Some((start, end)): Option<(i64, i64)> = owned_region else {
+            return Err(Error::LlvmIr(
+                "the address of a stack slot is taken in a frame whose owned bytes are not bounded, so the region a callee may reach through it cannot be modelled".to_owned(),
+            ));
+        };
+        if let Some(outside) = address_taken
+            .iter()
+            .find(|disp: &&i64| !(start..end).contains(*disp))
+        {
+            return Err(Error::LlvmIr(format!(
+                "the address of the stack slot at {outside} is taken outside the {start}..{end} bytes this frame allocates, so a pointer walk from it (a va_list over the home area and the incoming arguments) may reach the caller's frame"
+            )));
+        }
+        Some((start, end))
+    };
     let lo: i64 = slots
         .iter()
         .map(|(d, _): &(i64, Width)| *d)
+        .chain(owned.map(|(start, _): (i64, i64)| start))
         .min()
         .unwrap_or(0)
         .min(0);
     let hi: i64 = slots
         .iter()
         .map(|(d, w): &(i64, Width)| d + i64::from(w.bits() / 8))
+        .chain(owned.map(|(_, end): (i64, i64)| end))
         .max()
         .unwrap_or(0)
         .max(0);
@@ -24615,6 +25180,46 @@ fn call_cstmt(cx: &mut Cx<'_>, target: &CallTarget, args: &[Reg], name: Option<&
         }
         return CStmt::Expr(cx.call("panic_bounds_check", arg_exprs));
     }
+    if matches!(target, CallTarget::Register)
+        && let Some((pointer, rest)) = args.split_first()
+    {
+        let parameters: String = if rest.is_empty() {
+            "void".to_owned()
+        } else {
+            vec!["uint64_t"; rest.len()].join(", ")
+        };
+        let pointer_value: CExpr = cx.var(reg_var(*pointer));
+        let address: CExpr = c_cast(cx, "uintptr_t", pointer_value);
+        let callee: CExpr = c_cast(cx, &format!("uint64_t (*)({parameters})"), address);
+        let arg_exprs: Vec<CExpr> = rest.iter().map(|r: &Reg| cx.var(reg_var(*r))).collect();
+        let call_expr: CExpr = CExpr::Call {
+            callee: Box::new(callee),
+            args: arg_exprs,
+        };
+        return assign_expr_cstmt(cx, reg_var(Reg::Rax), call_expr);
+    }
+    if let CallTarget::Slot(slot) = target {
+        let parameters: String = if args.is_empty() {
+            "void".to_owned()
+        } else {
+            vec!["uint64_t"; args.len()].join(", ")
+        };
+        let label: String = name.map_or_else(String::new, |import: &str| {
+            format!("/* import {} */ ", sanitized_import_label(import))
+        });
+        let callee: CExpr = c_opaque(
+            cx,
+            &format!(
+                "{label}(uint64_t (*)({parameters}))(((struct __attribute__((packed, may_alias)) {{ uint64_t value; }} *)(uintptr_t){slot:#x}ULL)->value)"
+            ),
+        );
+        let arg_exprs: Vec<CExpr> = args.iter().map(|r: &Reg| cx.var(reg_var(*r))).collect();
+        let call_expr: CExpr = CExpr::Call {
+            callee: Box::new(callee),
+            args: arg_exprs,
+        };
+        return assign_expr_cstmt(cx, reg_var(Reg::Rax), call_expr);
+    }
     let CallTarget::Address(address) = target else {
         return CStmt::Expr(cx.call("__builtin_trap", Vec::new()));
     };
@@ -25708,7 +26313,7 @@ fn emit_rust(
     if block_string_ops_present(body) {
         return None;
     }
-    if block_has_vector(body) || !signature.vec.is_empty() {
+    if block_has_vector(body) || !signature.vec.is_empty() || block_has_slot_call(body) {
         return None;
     }
 
@@ -30537,6 +31142,63 @@ mod tests {
     }
 
     #[test]
+    fn a_linked_image_cookie_guard_is_recognised_across_branches_and_every_check() {
+        use crate::test_support::{SyntheticSection, pe64_layout_with_directories};
+        let image_base: u64 = crate::test_support::pe64_text_base();
+        let mut text: Vec<u8> = vec![0xCC; 0x80];
+        let function: [u8; 0x41] = [
+            0x48, 0x83, 0xec, 0x48, 0x48, 0x8b, 0x05, 0xf5, 0x1f, 0x00, 0x00, 0x48, 0x33, 0xc4,
+            0x48, 0x89, 0x44, 0x24, 0x38, 0x85, 0xc9, 0x78, 0x15, 0x8d, 0x41, 0x01, 0x48, 0x8b,
+            0x4c, 0x24, 0x38, 0x48, 0x33, 0xcc, 0xe8, 0x39, 0x00, 0x00, 0x00, 0x48, 0x83, 0xc4,
+            0x48, 0xc3, 0x8d, 0x41, 0xff, 0x48, 0x8b, 0x4c, 0x24, 0x38, 0x48, 0x33, 0xcc, 0xe8,
+            0x24, 0x00, 0x00, 0x00, 0x48, 0x83, 0xc4, 0x48, 0xc3,
+        ];
+        text[..function.len()].copy_from_slice(&function);
+        text[0x60..0x6b].copy_from_slice(&[
+            0x48, 0x3b, 0x0d, 0x99, 0x1f, 0x00, 0x00, 0x75, 0x01, 0xc3, 0xcc,
+        ]);
+        let mut load_config: Vec<u8> = vec![0u8; 0x100];
+        load_config[..4].copy_from_slice(&0x100u32.to_le_bytes());
+        load_config[0x58..0x60].copy_from_slice(&(image_base + 0x3000).to_le_bytes());
+        let image: Vec<u8> = pe64_layout_with_directories(
+            &[
+                SyntheticSection::backed(*b".text\0\0\0", 0x1000, text, 0x6000_0020),
+                SyntheticSection::backed(*b".rdata\0\0", 0x2000, load_config, 0x4000_0040),
+                SyntheticSection::backed(*b".data\0\0\0", 0x3000, vec![0x2b; 0x10], 0xC000_0040),
+            ],
+            0x1000,
+            &[(10, 0x2000, 0x100)],
+        );
+        let rec: LeafRecovery = recover_leaf_function_in_object(
+            &image,
+            &function,
+            image_base + 0x1000,
+            Abi::MsX64,
+            &[],
+        )
+        .expect("a cookie saved before a branch and checked on both exits is plumbing");
+        assert!(!rec.source.contains("sub_"), "{}", rec.source);
+        assert!(
+            rec.source.contains("(int64_t)1LL") && rec.source.contains("(int64_t)-1LL"),
+            "both guarded exits must recover: {}",
+            rec.source
+        );
+
+        let mut leaked: [u8; 0x41] = function;
+        leaked[0x2c..0x2f].copy_from_slice(&[0x8b, 0x44, 0x24]);
+        leaked[0x2f] = 0x38;
+        let refusal: String =
+            recover_leaf_function_in_object(&image, &leaked, image_base + 0x1000, Abi::MsX64, &[])
+                .map(|rec: LeafRecovery| rec.source)
+                .expect_err("a saved cookie slot read as a value is not plumbing")
+                .to_string();
+        assert!(
+            refusal.contains("stack-frame register escapes"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
     fn a_pointer_returned_from_a_loop_keeps_its_width_beside_a_null_return() {
         let code: [u8; 32] = [
             0x4d, 0x85, 0xc0, 0x74, 0x18, 0x49, 0x8d, 0x40, 0xff, 0x48, 0x01, 0xc8, 0x48, 0x39,
@@ -30558,16 +31220,32 @@ mod tests {
     }
 
     #[test]
-    fn an_unread_outgoing_stack_argument_refuses_the_call_site() {
+    fn an_outgoing_stack_argument_is_carried_into_the_call() {
         let fifth_argument: [u8; 23] = [
             0x48, 0x83, 0xec, 0x38, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xff, 0xff, 0xff, 0xff, 0xe8,
             0xe6, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc4, 0x38, 0xc3,
         ];
-        let refusal: String = recover_leaf_function_abi(&fifth_argument, 0x8, Abi::MsX64)
-            .map(|rec: LeafRecovery| rec.source)
-            .expect_err("a call that reads a fifth argument from [rsp+0x20] cannot drop it")
-            .to_string();
-        assert!(refusal.contains("outgoing stack argument"), "{refusal}");
+        let null_fifth_argument: [u8; 20] = [
+            0x48, 0x83, 0xec, 0x38, 0x48, 0x83, 0x64, 0x24, 0x20, 0x00, 0xe8, 0xe9, 0xff, 0xff,
+            0xff, 0x48, 0x83, 0xc4, 0x38, 0xc3,
+        ];
+        for code in [&fifth_argument[..], &null_fifth_argument[..]] {
+            let rec: LeafRecovery = recover_leaf_function_abi(code, 0x8, Abi::MsX64)
+                .expect("a call that reads a fifth argument from [rsp+0x20] recovers with it");
+            assert!(
+                rec.source.contains(
+                    "extern uint64_t sub_0(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);"
+                ),
+                "{}",
+                rec.source
+            );
+            assert!(
+                rec.source
+                    .contains("sub_0(r_rcx, r_rdx, r_r8, r_r9, r_x86_out0);"),
+                "{}",
+                rec.source
+            );
+        }
 
         let local_reloaded: [u8; 28] = [
             0x48, 0x83, 0xec, 0x38, 0x48, 0xc7, 0x44, 0x24, 0x20, 0x05, 0x00, 0x00, 0x00, 0xe8,
@@ -30575,7 +31253,11 @@ mod tests {
         ];
         let rec: LeafRecovery = recover_leaf_function_abi(&local_reloaded, 0x8, Abi::MsX64)
             .expect("a local read back after the call is not a stack argument");
-        assert!(rec.source.contains("sub_0("), "{}", rec.source);
+        assert!(
+            rec.source.contains("sub_0(r_rcx, r_rdx, r_r8, r_r9);"),
+            "{}",
+            rec.source
+        );
 
         let tail_fifth_argument: [u8; 14] = [
             0x48, 0xc7, 0x44, 0x24, 0x28, 0xff, 0xff, 0xff, 0xff, 0xe9, 0xea, 0xff, 0xff, 0xff,
@@ -30889,9 +31571,17 @@ mod tests {
             },
         ];
         let proven: BTreeSet<u64> = BTreeSet::from([0x2000]);
-        let classification: DirectJumpExit =
-            classify_direct_jump_exit(&insns, 1, &[], &proven, 0x1000, 0x1008, 0x2000, false)
-                .expect("classify the direct jump after the symmetric stack write");
+        let classification: DirectJumpExit = classify_direct_jump_exit(
+            &insns,
+            1,
+            &[],
+            &proven,
+            0x1000..0x1008,
+            0x2000,
+            false,
+            false,
+        )
+        .expect("classify the direct jump after the symmetric stack write");
         assert_eq!(classification, DirectJumpExit::Internal);
     }
 

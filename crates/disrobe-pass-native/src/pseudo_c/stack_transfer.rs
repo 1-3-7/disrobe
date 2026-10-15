@@ -33,12 +33,16 @@ const XMM_SHIFT: usize = 16;
 const ALL_LIVE: u32 = u32::MAX;
 const RETURN_LIVE: u32 = 0b101 | (0b11 << XMM_SHIFT);
 const MS_X64_CALL_PRESERVED_XMM: u32 = 0xffc0 << XMM_SHIFT;
+const MS_X64_TAIL_JUMP_LIVE: u32 = 0b11_0001_0110 | (0b1111 << XMM_SHIFT);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Next,
     Branch {
         target: Option<usize>,
+        conditional: bool,
+    },
+    TailJump {
         conditional: bool,
     },
     Call,
@@ -77,13 +81,23 @@ fn xmm_bit(xmm: Xmm) -> Option<u32> {
     iced_xmm_register(xmm).and_then(register_bit)
 }
 
-fn flow_of(decoded: &Instruction, by_address: &BTreeMap<u64, usize>) -> Flow {
+fn flow_of(
+    decoded: &Instruction,
+    by_address: &BTreeMap<u64, usize>,
+    function: &std::ops::Range<u64>,
+) -> Flow {
     match decoded.flow_control() {
         FlowControl::Next => Flow::Next,
         control @ (FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch) => {
-            Flow::Branch {
-                target: by_address.get(&decoded.near_branch_target()).copied(),
-                conditional: control == FlowControl::ConditionalBranch,
+            let conditional: bool = control == FlowControl::ConditionalBranch;
+            let destination: u64 = decoded.near_branch_target();
+            if function.contains(&destination) {
+                Flow::Branch {
+                    target: by_address.get(&destination).copied(),
+                    conditional,
+                }
+            } else {
+                Flow::TailJump { conditional }
             }
         }
         FlowControl::Call => Flow::Call,
@@ -101,6 +115,7 @@ fn instruction_facts(
     factory: &mut InstructionInfoFactory,
     insn: &DisasmInsn,
     by_address: &BTreeMap<u64, usize>,
+    function: &std::ops::Range<u64>,
 ) -> InsnFacts {
     let Some(decoded): Option<Instruction> = decode_one_x86(64, insn.address, &insn.bytes) else {
         return InsnFacts {
@@ -126,7 +141,7 @@ fn instruction_facts(
         }
     }
     InsnFacts {
-        flow: flow_of(&decoded, by_address),
+        flow: flow_of(&decoded, by_address, function),
         uses,
         kills,
     }
@@ -144,10 +159,16 @@ impl FunctionFacts {
             .enumerate()
             .map(|(index, insn): (usize, &DisasmInsn)| (insn.address, index))
             .collect();
+        let function: std::ops::Range<u64> = match (insns.first(), insns.last()) {
+            (Some(first), Some(last)) => {
+                first.address..last.address.saturating_add(last.bytes.len() as u64)
+            }
+            _ => 0..0,
+        };
         let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
         let facts: Vec<InsnFacts> = insns
             .iter()
-            .map(|insn: &DisasmInsn| instruction_facts(&mut factory, insn, &by_address))
+            .map(|insn: &DisasmInsn| instruction_facts(&mut factory, insn, &by_address, &function))
             .collect();
         let mut leaders: BTreeSet<usize> = extra_leaders
             .iter()
@@ -176,6 +197,10 @@ impl FunctionFacts {
                 .into_iter()
                 .chain(fallthrough.filter(|_: &usize| conditional))
                 .collect(),
+            Flow::TailJump { conditional } => fallthrough
+                .filter(|_: &usize| conditional)
+                .into_iter()
+                .collect(),
             Flow::Return | Flow::Trap | Flow::Unknown => Vec::new(),
         }
     }
@@ -190,6 +215,15 @@ impl FunctionFacts {
                 conditional,
             } => {
                 let taken: u32 = target.map_or(ALL_LIVE, next);
+                let fallthrough: u32 = if conditional { next(index + 1) } else { 0 };
+                taken | fallthrough
+            }
+            Flow::TailJump { conditional } => {
+                let taken: u32 = if abi == Abi::MsX64 {
+                    MS_X64_TAIL_JUMP_LIVE
+                } else {
+                    ALL_LIVE
+                };
                 let fallthrough: u32 = if conditional { next(index + 1) } else { 0 };
                 taken | fallthrough
             }
