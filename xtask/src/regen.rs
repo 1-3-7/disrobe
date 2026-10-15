@@ -15,143 +15,143 @@ const fn region_mode(check: bool) -> crate::doc_region::Mode {
 pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     let mut stale: Vec<String> = Vec::new();
 
-    run_one("schemas", check, || crate::run_schemas(check), &mut stale)?;
+    run_one("schemas", true, || crate::run_schemas(check), &mut stale)?;
     run_one(
         "gen-bindings",
-        check,
+        true,
         || crate::run_gen_bindings(None, check),
         &mut stale,
     )?;
     run_one(
         "gen-error-docs",
-        check,
+        true,
         || crate::run_gen_error_docs(check),
         &mut stale,
     )?;
     run_one(
         "errcodes",
-        check,
+        true,
         || crate::errcodes::run(root, check, false),
         &mut stale,
     )?;
-    run_one("sync", check, || crate::sync::run(root, check), &mut stale)?;
+    run_one("sync", true, || crate::sync::run(root, check), &mut stale)?;
     run_one(
         "attack-surface",
-        check,
+        true,
         || crate::attack_surface::run(root),
         &mut stale,
     )?;
     run_one(
         "fuzz-scope",
-        check,
+        true,
         || crate::fuzz_scope::run(root),
         &mut stale,
     )?;
     run_one(
         "fuzz-surface",
-        check,
+        true,
         || crate::fuzz_surface::run(root, check),
         &mut stale,
     )?;
     run_one(
         "claim-provenance",
-        check,
+        true,
         || crate::facts::run(root),
         &mut stale,
     )?;
     run_one(
         "local-tags",
-        check,
+        true,
         || crate::local_tags::run(root),
         &mut stale,
     )?;
     run_one(
         "cross-data",
-        check,
+        true,
         || crate::crossdata::run(root),
         &mut stale,
     )?;
     run_one(
         "published-floors",
-        check,
+        true,
         || crate::floors::run(root),
         &mut stale,
     )?;
     run_one(
         "catalog-counts",
-        check,
+        true,
         || crate::catalog_counts::run(root),
         &mut stale,
     )?;
     run_one(
         "packer-roster",
-        check,
+        true,
         || crate::packer_roster::run(root, region_mode(check)),
         &mut stale,
     )?;
     run_one(
         "roster-breadth",
-        check,
+        true,
         || crate::roster_breadth::run(root, region_mode(check)),
         &mut stale,
     )?;
     run_one(
         "typography",
-        check,
+        true,
         || crate::typography::run(root),
         &mut stale,
     )?;
     run_one(
         "source-comments",
-        check,
+        true,
         || crate::comments::run(root),
         &mut stale,
     )?;
     run_one(
         "dotnet-string-evidence",
-        check,
+        true,
         || crate::dotnet_string_evidence::run(root, region_mode(check)),
         &mut stale,
     )?;
     run_one(
         "capability-reachability",
-        check,
+        true,
         || crate::capability_reachability::run(root),
         &mut stale,
     )?;
     run_one(
         "skip-census",
-        check,
+        true,
         || crate::skip_census::run(root),
         &mut stale,
     )?;
     run_one(
         "denominator-floor",
-        check,
+        true,
         || crate::denominator_floor::run(root),
         &mut stale,
     )?;
     run_one(
         "artifact-classification",
-        check,
+        true,
         || crate::artifact_map::run(root),
         &mut stale,
     )?;
     run_one(
         "input-bounds",
-        check,
+        true,
         || crate::input_bounds::run(root, region_mode(check)),
         &mut stale,
     )?;
     run_one(
         "unsafe-inventory",
-        check,
+        true,
         || crate::unsafe_inventory::run(root, region_mode(check)),
         &mut stale,
     )?;
     run_one(
         "published-figures",
-        check,
+        true,
         || crate::figures::run(root),
         &mut stale,
     )?;
@@ -169,8 +169,14 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
                 stale.join("\n  ")
             )
         }
-    } else {
+    } else if stale.is_empty() {
         println!("xtask regen: artifacts regenerated; publication and capability checks passed");
         Ok(())
+    } else {
+        bail!(
+            "xtask regen: {} generation step(s) failed:\n  {}",
+            stale.len(),
+            stale.join("\n  ")
+        )
     }
 }
