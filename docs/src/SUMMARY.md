@@ -36,6 +36,7 @@
 - [Native (PE / ELF / Mach-O / NE)](./languages/native.md)
   - [Native decompile](./languages/native-decompile.md)
   - [Native unpacking and devirtualization](./languages/native-unpack.md)
+  - [PE resources](./languages/pe-resources.md)
 - [Go](./languages/go.md)
 - [Lua](./languages/lua.md)
 - [PHP](./languages/php.md)

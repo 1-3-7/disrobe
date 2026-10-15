@@ -23,6 +23,7 @@ pub mod native;
 pub mod native_graph;
 pub mod native_image;
 mod ne;
+pub mod pe_resources;
 pub mod quota;
 pub mod rewrite;
 pub use disrobe_core::structural;

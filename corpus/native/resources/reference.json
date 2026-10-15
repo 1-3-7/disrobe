@@ -1,0 +1,145 @@
+{
+ "tree": [
+  {
+   "type": "CUSTOMTYPE",
+   "name": "CONFIG",
+   "language": 1033,
+   "size": 10,
+   "sha256": "9d581004ad31917ff636ada802c4c2fc9ed40848c10be252131de228f550ccbb"
+  },
+  {
+   "type": 3,
+   "name": 1,
+   "language": 1033,
+   "size": 1128,
+   "sha256": "37dd311a553bfa36062275eb1977307058106aa384ad205304692826ae0a9dc9"
+  },
+  {
+   "type": 3,
+   "name": 2,
+   "language": 1033,
+   "size": 4264,
+   "sha256": "29c9e14d965608688cbfb09a61661c5db58c194a93731beb26e92eca7c736710"
+  },
+  {
+   "type": 6,
+   "name": 1,
+   "language": 1031,
+   "size": 68,
+   "sha256": "692c70874b4bfb96a9571383d0618ce7697f09f0e428cf719c4c0fbbe9718475"
+  },
+  {
+   "type": 6,
+   "name": 1,
+   "language": 1033,
+   "size": 110,
+   "sha256": "969bdf0dd3fa19227097c87bd1287897a5360dc4994a2eabb979778fe7021735"
+  },
+  {
+   "type": 6,
+   "name": 2,
+   "language": 1033,
+   "size": 82,
+   "sha256": "40015d23b829ae5ced9cb6ef87e223505c75a7f64f218516337659ba38d18a39"
+  },
+  {
+   "type": 6,
+   "name": 3,
+   "language": 1033,
+   "size": 56,
+   "sha256": "38e6250c07c2a6c78226f89de70150dd5e38c4aa9656f355ccc7deb1a1918dde"
+  },
+  {
+   "type": 6,
+   "name": 7,
+   "language": 1033,
+   "size": 50,
+   "sha256": "97371de38bc9be28998533a66cb0517789859b1021b6649c3df72b2ef18b0fcc"
+  },
+  {
+   "type": 10,
+   "name": "PAYLOAD",
+   "language": 1033,
+   "size": 344,
+   "sha256": "ef6b4e89264f02c9f33175d01efa58c2eff8aacdf4e6011c285e1e8e60c637d5"
+  },
+  {
+   "type": 10,
+   "name": 201,
+   "language": 1033,
+   "size": 18,
+   "sha256": "6efc0e86f0a0091c8330ef0bea0a5b94bcac9137a53dac66473749ddf4e27e58"
+  },
+  {
+   "type": 14,
+   "name": 101,
+   "language": 1033,
+   "size": 34,
+   "sha256": "b1a9ff73f6a9d486c67f409a629924792ca40aa8966d45e48239863f63629fd0"
+  },
+  {
+   "type": 16,
+   "name": 1,
+   "language": 1033,
+   "size": 916,
+   "sha256": "ab8c489f64e16b36946ce6ba3071d185d0f1a1c3e7e8a965e320ddef938ad00e"
+  },
+  {
+   "type": 24,
+   "name": 1,
+   "language": 1033,
+   "size": 961,
+   "sha256": "c6ee44b0056c6376dc83ecb82683d47ed8f0a91782772426e2d0cbf627cfbc04"
+  }
+ ],
+ "version": {
+  "file_version": "1.2.3.4",
+  "product_version": "5.6.7.8",
+  "flags_mask": 63,
+  "flags": 2,
+  "os": 262148,
+  "type": 1,
+  "subtype": 0,
+  "translations": [
+   [
+    1033,
+    1200
+   ],
+   [
+    1031,
+    1200
+   ]
+  ],
+  "strings": {
+   "040904b0": {
+    "CompanyName": "Disrobe Samples",
+    "FileDescription": "Resource fixture",
+    "FileVersion": "1.2.3.4",
+    "InternalName": "resources",
+    "LegalCopyright": "authored for tests",
+    "OriginalFilename": "resources.exe",
+    "ProductName": "Disrobe resource sample",
+    "ProductVersion": "5.6.7.8"
+   },
+   "040704b0": {
+    "FileDescription": "Ressourcen-Testdatei",
+    "ProductName": "Disrobe Beispiel"
+   }
+  }
+ },
+ "strings": {
+  "1033": {
+   "1": "first string",
+   "2": "second string with \"quotes\"",
+   "16": "start of the second block",
+   "40": "string forty",
+   "100": "hundredth"
+  },
+  "1031": {
+   "1": "erste Zeichenkette",
+   "16": "start of the second block",
+   "40": "string forty",
+   "100": "hundredth"
+  }
+ }
+}

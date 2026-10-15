@@ -1,0 +1,32 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-binfmt"
+generated = "2026-10-14"
+toolchain = "LLVM llvm-rc and clang (x86_64-pc-windows-msvc, -nostdlib, lld /Brepro)"
+note = "benign authored PE whose only content is resources: version info in two languages, string tables in two languages across four blocks, a manifest, an icon group, RCDATA blobs (one shaped like an embedded PE) and a custom type; it has no code beyond a return"
+
+[provenance]
+build = "llvm-rc /FO resources.res src/resources.rc; clang --target=x86_64-pc-windows-msvc -O1 -nostdlib -fuse-ld=lld -Wl,/entry:start -Wl,/subsystem:windows -Wl,/Brepro src/stub.c resources.res -o resources.exe (MSYS_NO_PATHCONV=1 under Git Bash)"
+reference = "python make_reference.py resources.exe reference.json on Windows: LoadLibraryExW with LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE (no code runs), EnumResourceTypesW/NamesW/LanguagesW, FindResourceExW and LockResource for every blob's size and SHA-256, GetFileVersionInfoW and VerQueryValueW for the fixed info, translations and string values, LoadStringW under each thread UI language for the string tables"
+
+[[fixture]]
+name = "resources.rc"
+path = "src/resources.rc"
+kind = "rc-source"
+provenance = "self-authored"
+
+[[fixture]]
+name = "resources.exe"
+path = "resources.exe"
+kind = "pe-exe"
+provenance = "real"
+source = "src/resources.rc"
+sha256 = "5abbe237e62af6c090f231c67606ab9e28d05c08e875228270516136f307f55a"
+
+[[fixture]]
+name = "reference.json"
+path = "reference.json"
+kind = "reference-output"
+provenance = "real"
+source = "make_reference.py"
+sha256 = "29f3c4062755f3669141c62396736c28de0b5e0cb45fbe7d8d5da11f52471d52"
+description = "what the Windows resource and version APIs report for resources.exe"

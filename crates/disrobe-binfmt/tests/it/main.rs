@@ -90,6 +90,9 @@ mod negative_corpus;
 #[path = "../partial_archive_parity.rs"]
 mod partial_archive_parity;
 
+#[path = "../pe_resources_reference.rs"]
+mod pe_resources_reference;
+
 #[path = "../real_appimage.rs"]
 mod real_appimage;
 

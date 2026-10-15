@@ -1,0 +1,63 @@
+#define VS_VERSION_INFO 1
+#define RT_MANIFEST 24
+#define IDI_APP 101
+
+LANGUAGE 0x09, 0x01
+
+IDI_APP ICON "app.ico"
+
+1 RT_MANIFEST "app.manifest"
+
+STRINGTABLE
+BEGIN
+    1 "first string"
+    2 "second string with ""quotes"""
+    16 "start of the second block"
+    40 "string forty"
+    100 "hundredth"
+END
+
+LANGUAGE 0x07, 0x01
+STRINGTABLE
+BEGIN
+    1 "erste Zeichenkette"
+END
+
+LANGUAGE 0x09, 0x01
+PAYLOAD RCDATA "payload.bin"
+201 RCDATA { "inline bytes", 0x0102, 0x0304L }
+CONFIG CUSTOMTYPE { "key=value\0" }
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,2,3,4
+PRODUCTVERSION 5,6,7,8
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x2L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Disrobe Samples"
+            VALUE "FileDescription", "Resource fixture"
+            VALUE "FileVersion", "1.2.3.4"
+            VALUE "InternalName", "resources"
+            VALUE "LegalCopyright", "authored for tests"
+            VALUE "OriginalFilename", "resources.exe"
+            VALUE "ProductName", "Disrobe resource sample"
+            VALUE "ProductVersion", "5.6.7.8"
+        END
+        BLOCK "040704b0"
+        BEGIN
+            VALUE "FileDescription", "Ressourcen-Testdatei"
+            VALUE "ProductName", "Disrobe Beispiel"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200, 0x0407, 1200
+    END
+END
