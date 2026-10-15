@@ -1,0 +1,445 @@
+Bytecode File Information:
+  Bytecode version number: 99
+  Source hash: f14d8121c690ed88d0f3b0769acd66b9815d938d
+  Function count: 8
+  String count: 41
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  StringSwitchImm count: 0
+  Key buffer size (bytes): 0
+  Value buffer size (bytes): 0
+  Shape table count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: ,
+s2[ASCII, 1..1]: ?
+s3[ASCII, 2..2]: A
+s4[ASCII, 3..3]: B
+s5[ASCII, 4..4]: C
+s6[ASCII, 10..15]: global
+s7[ASCII, 14..14]: a
+s8[ASCII, 15..19]: large
+s9[ASCII, 20..20]: b
+s10[ASCII, 22..22]: c
+s11[ASCII, 30..30]: y
+s12[ASCII, 30..32]: yes
+s13[ASCII, 32..36]: small
+s14[ASCII, 46..46]: z
+s15[ASCII, 46..49]: zero
+s16[ASCII, 55..61]: default
+s17[ASCII, 61..65]: three
+s18[ASCII, 66..69]: five
+s19[ASCII, 70..73]: four
+s20[ASCII, 80..82]: two
+s21[ASCII, 82..84]: one
+s22[ASCII, 83..90]: negative
+s23[ASCII, 94..96]: not
+s24[ASCII, 95..99]: other
+s25[ASCII, 100..100]: |
+i26[ASCII, 5..10] #C93542E8: String
+i27[ASCII, 21..23] #5B6612E2: acc
+i28[ASCII, 23..30] #65493D93: classify
+i29[ASCII, 36..40] #52AAEADF: logic
+i30[ASCII, 40..46] #356ADF22: collatz
+i31[ASCII, 50..55] #07E38639: nested
+i32[ASCII, 74..76] #5A39B07E: map
+i33[ASCII, 76..80] #A689F65B: print
+i34[ASCII, 81..81] #0001DB06: w
+i35[ASCII, 91..94] #874F77A9: join
+i36[ASCII, 101..105] #2C807054: dense
+i37[ASCII, 106..110] #F4181567: loops
+i38[ASCII, 110..115] #B7E82A7A: sparse
+i39[ASCII, 116..119] #3F21B886: push
+i40[ASCII, 120..120] #0001C360: q
+
+Function<global>(1 params, 27 registers, 6 numbers, 2 non-pointers):
+Offset in debug table: source 0x0000
+    DeclareGlobalVar  "classify"
+    DeclareGlobalVar  "dense"
+    DeclareGlobalVar  "sparse"
+    DeclareGlobalVar  "loops"
+    DeclareGlobalVar  "nested"
+    DeclareGlobalVar  "logic"
+    DeclareGlobalVar  "collatz"
+    DeclareGlobalVar  "q"
+    DeclareGlobalVar  "acc"
+    DeclareGlobalVar  "w"
+    GetGlobalObject   r8
+    LoadConstUndefined r6
+    CreateClosure     r9, r6, Function<classify>
+    PutByIdLoose      r8, r9, 0, "classify"
+    CreateClosure     r9, r6, Function<dense>
+    PutByIdLoose      r8, r9, 1, "dense"
+    CreateClosure     r9, r6, Function<sparse>
+    PutByIdLoose      r8, r9, 2, "sparse"
+    CreateClosure     r9, r6, Function<loops>
+    PutByIdLoose      r8, r9, 3, "loops"
+    CreateClosure     r9, r6, Function<nested>
+    PutByIdLoose      r8, r9, 4, "nested"
+    CreateClosure     r9, r6, Function<logic>
+    PutByIdLoose      r8, r9, 5, "logic"
+    CreateClosure     r9, r6, Function<collatz>
+    PutByIdLoose      r8, r9, 6, "collatz"
+    TryGetById        r13, r8, 0, "print"
+    GetByIdShort      r9, r8, 1, "classify"
+    LoadConstInt      r4, -4
+    Call2             r12, r9, r6, r4
+    GetByIdShort      r9, r8, 1, "classify"
+    LoadConstZero     r4
+    Call2             r17, r9, r6, r4
+    GetByIdShort      r9, r8, 1, "classify"
+    LoadConstUInt8    r2, 7
+    Call2             r16, r9, r6, r2
+    GetByIdShort      r9, r8, 1, "classify"
+    LoadConstUInt8    r1, 70
+    Call2             r15, r9, r6, r1
+    LoadConstUndefined r19
+    Mov               r18, r12
+    Call              r9, r13, 5
+    LoadConstInt      r1, -1
+    PutByIdLoose      r8, r1, 7, "q"
+    GetByIdShort      r9, r8, 2, "q"
+    LoadConstUInt8    r1, 8
+    JNotLess          L1, r9, r1
+L2:
+    TryGetById        r11, r8, 0, "print"
+    GetByIdShort      r10, r8, 2, "q"
+    GetByIdShort      r12, r8, 3, "dense"
+    GetByIdShort      r9, r8, 2, "q"
+    Call2             r9, r12, r6, r9
+    Call3             r9, r11, r6, r10, r9
+    GetByIdShort      r9, r8, 2, "q"
+    Inc               r9, r9
+    PutByIdLoose      r8, r9, 7, "q"
+    GetByIdShort      r9, r8, 2, "q"
+    JLess             L2, r9, r1
+L1:
+    TryGetById        r13, r8, 0, "print"
+    GetByIdShort      r10, r8, 4, "sparse"
+    LoadConstString   r9, "a"
+    Call2             r12, r10, r6, r9
+    GetByIdShort      r10, r8, 4, "sparse"
+    LoadConstString   r9, "b"
+    Call2             r17, r10, r6, r9
+    GetByIdShort      r10, r8, 4, "sparse"
+    LoadConstString   r9, "c"
+    Call2             r16, r10, r6, r9
+    GetByIdShort      r14, r8, 4, "sparse"
+    LoadConstString   r9, "z"
+    Call2             r15, r14, r6, r9
+    LoadConstUndefined r19
+    Mov               r18, r12
+    Call              r9, r13, 5
+    TryGetById        r12, r8, 0, "print"
+    GetByIdShort      r9, r8, 5, "loops"
+    LoadConstUInt8    r1, 12
+    Call2             r11, r9, r6, r1
+    GetByIdShort      r9, r8, 5, "loops"
+    LoadConstUInt8    r1, 5
+    Call2             r10, r9, r6, r1
+    GetByIdShort      r9, r8, 5, "loops"
+    Call2             r9, r9, r6, r4
+    Call4             r9, r12, r6, r11, r10, r9
+    TryGetById        r11, r8, 0, "print"
+    GetByIdShort      r9, r8, 6, "nested"
+    LoadConstUInt8    r1, 4
+    Call2             r10, r9, r6, r1
+    GetByIdShort      r9, r8, 6, "nested"
+    LoadConstUInt8    r1, 9
+    Call2             r9, r9, r6, r1
+    Call3             r9, r11, r6, r10, r9
+    TryGetById        r13, r8, 0, "print"
+    GetByIdShort      r9, r8, 7, "logic"
+    LoadConstUInt8    r1, 1
+    Call3             r12, r9, r6, r4, r1
+    GetByIdShort      r9, r8, 7, "logic"
+    LoadConstUInt8    r3, 3
+    LoadConstUInt8    r5, 2
+    Call3             r11, r9, r6, r5, r3
+    GetByIdShort      r10, r8, 7, "logic"
+    LoadConstString   r9, "y"
+    LoadConstNull     r7
+    Call3             r16, r10, r6, r7, r9
+    GetByIdShort      r9, r8, 7, "logic"
+    Call3             r15, r9, r6, r6, r4
+    LoadConstUndefined r19
+    Mov               r18, r12
+    Mov               r17, r11
+    Call              r9, r13, 5
+    TryGetById        r12, r8, 0, "print"
+    GetByIdShort      r9, r8, 8, "collatz"
+    LoadConstUInt8    r5, 27
+    Call2             r11, r9, r6, r5
+    GetByIdShort      r9, r8, 8, "collatz"
+    Call2             r10, r9, r6, r1
+    GetByIdShort      r9, r8, 8, "collatz"
+    LoadConstUInt8    r1, 97
+    Call2             r9, r9, r6, r1
+    Call4             r9, r12, r6, r11, r10, r9
+    PutByIdLoose      r8, r4, 8, "acc"
+    PutByIdLoose      r8, r4, 9, "w"
+    GetByIdShort      r9, r8, 9, "w"
+    LoadConstUInt8    r5, 50
+    LoadConstInt      r1, 999
+    LoadConstInt      r4, 1000
+    JNotLess          L3, r9, r5
+L5:
+    GetByIdShort      r9, r8, 10, "acc"
+    Mul               r0, r9, r3
+    GetByIdShort      r9, r8, 9, "w"
+    Add               r9, r0, r9
+    PutByIdLoose      r8, r9, 8, "acc"
+    GetByIdShort      r9, r8, 10, "acc"
+    JNotGreater       L4, r9, r4
+    GetByIdShort      r9, r8, 10, "acc"
+    Sub               r0, r9, r1
+    PutByIdLoose      r8, r0, 8, "acc"
+L4:
+    GetByIdShort      r9, r8, 9, "w"
+    Add               r9, r9, r2
+    PutByIdLoose      r8, r9, 9, "w"
+    GetByIdShort      r9, r8, 9, "w"
+    JLess             L5, r9, r5
+L3:
+    TryGetById        r9, r8, 0, "print"
+    GetByIdShort      r8, r8, 10, "acc"
+    Call2             r8, r9, r6, r8
+    Ret               r8
+
+Function<classify>(2 params, 2 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x0141
+    LoadParam         r1, 1
+    LoadConstZero     r0
+    JLess             L1, r1, r0
+    JStrictEqual      L2, r1, r0
+    LoadConstUInt8    r0, 10
+    JLess             L3, r1, r0
+    LoadConstString   r1, "large"
+    Ret               r1
+L3:
+    LoadConstString   r1, "small"
+    Ret               r1
+L2:
+    LoadConstString   r1, "zero"
+    Ret               r1
+L1:
+    LoadConstString   r1, "negative"
+    Ret               r1
+
+Function<dense>(2 params, 2 registers, 1 numbers, 0 non-pointers):
+    LoadParam         r1, 1
+    LoadConstZero     r0
+    JStrictEqual      L1, r0, r1
+    LoadConstUInt8    r0, 1
+    JStrictEqual      L2, r0, r1
+    LoadConstUInt8    r0, 2
+    JStrictEqual      L3, r0, r1
+    LoadConstUInt8    r0, 3
+    JStrictEqual      L4, r0, r1
+    LoadConstUInt8    r0, 4
+    JStrictEqual      L5, r0, r1
+    LoadConstUInt8    r0, 5
+    JStrictEqual      L6, r0, r1
+    LoadConstString   r1, "other"
+    Ret               r1
+L6:
+    LoadConstString   r1, "five"
+    Ret               r1
+L5:
+    LoadConstString   r1, "four"
+    Ret               r1
+L4:
+    LoadConstString   r1, "three"
+    Ret               r1
+L3:
+    LoadConstString   r1, "two"
+    Ret               r1
+L2:
+    LoadConstString   r1, "one"
+    Ret               r1
+L1:
+    LoadConstString   r1, "zero"
+    Ret               r1
+
+Function<sparse>(2 params, 4 registers, 0 numbers, 0 non-pointers):
+    LoadParam         r3, 1
+    LoadConstString   r0, "a"
+    JStrictEqual      L1, r0, r3
+    LoadConstString   r2, ""
+    LoadConstString   r0, "b"
+    JStrictEqual      L2, r0, r3
+    LoadConstString   r0, "C"
+    LoadConstString   r1, "c"
+    JStrictEqual      L3, r1, r3
+    LoadConstString   r0, "?"
+    Jmp               L3
+L1:
+    LoadConstString   r2, "A"
+L2:
+    LoadConstString   r1, "B"
+    AddS              r0, r2, r1
+L3:
+    Ret               r0
+
+Function<loops>(2 params, 13 registers, 10 numbers, 1 non-pointers):
+Offset in debug table: source 0x014c
+    LoadParam         r11, 1
+    LoadConstZero     r6
+    Less              r10, r6, r11
+    LoadConstUInt8    r9, 1
+    LoadConstUInt8    r8, 3
+    LoadConstZero     r4
+    LoadConstZero     r2
+    LoadConstZero     r0
+    JmpFalse          L1, r10
+L4:
+    Mod               r1, r4, r8
+    Mov               r7, r4
+    Mov               r5, r2
+    JStrictEqual      L2, r1, r6
+    AddN              r3, r5, r7
+    AddN              r1, r7, r9
+    Jmp               L3
+L2:
+    AddN              r1, r7, r9
+    Mov               r3, r5
+L3:
+    Mov               r4, r1
+    Mov               r2, r3
+    Mov               r0, r2
+    JLess             L4, r4, r11
+L1:
+    LoadConstUInt8    r8, 2
+    Mov               r12, r11
+L5:
+    Sub               r2, r0, r12
+    Sub               r12, r12, r8
+    Mov               r0, r2
+    JLessN            L5, r6, r12
+    Less              r10, r6, r11
+    LoadConstUInt8    r4, 7
+    LoadConstZero     r6
+    Mov               r0, r2
+    Mov               r2, r0
+    JmpFalse          L6, r10
+L7:
+    Mov               r1, r6
+    Mov               r5, r0
+    Mov               r2, r5
+    JStrictEqual      L6, r1, r4
+    MulN              r3, r1, r8
+    AddN              r0, r5, r3
+    AddN              r6, r1, r9
+    Mov               r2, r0
+    JLess             L7, r6, r11
+L6:
+    Ret               r2
+
+Function<nested>(2 params, 23 registers, 10 numbers, 1 non-pointers):
+Offset in debug table: source 0x0163
+    LoadParam         r11, 1
+    NewArray          r13, 0
+    LoadConstZero     r7
+    Less              r10, r7, r11
+    LoadConstUInt8    r4, 1
+    LoadConstUInt8    r8, 10
+    LoadConstUInt8    r9, 5
+    LoadConstZero     r6
+    JmpFalse          L1, r10
+L4:
+    Less              r10, r7, r11
+    MulN              r5, r6, r8
+    Mov               r3, r6
+    LoadConstZero     r0
+    JmpFalse          L2, r10
+L3:
+    Mov               r1, r0
+    JLessN            L2, r3, r1
+    AddN              r2, r3, r1
+    JStrictEqual      L1, r2, r9
+    GetByIdShort      r12, r13, 0, "push"
+    AddN              r2, r5, r1
+    Call2             r12, r12, r13, r2
+    AddN              r0, r1, r4
+    JLess             L3, r0, r11
+L2:
+    AddN              r6, r3, r4
+    JLess             L4, r6, r11
+L1:
+    GetByIdShort      r12, r13, 1, "join"
+    LoadConstString   r11, ","
+    Call2             r11, r12, r13, r11
+    Ret               r11
+
+Function<logic>(3 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0180
+    LoadParam         r3, 1
+    LoadParam         r1, 2
+    Mov               r6, r3
+    JmpFalse          L1, r3
+    Mov               r6, r1
+L1:
+    Mov               r5, r3
+    JmpTrue           L2, r3
+    Mov               r5, r1
+L2:
+    LoadConstNull     r0
+    Mov               r4, r3
+    JNotEqual         L3, r4, r0
+    LoadConstString   r4, "default"
+L3:
+    LoadConstString   r2, "yes"
+    JmpTrue           L4, r3
+    LoadConstString   r2, "not"
+L4:
+    NewArray          r3, 5
+    DefineOwnInDenseArray r3, r6, 0
+    DefineOwnInDenseArray r3, r5, 1
+    DefineOwnInDenseArray r3, r4, 2
+    DefineOwnInDenseArray r3, r2, 3
+    DefineOwnInDenseArray r3, r1, 4
+    GetByIdShort      r2, r3, 0, "map"
+    GetGlobalObject   r1
+    TryGetById        r1, r1, 1, "String"
+    Call2             r3, r2, r3, r1
+    GetByIdShort      r2, r3, 2, "join"
+    LoadConstString   r1, "|"
+    Call2             r1, r2, r3, r1
+    Ret               r1
+
+Function<collatz>(2 params, 11 registers, 9 numbers, 0 non-pointers):
+Offset in debug table: source 0x0197
+    LoadParam         r9, 1
+    LoadConstZero     r7
+    LoadConstUInt8    r2, 1
+    LoadConstUInt8    r3, 2
+    LoadConstUInt8    r6, 3
+    LoadConstZero     r1
+    LoadConstZero     r5
+    JStrictEqual      L1, r9, r2
+L4:
+    Mod               r0, r9, r3
+    Mov               r4, r1
+    Mov               r10, r9
+    JStrictEqual      L2, r0, r7
+    Mul               r0, r6, r10
+    AddN              r0, r0, r2
+    Jmp               L3
+L2:
+    Div               r0, r10, r3
+L3:
+    AddN              r1, r4, r2
+    Mov               r9, r0
+    Mov               r5, r1
+    JStrictNotEqual   L4, r9, r2
+L1:
+    Ret               r5

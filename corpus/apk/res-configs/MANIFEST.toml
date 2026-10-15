@@ -1,0 +1,24 @@
+schema_version = 1
+crate = "disrobe-pass-mobile"
+generated = "2026-10-15"
+toolchain = "aapt2 2.20-14042983 (Android build-tools 36.1)"
+command = "python build.py <aapt2>"
+purpose = "Authored APK for tests/arsc_configurations.rs: 62 values directories, one per resource qualifier (locales in legacy and BCP 47 form, mcc/mnc, grammatical gender, layout direction, smallest/available width and height, screen size and aspect, round, wide colour gamut, HDR, orientation, UI mode, night, densities, touchscreen, keyboard, navigation, SDK level, and two combinations), each holding the string label whose value names its directory."
+
+[provenance]
+reference = "configs.apk.resources.txt is `aapt2 dump resources configs.apk` and configs.apk.configurations.txt is `aapt2 dump configurations configs.apk`, both from the same aapt2; they give the configuration aapt2 reads back for every value, including the -v4/-v8/-v13/-v17/-v21/-v23/-v26/-v34 levels link adds"
+
+[[fixture]]
+path = "configs.apk"
+size_bytes = 8771
+sha256 = "0a66dbc4d098c1a9775afe7ffd3d9b6fa35762d4849f832f170822dee775b07e"
+
+[[fixture]]
+path = "configs.apk.resources.txt"
+size_bytes = 2501
+sha256 = "4f1faa1ea04cd8007d3d112ab293b9bebaeed9a727fb7f8f0e435acffdb152d5"
+
+[[fixture]]
+path = "configs.apk.configurations.txt"
+size_bytes = 712
+sha256 = "3a880f5977b17dad1ef549dbf266990e122b2fbfd7f200a9a0fe8d0e03c8cce8"

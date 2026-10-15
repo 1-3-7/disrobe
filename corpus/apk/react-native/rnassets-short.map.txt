@@ -1,0 +1,10 @@
+res/drawable-400dpi-v4/_shared_img_splashbg.jpg -> res/yK.jpg
+res/drawable-hdpi-v4/node_modules_scope_icons_assets_iconback.webp -> res/sm.webp
+res/drawable-ldpi-v4/_shared_img_splashbg.jpg -> res/m_.jpg
+res/drawable-mdpi-v4/node_modules_scope_icons_assets_iconback.webp -> res/Bu.webp
+res/drawable-mdpi-v4/src_images_logo.png -> res/Fn.png
+res/drawable-xhdpi-v4/node_modules_scope_icons_assets_iconback.webp -> res/S7.webp
+res/drawable-xhdpi-v4/src_images_logo.png -> res/qO.png
+res/drawable-xxhdpi-v4/node_modules_scope_icons_assets_iconback.webp -> res/ub.webp
+res/drawable-xxhdpi-v4/src_images_logo.png -> res/Ss.png
+res/raw/fonts_interbold.ttf -> res/OP.ttf

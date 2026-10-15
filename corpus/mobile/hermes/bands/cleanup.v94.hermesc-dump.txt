@@ -1,0 +1,1249 @@
+Bytecode File Information:
+  Bytecode version number: 94
+  Source hash: c3ae40363763b9ee2616693722ff44ecd709d60c
+  Function count: 25
+  String count: 91
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 10
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: ,
+s2[ASCII, 1..15]: ?anon_0_guarded
+s3[ASCII, 15..20]: drain:
+s4[ASCII, 20..27]: :cleanup
+s5[ASCII, 21..33]: cleanup error
+s6[ASCII, 39..45]: :closed
+s7[ASCII, 40..51]: closed with 
+s8[ASCII, 52..57]: :start
+s9[ASCII, 57..62]: total=
+s10[ASCII, 63..87]: ?anon_0_cleanupThatYields
+s11[ASCII, 87..89]: src
+s12[ASCII, 89..95]: closing
+s13[ASCII, 96..121]: ?anon_0_conditionalCleanup
+s14[ASCII, 124..139]: ?anon_0_counting
+s15[ASCII, 139..144]: global
+s16[ASCII, 147..169]: ?anon_0_drainingCleanup
+s17[ASCII, 174..195]: ?anon_0_failingCleanup
+s18[ASCII, 182..188]: failing
+s19[ASCII, 204..224]: ?anon_0_nestedFinally
+s20[ASCII, 225..242]: ?anon_0_overriding
+s21[ASCII, 243..255]: ?anon_0_pairs
+s22[ASCII, 255..258]: stop
+s23[ASCII, 262..274]: ?anon_0_relay
+s24[ASCII, 273..273]: a
+s25[ASCII, 275..277]: ack
+s26[ASCII, 278..278]: b
+s27[ASCII, 278..281]: bang
+s28[ASCII, 282..285]: body
+s29[ASCII, 286..286]: q
+s30[ASCII, 286..298]: quiet-cleanup
+s31[ASCII, 292..305]: cleanup failed
+s32[ASCII, 305..311]: drained
+s33[ASCII, 312..326]: verbose-cleanup
+s34[ASCII, 320..331]: cleanup-done
+s35[ASCII, 332..332]: x
+s36[ASCII, 335..337]: cut
+s37[ASCII, 338..345]: override
+s38[ASCII, 345..349]: early
+s39[ASCII, 352..356]: inner
+s40[ASCII, 352..364]: inner-finally
+s41[ASCII, 358..362]: final
+s42[ASCII, 365..371]: ignored
+s43[ASCII, 372..384]: outer-finally
+s44[ASCII, 385..394]: overridden
+s45[ASCII, 409..414]: thrown
+s46[ASCII, 411..413]: row
+s47[ASCII, 415..418]: work
+i48[ASCII, 9..15] #30CCEBB5: guarded
+i49[ASCII, 21..21] #00018A52: c
+i50[ASCII, 27..27] #0001C771: p
+i51[ASCII, 33..38] #44B120DB: return
+i52[ASCII, 45..45] #00019625: d
+i53[ASCII, 56..56] #0001CF53: r
+i54[ASCII, 57..57] #0001D735: t
+i55[ASCII, 71..87] #DF54F773: cleanupThatYields
+i56[ASCII, 104..121] #910AB0C3: conditionalCleanup
+i57[ASCII, 121..123] #FDB25292: pop
+i58[ASCII, 132..139] #B0A2E61C: counting
+i59[ASCII, 138..138] #0001BE8F: n
+i60[ASCII, 139..139] #00019A16: g
+i61[ASCII, 144..146] #1C35E808: log
+i62[ASCII, 155..169] #3E622B30: drainingCleanup
+i63[ASCII, 169..173] #A689F65B: print
+i64[ASCII, 182..195] #138E2F3D: failingCleanup
+i65[ASCII, 195..203] #807C5F3D: prototype
+i66[ASCII, 212..224] #BBEB4321: nestedFinally
+i67[ASCII, 224..224] #0001E3E8: y
+i68[ASCII, 233..233] #0001BA9E: o
+i69[ASCII, 233..242] #C408642E: overriding
+i70[ASCII, 234..234] #0001DF17: v
+i71[ASCII, 251..255] #1EF8AF0A: pairs
+i72[ASCII, 258..261] #3F21B886: push
+i73[ASCII, 270..274] #1E77C706: relay
+i74[ASCII, 328..331] #B553E7BD: done
+i75[ASCII, 330..333] #C62208C8: next
+i76[ASCII, 334..335] #0662AB73: fc
+i77[ASCII, 350..353] #874F77A9: join
+i78[ASCII, 395..406] #498FDB21: makeIterable
+i79[ASCII, 405..410] #15A9FF56: length
+i80[ASCII, 409..413] #E14FDC36: throw
+i81[ASCII, 419..423] #9102A3D0: Error
+i82[ASCII, 424..427] #971CE5C7: JSON
+i83[ASCII, 428..433] #FB8C3D32: Symbol
+i84[ASCII, 434..438] #3C4224BC: fresh
+i85[ASCII, 439..446] #1F1F1786: iterator
+i86[ASCII, 447..453] #63D87C1C: message
+i87[ASCII, 454..455] #070C478F: q1
+i88[ASCII, 456..457] #070C4BBC: q2
+i89[ASCII, 458..466] #8D1543BD: stringify
+i90[ASCII, 467..471] #DF50693D: value
+
+Array Buffer:
+[int 1]
+[int 2]
+[int 3]
+Function Source Table:
+  Function ID 2 -> s0
+  Function ID 4 -> s0
+  Function ID 6 -> s0
+  Function ID 12 -> s0
+  Function ID 14 -> s0
+  Function ID 16 -> s0
+  Function ID 18 -> s0
+  Function ID 20 -> s0
+  Function ID 22 -> s0
+  Function ID 24 -> s0
+
+Function<global>(1 params, 20 registers, 0 symbols):
+Offset in debug table: source 0x0000, scope 0x0000, textified callees 0x0000
+    DeclareGlobalVar  "log"
+    DeclareGlobalVar  "g"
+    DeclareGlobalVar  "n"
+    DeclareGlobalVar  "o"
+    DeclareGlobalVar  "r"
+    DeclareGlobalVar  "p"
+    DeclareGlobalVar  "v"
+    DeclareGlobalVar  "t"
+    DeclareGlobalVar  "fc"
+    DeclareGlobalVar  "c"
+    DeclareGlobalVar  "fresh"
+    DeclareGlobalVar  "q1"
+    DeclareGlobalVar  "q2"
+    DeclareGlobalVar  "d"
+    DeclareGlobalVar  "y"
+    DeclareGlobalVar  "guarded"
+    DeclareGlobalVar  "nestedFinally"
+    DeclareGlobalVar  "overriding"
+    DeclareGlobalVar  "makeIterable"
+    DeclareGlobalVar  "relay"
+    DeclareGlobalVar  "pairs"
+    DeclareGlobalVar  "failingCleanup"
+    DeclareGlobalVar  "counting"
+    DeclareGlobalVar  "conditionalCleanu"...
+    DeclareGlobalVar  "drainingCleanup"
+    DeclareGlobalVar  "cleanupThatYields"
+    CreateEnvironment r1
+    LoadConstUndefined r4
+    GetGlobalObject   r0
+    LoadConstUInt8    r3, 1
+    CreateGeneratorClosure r2, r1, NCFunction<guarded>
+    PutById           r0, r2, 1, "guarded"
+    CreateGeneratorClosure r2, r1, NCFunction<nestedFinally>
+    PutById           r0, r2, 2, "nestedFinally"
+    CreateGeneratorClosure r2, r1, NCFunction<overriding>
+    PutById           r0, r2, 3, "overriding"
+    CreateClosure     r2, r1, Function<makeIterable>
+    PutById           r0, r2, 4, "makeIterable"
+    CreateGeneratorClosure r2, r1, NCFunction<relay>
+    PutById           r0, r2, 5, "relay"
+    CreateGeneratorClosure r2, r1, NCFunction<pairs>
+    PutById           r0, r2, 6, "pairs"
+    CreateGeneratorClosure r2, r1, NCFunction<failingCleanup>
+    PutById           r0, r2, 7, "failingCleanup"
+    CreateGeneratorClosure r2, r1, NCFunction<counting>
+    PutById           r0, r2, 8, "counting"
+    CreateGeneratorClosure r2, r1, NCFunction<conditionalCleanup>
+    PutById           r0, r2, 9, "conditionalCleanu"...
+    CreateGeneratorClosure r2, r1, NCFunction<drainingCleanup>
+    PutById           r0, r2, 10, "drainingCleanup"
+    CreateGeneratorClosure r1, r1, NCFunction<cleanupThatYields>
+    PutById           r0, r1, 11, "cleanupThatYields"
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 1, "guarded"
+    LoadConstString   r1, "a"
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 13, "g"
+    TryGetById        r6, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r2, r5, 4, "stringify"
+    GetByIdShort      r7, r0, 5, "g"
+    GetByIdShort      r1, r7, 6, "next"
+    Call1             r1, r1, r7
+    Call2             r5, r2, r5, r1
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 5, "g"
+    GetByIdShort      r8, r9, 7, "return"
+    LoadConstUInt8    r1, 42
+    Call2             r1, r8, r9, r1
+    Call2             r2, r2, r7, r1
+    TryGetById        r8, r0, 3, "JSON"
+    GetByIdShort      r7, r8, 4, "stringify"
+    GetByIdShort      r9, r0, 5, "g"
+    GetByIdShort      r1, r9, 6, "next"
+    Call1             r1, r1, r9
+    Call2             r1, r7, r8, r1
+    Call4             r1, r6, r4, r5, r2, r1
+    TryGetById        r2, r0, 2, "print"
+    GetByIdShort      r5, r0, 8, "log"
+    GetByIdShort      r1, r5, 9, "join"
+    LoadConstString   r6, ","
+    Call2             r1, r1, r5, r6
+    Call2             r1, r2, r4, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r1, r0, 10, "nestedFinally"
+    Call1             r1, r1, r4
+    PutById           r0, r1, 14, "n"
+    GetByIdShort      r2, r0, 11, "n"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 11, "n"
+    GetByIdShort      r8, r9, 7, "return"
+    LoadConstString   r1, "done"
+    Call2             r1, r8, r9, r1
+    Call2             r2, r2, r7, r1
+    GetByIdShort      r7, r0, 8, "log"
+    GetByIdShort      r1, r7, 9, "join"
+    Call2             r1, r1, r7, r6
+    Call3             r1, r5, r4, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r1, r0, 12, "overriding"
+    Call1             r1, r1, r4
+    PutById           r0, r1, 15, "o"
+    GetByIdShort      r2, r0, 13, "o"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 13, "o"
+    GetByIdShort      r8, r9, 7, "return"
+    LoadConstString   r1, "ignored"
+    Call2             r1, r8, r9, r1
+    Call2             r2, r2, r7, r1
+    GetByIdShort      r7, r0, 8, "log"
+    GetByIdShort      r1, r7, 9, "join"
+    Call2             r1, r1, r7, r6
+    Call3             r1, r5, r4, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 14, "relay"
+    GetByIdShort      r5, r0, 15, "makeIterable"
+    LoadConstString   r1, "src"
+    Call2             r1, r5, r4, r1
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 16, "r"
+    TryGetById        r5, r0, 2, "print"
+    GetByIdShort      r2, r0, 16, "r"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    GetByIdShort      r2, r1, 17, "value"
+    GetByIdShort      r7, r0, 16, "r"
+    GetByIdShort      r1, r7, 6, "next"
+    Call1             r1, r1, r7
+    GetByIdShort      r1, r1, 17, "value"
+    Call3             r1, r5, r4, r2, r1
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 16, "r"
+    GetByIdShort      r8, r9, 7, "return"
+    LoadConstString   r1, "stop"
+    Call2             r1, r8, r9, r1
+    Call2             r2, r2, r7, r1
+    GetByIdShort      r7, r0, 8, "log"
+    GetByIdShort      r1, r7, 9, "join"
+    Call2             r1, r1, r7, r6
+    Call3             r1, r5, r4, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 18, "pairs"
+    GetByIdShort      r5, r0, 15, "makeIterable"
+    LoadConstString   r1, "row"
+    Call2             r5, r5, r4, r1
+    NewArray          r1, 2
+    PutOwnByIndex     r1, r5, 0
+    GetByIdShort      r7, r0, 15, "makeIterable"
+    LoadConstString   r5, "next"
+    Call2             r5, r7, r4, r5
+    PutOwnByIndex     r1, r5, 1
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 17, "p"
+    TryGetById        r5, r0, 2, "print"
+    GetByIdShort      r2, r0, 19, "p"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    GetByIdShort      r2, r1, 17, "value"
+    GetByIdShort      r7, r0, 19, "p"
+    GetByIdShort      r1, r7, 6, "next"
+    Call1             r1, r1, r7
+    GetByIdShort      r1, r1, 17, "value"
+    Call3             r1, r5, r4, r2, r1
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 19, "p"
+    GetByIdShort      r8, r9, 7, "return"
+    LoadConstString   r1, "cut"
+    Call2             r1, r8, r9, r1
+    Call2             r2, r2, r7, r1
+    GetByIdShort      r7, r0, 8, "log"
+    GetByIdShort      r1, r7, 9, "join"
+    Call2             r1, r1, r7, r6
+    Call3             r1, r5, r4, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 1, "guarded"
+    LoadConstString   r1, "b"
+    Call2             r5, r2, r4, r1
+    Mov               r1, r5
+    IteratorBegin     r2, r1
+L3:
+    IteratorNext      r5, r2, r1
+    Mov               r7, r2
+    JStrictEqual      L1, r7, r4
+L10:
+    PutById           r0, r5, 18, "v"
+    GetByIdShort      r5, r0, 20, "v"
+    JStrictEqual      L2, r5, r3
+L11:
+    Jmp               L3
+L2:
+    IteratorClose     r2, 0
+    Jmp               L1
+L4:
+    Catch             r1
+    IteratorClose     r2, 1
+    Throw             r1
+L1:
+    TryGetById        r2, r0, 2, "print"
+    GetByIdShort      r3, r0, 8, "log"
+    GetByIdShort      r1, r3, 9, "join"
+    Call2             r1, r1, r3, r6
+    Call2             r1, r2, r4, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 1, "guarded"
+    LoadConstString   r1, "c"
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 19, "t"
+    GetByIdShort      r2, r0, 21, "t"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+L12:
+    GetByIdShort      r3, r0, 21, "t"
+    GetByIdShort      r2, r3, 22, "throw"
+    TryGetById        r7, r0, 23, "Error"
+    GetByIdShort      r1, r7, 24, "prototype"
+    CreateThis        r5, r1, r7
+    LoadConstString   r12, "bang"
+    Mov               r13, r5
+    Construct         r1, r7, 2
+    SelectObject      r1, r5, r1
+    Call2             r1, r2, r3, r1
+L13:
+    Jmp               L6
+L5:
+    Catch             r1
+    TryGetById        r3, r0, 2, "print"
+    GetByIdShort      r2, r1, 25, "message"
+    LoadConstString   r1, "thrown"
+    Call3             r1, r3, r4, r1, r2
+L6:
+    TryGetById        r2, r0, 2, "print"
+    GetByIdShort      r3, r0, 8, "log"
+    GetByIdShort      r1, r3, 9, "join"
+    Call2             r1, r1, r3, r6
+    Call2             r1, r2, r4, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r1, r0, 26, "failingCleanup"
+    Call1             r1, r1, r4
+    PutById           r0, r1, 20, "fc"
+    GetByIdShort      r2, r0, 27, "fc"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+L14:
+    GetByIdShort      r3, r0, 27, "fc"
+    GetByIdShort      r2, r3, 7, "return"
+    LoadConstUInt8    r1, 5
+    Call2             r1, r2, r3, r1
+L15:
+    Jmp               L8
+L7:
+    Catch             r1
+    TryGetById        r5, r0, 2, "print"
+    GetByIdShort      r3, r1, 25, "message"
+    GetByIdShort      r2, r0, 8, "log"
+    GetByIdShort      r1, r2, 9, "join"
+    Call2             r2, r1, r2, r6
+    LoadConstString   r1, "cleanup error"
+    Call4             r1, r5, r4, r1, r3, r2
+L8:
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r1, r0, 28, "counting"
+    Call1             r1, r1, r4
+    PutById           r0, r1, 21, "c"
+    GetByIdShort      r2, r0, 29, "c"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    GetByIdShort      r3, r0, 29, "c"
+    GetByIdShort      r2, r3, 6, "next"
+    LoadConstUInt8    r1, 5
+    Call2             r1, r2, r3, r1
+    GetByIdShort      r3, r0, 29, "c"
+    GetByIdShort      r2, r3, 6, "next"
+    LoadConstUInt8    r1, 7
+    Call2             r1, r2, r3, r1
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r2, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 29, "c"
+    GetByIdShort      r7, r8, 7, "return"
+    LoadConstInt      r1, -1
+    Call2             r1, r7, r8, r1
+    Call2             r2, r2, r5, r1
+    GetByIdShort      r5, r0, 8, "log"
+    GetByIdShort      r1, r5, 9, "join"
+    Call2             r1, r1, r5, r6
+    Call3             r1, r3, r4, r2, r1
+    GetByIdShort      r1, r0, 28, "counting"
+    Call1             r1, r1, r4
+    PutById           r0, r1, 22, "fresh"
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r2, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 30, "fresh"
+    GetByIdShort      r7, r8, 7, "return"
+    LoadConstString   r1, "early"
+    Call2             r1, r7, r8, r1
+    Call2             r2, r2, r5, r1
+    GetByIdShort      r5, r0, 8, "log"
+    GetByIdShort      r1, r5, 9, "join"
+    Call2             r1, r1, r5, r6
+    Call3             r1, r3, r4, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 31, "conditionalCleanu"...
+    LoadConstTrue     r1
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 23, "q1"
+    GetByIdShort      r2, r0, 32, "q1"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    GetByIdShort      r2, r0, 31, "conditionalCleanu"...
+    LoadConstFalse    r1
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 24, "q2"
+    GetByIdShort      r2, r0, 33, "q2"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r3, r0, 3, "JSON"
+    GetByIdShort      r2, r3, 4, "stringify"
+    GetByIdShort      r8, r0, 32, "q1"
+    GetByIdShort      r7, r8, 7, "return"
+    LoadConstString   r1, "v"
+    Call2             r1, r7, r8, r1
+    Call2             r3, r2, r3, r1
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 33, "q2"
+    GetByIdShort      r8, r9, 7, "return"
+    LoadConstString   r1, "q"
+    Call2             r1, r8, r9, r1
+    Call2             r2, r2, r7, r1
+    GetByIdShort      r7, r0, 8, "log"
+    GetByIdShort      r1, r7, 9, "join"
+    Call2             r1, r1, r7, r6
+    Call4             r1, r5, r4, r3, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r2, r0, 34, "drainingCleanup"
+    NewArrayWithBuffer r1, 3, 3, 1
+    Call2             r1, r2, r4, r1
+    PutById           r0, r1, 25, "d"
+    GetByIdShort      r2, r0, 35, "d"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r2, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 35, "d"
+    GetByIdShort      r7, r8, 7, "return"
+    LoadConstString   r1, "drained"
+    Call2             r1, r7, r8, r1
+    Call2             r2, r2, r5, r1
+    GetByIdShort      r5, r0, 8, "log"
+    GetByIdShort      r1, r5, 9, "join"
+    Call2             r1, r1, r5, r6
+    Call3             r1, r3, r4, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 12, "log"
+    GetByIdShort      r1, r0, 36, "cleanupThatYields"
+    Call1             r1, r1, r4
+    PutById           r0, r1, 26, "y"
+    GetByIdShort      r2, r0, 37, "y"
+    GetByIdShort      r1, r2, 6, "next"
+    Call1             r1, r1, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r2, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 37, "y"
+    GetByIdShort      r7, r8, 7, "return"
+    LoadConstString   r1, "final"
+    Call2             r1, r7, r8, r1
+    Call2             r2, r2, r5, r1
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r5, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 37, "y"
+    GetByIdShort      r8, r9, 6, "next"
+    LoadConstString   r1, "ack"
+    Call2             r1, r8, r9, r1
+    Call2             r1, r5, r7, r1
+    GetByIdShort      r5, r0, 8, "log"
+    GetByIdShort      r0, r5, 9, "join"
+    Call2             r0, r0, r5, r6
+    Call4             r0, r3, r4, r2, r1, r0
+    Ret               r0
+
+Exception Handlers:
+0: start = L10, end = L11, target = L4
+1: start = L12, end = L13, target = L5
+2: start = L14, end = L15, target = L7
+
+NCFunction<guarded>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_guarded>
+    Ret               r0
+
+Function<?anon_0_guarded>(2 params, 16 registers, 0 symbols):
+Offset in debug table: source 0x05f3, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadParam         r5, 1
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L8:
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r1, ":start"
+    Add               r1, r5, r1
+    Call2             r1, r3, r4, r1
+    LoadConstUInt8    r1, 1
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r3
+    JmpTrue           L3, r3
+    LoadConstUInt8    r3, 2
+    SaveGenerator     L4
+    Ret               r3
+L4:
+    ResumeGenerator   r3, r4
+    JmpTrue           L5, r4
+L9:
+    GetByIdShort      r7, r2, 1, "log"
+    GetByIdShort      r6, r7, 2, "push"
+    LoadConstString   r4, ":cleanup"
+    Add               r4, r5, r4
+    Call2             r4, r6, r7, r4
+    LoadConstUndefined r4
+    CompleteGenerator
+    Ret               r4
+L5:
+    GetByIdShort      r7, r2, 1, "log"
+    GetByIdShort      r6, r7, 2, "push"
+    LoadConstString   r4, ":cleanup"
+    Add               r4, r5, r4
+    Call2             r4, r6, r7, r4
+    CompleteGenerator
+    Ret               r3
+L3:
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, ":cleanup"
+    Add               r2, r5, r2
+    Call2             r2, r3, r4, r2
+    CompleteGenerator
+    Ret               r1
+L6:
+    Catch             r1
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, ":cleanup"
+    Add               r2, r5, r2
+    Call2             r2, r3, r4, r2
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L8, end = L9, target = L6
+
+NCFunction<nestedFinally>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_nestedFinally>
+    Ret               r0
+
+Function<?anon_0_nestedFinally>(1 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x06e1, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L7:
+    LoadConstString   r1, "inner"
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r2
+    JmpTrue           L3, r2
+L8:
+    GetGlobalObject   r2
+    GetByIdShort      r5, r2, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "inner-finally"
+    Call2             r3, r4, r5, r3
+L9:
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "outer-finally"
+    Call2             r2, r3, r4, r2
+    LoadConstUndefined r2
+    CompleteGenerator
+    Ret               r2
+L3:
+    GetGlobalObject   r2
+    GetByIdShort      r5, r2, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "inner-finally"
+    Call2             r3, r4, r5, r3
+L10:
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "outer-finally"
+    Call2             r2, r3, r4, r2
+    CompleteGenerator
+    Ret               r1
+L4:
+    Catch             r1
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "inner-finally"
+    Call2             r2, r3, r4, r2
+    Throw             r1
+L5:
+    Catch             r1
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "outer-finally"
+    Call2             r2, r3, r4, r2
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L7, end = L8, target = L4
+1: start = L7, end = L9, target = L5
+2: start = L3, end = L10, target = L5
+3: start = L4, end = L5, target = L5
+
+NCFunction<overriding>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_overriding>
+    Ret               r0
+
+Function<?anon_0_overriding>(1 params, 12 registers, 0 symbols):
+Offset in debug table: source 0x07cf, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+L6:
+    LoadConstString   r2, "x"
+    SaveGenerator     L2
+    Ret               r2
+L2:
+    ResumeGenerator   r2, r1
+    JmpTrue           L3, r1
+L7:
+    GetGlobalObject   r1
+    GetByIdShort      r3, r1, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "override"
+    Call2             r1, r2, r3, r1
+    LoadConstString   r1, "overridden"
+    CompleteGenerator
+    Ret               r1
+L3:
+    GetGlobalObject   r1
+    GetByIdShort      r3, r1, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "override"
+    Call2             r1, r2, r3, r1
+    LoadConstString   r1, "overridden"
+    CompleteGenerator
+    Ret               r1
+L4:
+    Catch             r1
+    GetGlobalObject   r1
+    GetByIdShort      r3, r1, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "override"
+    Call2             r1, r2, r3, r1
+    LoadConstString   r1, "overridden"
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L6, end = L7, target = L4
+
+Function<makeIterable>(2 params, 3 registers, 2 symbols):
+Offset in debug table: source 0x0851, scope 0x0000, textified callees 0x0000
+    CreateEnvironment r1
+    LoadParam         r0, 1
+    StoreToEnvironment r1, 0, r0
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 1, r0
+    NewObject         r0
+    GetGlobalObject   r2
+    TryGetById        r2, r2, 1, "Symbol"
+    GetByIdShort      r2, r2, 2, "iterator"
+    CreateClosure     r1, r1, Function<>
+    PutByVal          r0, r2, r1
+    Ret               r0
+
+Function<>(1 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x0864, scope 0x0000, textified callees 0x0000
+    CreateEnvironment r1
+    NewObject         r0
+    CreateClosure     r2, r1, Function<next>
+    PutNewOwnByIdShort r0, r2, "next"
+    CreateClosure     r1, r1, Function<return>
+    PutNewOwnByIdShort r0, r1, "return"
+    Ret               r0
+
+Function<next>(1 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x0872, scope 0x0000, textified callees 0x0000
+    GetEnvironment    r0, 1
+    LoadFromEnvironment r1, r0, 1
+    Inc               r2, r1
+    StoreToEnvironment r0, 1, r2
+    LoadFromEnvironment r1, r0, 0
+    Add               r2, r1, r2
+    LoadFromEnvironment r1, r0, 1
+    LoadConstUInt8    r0, 3
+    Greater           r1, r1, r0
+    NewObject         r0
+    PutNewOwnByIdShort r0, r2, "value"
+    PutNewOwnByIdShort r0, r1, "done"
+    Ret               r0
+
+Function<return>(1 params, 12 registers, 0 symbols):
+Offset in debug table: source 0x08a3, scope 0x0000, textified callees 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r2, r0, 1, "log"
+    GetByIdShort      r1, r2, 2, "push"
+    GetEnvironment    r0, 1
+    LoadFromEnvironment r3, r0, 0
+    LoadConstString   r0, ":closed"
+    Add               r0, r3, r0
+    Call2             r0, r1, r2, r0
+    NewObject         r0
+    Ret               r0
+
+NCFunction<relay>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_relay>
+    Ret               r0
+
+Function<?anon_0_relay>(2 params, 6 registers, 0 symbols):
+Offset in debug table: source 0x08cb, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstUndefined r1
+    ResumeGenerator   r0, r2
+    JmpTrue           L1, r2
+    LoadParam         r4, 1
+    IteratorBegin     r3, r4
+L5:
+    IteratorNext      r2, r3, r4
+    Mov               r5, r3
+    JStrictEqual      L2, r5, r1
+L8:
+    SaveGenerator     L3
+    Ret               r2
+L3:
+    ResumeGenerator   r2, r5
+    JmpTrue           L4, r5
+L9:
+    Jmp               L5
+L4:
+    IteratorClose     r3, 0
+    CompleteGenerator
+    Ret               r2
+L6:
+    Catch             r2
+    IteratorClose     r3, 1
+    Throw             r2
+L2:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L8, end = L9, target = L6
+
+NCFunction<pairs>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_pairs>
+    Ret               r0
+
+Function<?anon_0_pairs>(2 params, 8 registers, 0 symbols):
+Offset in debug table: source 0x0921, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstUndefined r1
+    ResumeGenerator   r0, r2
+    JmpTrue           L1, r2
+    LoadParam         r2, 1
+    IteratorBegin     r3, r2
+L9:
+    IteratorNext      r4, r3, r2
+    Mov               r5, r3
+    JStrictEqual      L2, r5, r1
+L13:
+    Mov               r6, r4
+    IteratorBegin     r5, r6
+L6:
+    IteratorNext      r4, r5, r6
+    Mov               r7, r5
+    JStrictEqual      L3, r7, r1
+L11:
+    SaveGenerator     L4
+    Ret               r4
+L4:
+    ResumeGenerator   r4, r7
+    JmpTrue           L5, r7
+L12:
+    Jmp               L6
+L5:
+    IteratorClose     r5, 0
+L14:
+    IteratorClose     r3, 0
+    CompleteGenerator
+    Ret               r4
+L7:
+    Catch             r4
+    IteratorClose     r5, 1
+    Throw             r4
+L3:
+    Jmp               L9
+L8:
+    Catch             r2
+    IteratorClose     r3, 1
+    Throw             r2
+L2:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L11, end = L12, target = L7
+1: start = L13, end = L14, target = L8
+2: start = L7, end = L3, target = L8
+
+NCFunction<failingCleanup>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_failingCleanup>
+    Ret               r0
+
+Function<?anon_0_failingCleanup>(1 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x09b6, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L6:
+    LoadConstUInt8    r2, 1
+    SaveGenerator     L2
+    Ret               r2
+L2:
+    ResumeGenerator   r2, r1
+    JmpTrue           L3, r1
+L7:
+    GetGlobalObject   r1
+    GetByIdShort      r4, r1, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "failing"
+    Call2             r2, r3, r4, r2
+    TryGetById        r3, r1, 3, "Error"
+    GetByIdShort      r1, r3, 4, "prototype"
+    CreateThis        r2, r1, r3
+    LoadConstString   r5, "cleanup failed"
+    Mov               r6, r2
+    Construct         r1, r3, 2
+    SelectObject      r1, r2, r1
+    Throw             r1
+L3:
+    GetGlobalObject   r1
+    GetByIdShort      r4, r1, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "failing"
+    Call2             r2, r3, r4, r2
+    TryGetById        r3, r1, 3, "Error"
+    GetByIdShort      r1, r3, 4, "prototype"
+    CreateThis        r2, r1, r3
+    LoadConstString   r5, "cleanup failed"
+    Mov               r6, r2
+    Construct         r1, r3, 2
+    SelectObject      r1, r2, r1
+    Throw             r1
+L4:
+    Catch             r1
+    GetGlobalObject   r1
+    GetByIdShort      r4, r1, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "failing"
+    Call2             r2, r3, r4, r2
+    TryGetById        r3, r1, 3, "Error"
+    GetByIdShort      r1, r3, 4, "prototype"
+    CreateThis        r2, r1, r3
+    LoadConstString   r5, "cleanup failed"
+    Mov               r6, r2
+    Construct         r1, r3, 2
+    SelectObject      r1, r2, r1
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L6, end = L7, target = L4
+
+NCFunction<counting>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_counting>
+    Ret               r0
+
+Function<?anon_0_counting>(1 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x0ac0, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstUndefined r2
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+    LoadConstZero     r2
+L4:
+    Mov               r3, r2
+    SaveGenerator     L2
+    Ret               r3
+L2:
+    ResumeGenerator   r1, r4
+    JmpTrue           L3, r4
+    Add               r2, r3, r1
+    Jmp               L4
+L3:
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    Mov               r6, r2
+    LoadConstString   r3, "total="
+    Add               r3, r3, r6
+    Call2             r3, r4, r5, r3
+    CompleteGenerator
+    Ret               r1
+L5:
+    Catch             r1
+    GetGlobalObject   r3
+    GetByIdShort      r4, r3, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    Mov               r5, r2
+    LoadConstString   r2, "total="
+    Add               r2, r2, r5
+    Call2             r2, r3, r4, r2
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L4, end = L3, target = L5
+
+NCFunction<conditionalCleanup>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_conditionalCleanup>
+    Ret               r0
+
+Function<?anon_0_conditionalCleanup>(2 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x0b31, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadParam         r2, 1
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L12:
+    LoadConstString   r1, "work"
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r3
+    JmpTrue           L3, r3
+L13:
+    JmpTrue           L4, r2
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "quiet-cleanup"
+    Call2             r3, r4, r5, r3
+    Jmp               L5
+L4:
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "verbose-cleanup"
+    Call2             r3, r4, r5, r3
+L5:
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "cleanup-done"
+    Call2             r3, r4, r5, r3
+    LoadConstUndefined r3
+    CompleteGenerator
+    Ret               r3
+L3:
+    JmpTrue           L6, r2
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "quiet-cleanup"
+    Call2             r3, r4, r5, r3
+    Jmp               L7
+L6:
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "verbose-cleanup"
+    Call2             r3, r4, r5, r3
+L7:
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "cleanup-done"
+    Call2             r3, r4, r5, r3
+    CompleteGenerator
+    Ret               r1
+L8:
+    Catch             r1
+    JmpTrue           L9, r2
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "quiet-cleanup"
+    Call2             r2, r3, r4, r2
+    Jmp               L10
+L9:
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "verbose-cleanup"
+    Call2             r2, r3, r4, r2
+L10:
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, "cleanup-done"
+    Call2             r2, r3, r4, r2
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L12, end = L13, target = L8
+
+NCFunction<drainingCleanup>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_drainingCleanup>
+    Ret               r0
+
+Function<?anon_0_drainingCleanup>(2 params, 17 registers, 0 symbols):
+Offset in debug table: source 0x0c5f, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadParam         r6, 1
+    GetGlobalObject   r5
+    LoadConstString   r4, "drain:"
+    LoadConstZero     r3
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L12:
+    GetByIdShort      r1, r6, 1, "length"
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r2
+    JmpTrue           L3, r2
+L13:
+    GetByIdShort      r2, r6, 1, "length"
+    JNotGreater       L4, r2, r3
+L5:
+    GetByIdShort      r8, r5, 2, "log"
+    GetByIdShort      r7, r8, 3, "push"
+    GetByIdShort      r2, r6, 4, "pop"
+    Call1             r2, r2, r6
+    Add               r2, r4, r2
+    Call2             r2, r7, r8, r2
+    GetByIdShort      r2, r6, 1, "length"
+    JGreater          L5, r2, r3
+L4:
+    LoadConstUndefined r2
+    CompleteGenerator
+    Ret               r2
+L3:
+    GetByIdShort      r2, r6, 1, "length"
+    JNotGreater       L6, r2, r3
+L7:
+    GetByIdShort      r8, r5, 2, "log"
+    GetByIdShort      r7, r8, 3, "push"
+    GetByIdShort      r2, r6, 4, "pop"
+    Call1             r2, r2, r6
+    Add               r2, r4, r2
+    Call2             r2, r7, r8, r2
+    GetByIdShort      r2, r6, 1, "length"
+    JGreater          L7, r2, r3
+L6:
+    CompleteGenerator
+    Ret               r1
+L8:
+    Catch             r1
+    GetByIdShort      r2, r6, 1, "length"
+    JNotGreater       L9, r2, r3
+L10:
+    GetByIdShort      r8, r5, 2, "log"
+    GetByIdShort      r7, r8, 3, "push"
+    GetByIdShort      r2, r6, 4, "pop"
+    Call1             r2, r2, r6
+    Add               r2, r4, r2
+    Call2             r2, r7, r8, r2
+    GetByIdShort      r2, r6, 1, "length"
+    JGreater          L10, r2, r3
+L9:
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L12, end = L13, target = L8
+
+NCFunction<cleanupThatYields>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_cleanupThatYields>
+    Ret               r0
+
+Function<?anon_0_cleanupThatYields>(1 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x0d9f, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L12:
+    LoadConstString   r2, "body"
+    SaveGenerator     L2
+    Ret               r2
+L2:
+    ResumeGenerator   r2, r1
+    JmpTrue           L3, r1
+L13:
+    LoadConstString   r1, "closing"
+    SaveGenerator     L4
+    Ret               r1
+L4:
+    ResumeGenerator   r1, r3
+    JmpTrue           L5, r3
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "closed with "
+    Add               r3, r3, r1
+    Call2             r3, r4, r5, r3
+    LoadConstUndefined r3
+    CompleteGenerator
+    Ret               r3
+L5:
+    CompleteGenerator
+    Ret               r1
+L3:
+    LoadConstString   r1, "closing"
+    SaveGenerator     L6
+    Ret               r1
+L6:
+    ResumeGenerator   r1, r3
+    JmpTrue           L7, r3
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "closed with "
+    Add               r3, r3, r1
+    Call2             r3, r4, r5, r3
+    CompleteGenerator
+    Ret               r2
+L7:
+    CompleteGenerator
+    Ret               r1
+L8:
+    Catch             r2
+    LoadConstString   r1, "closing"
+    SaveGenerator     L9
+    Ret               r1
+L9:
+    ResumeGenerator   r1, r3
+    JmpTrue           L10, r3
+    GetGlobalObject   r3
+    GetByIdShort      r5, r3, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "closed with "
+    Add               r3, r3, r1
+    Call2             r3, r4, r5, r3
+    Throw             r2
+L10:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L12, end = L13, target = L8

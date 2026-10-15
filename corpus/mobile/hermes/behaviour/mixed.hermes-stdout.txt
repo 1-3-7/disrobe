@@ -1,0 +1,12 @@
+fin
+15 two boom 1 2 P(21) 8
+true 1,2,3 object
+3 1 2 9 5
+10
+20
+1 2 true
+0 0
+1 0
+2 0
+{"a":1,"b":2,"c1":3} 3
+async 7

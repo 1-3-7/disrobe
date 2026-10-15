@@ -7,7 +7,7 @@
 
 use boa_engine::{Context, Source};
 use disrobe_pass_mobile::{
-    DecompileReport, DecompiledFunction, HermesExceptionEntry, HermesModule, StructureDecline,
+    DecompileReport, DecompiledFunction, HermesExceptionEntry, HermesModule,
     decompile_hermes_module, parse_hermes_module,
 };
 use oxc_allocator::Allocator;
@@ -276,29 +276,27 @@ fn nested_report() -> DecompileReport {
 }
 
 #[test]
-fn a_try_catch_nested_inside_another_try_catch_declines_by_name_instead_of_mis_structuring() {
+fn a_try_catch_nested_inside_another_try_catch_splices_inside_out() {
     let decompiled: DecompileReport = nested_report();
     let nested: &DecompiledFunction = function(&decompiled, "nested");
     assert!(
-        !nested.structured,
-        "the outer catch region overlaps the inner try/catch's blocks, which this pass does not \
-         splice; a function in this shape must decline rather than silently drop or misplace a \
-         handler; src:\n{}",
-        nested.source
-    );
-    assert_eq!(
+        nested.structured && nested.structure_decline.is_none(),
+        "the inner handler's region is spliced first and the outer region then covers it as one \
+         block, so the function structures; decline {:?}; src:\n{}",
         nested.structure_decline,
-        Some(StructureDecline::UnreachableExceptionHandler)
+        nested.source
     );
+    let expected: &str = "  try {\n    try {\n      r0 = (arg0 / arg1);\n    } catch ($exc) {\n      \
+                          r0 = -1;\n    }\n    if (r0 < 0) {\n      throw new Error(\"neg\");\n    \
+                          }\n  } catch ($exc) {\n    r0 = -2;\n  }\n  return r0;\n";
     assert!(
-        nested.source.contains("unstructured ("),
-        "a declined function must say so in its rendered body; src:\n{}",
+        nested.source.contains(expected),
+        "the inner try sits inside the outer try body, each with its own catch; src:\n{}",
         nested.source
     );
     assert!(
-        !nested.source.contains("try {"),
-        "a declined function must never emit a try statement that only covers part of the real \
-         protected range; src:\n{}",
+        parses_as_javascript(&nested.source),
+        "src:\n{}",
         nested.source
     );
 }

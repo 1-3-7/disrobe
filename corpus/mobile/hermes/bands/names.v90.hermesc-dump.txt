@@ -1,0 +1,210 @@
+Bytecode File Information:
+  Bytecode version number: 90
+  Source hash: 5a340e34a5665af196941ab6320e83cdb835c1ba
+  Function count: 10
+  String count: 20
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: +
+s2[ASCII, 1..1]: ,
+s3[ASCII, 4..9]: global
+s4[ASCII, 4..10]: global 
+s5[ASCII, 11..16]: label:
+s6[ASCII, 17..21]: outer
+i7[ASCII, 2..4] #1C35E808: log
+i8[ASCII, 11..15] #1BA84CF3: label
+i9[ASCII, 21..26] #135294CE: report
+i10[ASCII, 27..30] #349ACB60: fact
+i11[ASCII, 30..34] #BE15DBE4: tools
+i12[ASCII, 34..42] #983063F9: savedFact
+i13[ASCII, 43..46] #874F77A9: join
+i14[ASCII, 46..49] #E7ECD7B6: name
+i15[ASCII, 50..52] #5A39B07E: map
+i16[ASCII, 52..56] #A689F65B: print
+i17[ASCII, 57..62] #07E38639: nested
+i18[ASCII, 63..66] #3F21B886: push
+i19[ASCII, 65..70] #CB66408A: shadow
+
+Array Buffer:
+[int 1]
+[int 2]
+Function<global>(1 params, 22 registers, 1 symbols):
+Offset in debug table: source 0x0000, lexical 0x0000
+    DeclareGlobalVar  "log"
+    DeclareGlobalVar  "tools"
+    DeclareGlobalVar  "shadow"
+    DeclareGlobalVar  "savedFact"
+    DeclareGlobalVar  "report"
+    DeclareGlobalVar  "label"
+    DeclareGlobalVar  "fact"
+    CreateEnvironment r1
+    CreateClosure     r2, r1, Function<report>
+    GetGlobalObject   r0
+    PutById           r0, r2, 1, "report"
+    CreateClosure     r2, r1, Function<label>
+    PutById           r0, r2, 2, "label"
+    CreateClosure     r2, r1, Function<fact>
+    PutById           r0, r2, 3, "fact"
+    NewArray          r2, 0
+    PutById           r0, r2, 4, "log"
+    NewObject         r2
+    CreateClosure     r3, r1, Function<report>
+    PutNewOwnByIdShort r2, r3, "report"
+    CreateClosure     r3, r1, Function<label>
+    PutNewOwnByIdShort r2, r3, "label"
+    CreateClosure     r3, r1, Function<nested>
+    PutNewOwnByIdShort r2, r3, "nested"
+    PutById           r0, r2, 5, "tools"
+    CreateClosure     r2, r1, Function<report>
+    StoreToEnvironment r1, 0, r2
+    PutById           r0, r2, 6, "shadow"
+    GetByIdShort      r2, r0, 1, "fact"
+    PutById           r0, r2, 7, "savedFact"
+    CreateClosure     r1, r1, Function<fact>
+    PutById           r0, r1, 3, "fact"
+    TryGetById        r7, r0, 2, "print"
+    GetByIdShort      r3, r0, 3, "tools"
+    GetByIdShort      r2, r3, 4, "report"
+    LoadConstUInt8    r1, 5
+    Call2             r6, r2, r3, r1
+    GetByIdShort      r2, r0, 3, "tools"
+    GetByIdShort      r1, r2, 5, "label"
+    Call1             r13, r1, r2
+    GetByIdShort      r2, r0, 3, "tools"
+    GetByIdShort      r1, r2, 6, "nested"
+    Call1             r3, r1, r2
+    GetByIdShort      r2, r3, 7, "join"
+    LoadConstString   r1, "+"
+    Call2             r12, r2, r3, r1
+    GetByIdShort      r3, r0, 8, "shadow"
+    LoadConstUndefined r2
+    LoadConstUInt8    r1, 3
+    Call2             r11, r3, r2, r1
+    GetByIdShort      r9, r0, 9, "log"
+    GetByIdShort      r8, r9, 7, "join"
+    LoadConstString   r1, ","
+    Call2             r10, r8, r9, r1
+    LoadConstUndefined r15
+    Mov               r14, r6
+    Call              r1, r7, 6
+    TryGetById        r6, r0, 2, "print"
+    GetByIdShort      r1, r0, 3, "tools"
+    GetByIdShort      r1, r1, 4, "report"
+    GetByIdShort      r14, r1, 10, "name"
+    GetByIdShort      r1, r0, 3, "tools"
+    GetByIdShort      r1, r1, 5, "label"
+    GetByIdShort      r13, r1, 10, "name"
+    GetByIdShort      r1, r0, 8, "shadow"
+    GetByIdShort      r12, r1, 10, "name"
+    GetByIdShort      r1, r0, 11, "savedFact"
+    GetByIdShort      r11, r1, 10, "name"
+    Call              r1, r6, 5
+    TryGetById        r1, r0, 2, "print"
+    GetByIdShort      r3, r0, 11, "savedFact"
+    LoadConstUInt8    r0, 4
+    Call2             r0, r3, r2, r0
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<report>(2 params, 12 registers, 0 symbols):
+Offset in debug table: source 0x008f, lexical 0x0000
+    LoadParam         r1, 1
+    GetGlobalObject   r0
+    GetByIdShort      r3, r0, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r0, "global "
+    Add               r0, r0, r1
+    Call2             r0, r2, r3, r0
+    LoadConstUInt8    r0, 2
+    Mul               r0, r1, r0
+    Ret               r0
+
+Function<label>(1 params, 1 registers, 0 symbols):
+    LoadConstString   r0, "outer"
+    Ret               r0
+
+Function<fact>(2 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x00a2, lexical 0x0000
+    LoadParam         r2, 1
+    LoadConstUInt8    r1, 1
+    Mov               r0, r1
+    JLessEqual        L1, r2, r0
+    GetGlobalObject   r3
+    GetByIdShort      r4, r3, 1, "fact"
+    Sub               r3, r2, r1
+    LoadConstUndefined r1
+    Call2             r1, r4, r1, r3
+    Mul               r0, r2, r1
+L1:
+    Ret               r0
+
+Function<report>(2 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x00b5, lexical 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r2, r0, 1, "report"
+    LoadConstUndefined r1
+    LoadParam         r0, 1
+    Call2             r1, r2, r1, r0
+    LoadConstUInt8    r0, 1
+    Add               r0, r1, r0
+    Ret               r0
+
+Function<label>(1 params, 9 registers, 0 symbols):
+Offset in debug table: source 0x00c2, lexical 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r1, r0, 1, "label"
+    LoadConstUndefined r0
+    Call1             r1, r1, r0
+    LoadConstString   r0, "label:"
+    Add               r0, r0, r1
+    Ret               r0
+
+Function<nested>(1 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x00cf, lexical 0x0000
+    NewArrayWithBuffer r2, 2, 2, 1
+    GetByIdShort      r1, r2, 1, "map"
+    CreateEnvironment r0
+    CreateClosure     r0, r0, Function<>
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<>(2 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x00d9, lexical 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r2, r0, 1, "report"
+    LoadConstUndefined r1
+    LoadParam         r0, 1
+    Call2             r0, r2, r1, r0
+    Ret               r0
+
+Function<report>(2 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x00e3, lexical 0x0000
+    LoadParam         r2, 1
+    LoadConstZero     r0
+    JNotGreater       L1, r2, r0
+    GetEnvironment    r1, 0
+    LoadFromEnvironment r4, r1, 0
+    LoadConstUInt8    r1, 1
+    Sub               r3, r2, r1
+    LoadConstUndefined r1
+    Call2             r1, r4, r1, r3
+    Add               r0, r1, r2
+L1:
+    Ret               r0
+
+Function<fact>(2 params, 1 registers, 0 symbols):
+Offset in debug table: source 0x00f3, lexical 0x0000
+    LoadParam         r0, 1
+    Negate            r0, r0
+    Ret               r0

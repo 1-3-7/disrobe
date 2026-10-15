@@ -983,8 +983,9 @@ fn dropping_the_label_from_the_recovered_break_stops_reproducing_the_original() 
     let unlabelled: String = recovered
         .split_inclusive('\n')
         .map(|line: &str| {
-            if line.trim_start().starts_with("break $loop") {
-                line.replace("break $loop1;", "break;")
+            let statement: &str = line.trim();
+            if statement.starts_with("break $loop") && statement.ends_with(';') {
+                line.replace(statement, "break;")
             } else {
                 line.to_owned()
             }

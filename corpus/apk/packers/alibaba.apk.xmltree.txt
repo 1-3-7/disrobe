@@ -1,0 +1,5 @@
+N: android=http://schemas.android.com/apk/res/android (line=1)
+  E: manifest (line=1)
+    A: package="com.example.packed" (Raw: "com.example.packed")
+      E: application (line=1)
+        A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.ali.mobisecenhance.StubApplication" (Raw: "com.ali.mobisecenhance.StubApplication")

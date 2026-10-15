@@ -108,6 +108,33 @@ const CASES: &[ModuleCase] = &[
     },
     ModuleCase {
         directory: "sample",
+        bytecode: "sample.hbc.v85",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v85, the React Native 0.69 compiler, whose \
+                 opcode list adds Inc and Dec to v84 but not yet the big-int loads",
+        version: 85,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v90",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v90, the React Native 0.71 compiler, which \
+                 keeps the v89 opcode list and adds initRegexNamedGroups to the private builtins",
+        version: 90,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v94",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v94, the React Native 0.72 compiler, which \
+                 adds CreateInnerEnvironment while DirectEval still takes two operands",
+        version: 94,
+    },
+    ModuleCase {
+        directory: "sample",
         bytecode: "sample.hbc.v83",
         original: "sample.js",
         observation: "",
@@ -142,13 +169,31 @@ const CASES: &[ModuleCase] = &[
                  unoptimised codegen emits far more instructions for the same source",
         version: 62,
     },
+    ModuleCase {
+        directory: "modern",
+        bytecode: "sample.hbc.v98",
+        original: "../sample/sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v98, whose redesigned instruction set builds \
+                 object literals from a shape table and names its stores loose or strict",
+        version: 98,
+    },
+    ModuleCase {
+        directory: "modern",
+        bytecode: "sample.hbc.v99",
+        original: "../sample/sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v99, which drops the new-object cache and \
+                 renumbers every opcode after it",
+        version: 99,
+    },
 ];
 
-const PINNED_MODULES: usize = 12;
-const PINNED_FUNCTIONS_PARSED: usize = 72;
-const PINNED_FUNCTIONS_WITH_BODY: usize = 72;
-const PINNED_FUNCTIONS_CARRIED: usize = 72;
-const PINNED_FUNCTIONS_PARSE_VALID: usize = 72;
+const PINNED_MODULES: usize = 17;
+const PINNED_FUNCTIONS_PARSED: usize = 112;
+const PINNED_FUNCTIONS_WITH_BODY: usize = 112;
+const PINNED_FUNCTIONS_CARRIED: usize = 112;
+const PINNED_FUNCTIONS_PARSE_VALID: usize = 112;
 const PINNED_FUNCTIONS_DECLINED: usize = 0;
 
 fn corpus(parts: &[&str]) -> PathBuf {
@@ -189,6 +234,13 @@ fn parses_as_javascript(source: &str) -> bool {
     let source_type: SourceType = SourceType::from_path("recovered.js").unwrap_or_default();
     let parsed: oxc_parser::ParserReturn<'_> = Parser::new(&allocator, source, source_type).parse();
     parsed.errors.is_empty() && !parsed.panicked
+}
+
+fn without_indentation(text: &str) -> String {
+    text.lines()
+        .map(str::trim_start)
+        .collect::<Vec<&str>>()
+        .join("\n")
 }
 
 fn unalias(recovered: &str) -> String {
@@ -272,8 +324,9 @@ fn grade(case: &ModuleCase, population: &mut Population) {
         if parses_as_javascript(&recovered.source) {
             population.functions_parse_valid += 1;
         }
-        let carried: bool =
-            recovered.name == "global" || global.source.contains(recovered.source.trim());
+        let carried: bool = recovered.name == "global"
+            || without_indentation(&global.source)
+                .contains(&without_indentation(recovered.source.trim()));
         if carried {
             population.functions_carried_by_execution += 1;
         } else {

@@ -1,0 +1,800 @@
+Bytecode File Information:
+  Bytecode version number: 94
+  Source hash: 49d9172f53ac3aa239082797352b42d7eb284f86
+  Function count: 9
+  String count: 85
+  BigInt count: 1
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 2..11]: get double
+s2[ASCII, 11..11]: e
+s3[ASCII, 15..17]: hi 
+s4[ASCII, 17..17]:  
+s5[ASCII, 18..18]: ,
+s6[ASCII, 19..19]: -
+s7[ASCII, 20..20]: =
+s8[ASCII, 21..21]: T
+s9[ASCII, 22..24]: abc
+s10[ASCII, 34..36]: one
+s11[ASCII, 40..42]: dyn
+s12[ASCII, 43..46]: amic
+s13[ASCII, 56..59]: dflt
+s14[ASCII, 59..61]: two
+s15[ASCII, 61..66]: object
+s16[ASCII, 76..81]: global
+s17[ASCII, 87..96]: set double
+s18[ASCII, 97..107]: {"q":[1,2]}
+i19[ASCII, 0..2] #9B858B48: bag
+i20[ASCII, 6..11] #7ABD63D8: double
+i21[ASCII, 10..12] #206856B9: len
+i22[ASCII, 10..15] #15A9FF56: length
+i23[ASCII, 22..22] #00018270: a
+i24[ASCII, 23..23] #00018E43: b
+i25[ASCII, 24..24] #00018A52: c
+i26[ASCII, 24..25] #0634C370: ch
+i27[ASCII, 24..33] #15799231: charCodeAt
+i28[ASCII, 35..40] #07E38639: nested
+i29[ASCII, 40..46] #9D91E0C8: dynamic
+i30[ASCII, 41..41] #0001E3E8: y
+i31[ASCII, 46..50] #075DD52E: count
+i32[ASCII, 51..56] #5B8EEB7D: method
+i33[ASCII, 56..56] #00019625: d
+i34[ASCII, 61..63] #DC53DBCF: obj
+i35[ASCII, 66..69] #0A1E91E8: tail
+i36[ASCII, 70..76] #670F90EF: missing
+i37[ASCII, 82..84] #5CEFCE7D: Map
+i38[ASCII, 84..84] #0001C771: p
+i39[ASCII, 84..88] #958EDB02: parse
+i40[ASCII, 108..112] #B976BAAB: Array
+i41[ASCII, 113..119] #F418F7E4: Factory
+i42[ASCII, 120..123] #971CE5C7: JSON
+i43[ASCII, 124..127] #1C182460: Math
+i44[ASCII, 126..130] #B368C9B6: third
+i45[ASCII, 131..136] #9615E9FA: Object
+i46[ASCII, 136..146] #713A6BCE: toUpperCase
+i47[ASCII, 145..148] #3BC1FE7F: seen
+i48[ASCII, 149..153] #565A7CFB: Point
+i49[ASCII, 153..157] #FE83F276: total
+i50[ASCII, 158..158] #0001B2BC: m
+i51[ASCII, 158..161] #40C71DF9: made
+i52[ASCII, 160..163] #12F9D8E4: deep
+i53[ASCII, 163..167] #A689F65B: print
+i54[ASCII, 168..172] #4C29DE53: first
+i55[ASCII, 171..179] #8D1543BD: stringify
+i56[ASCII, 180..185] #2F1A89B3: freeze
+i57[ASCII, 184..184] #0001EFDB: z
+i58[ASCII, 186..191] #E8168BFD: frozen
+i59[ASCII, 191..197] #52F4E039: nothing
+i60[ASCII, 197..201] #1D013422: greet
+i61[ASCII, 202..205] #3F21B886: push
+i62[ASCII, 205..218] #0331F1EF: hasOwnProperty
+i63[ASCII, 219..223] #6045AB3B: holes
+i64[ASCII, 223..227] #1680F809: slice
+i65[ASCII, 228..230] #5A3E1EC7: idx
+i66[ASCII, 230..230] #0001E7F9: x
+i67[ASCII, 231..238] #6FDE135A: isFrozen
+i68[ASCII, 239..242] #874F77A9: join
+i69[ASCII, 243..244] #06D5761B: mk
+i70[ASCII, 244..244] #0001AADA: k
+i71[ASCII, 244..246] #D4703C24: key
+i72[ASCII, 244..247] #973712F5: keys
+i73[ASCII, 247..252] #A98BC080: spread
+i74[ASCII, 253..254] #06D542DE: mv
+i75[ASCII, 254..254] #0001DF17: v
+i76[ASCII, 255..261] #04D61833: renamed
+i77[ASCII, 257..260] #E7ECD7B6: name
+i78[ASCII, 262..267] #2D334AB0: others
+i79[ASCII, 267..270] #58181A3C: sqrt
+i80[ASCII, 271..274] #C318DB2A: swap
+i81[ASCII, 274..278] #48D44E41: proto
+i82[ASCII, 274..282] #807C5F3D: prototype
+i83[ASCII, 283..283] #0001C360: q
+i84[ASCII, 284..299] #F57E8C66: undeclaredGlobal
+
+Array Buffer:
+[int 1]
+[int 2]
+[int 1]
+[String 10]
+[int 0]
+[String 23]
+[String 24]
+[String 66]
+[String 30]
+[int 3]
+[int 4]
+[int 5]
+[int 2]
+[String 14]
+Object Key Buffer:
+[String 77]
+[String 31]
+[String 77]
+[String 31]
+[String 36]
+[String 23]
+[String 24]
+[String 25]
+[String 33]
+Object Value Buffer:
+[String 34]
+[int 3]
+[int 0]
+[int 0]
+[int 0]
+[int 1]
+[int 2]
+[int 3]
+[int 4]
+Global BigInt Table:
+ 0[ 0[0..0]: 1
+
+Function<global>(1 params, 35 registers, 0 symbols):
+Offset in debug table: source 0x0000, scope 0x0000, textified callees 0x0000
+    DeclareGlobalVar  "proto"
+    DeclareGlobalVar  "key"
+    DeclareGlobalVar  "obj"
+    DeclareGlobalVar  "holes"
+    DeclareGlobalVar  "spread"
+    DeclareGlobalVar  "name"
+    DeclareGlobalVar  "renamed"
+    DeclareGlobalVar  "missing"
+    DeclareGlobalVar  "others"
+    DeclareGlobalVar  "first"
+    DeclareGlobalVar  "third"
+    DeclareGlobalVar  "tail"
+    DeclareGlobalVar  "bag"
+    DeclareGlobalVar  "seen"
+    DeclareGlobalVar  "k"
+    DeclareGlobalVar  "idx"
+    DeclareGlobalVar  "total"
+    DeclareGlobalVar  "v"
+    DeclareGlobalVar  "ch"
+    DeclareGlobalVar  "m"
+    DeclareGlobalVar  "mk"
+    DeclareGlobalVar  "mv"
+    DeclareGlobalVar  "p"
+    DeclareGlobalVar  "frozen"
+    DeclareGlobalVar  "swap"
+    DeclareGlobalVar  "Point"
+    DeclareGlobalVar  "Factory"
+    CreateEnvironment r4
+    LoadConstUInt8    r9, 3
+    LoadConstString   r1, "dflt"
+    LoadConstUndefined r7
+    LoadConstUInt8    r8, 1
+    GetGlobalObject   r3
+    LoadConstString   r17, "b"
+    LoadConstString   r16, "="
+    LoadConstString   r15, "idx"
+    LoadConstZero     r10
+    CreateClosure     r0, r4, Function<swap>
+    PutById           r3, r0, 1, "swap"
+    CreateClosure     r0, r4, Function<Point>
+    PutById           r3, r0, 2, "Point"
+    CreateClosure     r0, r4, Function<Factory>
+    PutById           r3, r0, 3, "Factory"
+    NewObject         r0
+    CreateClosure     r2, r4, Function<greet>
+    PutNewOwnByIdShort r0, r2, "greet"
+    PutById           r3, r0, 4, "proto"
+    LoadConstString   r0, "dyn"
+    PutById           r3, r0, 5, "key"
+    NewObjectWithBuffer r0, 6, 2, 0, 0
+    GetByIdShort      r5, r3, 1, "key"
+    LoadConstString   r2, "amic"
+    Add               r5, r5, r2
+    LoadConstTrue     r2
+    PutOwnByVal       r0, r2, r5, 1
+    NewObject         r5
+    LoadConstString   r2, "y"
+    PutNewOwnByIdShort r5, r2, "x"
+    NewArrayWithBuffer r2, 3, 2, 0
+    PutOwnByIndex     r2, r5, 2
+    NewObject         r5
+    PutNewOwnByIdShort r5, r2, "deep"
+    LoadConstString   r2, "nested"
+    PutOwnByVal       r0, r5, r2, 1
+    CreateClosure     r6, r4, Function<get double>
+    CreateClosure     r5, r4, Function<set double>
+    LoadConstString   r2, "double"
+    PutOwnGetterSetterByVal r0, r2, r6, r5, 1
+    CreateClosure     r5, r4, Function<method>
+    LoadConstString   r2, "method"
+    PutOwnByVal       r0, r5, r2, 1
+    GetByIdShort      r26, r3, 2, "proto"
+    Mov               r27, r0
+    CallBuiltin       r2, "HermesBuiltin.silentSetPrototypeOf", 3
+    PutById           r3, r0, 6, "obj"
+    TryGetById        r12, r3, 3, "print"
+    GetByIdShort      r2, r3, 4, "obj"
+    GetByIdShort      r0, r2, 5, "greet"
+    Call1             r27, r0, r2
+    GetByIdShort      r0, r3, 4, "obj"
+    GetByIdShort      r26, r0, 6, "double"
+    GetByIdShort      r2, r3, 4, "obj"
+    GetByIdShort      r0, r2, 7, "method"
+    Call1             r25, r0, r2
+    GetByIdShort      r0, r3, 4, "obj"
+    GetByIdShort      r24, r0, 8, "dynamic"
+    GetByIdShort      r0, r3, 4, "obj"
+    GetByIdShort      r0, r0, 9, "nested"
+    GetByIdShort      r13, r0, 10, "deep"
+    LoadConstUInt8    r0, 2
+    GetByVal          r0, r13, r0
+    GetByIdShort      r23, r0, 11, "x"
+    LoadConstUndefined r28
+    Call              r0, r12, 6
+    GetByIdShort      r2, r3, 4, "obj"
+    LoadConstUInt8    r0, 10
+    PutById           r2, r0, 7, "double"
+    TryGetById        r11, r3, 3, "print"
+    GetByIdShort      r0, r3, 4, "obj"
+    GetByIdShort      r6, r0, 12, "count"
+    TryGetById        r5, r3, 13, "Object"
+    GetByIdShort      r2, r5, 14, "keys"
+    GetByIdShort      r0, r3, 4, "obj"
+    Call2             r2, r2, r5, r0
+    GetByIdShort      r0, r2, 15, "join"
+    LoadConstString   r13, ","
+    Call2             r26, r0, r2, r13
+    GetByIdShort      r0, r3, 4, "obj"
+    LoadConstString   r14, "greet"
+    IsIn              r25, r14, r0
+    GetByIdShort      r12, r3, 4, "obj"
+    GetByIdShort      r0, r12, 16, "hasOwnProperty"
+    Call2             r24, r0, r12, r14
+    LoadConstUndefined r28
+    Mov               r27, r6
+    Call              r0, r11, 5
+    NewArrayWithBuffer r0, 3, 1, 9
+    PutOwnByIndex     r0, r9, 2
+    PutById           r3, r0, 8, "holes"
+    GetByIdShort      r5, r3, 17, "holes"
+    LoadConstUInt8    r2, 7
+    LoadConstUInt8    r0, 6
+    PutByVal          r5, r0, r2
+    TryGetById        r6, r3, 3, "print"
+    GetByIdShort      r0, r3, 17, "holes"
+    GetByIdShort      r5, r0, 18, "length"
+    GetByIdShort      r0, r3, 17, "holes"
+    IsIn              r2, r8, r0
+    GetByIdShort      r12, r3, 17, "holes"
+    GetByIdShort      r11, r12, 15, "join"
+    LoadConstString   r0, "-"
+    Call2             r0, r11, r12, r0
+    Call4             r0, r6, r7, r5, r2, r0
+    GetByIdShort      r2, r3, 17, "holes"
+    GetByIdShort      r0, r2, 19, "slice"
+    Call3             r26, r0, r2, r10, r9
+    NewArrayWithBuffer r0, 2, 1, 16
+    Mov               r27, r0
+    Mov               r25, r8
+    CallBuiltin       r2, "HermesBuiltin.arraySpread", 4
+    LoadConstUInt8    r5, 9
+    PutOwnByVal       r0, r5, r2, 1
+    Add               r2, r2, r8
+    PutById           r3, r0, 9, "spread"
+    TryGetById        r5, r3, 3, "print"
+    GetByIdShort      r0, r3, 20, "spread"
+    GetByIdShort      r2, r0, 18, "length"
+    TryGetById        r11, r3, 21, "JSON"
+    GetByIdShort      r6, r11, 22, "stringify"
+    GetByIdShort      r0, r3, 20, "spread"
+    Call2             r0, r6, r11, r0
+    Call3             r0, r5, r7, r2, r0
+    GetByIdShort      r2, r3, 4, "obj"
+    GetByIdShort      r0, r2, 23, "name"
+    PutById           r3, r0, 10, "name"
+    GetByIdShort      r0, r2, 12, "count"
+    PutById           r3, r0, 11, "renamed"
+    GetByIdShort      r0, r2, 24, "missing"
+    JStrictNotEqual   L1, r0, r7
+    Mov               r0, r1
+L1:
+    PutById           r3, r0, 12, "missing"
+    NewObject         r27
+    NewObjectWithBuffer r25, 3, 3, 3, 7
+    Mov               r26, r2
+    CallBuiltin       r0, "HermesBuiltin.copyDataProperties", 4
+    PutById           r3, r0, 13, "others"
+    TryGetById        r6, r3, 3, "print"
+    GetByIdShort      r5, r3, 23, "name"
+    GetByIdShort      r26, r3, 25, "renamed"
+    GetByIdShort      r25, r3, 24, "missing"
+    TryGetById        r12, r3, 13, "Object"
+    GetByIdShort      r11, r12, 14, "keys"
+    GetByIdShort      r0, r3, 26, "others"
+    Call2             r11, r11, r12, r0
+    GetByIdShort      r0, r11, 15, "join"
+    Call2             r24, r0, r11, r13
+    LoadConstUndefined r28
+    Mov               r27, r5
+    Call              r0, r6, 5
+    NewArrayWithBuffer r0, 5, 2, 21
+    PutOwnByIndex     r0, r7, 2
+    LoadConstString   r11, "d"
+    PutOwnByIndex     r0, r11, 3
+    LoadConstString   r1, "e"
+    PutOwnByIndex     r0, r1, 4
+    Mov               r12, r0
+    IteratorBegin     r1, r12
+    LoadConstUndefined r2
+    LoadConstUndefined r5
+    IteratorNext      r6, r1, r12
+    Mov               r14, r1
+    StrictEq          r14, r14, r7
+    Mov               r2, r14
+    JmpTrue           L2, r14
+    Mov               r5, r6
+L2:
+    Mov               r6, r5
+    PutById           r3, r6, 14, "first"
+L43:
+    LoadConstUndefined r5
+    Mov               r6, r2
+    JmpTrue           L3, r6
+    IteratorNext      r6, r1, r12
+    Mov               r14, r1
+    StrictEq          r14, r14, r7
+    Mov               r2, r14
+    JmpTrue           L3, r14
+    Mov               r5, r6
+L3:
+    LoadConstUndefined r5
+    Mov               r6, r2
+    JmpTrue           L4, r6
+    IteratorNext      r6, r1, r12
+    Mov               r14, r1
+    StrictEq          r14, r14, r7
+    Mov               r2, r14
+    JmpTrue           L5, r14
+    Mov               r5, r6
+L4:
+    Mov               r6, r5
+    JStrictNotEqual   L6, r6, r7
+L5:
+    LoadConstString   r5, "T"
+L6:
+    PutById           r3, r5, 15, "third"
+L44:
+    NewArray          r5, 0
+    LoadConstZero     r6
+    Mov               r14, r2
+    JmpTrue           L7, r14
+L9:
+    IteratorNext      r18, r1, r12
+    Mov               r14, r1
+    StrictEq          r14, r14, r7
+    Mov               r2, r14
+    JmpTrue           L7, r14
+    Mov               r14, r6
+L45:
+    PutByVal          r5, r14, r18
+L46:
+    AddN              r6, r14, r8
+    Jmp               L9
+L8:
+    Catch             r0
+    JmpLong           L10
+L7:
+    PutById           r3, r5, 16, "tail"
+L47:
+    TryGetById        r14, r3, 3, "print"
+    GetByIdShort      r12, r3, 27, "first"
+    GetByIdShort      r6, r3, 28, "third"
+    GetByIdShort      r19, r3, 29, "tail"
+    GetByIdShort      r18, r19, 15, "join"
+    LoadConstString   r5, ""
+    Call2             r5, r18, r19, r5
+    Call4             r5, r14, r7, r12, r6, r5
+    TryGetById        r6, r3, 3, "print"
+    GetByIdShort      r12, r3, 30, "swap"
+    NewArrayWithBuffer r5, 2, 2, 0
+    Call2             r12, r12, r7, r5
+    GetByIdShort      r5, r12, 15, "join"
+    Call2             r5, r5, r12, r13
+    Call2             r5, r6, r7, r5
+    NewObjectWithBuffer r5, 4, 4, 7, 20
+    PutById           r3, r5, 17, "bag"
+    NewArray          r5, 0
+    PutById           r3, r5, 18, "seen"
+    GetByIdShort      r13, r3, 31, "bag"
+    GetPNameList      r14, r13, r12, r6
+    JmpUndefined      L11, r14
+L13:
+    GetNextPName      r5, r14, r13, r12, r6
+    JmpUndefined      L11, r5
+    Mov               r18, r5
+    PutById           r3, r18, 19, "k"
+    GetByIdShort      r18, r3, 32, "k"
+    JStrictNotEqual   L12, r18, r17
+    GetByIdShort      r18, r3, 31, "bag"
+    DelById           r18, r18, "c"
+L12:
+    GetByIdShort      r20, r3, 33, "seen"
+    GetByIdShort      r19, r20, 34, "push"
+    GetByIdShort      r18, r3, 32, "k"
+    Add               r21, r18, r16
+    GetByIdShort      r22, r3, 31, "bag"
+    GetByIdShort      r18, r3, 32, "k"
+    GetByVal          r18, r22, r18
+    Add               r18, r21, r18
+    Call2             r18, r19, r20, r18
+    Jmp               L13
+L11:
+    TryGetById        r6, r3, 3, "print"
+    GetByIdShort      r13, r3, 33, "seen"
+    GetByIdShort      r12, r13, 15, "join"
+    LoadConstString   r5, " "
+    Call2             r5, r12, r13, r5
+    Call2             r5, r6, r7, r5
+    NewArrayWithBuffer r13, 2, 2, 25
+    GetPNameList      r14, r13, r12, r6
+    JmpUndefined      L14, r14
+L15:
+    GetNextPName      r5, r14, r13, r12, r6
+    JmpUndefined      L14, r5
+    Mov               r16, r5
+    PutById           r3, r16, 20, "idx"
+    TryGetById        r18, r3, 3, "print"
+    GetByIdShort      r17, r3, 35, "idx"
+    GetByIdShort      r16, r3, 35, "idx"
+    TypeOf            r16, r16
+    Call4             r16, r18, r7, r15, r17, r16
+    Jmp               L15
+L14:
+    PutById           r3, r10, 21, "total"
+    NewArrayWithBuffer r5, 3, 3, 28
+    IteratorBegin     r6, r5
+L18:
+    IteratorNext      r12, r6, r5
+    Mov               r13, r6
+    JStrictEqual      L16, r13, r7
+L48:
+    PutById           r3, r12, 22, "v"
+    GetByIdShort      r13, r3, 36, "total"
+    GetByIdShort      r12, r3, 37, "v"
+    Add               r12, r13, r12
+    PutById           r3, r12, 21, "total"
+L49:
+    Jmp               L18
+L17:
+    Catch             r5
+    IteratorClose     r6, 1
+    Throw             r5
+L16:
+    LoadConstString   r5, "abc"
+    IteratorBegin     r6, r5
+L21:
+    IteratorNext      r12, r6, r5
+    Mov               r13, r6
+    JStrictEqual      L19, r13, r7
+L50:
+    PutById           r3, r12, 23, "ch"
+    GetByIdShort      r13, r3, 36, "total"
+    GetByIdShort      r14, r3, 38, "ch"
+    GetByIdShort      r12, r14, 39, "charCodeAt"
+    Call2             r12, r12, r14, r10
+    Add               r12, r13, r12
+    PutById           r3, r12, 21, "total"
+L51:
+    Jmp               L21
+L20:
+    Catch             r5
+    IteratorClose     r6, 1
+    Throw             r5
+L19:
+    TryGetById        r6, r3, 3, "print"
+    GetByIdShort      r5, r3, 36, "total"
+    Call2             r5, r6, r7, r5
+    TryGetById        r10, r3, 40, "Map"
+    NewArray          r5, 2
+    NewArrayWithBuffer r6, 2, 2, 9
+    PutOwnByIndex     r5, r6, 0
+    NewArrayWithBuffer r6, 2, 2, 41
+    PutOwnByIndex     r5, r6, 1
+    GetByIdShort      r6, r10, 41, "prototype"
+    CreateThis        r6, r6, r10
+    Mov               r28, r6
+    Mov               r27, r5
+    Construct         r5, r10, 2
+    SelectObject      r5, r6, r5
+    PutById           r3, r5, 24, "m"
+    GetByIdShort      r5, r3, 42, "m"
+    Mov               r13, r5
+    IteratorBegin     r6, r13
+L27:
+    IteratorNext      r5, r6, r13
+    Mov               r10, r6
+    JStrictEqualLong  L22, r10, r7
+L52:
+    Mov               r15, r5
+    IteratorBegin     r10, r15
+    LoadConstUndefined r12
+    LoadConstUndefined r14
+    IteratorNext      r16, r10, r15
+    Mov               r17, r10
+    StrictEq          r17, r17, r7
+    Mov               r12, r17
+    JmpTrue           L23, r17
+    Mov               r14, r16
+L23:
+    Mov               r16, r14
+    PutById           r3, r16, 25, "mk"
+L41:
+    LoadConstUndefined r14
+    Mov               r16, r12
+    JmpTrue           L24, r16
+    IteratorNext      r15, r10, r15
+    Mov               r16, r10
+    StrictEq          r16, r16, r7
+    Mov               r12, r16
+    JmpTrue           L24, r16
+    Mov               r14, r15
+L24:
+    PutById           r3, r14, 26, "mv"
+L42:
+    Mov               r14, r12
+    JmpTrue           L25, r14
+    IteratorClose     r10, 0
+L25:
+    TryGetById        r16, r3, 3, "print"
+    GetByIdShort      r15, r3, 43, "mk"
+    GetByIdShort      r14, r3, 44, "mv"
+    Call3             r14, r16, r7, r15, r14
+L53:
+    Jmp               L27
+L26:
+    Catch             r5
+    Jmp               L29
+L28:
+    Catch             r5
+    Jmp               L29
+L30:
+    Catch             r5
+L29:
+    JmpTrue           L31, r12
+    IteratorClose     r10, 1
+L31:
+    Throw             r5
+L32:
+    Catch             r5
+    IteratorClose     r6, 1
+    Throw             r5
+L22:
+    TryGetById        r14, r3, 3, "print"
+    GetByIdShort      r10, r3, 45, "undeclaredGlobal"
+    GetByIdShort      r6, r3, 4, "obj"
+    GetByIdShort      r5, r3, 3, "print"
+    TypeOf            r27, r10
+    TypeOf            r26, r6
+    LoadConstString   r25, "object"
+    TypeOf            r24, r5
+    LoadConstBigInt   r5, 1n
+    TypeOf            r23, r5
+    LoadConstUndefined r28
+    Call              r5, r14, 6
+    TryGetById        r14, r3, 3, "print"
+    GetByIdShort      r5, r3, 4, "obj"
+    DelById           r27, r5, "name"
+    GetByIdShort      r5, r3, 4, "obj"
+    GetByIdShort      r26, r5, 23, "name"
+    GetByIdShort      r5, r3, 4, "obj"
+    DelById           r25, r5, "nothing"
+    TryGetById        r6, r3, 46, "Array"
+    NewArray          r5, 0
+    InstanceOf        r24, r5, r6
+    GetByIdShort      r15, r3, 4, "obj"
+    TryGetById        r5, r3, 13, "Object"
+    InstanceOf        r23, r15, r5
+    Call              r5, r14, 6
+    GetByIdShort      r5, r3, 47, "Point"
+    GetByIdShort      r5, r5, 41, "prototype"
+    CreateClosure     r4, r4, Function<>
+    PutById           r5, r4, 27, "len"
+    GetByIdShort      r6, r3, 47, "Point"
+    GetByIdShort      r4, r6, 41, "prototype"
+    CreateThis        r5, r4, r6
+    LoadConstUInt8    r26, 4
+    Mov               r28, r5
+    Mov               r27, r9
+    Construct         r4, r6, 3
+    SelectObject      r4, r5, r4
+    PutById           r3, r4, 28, "p"
+    TryGetById        r10, r3, 3, "print"
+    GetByIdShort      r5, r3, 48, "p"
+    GetByIdShort      r4, r5, 49, "len"
+    Call1             r27, r4, r5
+    GetByIdShort      r5, r3, 48, "p"
+    GetByIdShort      r4, r3, 47, "Point"
+    InstanceOf        r26, r5, r4
+    GetByIdShort      r4, r3, 50, "Factory"
+    GetByIdShort      r5, r4, 41, "prototype"
+    CreateThis        r5, r5, r4
+    Mov               r28, r5
+    Construct         r4, r4, 1
+    SelectObject      r4, r5, r4
+    GetByIdShort      r25, r4, 51, "made"
+    GetByIdShort      r4, r3, 50, "Factory"
+    GetByIdShort      r12, r4, 41, "prototype"
+    CreateThis        r12, r12, r4
+    Mov               r28, r12
+    Construct         r4, r4, 1
+    SelectObject      r12, r12, r4
+    GetByIdShort      r4, r3, 50, "Factory"
+    InstanceOf        r24, r12, r4
+    LoadConstUndefined r28
+    Call              r4, r10, 5
+    TryGetById        r6, r3, 13, "Object"
+    GetByIdShort      r5, r6, 52, "freeze"
+    NewObject         r4
+    PutNewOwnByIdShort r4, r8, "z"
+    Call2             r4, r5, r6, r4
+    PutById           r3, r4, 29, "frozen"
+    TryGetById        r6, r3, 3, "print"
+    TryGetById        r9, r3, 13, "Object"
+    GetByIdShort      r5, r9, 53, "isFrozen"
+    GetByIdShort      r4, r3, 54, "frozen"
+    Call2             r5, r5, r9, r4
+    TryGetById        r10, r3, 21, "JSON"
+    GetByIdShort      r9, r10, 22, "stringify"
+    NewObject         r4
+    LoadConstNull     r12
+    PutNewOwnByIdShort r4, r12, "b"
+    NewArrayWithBuffer r12, 2, 1, 9
+    PutOwnByIndex     r12, r4, 1
+    NewObject         r4
+    PutNewOwnByIdShort r4, r12, "a"
+    PutNewOwnByIdShort r4, r11, "c"
+    Call2             r4, r9, r10, r4
+    TryGetById        r10, r3, 21, "JSON"
+    GetByIdShort      r9, r10, 55, "parse"
+    LoadConstString   r3, "{"q":[1,2]}"
+    Call2             r3, r9, r10, r3
+    GetByIdShort      r3, r3, 56, "q"
+    GetByVal          r3, r3, r8
+    Call4             r3, r6, r7, r5, r4, r3
+    Ret               r3
+L33:
+    Catch             r0
+    Jmp               L10
+L34:
+    Catch             r0
+    Jmp               L10
+L35:
+    Catch             r0
+    Jmp               L10
+L36:
+    Catch             r0
+    Jmp               L10
+L37:
+    Catch             r0
+    Jmp               L10
+L38:
+    Catch             r0
+L10:
+    JmpTrue           L39, r2
+    IteratorClose     r1, 1
+L39:
+    Throw             r0
+
+Exception Handlers:
+0: start = L23, end = L41, target = L28
+1: start = L24, end = L42, target = L26
+2: start = L2, end = L43, target = L37
+3: start = L6, end = L44, target = L35
+4: start = L45, end = L46, target = L8
+5: start = L7, end = L47, target = L33
+6: start = L48, end = L49, target = L17
+7: start = L50, end = L51, target = L20
+8: start = L52, end = L53, target = L32
+9: start = L26, end = L32, target = L32
+
+Function<swap>(2 params, 7 registers, 0 symbols):
+Offset in debug table: source 0x05ae, scope 0x0000, textified callees 0x0000
+    LoadConstUndefined r6
+    LoadParam         r4, 1
+    IteratorBegin     r0, r4
+    IteratorNext      r2, r0, r4
+    Mov               r1, r0
+    StrictEq          r3, r1, r6
+    LoadConstUndefined r1
+    JmpTrue           L1, r3
+    Mov               r1, r2
+L1:
+    LoadConstUndefined r2
+    JmpTrue           L2, r3
+    IteratorNext      r5, r0, r4
+    Mov               r4, r0
+    StrictEq          r4, r4, r6
+    LoadConstUndefined r2
+    Mov               r3, r4
+    JmpTrue           L2, r4
+    Mov               r2, r5
+    Mov               r3, r4
+L2:
+    JmpTrue           L3, r3
+    IteratorClose     r0, 0
+L3:
+    NewArray          r0, 2
+    PutOwnByIndex     r0, r2, 0
+    PutOwnByIndex     r0, r1, 1
+    Ret               r0
+
+Function<Point>(3 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x05e8, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r1
+    LoadParam         r0, 1
+    PutById           r1, r0, 1, "x"
+    LoadParam         r0, 2
+    PutById           r1, r0, 2, "y"
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<Factory>(1 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x05fe, scope 0x0000, textified callees 0x0000
+    NewObject         r0
+    LoadConstTrue     r1
+    PutNewOwnByIdShort r0, r1, "made"
+    Ret               r0
+
+Function<greet>(1 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x060b, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r0
+    GetByIdShort      r1, r0, 1, "name"
+    LoadConstString   r0, "hi "
+    Add               r0, r0, r1
+    Ret               r0
+
+Function<get double>(1 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x0621, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r0
+    GetByIdShort      r1, r0, 1, "count"
+    LoadConstUInt8    r0, 2
+    Mul               r0, r1, r0
+    Ret               r0
+
+Function<set double>(2 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x0637, scope 0x0000, textified callees 0x0000
+    LoadParam         r1, 1
+    LoadConstUInt8    r0, 2
+    Div               r1, r1, r0
+    LoadThisNS        r0
+    PutById           r0, r1, 1, "count"
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<method>(1 params, 9 registers, 0 symbols):
+Offset in debug table: source 0x064d, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r0
+    GetByIdShort      r1, r0, 1, "name"
+    GetByIdShort      r0, r1, 2, "toUpperCase"
+    Call1             r0, r0, r1
+    Ret               r0
+
+Function<>(1 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x066c, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r0
+    GetGlobalObject   r1
+    TryGetById        r2, r1, 1, "Math"
+    GetByIdShort      r1, r2, 2, "sqrt"
+    GetByIdShort      r4, r0, 3, "x"
+    GetByIdShort      r3, r0, 3, "x"
+    Mul               r3, r4, r3
+    GetByIdShort      r4, r0, 4, "y"
+    GetByIdShort      r0, r0, 4, "y"
+    Mul               r0, r4, r0
+    Add               r0, r3, r0
+    Call2             r0, r1, r2, r0
+    Ret               r0

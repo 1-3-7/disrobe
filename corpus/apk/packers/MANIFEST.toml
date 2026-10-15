@@ -1,0 +1,92 @@
+schema_version = 1
+crate = "disrobe-pass-mobile"
+generated = "2026-10-15"
+toolchain = "OpenJDK 25.0.4 javac (--release 8, -g:none) and javax.crypto, R8 9.1.31 D8 (--release, --min-api 21), zig 0.13.0 (aarch64-linux-gnu shared library), aapt2 2.20 (manifest check only)"
+command = "python build.py <jdk bin> <r8 jar> <zig> <aapt2>"
+purpose = "Authored mimics of Android packer layouts for tests/apk_packers.rs. No packer, protector, third-party app or malware was run or copied: build.py writes each APK to match file names, manifest application classes, stub classes and, where public research documents it, the payload container of one packer. Detection anchors and formats come from published research (DexHunter, PackerGrind, Quarkslab, VB2014, DEF CON 22, DIMVA 2018) and, for the open-source Jiagu loader, its Apache-2.0 source."
+
+[provenance]
+reference = "original.dex, second.dex and large.dex are compiled from the Java sources inside build.py; a recovery must reproduce them byte for byte"
+manifest_check = "each <apk>.xmltree.txt is `aapt2 dump xmltree --file AndroidManifest.xml <apk>` over the written APK"
+dex_check = "dexdump -c reports 'Checksum verified' for original.dex, second.dex and large.dex"
+encrypted_placeholders = "payloads the research describes as decrypted with a run-time key are RC4 under the literal key 'runtime-only-key', so a static recovery that claims them is wrong"
+
+[[fixture]]
+path = "original.dex"
+size_bytes = 1500
+sha256 = "6e73edd157cd171a2238d783d89422a12eef5ca76816051ddd1af7cf3a1b422f"
+
+[[fixture]]
+path = "second.dex"
+size_bytes = 804
+sha256 = "369e77b5587a15ffee9f04bf30092c83c18e2977aad994203fdb375e8cba8a76"
+
+[[fixture]]
+path = "large.dex"
+size_bytes = 292360
+sha256 = "43635f0edf81d849ff1a8f08733e9ba55b5f3ba264577a06d6fe7c5907567133"
+
+[[fixture]]
+path = "jiagu-legacy.apk"
+sha256 = "bc7b9ec865c5dd64b4bad6a81947b00f707e9b15c4b6a60446ee2da372bae469"
+layout = "assets/libprotectClass.so, assets/libprotectClass_x86.so, assets/libqupc.so; application com.qihoo.util.StubApplication"
+
+[[fixture]]
+path = "jiagu.apk"
+sha256 = "b9a50ad1230881158e134e6e871e5b2eb242e525fa0f39bb1a108194a27ce379"
+layout = "assets/libjiagu.so, libjiagu_a64.so, libjiagu_x86.so; application com.stub.StubApp; classes.dex carries a tail starting 71 68 00 01 after its declared size"
+
+[[fixture]]
+path = "bangcle.apk"
+sha256 = "c45b5c933676bd46a9e3004f29e67e6b93c1aa8960101bb06a9460a2addf8c7a"
+layout = "lib/armeabi/libsecexe.so, libsecmain.so; assets/bangcle_classes.jar (run-time key placeholder); assets/bangcleplugin/container.dex; application com.bangcle.protect.ApplicationWrapper"
+
+[[fixture]]
+path = "dexhelper.apk"
+sha256 = "1ba1b618fe1394fa13867747360a16a60ad2391ec94c7386461a81f1d45f18f0"
+layout = "lib/arm64-v8a/libDexHelper.so; assets/classes0.jar whose dex entry is large.dex with its first 0x20000 bytes RC4 under the published 16-byte key and the rest xored with 0xAC"
+
+[[fixture]]
+path = "ijiami.apk"
+sha256 = "f20cbd52d4e81642365f20556a6f2b8c223e5e7409e0f62578123e96d03b593d"
+layout = "lib/armeabi/libexec.so, libexecmain.so; assets/ijiami.dat (run-time key placeholder); META-INF/signed.bin; application com.shell.SuperApplication"
+
+[[fixture]]
+path = "legu.apk"
+sha256 = "c29d4450a8a7336959c348418482d5f536a7477659f8f06e448ac8b83d8bf871"
+layout = "lib/armeabi-v7a/libshella-4.1.0.18.so, libshell-super.2019.so; assets/0OO00l111l1l (placeholder, not the NRV/XTEA container); assets/tosversion; application com.tencent.StubShell.TxAppEntry"
+
+[[fixture]]
+path = "baidu.apk"
+sha256 = "ad2622049d3120c0c2f8ccb0c7af2313855fced2b870be188c1b69a70b1a153c"
+layout = "lib/armeabi/libbaiduprotect.so; assets/baiduprotect1.jar (run-time key placeholder); application com.baidu.protect.StubApplication"
+
+[[fixture]]
+path = "alibaba.apk"
+sha256 = "2a39a355ce53d42e868e393cac9634c1ca616954c942a338f15fc60928f9edc7"
+layout = "lib/armeabi/libmobisec.so, libmobisecy1.so; application com.ali.mobisecenhance.StubApplication"
+
+[[fixture]]
+path = "dexprotector.apk"
+sha256 = "e14c6002fa8d20fc0ffe7aca34dac83d8fd16c1cef41ef76c074744b5f56c03e"
+layout = "lib/arm64-v8a/libdexprotector.so; assets/classes.dex.dat (run-time key placeholder); assets/dp.mp3"
+
+[[fixture]]
+path = "appguard.apk"
+sha256 = "ccecbd7164c16060047964f071b66ee0108ccf4318f17a464d818e57a6e261ab"
+layout = "assets/appguard/arm64-v8a/libengine.sox and libstub.sox starting with SOX; stub class com.inca.security.Core.AppGuardEngine"
+
+[[fixture]]
+path = "promon.apk"
+sha256 = "5b4b494179f04f9dc79e083e54acc63add976a25307895e479ffd1666c64864a"
+layout = "lib/arm64-v8a/libshield.so; assets/pbi.bin, mappings.bin, config-encrypt.txt; stub class no.promon.shield.Shield"
+
+[[fixture]]
+path = "pangxie.apk"
+sha256 = "b06a44df6fa752bc4cc5fc1970a4d9bd333dc3a6e7bfe36c577c71fc48005bfe"
+layout = "lib/armeabi/libnsecure.so; assets/packed.dex is original.dex xored with 0x54; application com.merry.wapper.WapperApplication"
+
+[[fixture]]
+path = "open-source-jiagu.apk"
+sha256 = "c7a74412ae41d0baeaea1da62429960375320cb5b2112ca76c6465cfe0afd57f"
+layout = "classes.dex is a stub dex (com.frezrik.jiagu.StubApp) followed by [name length, application name, size, original.dex, size, second.dex with its 112-byte header xored with 0x66], the first 512 bytes of that block AES-128-CBC under the loader's published key and IV, and the stub size as a big-endian u32"

@@ -125,6 +125,42 @@ const V84: Measured = Measured {
     structured: 8,
 };
 
+const V85: Measured = Measured {
+    sample: "sample/sample.hbc.v85",
+    upstream_tag: "hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
+
+const V90: Measured = Measured {
+    sample: "sample/sample.hbc.v90",
+    upstream_tag: "hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
+
+const V94: Measured = Measured {
+    sample: "sample/sample.hbc.v94",
+    upstream_tag: "hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
+
 const V96: Measured = Measured {
     sample: "sample/sample.hbc.v96",
     upstream_tag: "v0.13.0",
@@ -163,16 +199,16 @@ const BAND: [(u32, Coverage); 37] = [
     (82, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (83, Coverage::BodiesGraded(V83)),
     (84, Coverage::BodiesGraded(V84)),
-    (85, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (85, Coverage::BodiesGraded(V85)),
     (86, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (87, Coverage::NoSample(LAYOUT_BOUNDARY_87)),
     (88, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (89, Coverage::BodiesGraded(V89)),
-    (90, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (90, Coverage::BodiesGraded(V90)),
     (91, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (92, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (93, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (94, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (94, Coverage::BodiesGraded(V94)),
     (95, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (96, Coverage::BodiesGraded(V96)),
 ];
@@ -187,11 +223,11 @@ const SAMPLE_NAMES: [&str; 7] = [
     "label",
 ];
 
-const PINNED_GRADED_VERSIONS: usize = 8;
-const PINNED_GRADED_FUNCTIONS: usize = 64;
-const PINNED_GRADED_DECODED_OPS: usize = 911;
-const PINNED_GRADED_RECONSTRUCTED_OPS: usize = 911;
-const PINNED_GRADED_STRUCTURED: usize = 64;
+const PINNED_GRADED_VERSIONS: usize = 11;
+const PINNED_GRADED_FUNCTIONS: usize = 88;
+const PINNED_GRADED_DECODED_OPS: usize = 1_205;
+const PINNED_GRADED_RECONSTRUCTED_OPS: usize = 1_205;
+const PINNED_GRADED_STRUCTURED: usize = 88;
 
 fn corpus(relative: &str) -> PathBuf {
     let mut path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -278,12 +314,17 @@ fn the_versions_that_claim_graded_bodies_are_exactly_the_versions_the_crate_lift
             }
         }
     }
+    let classic: Vec<u32> = HERMES_LIFTED_VERSIONS
+        .iter()
+        .copied()
+        .filter(|version: &u32| *version <= HERMES_MAX_VERSION)
+        .collect();
     assert_eq!(
-        bodies_graded,
-        HERMES_LIFTED_VERSIONS.to_vec(),
-        "a version claims graded bodies here exactly when the crate lifts it. A lifted version \
-         missing from this table would emit JavaScript no row measures, and a row claiming a \
-         version the crate refuses would publish a recovery that never runs"
+        bodies_graded, classic,
+        "a version in the classic band claims graded bodies here exactly when the crate lifts it. \
+         A lifted version missing from this table would emit JavaScript no row measures, and a row \
+         claiming a version the crate refuses would publish a recovery that never runs; v98 and \
+         v99 sit outside the band and are graded in hermes_behaviour.rs"
     );
     assert_eq!(bodies_graded.len(), PINNED_GRADED_VERSIONS);
     assert!(
@@ -387,7 +428,7 @@ fn each_graded_version_meets_its_pinned_recovery_counts_and_the_rest_refuse_by_n
 
     assert_eq!(
         graded_versions, PINNED_GRADED_VERSIONS,
-        "eight versions in the accepted band have a committed sample; a run that grades fewer of \
+        "eleven versions in the accepted band have a committed sample; a run that grades fewer of \
          them is reading the wrong corpus path rather than meeting a legitimate absence"
     );
     assert_eq!(

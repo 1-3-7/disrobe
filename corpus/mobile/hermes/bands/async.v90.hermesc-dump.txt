@@ -1,0 +1,409 @@
+Bytecode File Information:
+  Bytecode version number: 90
+  Source hash: b6fd225f9fcec1d33c93200d5b6e537bfaf4227d
+  Function count: 20
+  String count: 31
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 5
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: ,
+s2[ASCII, 1..1]: /
+s3[ASCII, 2..27]: ?anon_0_?anon_0_arrowAsync
+s4[ASCII, 10..27]: ?anon_0_arrowAsync
+s5[ASCII, 18..22]: arrow
+s6[ASCII, 24..31]: sync end
+s7[ASCII, 32..52]: ?anon_0_?anon_0_chain
+s8[ASCII, 40..52]: ?anon_0_chain
+s9[ASCII, 53..74]: ?anon_0_?anon_0_double
+s10[ASCII, 61..74]: ?anon_0_double
+s11[ASCII, 75..97]: ?anon_0_?anon_0_failing
+s12[ASCII, 83..97]: ?anon_0_failing
+s13[ASCII, 97..102]: global
+s14[ASCII, 104..127]: ?anon_0_?anon_0_sequence
+s15[ASCII, 112..127]: ?anon_0_sequence
+s16[ASCII, 128..140]: async failure
+i17[ASCII, 18..27] #607E25A2: arrowAsync
+i18[ASCII, 48..52] #4EF27D74: chain
+i19[ASCII, 69..74] #7ABD63D8: double
+i20[ASCII, 91..97] #8F597A63: failing
+i21[ASCII, 101..103] #587EA6B5: all
+i22[ASCII, 120..127] #32F7B3E8: sequence
+i23[ASCII, 141..145] #9102A3D0: Error
+i24[ASCII, 146..152] #9D007186: Promise
+i25[ASCII, 153..156] #874F77A9: join
+i26[ASCII, 157..163] #63D87C1C: message
+i27[ASCII, 164..168] #A689F65B: print
+i28[ASCII, 168..171] #3F9C8812: then
+i29[ASCII, 172..180] #807C5F3D: prototype
+i30[ASCII, 181..184] #3F21B886: push
+
+Array Buffer:
+Function Source Table:
+  Function ID 3 -> s0
+  Function ID 6 -> s0
+  Function ID 9 -> s0
+  Function ID 12 -> s0
+  Function ID 15 -> s0
+
+Function<global>(1 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x0000, lexical 0x0000
+    DeclareGlobalVar  "arrowAsync"
+    DeclareGlobalVar  "double"
+    DeclareGlobalVar  "chain"
+    DeclareGlobalVar  "failing"
+    DeclareGlobalVar  "sequence"
+    CreateEnvironment r1
+    CreateAsyncClosure r2, r1, NCFunction<double>
+    GetGlobalObject   r0
+    PutById           r0, r2, 1, "double"
+    CreateAsyncClosure r2, r1, NCFunction<chain>
+    PutById           r0, r2, 2, "chain"
+    CreateAsyncClosure r2, r1, NCFunction<failing>
+    PutById           r0, r2, 3, "failing"
+    CreateAsyncClosure r2, r1, NCFunction<sequence>
+    PutById           r0, r2, 4, "sequence"
+    CreateAsyncClosure r2, r1, NCFunction<arrowAsync>
+    PutById           r0, r2, 5, "arrowAsync"
+    GetByIdShort      r3, r0, 1, "sequence"
+    LoadConstUndefined r2
+    Call1             r5, r3, r2
+    GetByIdShort      r4, r5, 2, "then"
+    CreateClosure     r3, r1, Function<>
+    Call2             r5, r4, r5, r3
+    GetByIdShort      r4, r5, 2, "then"
+    CreateClosure     r3, r1, Function<>
+    Call2             r5, r4, r5, r3
+    GetByIdShort      r4, r5, 2, "then"
+    CreateClosure     r3, r1, Function<>
+    Call2             r4, r4, r5, r3
+    GetByIdShort      r3, r4, 2, "then"
+    CreateClosure     r1, r1, Function<>
+    Call2             r1, r3, r4, r1
+    TryGetById        r1, r0, 3, "print"
+    LoadConstString   r0, "sync end"
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+NCFunction<double>(2 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x0037, lexical 0x0000
+    LoadConstUndefined r4
+    LoadConstUndefined r0
+    ReifyArguments    r0
+    Mov               r3, r0
+    GetBuiltinClosure r2, "HermesBuiltin.spawnAsync"
+    CreateEnvironment r0
+    CreateGeneratorClosure r1, r0, NCFunction<?anon_0_double>
+    LoadThisNS        r0
+    Call4             r0, r2, r4, r1, r0, r3
+    Ret               r0
+
+NCFunction<?anon_0_double>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_?anon_0_double>
+    Ret               r0
+
+Function<?anon_0_?anon_0_double>(2 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x003e, lexical 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+    LoadParam         r2, 1
+    LoadConstUInt8    r1, 2
+    Mul               r1, r2, r1
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+NCFunction<chain>(2 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x0045, lexical 0x0000
+    LoadConstUndefined r4
+    LoadConstUndefined r0
+    ReifyArguments    r0
+    Mov               r3, r0
+    GetBuiltinClosure r2, "HermesBuiltin.spawnAsync"
+    CreateEnvironment r0
+    CreateGeneratorClosure r1, r0, NCFunction<?anon_0_chain>
+    LoadThisNS        r0
+    Call4             r0, r2, r4, r1, r0, r3
+    Ret               r0
+
+NCFunction<?anon_0_chain>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_?anon_0_chain>
+    Ret               r0
+
+Function<?anon_0_?anon_0_chain>(2 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x004c, lexical 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "double"
+    LoadConstUndefined r3
+    LoadParam         r1, 1
+    Call2             r1, r4, r3, r1
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r4
+    JmpTrue           L3, r4
+    GetByIdShort      r2, r2, 1, "double"
+    Call2             r2, r2, r3, r1
+    SaveGenerator     L4
+    Ret               r2
+L4:
+    ResumeGenerator   r2, r3
+    JmpTrue           L5, r3
+    Add               r3, r1, r2
+    CompleteGenerator
+    Ret               r3
+L5:
+    CompleteGenerator
+    Ret               r2
+L3:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+NCFunction<failing>(1 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x006b, lexical 0x0000
+    LoadConstUndefined r4
+    LoadConstUndefined r0
+    ReifyArguments    r0
+    Mov               r3, r0
+    GetBuiltinClosure r2, "HermesBuiltin.spawnAsync"
+    CreateEnvironment r0
+    CreateGeneratorClosure r1, r0, NCFunction<?anon_0_failing>
+    LoadThisNS        r0
+    Call4             r0, r2, r4, r1, r0, r3
+    Ret               r0
+
+NCFunction<?anon_0_failing>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_?anon_0_failing>
+    Ret               r0
+
+Function<?anon_0_?anon_0_failing>(1 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x0072, lexical 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+    LoadConstNull     r1
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r2
+    JmpTrue           L3, r2
+    GetGlobalObject   r2
+    TryGetById        r4, r2, 1, "Error"
+    GetByIdShort      r2, r4, 2, "prototype"
+    CreateThis        r3, r2, r4
+    LoadConstString   r5, "async failure"
+    Mov               r6, r3
+    Construct         r2, r4, 2
+    SelectObject      r2, r3, r2
+    Throw             r2
+L3:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+NCFunction<sequence>(1 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x008b, lexical 0x0000
+    LoadConstUndefined r4
+    LoadConstUndefined r0
+    ReifyArguments    r0
+    Mov               r3, r0
+    GetBuiltinClosure r2, "HermesBuiltin.spawnAsync"
+    CreateEnvironment r0
+    CreateGeneratorClosure r1, r0, NCFunction<?anon_0_sequence>
+    LoadThisNS        r0
+    Call4             r0, r2, r4, r1, r0, r3
+    Ret               r0
+
+NCFunction<?anon_0_sequence>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_?anon_0_sequence>
+    Ret               r0
+
+Function<?anon_0_?anon_0_sequence>(1 params, 19 registers, 0 symbols):
+Offset in debug table: source 0x0092, lexical 0x0000
+    StartGenerator   
+    GetGlobalObject   r3
+    LoadConstUndefined r4
+    LoadConstUInt8    r5, 3
+    LoadConstUndefined r2
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+    NewArray          r2, 0
+    LoadConstZero     r6
+L4:
+    Mov               r9, r2
+    GetByIdShort      r8, r9, 1, "push"
+    GetByIdShort      r1, r3, 2, "double"
+    Call2             r1, r1, r4, r6
+    Mov               r7, r6
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r10
+    JmpTrue           L3, r10
+    Call2             r8, r8, r9, r1
+    Inc               r6, r7
+    JLess             L4, r6, r5
+L10:
+    GetByIdShort      r3, r3, 3, "failing"
+    Call1             r3, r3, r4
+    SaveGenerator     L5
+    Ret               r3
+L5:
+    ResumeGenerator   r3, r4
+    JmpTrue           L6, r4
+L11:
+    Jmp               L7
+L6:
+    CompleteGenerator
+    Ret               r3
+L8:
+    Catch             r3
+    Mov               r5, r2
+    GetByIdShort      r4, r5, 1, "push"
+    GetByIdShort      r3, r3, 4, "message"
+    Call2             r3, r4, r5, r3
+L7:
+    Mov               r4, r2
+    GetByIdShort      r3, r4, 5, "join"
+    LoadConstString   r2, ","
+    Call2             r2, r3, r4, r2
+    CompleteGenerator
+    Ret               r2
+L3:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L10, end = L11, target = L8
+
+NCFunction<arrowAsync>(2 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x00cc, lexical 0x0000
+    LoadConstUndefined r4
+    LoadConstUndefined r0
+    ReifyArguments    r0
+    Mov               r3, r0
+    GetBuiltinClosure r2, "HermesBuiltin.spawnAsync"
+    CreateEnvironment r0
+    CreateGeneratorClosure r1, r0, NCFunction<?anon_0_arrowAsync>
+    LoadThisNS        r0
+    Call4             r0, r2, r4, r1, r0, r3
+    Ret               r0
+
+NCFunction<?anon_0_arrowAsync>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_?anon_0_arrowAsync>
+    Ret               r0
+
+Function<?anon_0_?anon_0_arrowAsync>(2 params, 12 registers, 0 symbols):
+Offset in debug table: source 0x00d3, lexical 0x0000
+    StartGenerator   
+    ResumeGenerator   r0, r1
+    JmpTrue           L1, r1
+    GetGlobalObject   r1
+    GetByIdShort      r3, r1, 1, "chain"
+    LoadConstUndefined r2
+    LoadParam         r1, 1
+    Call2             r1, r3, r2, r1
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r2
+    JmpTrue           L3, r2
+    LoadConstUInt8    r2, 1
+    Add               r2, r1, r2
+    CompleteGenerator
+    Ret               r2
+L3:
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Function<>(2 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x00e6, lexical 0x0000
+    GetGlobalObject   r0
+    TryGetById        r4, r0, 1, "print"
+    LoadConstUndefined r2
+    LoadConstString   r3, "sequence"
+    LoadParam         r1, 1
+    Call3             r1, r4, r2, r3, r1
+    GetByIdShort      r1, r0, 2, "chain"
+    LoadConstUInt8    r0, 5
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<>(2 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x00f6, lexical 0x0000
+    GetGlobalObject   r0
+    TryGetById        r4, r0, 1, "print"
+    LoadConstUndefined r2
+    LoadConstString   r3, "chain"
+    LoadParam         r1, 1
+    Call3             r1, r4, r2, r3, r1
+    GetByIdShort      r1, r0, 2, "arrowAsync"
+    LoadConstUInt8    r0, 1
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<>(2 params, 15 registers, 0 symbols):
+Offset in debug table: source 0x0106, lexical 0x0000
+    GetGlobalObject   r3
+    TryGetById        r2, r3, 1, "print"
+    LoadConstUndefined r5
+    LoadConstString   r1, "arrow"
+    LoadParam         r0, 1
+    Call3             r0, r2, r5, r1, r0
+    TryGetById        r2, r3, 2, "Promise"
+    GetByIdShort      r1, r2, 3, "all"
+    GetByIdShort      r4, r3, 4, "double"
+    LoadConstUInt8    r0, 1
+    Call2             r4, r4, r5, r0
+    NewArray          r0, 2
+    PutOwnByIndex     r0, r4, 0
+    GetByIdShort      r4, r3, 4, "double"
+    LoadConstUInt8    r3, 2
+    Call2             r3, r4, r5, r3
+    PutOwnByIndex     r0, r3, 1
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<>(2 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x012b, lexical 0x0000
+    LoadParam         r2, 1
+    GetGlobalObject   r0
+    TryGetById        r3, r0, 1, "print"
+    GetByIdShort      r1, r2, 2, "join"
+    LoadConstString   r0, "/"
+    Call2             r2, r1, r2, r0
+    LoadConstUndefined r0
+    LoadConstString   r1, "all"
+    Call3             r1, r3, r0, r1, r2
+    Ret               r0

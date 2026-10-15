@@ -1,0 +1,228 @@
+Bytecode File Information:
+  Bytecode version number: 99
+  Source hash: 5a340e34a5665af196941ab6320e83cdb835c1ba
+  Function count: 10
+  String count: 20
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  StringSwitchImm count: 0
+  Key buffer size (bytes): 7
+  Value buffer size (bytes): 10
+  Shape table count: 1
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: +
+s2[ASCII, 1..1]: ,
+s3[ASCII, 4..9]: global
+s4[ASCII, 4..10]: global 
+s5[ASCII, 11..16]: label:
+s6[ASCII, 17..21]: outer
+i7[ASCII, 2..4] #1C35E808: log
+i8[ASCII, 11..15] #1BA84CF3: label
+i9[ASCII, 21..26] #135294CE: report
+i10[ASCII, 27..30] #349ACB60: fact
+i11[ASCII, 30..34] #BE15DBE4: tools
+i12[ASCII, 34..42] #983063F9: savedFact
+i13[ASCII, 43..46] #874F77A9: join
+i14[ASCII, 46..49] #E7ECD7B6: name
+i15[ASCII, 50..52] #5A39B07E: map
+i16[ASCII, 52..56] #A689F65B: print
+i17[ASCII, 57..62] #07E38639: nested
+i18[ASCII, 63..66] #3F21B886: push
+i19[ASCII, 65..70] #CB66408A: shadow
+
+Literal Value Buffer:
+null
+null
+null
+[int 1]
+[int 2]
+
+Object Key Buffer:
+[String 9]
+[String 8]
+[String 17]
+
+Object Shape Table:
+0[0, 3]
+
+Function<global>(1 params, 24 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0000
+    CreateFunctionEnvironment r4, 1
+    DeclareGlobalVar  "log"
+    DeclareGlobalVar  "report"
+    DeclareGlobalVar  "label"
+    DeclareGlobalVar  "tools"
+    DeclareGlobalVar  "shadow"
+    DeclareGlobalVar  "fact"
+    DeclareGlobalVar  "savedFact"
+    GetGlobalObject   r2
+    LoadConstUndefined r1
+    CreateClosure     r3, r1, Function<report>
+    PutByIdLoose      r2, r3, 0, "report"
+    CreateClosure     r3, r1, Function<label>
+    PutByIdLoose      r2, r3, 1, "label"
+    CreateClosure     r3, r1, Function<fact>
+    PutByIdLoose      r2, r3, 2, "fact"
+    NewArray          r3, 0
+    PutByIdLoose      r2, r3, 3, "log"
+    NewObjectWithBuffer r3, 0, 0
+    CreateClosure     r5, r1, Function<report>
+    PutOwnBySlotIdx   r3, r5, 0
+    CreateClosure     r5, r1, NCFunction<label>
+    PutOwnBySlotIdx   r3, r5, 1
+    CreateClosure     r5, r1, Function<nested>
+    PutOwnBySlotIdx   r3, r5, 2
+    PutByIdLoose      r2, r3, 4, "tools"
+    CreateClosure     r3, r4, Function<report>
+    StoreToEnvironment r4, 0, r3
+    PutByIdLoose      r2, r3, 5, "shadow"
+    GetByIdShort      r3, r2, 0, "fact"
+    PutByIdLoose      r2, r3, 6, "savedFact"
+    CreateClosure     r3, r1, Function<fact>
+    PutByIdLoose      r2, r3, 2, "fact"
+    TryGetById        r8, r2, 1, "print"
+    GetByIdShort      r4, r2, 2, "tools"
+    GetByIdShort      r3, r4, 3, "report"
+    LoadConstUInt8    r0, 5
+    Call2             r7, r3, r4, r0
+    GetByIdShort      r4, r2, 2, "tools"
+    GetByIdShort      r3, r4, 4, "label"
+    Call1             r14, r3, r4
+    GetByIdShort      r4, r2, 2, "tools"
+    GetByIdShort      r3, r4, 5, "nested"
+    Call1             r5, r3, r4
+    GetByIdShort      r4, r5, 6, "join"
+    LoadConstString   r3, "+"
+    Call2             r13, r4, r5, r3
+    GetByIdShort      r3, r2, 7, "shadow"
+    LoadConstUInt8    r0, 3
+    Call2             r12, r3, r1, r0
+    GetByIdShort      r10, r2, 8, "log"
+    GetByIdShort      r9, r10, 6, "join"
+    LoadConstString   r3, ","
+    Call2             r11, r9, r10, r3
+    LoadConstUndefined r16
+    Mov               r15, r7
+    Call              r3, r8, 6
+    TryGetById        r7, r2, 1, "print"
+    GetByIdShort      r3, r2, 2, "tools"
+    GetByIdShort      r3, r3, 3, "report"
+    GetByIdShort      r15, r3, 9, "name"
+    GetByIdShort      r3, r2, 2, "tools"
+    GetByIdShort      r3, r3, 4, "label"
+    GetByIdShort      r14, r3, 9, "name"
+    GetByIdShort      r3, r2, 7, "shadow"
+    GetByIdShort      r13, r3, 9, "name"
+    GetByIdShort      r3, r2, 10, "savedFact"
+    GetByIdShort      r12, r3, 9, "name"
+    Call              r3, r7, 5
+    TryGetById        r3, r2, 1, "print"
+    GetByIdShort      r2, r2, 10, "savedFact"
+    LoadConstUInt8    r0, 4
+    Call2             r2, r2, r1, r0
+    Call2             r2, r3, r1, r2
+    Ret               r2
+
+Function<report>(2 params, 14 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x009f
+    LoadParam         r1, 1
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 0, "log"
+    GetByIdShort      r3, r4, 1, "push"
+    LoadConstString   r2, "global "
+    Add               r2, r2, r1
+    Call2             r2, r3, r4, r2
+    LoadConstUInt8    r0, 2
+    Mul               r0, r1, r0
+    Ret               r0
+
+Function<label>(1 params, 1 registers, 0 numbers, 0 non-pointers):
+    LoadConstString   r0, "outer"
+    Ret               r0
+
+Function<fact>(2 params, 14 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x00b3
+    LoadParam         r4, 1
+    LoadConstUInt8    r0, 1
+    LessEq            r1, r4, r0
+    Mov               r2, r0
+    JmpTrue           L1, r1
+    GetGlobalObject   r3
+    GetByIdShort      r3, r3, 0, "fact"
+    Sub               r0, r4, r0
+    LoadConstUndefined r1
+    Call2             r3, r3, r1, r0
+    Mul               r2, r4, r3
+L1:
+    Ret               r2
+
+Function<report>(2 params, 13 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x00c7
+    GetGlobalObject   r2
+    GetByIdShort      r3, r2, 0, "report"
+    LoadConstUndefined r1
+    LoadParam         r2, 1
+    Call2             r2, r3, r1, r2
+    LoadConstUInt8    r0, 1
+    Add               r2, r2, r0
+    Ret               r2
+
+NCFunction<label>(1 params, 11 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00d5
+    GetGlobalObject   r1
+    GetByIdShort      r1, r1, 0, "label"
+    LoadConstUndefined r0
+    Call1             r2, r1, r0
+    LoadConstString   r1, "label:"
+    Add               r1, r1, r2
+    Ret               r1
+
+Function<nested>(1 params, 13 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00e3
+    NewArrayWithBuffer r3, 2, 2, 1
+    GetByIdShort      r2, r3, 0, "map"
+    LoadConstUndefined r0
+    CreateClosure     r1, r0, Function<>
+    Call2             r1, r2, r3, r1
+    Ret               r1
+
+Function<report>(2 params, 14 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x00ee
+    LoadParam         r4, 1
+    LoadConstZero     r2
+    Greater           r1, r4, r2
+    JmpFalse          L1, r1
+    GetParentEnvironment r3, 0
+    LoadFromEnvironment r3, r3, 0
+    LoadConstUInt8    r0, 1
+    Sub               r0, r4, r0
+    LoadConstUndefined r1
+    Call2             r3, r3, r1, r0
+    Add               r2, r3, r4
+L1:
+    Ret               r2
+
+Function<fact>(2 params, 1 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x00ff
+    LoadParam         r0, 1
+    Negate            r0, r0
+    Ret               r0
+
+Function<>(2 params, 12 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0107
+    GetGlobalObject   r1
+    GetByIdShort      r2, r1, 0, "report"
+    LoadConstUndefined r0
+    LoadParam         r1, 1
+    Call2             r1, r2, r0, r1
+    Ret               r1

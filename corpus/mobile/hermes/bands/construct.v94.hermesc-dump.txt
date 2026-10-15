@@ -1,0 +1,321 @@
+Bytecode File Information:
+  Bytecode version number: 94
+  Source hash: eea579ebb00f32bb1cb70bc8565e1537cd7a07a4
+  Function count: 8
+  String count: 36
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: ,
+s2[ASCII, 1..6]: broken
+s3[ASCII, 12..16]: error
+s4[ASCII, 17..22]: global
+s5[ASCII, 22..25]: late
+s6[ASCII, 25..30]: event:
+s7[ASCII, 33..38]: picked
+s8[ASCII, 43..49]: timeout
+s9[ASCII, 50..50]: |
+i10[ASCII, 7..13] #BF10B939: Wrapper
+i11[ASCII, 31..33] #5A39B07E: map
+i12[ASCII, 33..33] #0001C771: p
+i13[ASCII, 33..36] #6DB0C257: pick
+i14[ASCII, 39..43] #F89137CC: Event
+i15[ASCII, 51..56] #9615E9FA: Object
+i16[ASCII, 55..59] #17735009: ctors
+i17[ASCII, 60..64] #565A7CFB: Point
+i18[ASCII, 65..68] #50273FEB: args
+i19[ASCII, 69..72] #40C71DF9: made
+i20[ASCII, 71..78] #7AB7765B: describe
+i21[ASCII, 79..82] #6579A14E: fire
+i22[ASCII, 81..88] #DA3714F4: registry
+i23[ASCII, 89..92] #874F77A9: join
+i24[ASCII, 91..91] #0001A2F8: i
+i25[ASCII, 93..96] #973712F5: keys
+i26[ASCII, 95..95] #0001E3E8: y
+i27[ASCII, 97..100] #B13B3CE5: kind
+i28[ASCII, 101..106] #15A9FF56: length
+i29[ASCII, 107..111] #A689F65B: print
+i30[ASCII, 112..120] #807C5F3D: prototype
+i31[ASCII, 121..124] #3F21B886: push
+i32[ASCII, 123..128] #CA394B99: shapes
+i33[ASCII, 129..133] #DF50693D: value
+i34[ASCII, 134..140] #E090A56E: wrapped
+i35[ASCII, 141..141] #0001E7F9: x
+
+Array Buffer:
+[int 3]
+[int 4]
+Function<global>(1 params, 23 registers, 0 symbols):
+Offset in debug table: source 0x0000, scope 0x0000, textified callees 0x0000
+    DeclareGlobalVar  "registry"
+    DeclareGlobalVar  "args"
+    DeclareGlobalVar  "p"
+    DeclareGlobalVar  "ctors"
+    DeclareGlobalVar  "i"
+    DeclareGlobalVar  "made"
+    DeclareGlobalVar  "Event"
+    DeclareGlobalVar  "Wrapper"
+    DeclareGlobalVar  "pick"
+    DeclareGlobalVar  "fire"
+    CreateEnvironment r0
+    GetGlobalObject   r6
+    LoadConstUInt8    r5, 1
+    LoadConstString   r4, "|"
+    LoadConstUndefined r3
+    CreateClosure     r1, r0, Function<Event>
+    PutById           r6, r1, 1, "Event"
+    CreateClosure     r1, r0, Function<Wrapper>
+    PutById           r6, r1, 2, "Wrapper"
+    CreateClosure     r1, r0, Function<pick>
+    PutById           r6, r1, 3, "pick"
+    CreateClosure     r1, r0, Function<fire>
+    PutById           r6, r1, 4, "fire"
+    GetByIdShort      r1, r6, 1, "Event"
+    GetByIdShort      r2, r1, 2, "prototype"
+    CreateClosure     r1, r0, Function<>
+    PutById           r2, r1, 5, "describe"
+    NewObject         r1
+    CreateClosure     r0, r0, Function<Point>
+    PutNewOwnByIdShort r1, r0, "Point"
+    NewObject         r0
+    PutNewOwnByIdShort r0, r1, "shapes"
+    PutById           r6, r0, 6, "registry"
+    NewArrayWithBuffer r0, 2, 2, 0
+    PutById           r6, r0, 7, "args"
+    GetByIdShort      r0, r6, 3, "registry"
+    GetByIdShort      r0, r0, 4, "shapes"
+    GetByIdShort      r2, r0, 5, "Point"
+    GetByIdShort      r14, r6, 6, "args"
+    NewArray          r0, 0
+    LoadConstZero     r1
+    Mov               r15, r0
+    LoadConstZero     r13
+    CallBuiltin       r7, "HermesBuiltin.arraySpread", 4
+    Mov               r15, r2
+    Mov               r14, r0
+    CallBuiltin       r0, "HermesBuiltin.apply", 3
+    PutById           r6, r0, 8, "p"
+    TryGetById        r9, r6, 7, "print"
+    GetByIdShort      r0, r6, 8, "fire"
+    LoadConstTrue     r2
+    LoadConstFalse    r8
+    Call3             r7, r0, r3, r2, r8
+    GetByIdShort      r0, r6, 8, "fire"
+    Call3             r0, r0, r3, r8, r2
+    Call3             r0, r9, r3, r7, r0
+    TryGetById        r10, r6, 7, "print"
+    GetByIdShort      r9, r6, 9, "Wrapper"
+    GetByIdShort      r0, r9, 2, "prototype"
+    CreateThis        r7, r0, r9
+    LoadConstUInt8    r15, 5
+    Mov               r16, r7
+    Construct         r0, r9, 2
+    SelectObject      r0, r7, r0
+    GetByIdShort      r9, r0, 10, "value"
+    GetByIdShort      r0, r6, 9, "Wrapper"
+    GetByIdShort      r7, r0, 2, "prototype"
+    CreateThis        r7, r7, r0
+    LoadConstUInt8    r12, 50
+    Mov               r16, r7
+    Mov               r15, r12
+    Construct         r0, r0, 2
+    SelectObject      r0, r7, r0
+    GetByIdShort      r7, r0, 11, "wrapped"
+    GetByIdShort      r0, r6, 9, "Wrapper"
+    GetByIdShort      r11, r0, 2, "prototype"
+    CreateThis        r11, r11, r0
+    Mov               r16, r11
+    Construct         r0, r0, 2
+    SelectObject      r11, r11, r0
+    GetByIdShort      r0, r6, 9, "Wrapper"
+    InstanceOf        r0, r11, r0
+    Call4             r0, r10, r3, r9, r7, r0
+    TryGetById        r9, r6, 7, "print"
+    GetByIdShort      r0, r6, 12, "p"
+    GetByIdShort      r7, r0, 13, "x"
+    GetByIdShort      r0, r6, 12, "p"
+    GetByIdShort      r0, r0, 14, "y"
+    Add               r7, r7, r0
+    GetByIdShort      r10, r6, 12, "p"
+    GetByIdShort      r0, r6, 3, "registry"
+    GetByIdShort      r0, r0, 4, "shapes"
+    GetByIdShort      r0, r0, 5, "Point"
+    InstanceOf        r0, r10, r0
+    Call3             r0, r9, r3, r7, r0
+    TryGetById        r7, r6, 7, "print"
+    GetByIdShort      r0, r6, 15, "pick"
+    Call2             r9, r0, r3, r2
+    GetByIdShort      r0, r9, 2, "prototype"
+    CreateThis        r2, r0, r9
+    LoadConstString   r15, "picked"
+    Mov               r16, r2
+    Construct         r0, r9, 2
+    SelectObject      r2, r2, r0
+    GetByIdShort      r0, r2, 16, "describe"
+    Call1             r2, r0, r2
+    GetByIdShort      r0, r6, 15, "pick"
+    Call2             r9, r0, r3, r8
+    GetByIdShort      r0, r9, 2, "prototype"
+    CreateThis        r8, r0, r9
+    LoadConstUInt8    r15, 7
+    Mov               r16, r8
+    Construct         r0, r9, 2
+    SelectObject      r0, r8, r0
+    GetByIdShort      r0, r0, 10, "value"
+    Call3             r0, r7, r3, r2, r0
+    GetByIdShort      r7, r6, 1, "Event"
+    NewArray          r2, 2
+    PutOwnByIndex     r2, r7, 0
+    GetByIdShort      r7, r6, 9, "Wrapper"
+    PutOwnByIndex     r2, r7, 1
+    PutById           r6, r2, 9, "ctors"
+    PutById           r6, r1, 10, "i"
+    GetByIdShort      r2, r6, 17, "i"
+    GetByIdShort      r1, r6, 18, "ctors"
+    GetByIdShort      r1, r1, 19, "length"
+    JNotLessLong      L1, r2, r1
+L2:
+    GetByIdShort      r2, r6, 18, "ctors"
+    GetByIdShort      r1, r6, 17, "i"
+    GetByVal          r7, r2, r1
+    GetByIdShort      r1, r6, 17, "i"
+    Add               r15, r1, r5
+    GetByIdShort      r2, r7, 2, "prototype"
+    CreateThis        r2, r2, r7
+    Mov               r16, r2
+    Construct         r1, r7, 2
+    SelectObject      r1, r2, r1
+    PutById           r6, r1, 11, "made"
+    TryGetById        r7, r6, 7, "print"
+    GetByIdShort      r2, r6, 17, "i"
+    TryGetById        r9, r6, 20, "Object"
+    GetByIdShort      r8, r9, 21, "keys"
+    GetByIdShort      r1, r6, 22, "made"
+    Call2             r8, r8, r9, r1
+    GetByIdShort      r1, r8, 23, "join"
+    Call2             r1, r1, r8, r4
+    Call3             r0, r7, r3, r2, r1
+    GetByIdShort      r1, r6, 17, "i"
+    Inc               r1, r1
+    PutById           r6, r1, 10, "i"
+    GetByIdShort      r2, r6, 17, "i"
+    GetByIdShort      r1, r6, 18, "ctors"
+    GetByIdShort      r1, r1, 19, "length"
+    JLess             L2, r2, r1
+L1:
+    Ret               r0
+
+Function<Event>(2 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x020d, scope 0x0000, textified callees 0x0000
+    LoadParam         r1, 1
+    LoadThisNS        r0
+    PutById           r0, r1, 1, "kind"
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<Wrapper>(2 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x021a, scope 0x0000, textified callees 0x0000
+    LoadParam         r1, 1
+    LoadConstUInt8    r0, 10
+    JGreater          L1, r1, r0
+    LoadThisNS        r0
+    PutById           r0, r1, 1, "value"
+    LoadConstUndefined r0
+    Ret               r0
+L1:
+    NewObject         r0
+    PutNewOwnByIdShort r0, r1, "wrapped"
+    Ret               r0
+
+Function<pick>(2 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x0239, scope 0x0000, textified callees 0x0000
+    LoadParam         r0, 1
+    JmpTrue           L1, r0
+    GetGlobalObject   r0
+    GetByIdShort      r0, r0, 1, "Wrapper"
+    Jmp               L2
+L1:
+    GetGlobalObject   r1
+    GetByIdShort      r0, r1, 2, "Event"
+L2:
+    Ret               r0
+
+Function<fire>(3 params, 18 registers, 0 symbols):
+Offset in debug table: source 0x024f, scope 0x0000, textified callees 0x0000
+    LoadParam         r5, 1
+    LoadConstString   r7, "timeout"
+    LoadConstString   r8, "error"
+    LoadConstString   r3, "late"
+    LoadConstString   r4, "broken"
+    NewArray          r2, 0
+    GetByIdShort      r6, r2, 1, "push"
+    GetGlobalObject   r0
+    GetByIdShort      r1, r0, 2, "Event"
+    JmpFalse          L1, r5
+    Mov               r8, r7
+L1:
+    GetByIdShort      r7, r1, 3, "prototype"
+    CreateThis        r7, r7, r1
+    Mov               r11, r7
+    Mov               r10, r8
+    Construct         r1, r1, 2
+    SelectObject      r1, r7, r1
+    Call2             r1, r6, r2, r1
+    LoadParam         r1, 2
+    JmpFalse          L2, r1
+    GetByIdShort      r1, r2, 1, "push"
+    GetByIdShort      r0, r0, 2, "Event"
+    JmpFalse          L3, r5
+    Mov               r4, r3
+L3:
+    GetByIdShort      r3, r0, 3, "prototype"
+    CreateThis        r3, r3, r0
+    Mov               r11, r3
+    Mov               r10, r4
+    Construct         r0, r0, 2
+    SelectObject      r0, r3, r0
+    Call2             r0, r1, r2, r0
+L2:
+    GetByIdShort      r1, r2, 4, "map"
+    CreateEnvironment r0
+    CreateClosure     r0, r0, Function<>
+    Call2             r2, r1, r2, r0
+    GetByIdShort      r1, r2, 5, "join"
+    LoadConstString   r0, ","
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<>(2 params, 9 registers, 0 symbols):
+Offset in debug table: source 0x02a3, scope 0x0000, textified callees 0x0000
+    LoadParam         r1, 1
+    GetByIdShort      r0, r1, 1, "describe"
+    Call1             r0, r0, r1
+    Ret               r0
+
+Function<>(1 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x02b9, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r0
+    GetByIdShort      r1, r0, 1, "kind"
+    LoadConstString   r0, "event:"
+    Add               r0, r0, r1
+    Ret               r0
+
+Function<Point>(3 params, 2 registers, 0 symbols):
+Offset in debug table: source 0x02cf, scope 0x0000, textified callees 0x0000
+    LoadThisNS        r1
+    LoadParam         r0, 1
+    PutById           r1, r0, 1, "x"
+    LoadParam         r0, 2
+    PutById           r1, r0, 2, "y"
+    LoadConstUndefined r0
+    Ret               r0

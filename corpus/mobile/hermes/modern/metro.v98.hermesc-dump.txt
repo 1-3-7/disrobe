@@ -1,0 +1,416 @@
+Bytecode File Information:
+  Bytecode version number: 98
+  Source hash: 8eb665325a88307149989a4de1e5f170d903db6f
+  Function count: 13
+  String count: 36
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  StringSwitchImm count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..14]: unknown module 
+s2[ASCII, 14..20]:  twice=
+s3[ASCII, 21..24]: boot
+s4[ASCII, 27..32]: define
+s5[ASCII, 41..46]: global
+s6[ASCII, 78..91]: metroImportAll
+s7[ASCII, 92..109]: metroImportDefault
+s8[ASCII, 110..121]: metroRequire
+s9[ASCII, 132..137]: value=
+s10[ASCII, 138..138]: |
+i11[ASCII, 25..27] #58FA9DBB: add
+i12[ASCII, 27..40] #F974074A: defineProperty
+i13[ASCII, 41..50] #F3091991: globalThis
+i14[ASCII, 49..61] #5A5132E5: isInitialized
+i15[ASCII, 61..73] #35B1A3D0: dependencyMap
+i16[ASCII, 73..77] #A689F65B: print
+i17[ASCII, 121..127] #C765D706: exports
+i18[ASCII, 127..131] #1680F809: slice
+i19[ASCII, 132..136] #DF50693D: value
+i20[ASCII, 139..143] #9102A3D0: Error
+i21[ASCII, 144..149] #9615E9FA: Object
+i22[ASCII, 150..151] #0503F32C: PI
+i23[ASCII, 152..154] #FDDAE4AD: __d
+i24[ASCII, 154..160] #47441A08: default
+i25[ASCII, 161..170] #AB1C2C6B: __esModule
+i26[ASCII, 169..174] #15A9FF56: length
+i27[ASCII, 175..177] #FDDA2FB3: __r
+i28[ASCII, 178..183] #51040606: create
+i29[ASCII, 184..190] #72894058: factory
+i30[ASCII, 191..195] #63146EAB: items
+i31[ASCII, 196..199] #874F77A9: join
+i32[ASCII, 199..207] #22005C8A: namespace
+i33[ASCII, 208..211] #973712F5: keys
+i34[ASCII, 212..223] #F775F54B: publicModule
+i35[ASCII, 224..227] #3F21B886: push
+
+Literal Value Buffer:
+[int 1]
+[int 2]
+[int 3]
+[int 1]
+true
+null
+null
+null
+null
+null
+false
+null
+Object Key Buffer:
+[String 19]
+[String 32]
+[String 35]
+[String 30]
+[String 29]
+[String 15]
+[String 14]
+[String 34]
+[String 17]
+Object Shape Table:
+0[0, 1]
+1[3, 3]
+2[10, 4]
+3[19, 1]
+Function<global>(1 params, 20 registers, 2 numbers, 1 non-pointers):
+Offset in debug table: source 0x0000
+    LoadThisNS        r5
+    GetGlobalObject   r3
+    GetByIdShort      r4, r3, 0, "globalThis"
+    JmpTypeOfIs       L1, r4, 1
+    TryGetById        r5, r3, 0, "globalThis"
+L1:
+    CreateFunctionEnvironment r6, 5
+    StoreToEnvironment r6, 0, r5
+    CreateClosure     r4, r6, Function<metroRequire>
+    StoreToEnvironment r6, 2, r4
+    CreateClosure     r7, r6, Function<metroImportDefault>
+    StoreToEnvironment r6, 3, r7
+    CreateClosure     r7, r6, Function<metroImportAll>
+    StoreToEnvironment r6, 4, r7
+    TryGetById        r8, r3, 1, "Object"
+    GetByIdShort      r7, r8, 2, "create"
+    LoadConstNull     r2
+    Call2             r7, r7, r8, r2
+    StoreToEnvironment r6, 1, r7
+    CreateClosure     r6, r6, Function<define>
+    PutByIdLoose      r5, r6, 0, "__d"
+    PutByIdLoose      r5, r4, 1, "__r"
+    TryGetById        r6, r3, 3, "__d"
+    LoadConstZero     r1
+    LoadConstUndefined r2
+    NewArrayWithBuffer r5, 3, 3, 0
+    CreateClosure     r4, r2, Function<>
+    Call4             r4, r6, r2, r4, r1, r5
+    TryGetById        r6, r3, 3, "__d"
+    LoadConstUInt8    r0, 1
+    NewArray          r5, 0
+    CreateClosure     r4, r2, Function<>
+    Call4             r4, r6, r2, r4, r0, r5
+    TryGetById        r6, r3, 3, "__d"
+    LoadConstUInt8    r0, 2
+    NewArrayWithBuffer r5, 1, 1, 13
+    CreateClosure     r4, r2, Function<>
+    Call4             r4, r6, r2, r4, r0, r5
+    TryGetById        r6, r3, 3, "__d"
+    LoadConstUInt8    r0, 3
+    NewArray          r5, 0
+    CreateClosure     r4, r2, Function<>
+    Call4             r4, r6, r2, r4, r0, r5
+    TryGetById        r3, r3, 4, "__r"
+    Call2             r3, r3, r2, r1
+    Ret               r3
+
+Function<>(8 params, 22 registers, 2 numbers, 2 non-pointers):
+Offset in debug table: source 0x0040
+    LoadParam         r5, 7
+    GetByIndex        r6, r5, 0
+    LoadConstUndefined r2
+    LoadParam         r4, 2
+    Call2             r4, r4, r2, r6
+    GetByIndex        r7, r5, 1
+    LoadParam         r6, 3
+    Call2             r9, r6, r2, r7
+    GetByIndex        r6, r5, 2
+    LoadParam         r5, 4
+    Call2             r6, r5, r2, r6
+    GetByIdShort      r7, r6, 0, "push"
+    LoadConstString   r5, "boot"
+    Call2             r5, r7, r6, r5
+    GetGlobalObject   r5
+    TryGetById        r8, r5, 1, "print"
+    GetByIdShort      r7, r4, 2, "add"
+    LoadConstUInt8    r0, 3
+    LoadConstUInt8    r1, 2
+    Call3             r7, r7, r4, r1, r0
+    Call2             r7, r9, r2, r7
+    GetByIdShort      r4, r4, 3, "PI"
+    GetByIdShort      r10, r6, 4, "default"
+    GetByIdShort      r9, r6, 5, "namespace"
+    StrictEq          r3, r10, r9
+    Call4             r4, r8, r2, r7, r4, r3
+    TryGetById        r7, r5, 1, "print"
+    GetByIdShort      r4, r6, 6, "items"
+    Call1             r8, r4, r6
+    GetByIdShort      r6, r8, 7, "join"
+    LoadConstString   r4, "|"
+    Call2             r6, r6, r8, r4
+    LoadParam         r4, 5
+    GetByIdShort      r4, r4, 8, "exports"
+    TryGetById        r9, r5, 9, "Object"
+    GetByIdShort      r8, r9, 10, "keys"
+    LoadParam         r5, 6
+    Call2             r5, r8, r9, r5
+    GetByIdShort      r5, r5, 11, "length"
+    TypeOf            r4, r4
+    Call4             r4, r7, r2, r6, r4, r5
+    Ret               r2
+
+Function<>(8 params, 4 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0097
+    LoadParam         r2, 6
+    LoadConstUndefined r1
+    CreateClosure     r3, r1, Function<>
+    PutByIdLoose      r2, r3, 0, "add"
+    LoadConstDouble   r0, 3.14
+    PutByIdLoose      r2, r0, 1, "PI"
+    Ret               r1
+
+Function<>(8 params, 18 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00a2
+    CreateFunctionEnvironment r1, 1
+    LoadParam         r2, 6
+    GetGlobalObject   r3
+    TryGetById        r6, r3, 0, "Object"
+    GetByIdShort      r5, r6, 1, "defineProperty"
+    LoadConstString   r4, "__esModule"
+    NewObjectWithBuffer r3, 0, 18
+    Call4             r3, r5, r6, r2, r4, r3
+    LoadParam         r3, 7
+    GetByIndex        r4, r3, 0
+    LoadConstUndefined r0
+    LoadParam         r3, 2
+    Call2             r3, r3, r0, r4
+    StoreToEnvironment r1, 0, r3
+    CreateClosure     r1, r1, Function<>
+    PutByIdLoose      r2, r1, 0, "default"
+    Ret               r0
+
+Function<>(8 params, 5 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00b9
+    CreateFunctionEnvironment r3, 1
+    LoadParam         r2, 5
+    NewArray          r1, 0
+    StoreToEnvironment r3, 0, r1
+    NewObjectWithBuffer r1, 1, 19
+    PutOwnBySlotIdx   r1, r2, 0
+    CreateClosure     r4, r3, Function<push>
+    PutOwnBySlotIdx   r1, r4, 1
+    CreateClosure     r3, r3, Function<items>
+    PutOwnBySlotIdx   r1, r3, 2
+    PutByIdLoose      r2, r1, 0, "exports"
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<define>(4 params, 5 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00c1
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r3, r1, 1
+    NewObjectWithBuffer r2, 2, 20
+    LoadParam         r1, 1
+    PutOwnBySlotIdx   r2, r1, 0
+    LoadParam         r1, 3
+    PutOwnBySlotIdx   r2, r1, 1
+    NewObjectWithBuffer r1, 3, 22
+    NewObject         r4
+    PutOwnBySlotIdx   r1, r4, 0
+    PutOwnBySlotIdx   r2, r1, 3
+    LoadParam         r1, 2
+    PutByValLoose     r3, r1, r2
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<metroRequire>(2 params, 25 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00c9
+    GetParentEnvironment r2, 0
+    LoadParam         r4, 1
+    LoadFromEnvironment r1, r2, 1
+    GetByVal          r1, r1, r4
+    JmpTrue           L1, r1
+    GetGlobalObject   r3
+    TryGetById        r5, r3, 0, "Error"
+    LoadConstString   r3, "unknown module "
+    Add               r16, r3, r4
+    CreateThisForNew  r4, r5, 1
+    Mov               r17, r4
+    Construct         r3, r5, 2
+    SelectObject      r3, r4, r3
+    Throw             r3
+L1:
+    GetByIdShort      r3, r1, 2, "isInitialized"
+    JmpTrue           L2, r3
+    LoadConstTrue     r0
+    PutByIdLoose      r1, r0, 0, "isInitialized"
+    GetByIdShort      r9, r1, 3, "factory"
+    LoadFromEnvironment r16, r2, 0
+    LoadFromEnvironment r15, r2, 2
+    LoadFromEnvironment r14, r2, 3
+    LoadFromEnvironment r13, r2, 4
+    GetByIdShort      r12, r1, 4, "publicModule"
+    GetByIdShort      r2, r1, 4, "publicModule"
+    GetByIdShort      r11, r2, 5, "exports"
+    GetByIdShort      r10, r1, 6, "dependencyMap"
+    Mov               r17, r1
+    Call              r2, r9, 8
+L2:
+    GetByIdShort      r1, r1, 4, "publicModule"
+    GetByIdShort      r1, r1, 5, "exports"
+    Ret               r1
+
+Function<metroImportDefault>(2 params, 25 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00fe
+    GetParentEnvironment r2, 0
+    LoadParam         r4, 1
+    LoadFromEnvironment r1, r2, 1
+    GetByVal          r1, r1, r4
+    JmpTrue           L1, r1
+    GetGlobalObject   r3
+    TryGetById        r5, r3, 0, "Error"
+    LoadConstString   r3, "unknown module "
+    Add               r16, r3, r4
+    CreateThisForNew  r4, r5, 1
+    Mov               r17, r4
+    Construct         r3, r5, 2
+    SelectObject      r3, r4, r3
+    Throw             r3
+L1:
+    GetByIdShort      r3, r1, 2, "isInitialized"
+    JmpTrue           L2, r3
+    LoadConstTrue     r0
+    PutByIdLoose      r1, r0, 0, "isInitialized"
+    GetByIdShort      r9, r1, 3, "factory"
+    LoadFromEnvironment r16, r2, 0
+    LoadFromEnvironment r15, r2, 2
+    LoadFromEnvironment r14, r2, 3
+    LoadFromEnvironment r13, r2, 4
+    GetByIdShort      r12, r1, 4, "publicModule"
+    GetByIdShort      r2, r1, 4, "publicModule"
+    GetByIdShort      r11, r2, 5, "exports"
+    GetByIdShort      r10, r1, 6, "dependencyMap"
+    Mov               r17, r1
+    Call              r2, r9, 8
+L2:
+    GetByIdShort      r1, r1, 4, "publicModule"
+    GetByIdShort      r2, r1, 5, "exports"
+    Mov               r1, r2
+    JmpFalse          L3, r2
+    GetByIdShort      r3, r2, 7, "__esModule"
+    Mov               r1, r2
+    JmpFalse          L3, r3
+    GetByIdShort      r1, r2, 8, "default"
+L3:
+    Ret               r1
+
+Function<metroImportAll>(2 params, 27 registers, 2 numbers, 1 non-pointers):
+Offset in debug table: source 0x013a
+    GetParentEnvironment r4, 0
+    LoadParam         r6, 1
+    LoadFromEnvironment r3, r4, 1
+    GetByVal          r3, r3, r6
+    JmpTrue           L1, r3
+    GetGlobalObject   r5
+    TryGetById        r7, r5, 0, "Error"
+    LoadConstString   r5, "unknown module "
+    Add               r18, r5, r6
+    CreateThisForNew  r6, r7, 1
+    Mov               r19, r6
+    Construct         r5, r7, 2
+    SelectObject      r5, r6, r5
+    Throw             r5
+L1:
+    GetByIdShort      r5, r3, 2, "isInitialized"
+    JmpTrue           L2, r5
+    LoadConstTrue     r2
+    PutByIdLoose      r3, r2, 0, "isInitialized"
+    GetByIdShort      r11, r3, 3, "factory"
+    LoadFromEnvironment r18, r4, 0
+    LoadFromEnvironment r17, r4, 2
+    LoadFromEnvironment r16, r4, 3
+    LoadFromEnvironment r15, r4, 4
+    GetByIdShort      r14, r3, 4, "publicModule"
+    GetByIdShort      r4, r3, 4, "publicModule"
+    GetByIdShort      r13, r4, 5, "exports"
+    GetByIdShort      r12, r3, 6, "dependencyMap"
+    Mov               r19, r3
+    Call              r4, r11, 8
+L2:
+    GetByIdShort      r3, r3, 4, "publicModule"
+    GetByIdShort      r3, r3, 5, "exports"
+    JmpFalse          L3, r3
+    GetByIdShort      r4, r3, 7, "__esModule"
+    JmpTrue           L4, r4
+L3:
+    NewObject         r4
+    Mov               r6, r3
+    GetPNameList      r7, r6, r0, r1
+    JmpUndefined      L5, r7
+L6:
+    GetNextPName      r5, r7, r6, r0, r1
+    JmpUndefined      L5, r5
+    Mov               r9, r5
+    GetByVal          r8, r3, r9
+    PutByValLoose     r4, r9, r8
+    Jmp               L6
+L5:
+    PutByIdLoose      r4, r3, 1, "default"
+    Ret               r4
+L4:
+    Ret               r3
+
+Function<>(3 params, 2 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x0183
+    LoadParam         r1, 2
+    LoadParam         r0, 1
+    Add               r0, r0, r1
+    Ret               r0
+
+Function<>(2 params, 14 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x018b
+    LoadParam         r3, 1
+    LoadConstString   r0, "value="
+    Add               r2, r0, r3
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r1, r0, 0
+    GetByIdShort      r0, r1, 0, "add"
+    Call3             r1, r0, r1, r3, r3
+    LoadConstString   r0, " twice="
+    AddS              r0, r2, r0
+    Add               r0, r0, r1
+    Ret               r0
+
+Function<push>(2 params, 13 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x019c
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r3, r1, 0
+    GetByIdShort      r2, r3, 0, "push"
+    LoadParam         r1, 1
+    Call2             r1, r2, r3, r1
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<items>(1 params, 10 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x01a8
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r1, r0, 0
+    GetByIdShort      r0, r1, 0, "slice"
+    Call1             r0, r0, r1
+    Ret               r0

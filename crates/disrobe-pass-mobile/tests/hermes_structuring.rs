@@ -190,7 +190,7 @@ fn every_function_in_the_older_version_samples_reaches_structured_control_flow()
 
 #[test]
 fn a_bytecode_version_the_opcode_table_does_not_cover_is_refused_by_number() {
-    let unlifted: u32 = 90;
+    let unlifted: u32 = 87;
     assert!(
         !HERMES_LIFTED_VERSIONS.contains(&unlifted),
         "v{unlifted} must sit outside the lifted set for this case to exercise the refusal path at \

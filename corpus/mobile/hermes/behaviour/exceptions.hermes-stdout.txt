@@ -1,0 +1,9 @@
+ok 2 caught RangeError too big: 5
+end early from-catch try0,after0,finally0,try1,finally1,try2,catch2,finally2
+c1:inner;f1;c2:rethrown;
+9/-6
+no binding
+true
+true
+cleanup
+1

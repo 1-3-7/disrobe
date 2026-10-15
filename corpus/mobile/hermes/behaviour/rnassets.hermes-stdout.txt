@@ -1,0 +1,3 @@
+1,2,3,4
+[{"__packager_asset":true,"httpServerLocation":"/assets/src/images","width":24,"height":24,"scales":[1,2,3],"hash":"6a1bf3c0e1a2b3c4d5e6f708192a3b4c","name":"logo","type":"png"},{"__packager_asset":true,"httpServerLocation":"/assets/node_modules/@scope/icons/assets","width":16,"height":16,"scales":[1,1.5,2,3,4],"hash":"0f1e2d3c4b5a69788796a5b4c3d2e1f0","name":"Icon-Back","type":"webp"},{"__packager_asset":true,"httpServerLocation":"/assets/fonts","scales":[1],"hash":"11223344556677889900aabbccddeeff","name":"Inter-Bold","type":"ttf"},{"__packager_asset":true,"httpServerLocation":"/assets/../shared/img","width":320,"height":180,"scales":[0.75,2.5],"hash":"ffeeddccbbaa00998877665544332211","name":"splash bg","type":"jpg"}]
+Icon-Back

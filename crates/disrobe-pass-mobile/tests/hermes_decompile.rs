@@ -12,15 +12,13 @@ mod hermes_production_bundle;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
-    DeclineCount, DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_function,
+    DeclineCount, DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_functions,
     decompile_hermes_module, parse_hermes_module,
 };
 use hermes_production_bundle::{PUBLISHED_FUNCTION_COUNT, load_bundle};
 
 const SAMPLED_FUNCTIONS: usize = 2_000;
-const SAMPLE_FALLBACK_OP_CEILING: usize = 19;
 const MODULE_OP_TOTAL: usize = 5_765_066;
-const MODULE_FALLBACK_OP_CEILING: usize = 9_531;
 
 fn hello_fixture() -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");
@@ -139,8 +137,7 @@ fn discord_bundle_decompiles_most_functions() {
     let mut with_try: usize = 0;
     let mut reconstructed: usize = 0;
     let mut fallback: usize = 0;
-    for i in 0..sample {
-        let f: DecompiledFunction = decompile_hermes_function(&module, i);
+    for f in decompile_hermes_functions(&module, 0..sample) {
         if f.instruction_count > 0 && f.fallback_ops < f.instruction_count {
             emitted += 1;
         }
@@ -167,10 +164,10 @@ fn discord_bundle_decompiles_most_functions() {
         "every one of the {sample} sampled functions emitted pseudo-JS when this figure was \
          measured, so anything short of all of them is a regression"
     );
-    assert!(
-        fallback <= SAMPLE_FALLBACK_OP_CEILING,
-        "the sampled window left {SAMPLE_FALLBACK_OP_CEILING} ops unlowered when this figure was \
-         measured, got {fallback} of {} total",
+    assert_eq!(
+        fallback,
+        0,
+        "every op in the sampled window lowers to JavaScript; {fallback} of {} were declined",
         reconstructed + fallback
     );
     assert!(with_if > 0, "expected some functions with conditionals");
@@ -193,11 +190,10 @@ fn discord_decompile_module_report_consistent() {
          of them has lost some"
     );
     assert!(report.total_reconstructed_ops > report.total_fallback_ops);
-    assert!(
-        report.total_fallback_ops <= MODULE_FALLBACK_OP_CEILING,
-        "the whole-module decompile left {MODULE_FALLBACK_OP_CEILING} ops unlowered when this \
-         figure was measured, got {}",
-        report.total_fallback_ops
+    assert_eq!(
+        report.total_fallback_ops, 0,
+        "every op of the production bundle lowers to JavaScript; declined {:?}",
+        report.declined_opcodes
     );
 
     let total_ops: usize = report.total_reconstructed_ops + report.total_fallback_ops;

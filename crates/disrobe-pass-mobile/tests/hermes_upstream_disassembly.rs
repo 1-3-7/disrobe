@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
-    HERMES_LIFTED_VERSIONS, HermesModule, hermes_disasm_function, parse_hermes_module,
+    HERMES_LIFTED_VERSIONS, HERMES_MODERN_VERSIONS, HermesModule, hermes_disasm_function,
+    parse_hermes_module,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +19,7 @@ struct Reference {
     instructions: usize,
 }
 
-const REFERENCES: [Reference; 8] = [
+const REFERENCES: [Reference; 11] = [
     Reference {
         version: 62,
         upstream_tag: "v0.2.1",
@@ -50,8 +51,23 @@ const REFERENCES: [Reference; 8] = [
         instructions: 98,
     },
     Reference {
+        version: 85,
+        upstream_tag: "hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111",
+        instructions: 98,
+    },
+    Reference {
         version: 89,
         upstream_tag: "v0.12.0",
+        instructions: 98,
+    },
+    Reference {
+        version: 90,
+        upstream_tag: "hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97",
+        instructions: 98,
+    },
+    Reference {
+        version: 94,
+        upstream_tag: "hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5",
         instructions: 98,
     },
     Reference {
@@ -61,10 +77,10 @@ const REFERENCES: [Reference; 8] = [
     },
 ];
 
-const SWAPS: [(u32, u32); 4] = [(83, 74), (74, 83), (96, 89), (62, 96)];
+const SWAPS: [(u32, u32); 6] = [(83, 74), (74, 83), (96, 89), (62, 96), (85, 84), (94, 89)];
 
-const PINNED_REFERENCE_INSTRUCTIONS: usize = 911;
-const PINNED_REFERENCE_FUNCTIONS: usize = 64;
+const PINNED_REFERENCE_INSTRUCTIONS: usize = 1_205;
+const PINNED_REFERENCE_FUNCTIONS: usize = 88;
 const EXPECTED_FUNCTION_NAMES: [&str; 8] = [
     "global",
     "add",
@@ -183,12 +199,17 @@ fn every_version_with_an_opcode_table_carries_the_disassembly_its_own_release_pr
         .iter()
         .map(|reference: &Reference| reference.version)
         .collect();
+    let classic: Vec<u32> = HERMES_LIFTED_VERSIONS
+        .iter()
+        .copied()
+        .filter(|version: &u32| !HERMES_MODERN_VERSIONS.contains(version))
+        .collect();
     assert_eq!(
-        listed,
-        HERMES_LIFTED_VERSIONS.to_vec(),
-        "this file grades every opcode table against the disassembly the matching Hermes release \
-         prints for the same committed bytes, so a lifted version missing here would decode its \
-         instructions with nothing outside disrobe checking the names"
+        listed, classic,
+        "this file grades every classic opcode table against the disassembly the matching Hermes \
+         release prints for the same committed bytes, so a lifted version missing here would \
+         decode its instructions with nothing outside disrobe checking the names; v98 and v99 are \
+         graded the same way in hermes_modern_disassembly.rs"
     );
 }
 

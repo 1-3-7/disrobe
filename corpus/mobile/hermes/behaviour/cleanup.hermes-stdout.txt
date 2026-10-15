@@ -1,0 +1,17 @@
+{"value":1,"done":false} {"value":42,"done":true} {"done":true}
+a:start,a:cleanup
+{"value":"done","done":true} inner-finally,outer-finally
+{"value":"overridden","done":true} override
+src1 src2
+{"value":"stop","done":true} src:closed
+row1 row2
+{"value":"cut","done":true} row:closed
+b:start,b:cleanup
+thrown bang
+c:start,c:cleanup
+cleanup error cleanup failed failing
+{"value":-1,"done":true} total=12
+{"value":"early","done":true} total=12
+{"value":"v","done":true} {"value":"q","done":true} verbose-cleanup,cleanup-done,quiet-cleanup,cleanup-done
+{"value":"drained","done":true} drain:3,drain:2,drain:1
+{"value":"closing","done":false} {"value":"final","done":true} closed with ack

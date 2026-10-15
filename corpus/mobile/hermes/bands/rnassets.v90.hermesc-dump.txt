@@ -1,0 +1,364 @@
+Bytecode File Information:
+  Bytecode version number: 90
+  Source hash: 00bebda272214d65e2535377cebbb32f95569c87
+  Function count: 11
+  String count: 43
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: ,
+s2[ASCII, 1..40]: /assets/node_modules/@scope/icons/assets
+s3[ASCII, 34..54]: /assets/../shared/img
+s4[ASCII, 66..78]: /assets/fonts
+s5[ASCII, 78..86]: splash bg
+s6[ASCII, 87..104]: /assets/src/images
+s7[ASCII, 110..141]: 0f1e2d3c4b5a69788796a5b4c3d2e1f0
+s8[ASCII, 157..159]: ttf
+s9[ASCII, 159..190]: ffeeddccbbaa00998877665544332211
+s10[ASCII, 189..220]: 11223344556677889900aabbccddeeff
+s11[ASCII, 227..258]: 6a1bf3c0e1a2b3c4d5e6f708192a3b4c
+s12[ASCII, 259..267]: Icon-Back
+s13[ASCII, 268..277]: Inter-Bold
+s14[ASCII, 289..291]: jpg
+s15[ASCII, 291..296]: global
+s16[ASCII, 303..306]: logo
+s17[ASCII, 307..310]: webp
+s18[ASCII, 310..312]: png
+i19[ASCII, 54..65] #37822088: getAssetByID
+i20[ASCII, 104..109] #FAF88A3D: scales
+i21[ASCII, 142..157] #F444A3C0: __packager_asset
+i22[ASCII, 220..226] #72894058: factory
+i23[ASCII, 277..288] #9B959C74: dependencies
+i24[ASCII, 291..300] #F3091991: globalThis
+i25[ASCII, 301..303] #587EA6B5: all
+i26[ASCII, 313..316] #971CE5C7: JSON
+i27[ASCII, 317..319] #FDDAE4AD: __d
+i28[ASCII, 319..322] #B553E7BD: done
+i29[ASCII, 322..328] #C765D706: exports
+i30[ASCII, 329..337] #0B2DAF65: __modules
+i31[ASCII, 337..345] #8D1543BD: stringify
+i32[ASCII, 346..348] #FDDA2FB3: __r
+i33[ASCII, 348..360] #8692C998: registerAsset
+i34[ASCII, 361..364] #3F21B886: push
+i35[ASCII, 364..367] #0E0D9709: hash
+i36[ASCII, 367..372] #FBB834E5: height
+i37[ASCII, 371..388] #EC8CCF3B: httpServerLocation
+i38[ASCII, 388..391] #E7ECD7B6: name
+i39[ASCII, 392..395] #874F77A9: join
+i40[ASCII, 396..400] #A689F65B: print
+i41[ASCII, 400..403] #665957A7: type
+i42[ASCII, 404..408] #039A191C: width
+
+Array Buffer:
+[int 0]
+[int 0]
+[int 1]
+[int 2]
+[int 3]
+[int 4]
+[int 1]
+[int 2]
+[int 3]
+[int 1]
+[double 1.500000]
+[int 2]
+[int 3]
+[int 4]
+[double 0.750000]
+[double 2.500000]
+Object Key Buffer:
+[String 21]
+[String 37]
+[String 42]
+[String 36]
+[String 20]
+[String 35]
+[String 38]
+[String 41]
+[String 21]
+[String 37]
+[String 20]
+[String 35]
+[String 38]
+[String 41]
+Object Value Buffer:
+true
+[String 2]
+[int 16]
+[int 16]
+null
+[String 7]
+[String 12]
+[String 17]
+[String 6]
+[int 24]
+[int 24]
+null
+[String 11]
+[String 16]
+[String 18]
+true
+[String 4]
+null
+[String 10]
+[String 13]
+[String 8]
+true
+[String 3]
+[int 320]
+[int 180]
+null
+[String 9]
+[String 5]
+[String 14]
+Function<global>(1 params, 17 registers, 0 symbols):
+Offset in debug table: source 0x0000, lexical 0x0000
+    DeclareGlobalVar  "__modules"
+    DeclareGlobalVar  "__d"
+    DeclareGlobalVar  "__r"
+    CreateEnvironment r1
+    CreateClosure     r2, r1, Function<__d>
+    GetGlobalObject   r0
+    PutById           r0, r2, 1, "__d"
+    CreateClosure     r2, r1, Function<__r>
+    PutById           r0, r2, 2, "__r"
+    NewObject         r2
+    PutById           r0, r2, 3, "__modules"
+    GetByIdShort      r6, r0, 1, "__d"
+    LoadConstUndefined r2
+    CreateClosure     r5, r1, Function<>
+    LoadConstZero     r4
+    NewArray          r3, 0
+    Call4             r3, r6, r2, r5, r4, r3
+    GetByIdShort      r6, r0, 1, "__d"
+    CreateClosure     r5, r1, Function<>
+    LoadConstUInt8    r4, 1
+    NewArrayWithBuffer r3, 1, 1, 1
+    Call4             r3, r6, r2, r5, r4, r3
+    GetByIdShort      r6, r0, 1, "__d"
+    CreateClosure     r5, r1, Function<>
+    LoadConstUInt8    r4, 2
+    NewArrayWithBuffer r3, 1, 1, 1
+    Call4             r3, r6, r2, r5, r4, r3
+    GetByIdShort      r6, r0, 1, "__d"
+    CreateClosure     r5, r1, Function<>
+    LoadConstUInt8    r4, 3
+    NewArrayWithBuffer r3, 1, 1, 1
+    Call4             r3, r6, r2, r5, r4, r3
+    GetByIdShort      r6, r0, 1, "__d"
+    CreateClosure     r5, r1, Function<>
+    LoadConstUInt8    r4, 4
+    NewArrayWithBuffer r3, 1, 1, 1
+    Call4             r3, r6, r2, r5, r4, r3
+    GetByIdShort      r5, r0, 1, "__d"
+    CreateClosure     r4, r1, Function<>
+    LoadConstUInt8    r1, 5
+    NewArrayWithBuffer r3, 5, 5, 6
+    Call4             r3, r5, r2, r4, r1, r3
+    GetByIdShort      r0, r0, 2, "__r"
+    Call2             r0, r0, r2, r1
+    Ret               r0
+
+Function<__d>(4 params, 4 registers, 0 symbols):
+Offset in debug table: source 0x0037, lexical 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r3, r0, 1, "__modules"
+    NewObject         r2
+    LoadParam         r0, 1
+    PutNewOwnByIdShort r2, r0, "factory"
+    LoadParam         r0, 3
+    PutNewOwnByIdShort r2, r0, "dependencies"
+    LoadConstUndefined r0
+    PutNewOwnByIdShort r2, r0, "exports"
+    LoadConstFalse    r1
+    PutNewOwnByIdShort r2, r1, "done"
+    LoadParam         r1, 2
+    PutByVal          r3, r1, r2
+    Ret               r0
+
+Function<__r>(2 params, 22 registers, 0 symbols):
+Offset in debug table: source 0x004d, lexical 0x0000
+    GetGlobalObject   r2
+    GetByIdShort      r1, r2, 1, "__modules"
+    LoadParam         r0, 1
+    GetByVal          r0, r1, r0
+    GetByIdShort      r1, r0, 2, "done"
+    JmpTrue           L1, r1
+    LoadConstTrue     r1
+    PutById           r0, r1, 1, "done"
+    NewObject         r1
+    NewObject         r3
+    PutNewOwnByIdShort r1, r3, "exports"
+    GetByIdShort      r7, r0, 3, "factory"
+    TryGetById        r14, r2, 4, "globalThis"
+    GetByIdShort      r13, r2, 5, "__r"
+    GetByIdShort      r9, r1, 6, "exports"
+    GetByIdShort      r8, r0, 7, "dependencies"
+    Mov               r15, r0
+    LoadConstNull     r12
+    LoadConstNull     r11
+    Mov               r10, r1
+    Call              r2, r7, 8
+    GetByIdShort      r1, r1, 6, "exports"
+    PutById           r0, r1, 2, "exports"
+L1:
+    GetByIdShort      r0, r0, 6, "exports"
+    Ret               r0
+
+Function<>(8 params, 4 registers, 1 symbols):
+Offset in debug table: source 0x007b, lexical 0x0000
+    CreateEnvironment r2
+    NewArray          r0, 0
+    StoreToEnvironment r2, 0, r0
+    NewObject         r1
+    CreateClosure     r3, r2, Function<registerAsset>
+    PutNewOwnByIdShort r1, r3, "registerAsset"
+    CreateClosure     r2, r2, Function<getAssetByID>
+    PutNewOwnByIdShort r1, r2, "getAssetByID"
+    PutNewOwnByIdShort r1, r0, "all"
+    LoadParam         r0, 5
+    PutById           r0, r1, 1, "exports"
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<registerAsset>(2 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x008b, lexical 0x0000
+    GetEnvironment    r0, 0
+    LoadFromEnvironment r2, r0, 0
+    GetByIdShort      r1, r2, 1, "push"
+    LoadParam         r0, 1
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Function<getAssetByID>(2 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x0095, lexical 0x0000
+    GetEnvironment    r0, 0
+    LoadFromEnvironment r1, r0, 0
+    LoadParam         r2, 1
+    LoadConstUInt8    r0, 1
+    Sub               r0, r2, r0
+    GetByVal          r0, r1, r0
+    Ret               r0
+
+Function<>(8 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x009f, lexical 0x0000
+    LoadParam         r1, 7
+    LoadConstZero     r0
+    GetByVal          r2, r1, r0
+    LoadParam         r1, 2
+    LoadConstUndefined r0
+    Call2             r3, r1, r0, r2
+    GetByIdShort      r2, r3, 1, "registerAsset"
+    NewObjectWithBuffer r1, 8, 8, 0, 16
+    NewArrayWithBuffer r4, 3, 3, 27
+    PutById           r1, r4, 1, "scales"
+    Call2             r2, r2, r3, r1
+    LoadParam         r1, 5
+    PutById           r1, r2, 2, "exports"
+    Ret               r0
+
+Function<>(8 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x00b5, lexical 0x0000
+    LoadParam         r1, 7
+    LoadConstZero     r0
+    GetByVal          r2, r1, r0
+    LoadParam         r1, 2
+    LoadConstUndefined r0
+    Call2             r3, r1, r0, r2
+    GetByIdShort      r2, r3, 1, "registerAsset"
+    NewObjectWithBuffer r1, 8, 8, 0, 0
+    NewArrayWithBuffer r4, 5, 5, 40
+    PutById           r1, r4, 1, "scales"
+    Call2             r2, r2, r3, r1
+    LoadParam         r1, 5
+    PutById           r1, r2, 2, "exports"
+    Ret               r0
+
+Function<>(8 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x00cb, lexical 0x0000
+    LoadParam         r1, 7
+    LoadConstZero     r0
+    GetByVal          r2, r1, r0
+    LoadParam         r1, 2
+    LoadConstUndefined r0
+    Call2             r3, r1, r0, r2
+    GetByIdShort      r2, r3, 1, "registerAsset"
+    NewObjectWithBuffer r1, 6, 6, 9, 33
+    NewArrayWithBuffer r4, 1, 1, 40
+    PutById           r1, r4, 1, "scales"
+    Call2             r2, r2, r3, r1
+    LoadParam         r1, 5
+    PutById           r1, r2, 2, "exports"
+    Ret               r0
+
+Function<>(8 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x00e1, lexical 0x0000
+    LoadParam         r1, 7
+    LoadConstZero     r0
+    GetByVal          r2, r1, r0
+    LoadParam         r1, 2
+    LoadConstUndefined r0
+    Call2             r3, r1, r0, r2
+    GetByIdShort      r2, r3, 1, "registerAsset"
+    NewObjectWithBuffer r1, 8, 8, 0, 41
+    NewArrayWithBuffer r4, 2, 2, 67
+    PutById           r1, r4, 1, "scales"
+    Call2             r2, r2, r3, r1
+    LoadParam         r1, 5
+    PutById           r1, r2, 2, "exports"
+    Ret               r0
+
+Function<>(8 params, 17 registers, 0 symbols):
+Offset in debug table: source 0x00f8, lexical 0x0000
+    LoadParam         r3, 2
+    LoadParam         r6, 7
+    LoadConstZero     r0
+    GetByVal          r1, r6, r0
+    LoadConstUndefined r0
+    Call2             r4, r3, r0, r1
+    LoadConstUInt8    r5, 1
+    GetByVal          r1, r6, r5
+    Call2             r2, r3, r0, r1
+    NewArray          r1, 4
+    PutOwnByIndex     r1, r2, 0
+    LoadConstUInt8    r2, 2
+    GetByVal          r2, r6, r2
+    Call2             r2, r3, r0, r2
+    PutOwnByIndex     r1, r2, 1
+    LoadConstUInt8    r2, 3
+    GetByVal          r2, r6, r2
+    Call2             r2, r3, r0, r2
+    PutOwnByIndex     r1, r2, 2
+    LoadConstUInt8    r2, 4
+    GetByVal          r2, r6, r2
+    Call2             r2, r3, r0, r2
+    PutOwnByIndex     r1, r2, 3
+    GetGlobalObject   r2
+    TryGetById        r6, r2, 1, "print"
+    GetByIdShort      r7, r1, 2, "join"
+    LoadConstString   r3, ","
+    Call2             r3, r7, r1, r3
+    Call2             r3, r6, r0, r3
+    TryGetById        r6, r2, 1, "print"
+    TryGetById        r8, r2, 3, "JSON"
+    GetByIdShort      r7, r8, 4, "stringify"
+    GetByIdShort      r3, r4, 5, "all"
+    Call2             r3, r7, r8, r3
+    Call2             r3, r6, r0, r3
+    TryGetById        r2, r2, 1, "print"
+    GetByIdShort      r3, r4, 6, "getAssetByID"
+    GetByVal          r1, r1, r5
+    Call2             r1, r3, r4, r1
+    GetByIdShort      r1, r1, 7, "name"
+    Call2             r1, r2, r0, r1
+    Ret               r0

@@ -1,0 +1,12 @@
+{"value":"a:1","done":false}
+{"value":"a:2","done":false}
+{"value":10,"done":false}
+{"value":20,"done":false}
+{"value":"c:1","done":false}
+{"value":"c:recovered","done":false}
+{"value":"outer:c:after-catch","done":true}
+a got x|a got y|a finally|outer a=a:done|outer b=undefined|c caught boom|c finally
+{"value":"stop","done":true} {"done":true} a finally
+nothrow true nt closed
+true 42 {"value":"end:b","done":true} custom next undefined|custom next b
+{"value":"lazy1","done":false} {"value":"not yet","done":false} {"value":"lazy2","done":false} {"value":"r2","done":true} lazy return r1|lazy return r2

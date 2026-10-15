@@ -1,0 +1,462 @@
+Bytecode File Information:
+  Bytecode version number: 99
+  Source hash: 6016b2ddb7d15b2e3e0fa205f31426cdc5af9763
+  Function count: 19
+  String count: 37
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  StringSwitchImm count: 0
+  Key buffer size (bytes): 7
+  Value buffer size (bytes): 36
+  Shape table count: 1
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]:  
+s2[ASCII, 1..1]: +
+s3[ASCII, 2..2]: ,
+s4[ASCII, 3..3]: /
+s5[ASCII, 4..4]: :
+s6[ASCII, 10..15]: global
+s7[ASCII, 14..14]: a
+s8[ASCII, 21..26]: object
+s9[ASCII, 31..39]: undefined
+i10[ASCII, 5..10] #C93542E8: String
+i11[ASCII, 15..20] #15A9FF56: length
+i12[ASCII, 25..25] #00018A52: c
+i13[ASCII, 26..30] #086BF7E9: twice
+i14[ASCII, 39..46] #56F0BE62: defaults
+i15[ASCII, 47..50] #1C182460: Math
+i16[ASCII, 51..56] #3857F922: adders
+i17[ASCII, 57..59] #5A39B07E: map
+i18[ASCII, 58..62] #E3B75234: apply
+i19[ASCII, 63..67] #CD4E2584: arrow
+i20[ASCII, 68..79] #ECBC9F05: fromCharCode
+i21[ASCII, 78..80] #11C004A0: dec
+i22[ASCII, 80..86] #F0B3FE10: compose
+i23[ASCII, 87..90] #349ACB60: fact
+i24[ASCII, 91..93] #CC29D6D5: get
+i25[ASCII, 94..97] #874F77A9: join
+i26[ASCII, 96..98] #5BDE6D11: inc
+i27[ASCII, 99..104] #C235D459: isEven
+i28[ASCII, 104..107] #7C8DF86A: nums
+i29[ASCII, 108..112] #2CE0B00C: isOdd
+i30[ASCII, 113..123] #D5D571C5: makeCounter
+i31[ASCII, 124..126] #5A3857F6: max
+i32[ASCII, 127..129] #5DA35ACD: min
+i33[ASCII, 130..134] #7403DEAA: outer
+i34[ASCII, 135..139] #A689F65B: print
+i35[ASCII, 140..143] #3F21B886: push
+i36[ASCII, 144..151] #96FDC3A6: variadic
+
+Literal Value Buffer:
+[int 3]
+[int 9]
+[int 4]
+[int 5]
+[int 1]
+[int 4]
+[int 72]
+[int 105]
+null
+null
+null
+
+Object Key Buffer:
+[String 26]
+[String 21]
+[String 24]
+
+Object Shape Table:
+0[0, 3]
+
+Function<global>(1 params, 30 registers, 6 numbers, 2 non-pointers):
+Offset in debug table: source 0x0000
+    DeclareGlobalVar  "makeCounter"
+    DeclareGlobalVar  "adders"
+    DeclareGlobalVar  "fact"
+    DeclareGlobalVar  "isEven"
+    DeclareGlobalVar  "isOdd"
+    DeclareGlobalVar  "variadic"
+    DeclareGlobalVar  "defaults"
+    DeclareGlobalVar  "outer"
+    DeclareGlobalVar  "arrow"
+    DeclareGlobalVar  "compose"
+    DeclareGlobalVar  "twice"
+    DeclareGlobalVar  "c"
+    DeclareGlobalVar  "nums"
+    GetGlobalObject   r8
+    LoadConstUndefined r6
+    CreateClosure     r9, r6, Function<makeCounter>
+    PutByIdLoose      r8, r9, 0, "makeCounter"
+    CreateClosure     r9, r6, Function<adders>
+    PutByIdLoose      r8, r9, 1, "adders"
+    CreateClosure     r9, r6, Function<fact>
+    PutByIdLoose      r8, r9, 2, "fact"
+    CreateClosure     r9, r6, Function<isEven>
+    PutByIdLoose      r8, r9, 3, "isEven"
+    CreateClosure     r9, r6, Function<isOdd>
+    PutByIdLoose      r8, r9, 4, "isOdd"
+    CreateClosure     r9, r6, Function<variadic>
+    PutByIdLoose      r8, r9, 5, "variadic"
+    CreateClosure     r9, r6, Function<defaults>
+    PutByIdLoose      r8, r9, 6, "defaults"
+    CreateClosure     r9, r6, Function<outer>
+    PutByIdLoose      r8, r9, 7, "outer"
+    CreateClosure     r9, r6, NCFunction<arrow>
+    PutByIdLoose      r8, r9, 8, "arrow"
+    CreateClosure     r9, r6, Function<compose>
+    PutByIdLoose      r8, r9, 9, "compose"
+    GetByIdShort      r11, r8, 0, "compose"
+    CreateClosure     r10, r6, Function<>
+    CreateClosure     r9, r6, Function<>
+    Call3             r9, r11, r6, r9, r10
+    PutByIdLoose      r8, r9, 10, "twice"
+    GetByIdShort      r9, r8, 1, "makeCounter"
+    LoadConstUInt8    r3, 5
+    Call2             r9, r9, r6, r3
+    PutByIdLoose      r8, r9, 11, "c"
+    TryGetById        r14, r8, 2, "print"
+    GetByIdShort      r10, r8, 3, "c"
+    GetByIdShort      r9, r10, 4, "inc"
+    Call1             r21, r9, r10
+    GetByIdShort      r10, r8, 3, "c"
+    GetByIdShort      r9, r10, 4, "inc"
+    Call1             r20, r9, r10
+    GetByIdShort      r10, r8, 3, "c"
+    GetByIdShort      r9, r10, 5, "dec"
+    Call1             r19, r9, r10
+    GetByIdShort      r10, r8, 3, "c"
+    GetByIdShort      r9, r10, 5, "dec"
+    Call1             r18, r9, r10
+    GetByIdShort      r15, r8, 3, "c"
+    GetByIdShort      r9, r15, 6, "get"
+    Call1             r17, r9, r15
+    LoadConstUndefined r22
+    Call              r9, r14, 6
+    TryGetById        r10, r8, 2, "print"
+    GetByIdShort      r9, r8, 7, "adders"
+    Call1             r9, r9, r6
+    Call2             r9, r10, r6, r9
+    TryGetById        r12, r8, 2, "print"
+    GetByIdShort      r9, r8, 8, "fact"
+    LoadConstUInt8    r0, 10
+    Call2             r11, r9, r6, r0
+    GetByIdShort      r9, r8, 9, "isEven"
+    Call2             r10, r9, r6, r0
+    GetByIdShort      r9, r8, 10, "isOdd"
+    LoadConstUInt8    r5, 7
+    Call2             r9, r9, r6, r5
+    Call4             r9, r12, r6, r11, r10, r9
+    TryGetById        r11, r8, 2, "print"
+    GetByIdShort      r13, r8, 11, "variadic"
+    LoadConstNull     r7
+    LoadConstString   r20, "a"
+    LoadConstUInt8    r1, 1
+    NewArray          r17, 0
+    NewObject         r18
+    LoadConstUndefined r22
+    Mov               r21, r1
+    LoadConstNull     r19
+    LoadConstUndefined r16
+    Call              r10, r13, 7
+    GetByIdShort      r9, r8, 11, "variadic"
+    Call1             r9, r9, r6
+    Call3             r9, r11, r6, r10, r9
+    TryGetById        r12, r8, 2, "print"
+    GetByIdShort      r9, r8, 12, "defaults"
+    Call2             r11, r9, r6, r1
+    GetByIdShort      r9, r8, 12, "defaults"
+    Call3             r10, r9, r6, r1, r3
+    GetByIdShort      r9, r8, 12, "defaults"
+    LoadConstUInt8    r0, 4
+    LoadConstUInt8    r2, 3
+    LoadConstUInt8    r20, 2
+    LoadConstUndefined r22
+    Mov               r21, r1
+    Mov               r19, r2
+    Mov               r18, r0
+    Mov               r17, r3
+    Call              r9, r9, 6
+    Call4             r9, r12, r6, r11, r10, r9
+    TryGetById        r10, r8, 2, "print"
+    GetByIdShort      r9, r8, 13, "outer"
+    Call1             r9, r9, r6
+    Call2             r9, r10, r6, r9
+    TryGetById        r12, r8, 2, "print"
+    GetByIdShort      r9, r8, 14, "arrow"
+    Call3             r11, r9, r6, r2, r0
+    GetByIdShort      r9, r8, 15, "twice"
+    Call2             r10, r9, r6, r0
+    TryGetById        r9, r8, 16, "Math"
+    GetByIdShort      r14, r9, 17, "max"
+    GetByIdShort      r13, r14, 18, "apply"
+    NewArrayWithBuffer r9, 3, 3, 0
+    Call3             r9, r13, r14, r7, r9
+    Call4             r9, r12, r6, r11, r10, r9
+    NewArrayWithBuffer r9, 3, 3, 13
+    PutByIdLoose      r8, r9, 12, "nums"
+    TryGetById        r12, r8, 2, "print"
+    TryGetById        r11, r8, 16, "Math"
+    GetByIdShort      r10, r11, 19, "min"
+    GetByIdShort      r20, r8, 20, "nums"
+    NewArray          r9, 0
+    Mov               r21, r9
+    LoadConstZero     r19
+    CallBuiltin       r2, "HermesBuiltin.arraySpread", 4
+    Mov               r21, r10
+    Mov               r20, r9
+    Mov               r19, r11
+    CallBuiltin       r11, "HermesBuiltin.apply", 4
+    GetByIdShort      r20, r8, 20, "nums"
+    NewArray          r9, 1
+    Mov               r21, r9
+    LoadConstZero     r19
+    CallBuiltin       r2, "HermesBuiltin.arraySpread", 4
+    DefineOwnByVal    r9, r5, r2, 1
+    GetByIdShort      r10, r9, 21, "length"
+    TryGetById        r14, r8, 22, "String"
+    GetByIdShort      r13, r14, 23, "fromCharCode"
+    NewArray          r9, 0
+    NewArrayWithBuffer r20, 2, 2, 26
+    Mov               r21, r9
+    CallBuiltin       r0, "HermesBuiltin.arraySpread", 4
+    Mov               r21, r13
+    Mov               r20, r9
+    Mov               r19, r14
+    CallBuiltin       r9, "HermesBuiltin.apply", 4
+    Call4             r9, r12, r6, r11, r10, r9
+    TryGetById        r10, r8, 2, "print"
+    LoadConstString   r9, "undefined"
+    LoadConstString   r8, "object"
+    Call3             r8, r10, r6, r8, r9
+    Ret               r8
+
+Function<makeCounter>(2 params, 3 registers, 0 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 1
+    LoadParam         r0, 1
+    StoreToEnvironment r1, 0, r0
+    NewObjectWithBuffer r0, 0, 35
+    CreateClosure     r2, r1, Function<inc>
+    PutOwnBySlotIdx   r0, r2, 0
+    CreateClosure     r2, r1, Function<dec>
+    PutOwnBySlotIdx   r0, r2, 1
+    CreateClosure     r1, r1, Function<get>
+    PutOwnBySlotIdx   r0, r1, 2
+    Ret               r0
+
+Function<adders>(1 params, 17 registers, 4 numbers, 1 non-pointers):
+Offset in debug table: source 0x013e
+    NewArray          r7, 0
+    LoadConstUInt8    r1, 1
+    LoadConstUInt8    r2, 4
+    LoadConstZero     r0
+L1:
+    GetByIdShort      r6, r7, 0, "push"
+    CreateFunctionEnvironment r5, 1
+    StoreNPToEnvironment r5, 0, r0
+    CreateClosure     r5, r5, Function<>
+    Call2             r5, r6, r7, r5
+    AddN              r0, r0, r1
+    JLessN            L1, r0, r2
+    GetByIdShort      r6, r7, 1, "map"
+    LoadConstUndefined r4
+    CreateClosure     r5, r4, Function<>
+    Call2             r7, r6, r7, r5
+    GetByIdShort      r6, r7, 2, "join"
+    LoadConstString   r5, ","
+    Call2             r5, r6, r7, r5
+    Ret               r5
+
+Function<fact>(2 params, 14 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0155
+    LoadParam         r4, 1
+    LoadConstUInt8    r0, 1
+    LessEq            r1, r4, r0
+    Mov               r2, r0
+    JmpTrue           L1, r1
+    GetGlobalObject   r3
+    GetByIdShort      r3, r3, 0, "fact"
+    Sub               r0, r4, r0
+    LoadConstUndefined r1
+    Call2             r3, r3, r1, r0
+    Mul               r2, r4, r3
+L1:
+    Ret               r2
+
+Function<isEven>(2 params, 14 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0169
+    LoadParam         r4, 1
+    LoadConstZero     r0
+    LoadConstTrue     r2
+    JStrictEqual      L1, r4, r0
+    GetGlobalObject   r3
+    GetByIdShort      r3, r3, 0, "isOdd"
+    LoadConstUInt8    r0, 1
+    Sub               r0, r4, r0
+    LoadConstUndefined r1
+    Call2             r2, r3, r1, r0
+L1:
+    Ret               r2
+
+Function<isOdd>(2 params, 14 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0177
+    LoadParam         r4, 1
+    LoadConstZero     r0
+    LoadConstFalse    r2
+    JStrictEqual      L1, r4, r0
+    GetGlobalObject   r3
+    GetByIdShort      r3, r3, 0, "isEven"
+    LoadConstUInt8    r0, 1
+    Sub               r0, r4, r0
+    LoadConstUndefined r1
+    Call2             r2, r3, r1, r0
+L1:
+    Ret               r2
+
+Function<variadic>(1 params, 17 registers, 3 numbers, 1 non-pointers):
+Offset in debug table: source 0x0185
+    LoadConstUndefined r4
+    NewArray          r7, 0
+    Mov               r5, r4
+    GetArgumentsLength r5, r5
+    LoadConstZero     r0
+    Less              r3, r0, r5
+    LoadConstUInt8    r1, 1
+    JmpFalse          L1, r3
+L2:
+    GetByIdShort      r6, r7, 0, "push"
+    GetArgumentsPropByValLoose r5, r0, r4
+    TypeOf            r5, r5
+    Call2             r5, r6, r7, r5
+    AddN              r0, r0, r1
+    Mov               r5, r4
+    GetArgumentsLength r5, r5
+    JLess             L2, r0, r5
+L1:
+    GetArgumentsLength r5, r4
+    LoadConstString   r4, ":"
+    Add               r5, r5, r4
+    GetByIdShort      r6, r7, 1, "join"
+    LoadConstString   r4, "/"
+    Call2             r4, r6, r7, r4
+    Add               r4, r5, r4
+    Ret               r4
+
+Function<defaults>(2 params, 15 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x01ae
+    LoadParam         r3, 1
+    LoadParam         r2, 2
+    LoadConstUndefined r1
+    JStrictNotEqual   L1, r2, r1
+    LoadConstUInt8    r0, 2
+    Mul               r2, r3, r0
+L1:
+    LoadConstUInt8    r6, 2
+    CallBuiltin       r5, "HermesBuiltin.copyRestArgs", 2
+    NewArray          r4, 4
+    DefineOwnInDenseArray r4, r3, 0
+    DefineOwnInDenseArray r4, r2, 1
+    GetByIdShort      r2, r5, 0, "length"
+    DefineOwnInDenseArray r4, r2, 2
+    GetByIdShort      r3, r5, 1, "join"
+    LoadConstString   r2, "+"
+    Call2             r2, r3, r5, r2
+    DefineOwnInDenseArray r4, r2, 3
+    GetByIdShort      r3, r4, 1, "join"
+    LoadConstString   r2, " "
+    Call2             r2, r3, r4, r2
+    Ret               r2
+
+Function<outer>(1 params, 1 registers, 1 numbers, 0 non-pointers):
+    LoadConstUInt8    r0, 117
+    Ret               r0
+
+NCFunction<arrow>(3 params, 3 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x01c8
+    LoadParam         r2, 2
+    LoadParam         r1, 1
+    Mul               r1, r1, r2
+    LoadConstUInt8    r0, 1
+    Add               r0, r1, r0
+    Ret               r0
+
+Function<compose>(3 params, 2 registers, 0 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r0, 2
+    LoadParam         r1, 1
+    StoreToEnvironment r0, 0, r1
+    LoadParam         r1, 2
+    StoreToEnvironment r0, 1, r1
+    CreateClosure     r0, r0, Function<>
+    Ret               r0
+
+Function<>(2 params, 2 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x01d3
+    LoadConstUInt8    r0, 2
+    LoadParam         r1, 1
+    Mul               r0, r1, r0
+    Ret               r0
+
+Function<>(2 params, 2 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x01db
+    LoadConstUInt8    r0, 3
+    LoadParam         r1, 1
+    Add               r1, r1, r0
+    Ret               r1
+
+Function<inc>(1 params, 2 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x01e3
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 0
+    Inc               r0, r0
+    StoreToEnvironment r1, 0, r0
+    Ret               r0
+
+Function<dec>(1 params, 3 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x01eb
+    GetParentEnvironment r2, 0
+    LoadFromEnvironment r0, r2, 0
+    ToNumeric         r0, r0
+    Dec               r1, r0
+    StoreToEnvironment r2, 0, r1
+    Ret               r0
+
+Function<get>(1 params, 1 registers, 0 numbers, 0 non-pointers):
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r0, r0, 0
+    Ret               r0
+
+Function<>(2 params, 12 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x01f3
+    LoadConstUInt8    r0, 10
+    LoadConstUndefined r1
+    LoadParam         r2, 1
+    Call2             r2, r2, r1, r0
+    Ret               r2
+
+Function<>(2 params, 13 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x01fb
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r2, r1, 0
+    LoadFromEnvironment r3, r1, 1
+    LoadConstUndefined r0
+    LoadParam         r1, 1
+    Call2             r1, r3, r0, r1
+    Call2             r1, r2, r0, r1
+    Ret               r1
+
+Function<>(2 params, 2 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x0206
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 0
+    LoadParam         r1, 1
+    Add               r1, r1, r0
+    Ret               r1

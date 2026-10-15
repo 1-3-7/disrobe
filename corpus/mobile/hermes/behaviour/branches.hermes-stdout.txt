@@ -1,0 +1,18 @@
+true 5 null
+1 2 3 0 x
+few few other
+a b none b a
+2 3 -1 -1
+1 0 1 0 abctabfatabcf
+small big huge bad bad
+2
+null
+null
+one+two two three four+other other
+fail0,f0,ok1,f1,fail2,f2,ok3,f3,ok4,f4
+ok0,f0,ok1,f1,fail2,f2
+12 6 16 0 0
+b undefined
+0 8 100 103
++-+?-+ - ++++++++++
+missing missing loose scalar loose scalar loose empty object empty

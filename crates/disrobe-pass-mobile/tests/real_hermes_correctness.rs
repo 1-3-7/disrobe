@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use boa_engine::{Context, Source};
 use disrobe_pass_mobile::{
-    DecompileReport, DecompiledFunction, HERMES_LIFTED_VERSIONS, HermesModule,
-    decompile_hermes_module, parse_hermes_module,
+    DecompileReport, DecompiledFunction, HERMES_LIFTED_VERSIONS, HERMES_MODERN_VERSIONS,
+    HermesModule, decompile_hermes_module, parse_hermes_module,
 };
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -29,7 +29,11 @@ fn sample(file: &str) -> PathBuf {
 }
 
 fn report_at(version: u32) -> DecompileReport {
-    let path: PathBuf = sample(&format!("sample.hbc.v{version}"));
+    let path: PathBuf = if HERMES_MODERN_VERSIONS.contains(&version) {
+        sample(&format!("../modern/sample.hbc.v{version}"))
+    } else {
+        sample(&format!("sample.hbc.v{version}"))
+    };
     let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
         panic!(
             "the graded bytecode is committed to this repository, so a run that cannot read {} \
@@ -406,11 +410,17 @@ fn hbc_v96_sample_decompile_is_behaviorally_correct_against_real_js_engine() {
 }
 
 fn has_bare_register_token(src: &str) -> bool {
+    let declared: Vec<&str> = src
+        .lines()
+        .filter_map(|line: &str| line.trim_start().strip_prefix("var "))
+        .flat_map(|names: &str| names.trim_end_matches(';').split(", "))
+        .collect();
     src.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .any(|tok: &str| {
             tok.len() >= 2
                 && tok.starts_with('r')
                 && tok[1..].chars().all(|c: char| c.is_ascii_digit())
+                && !declared.contains(&tok)
         })
 }
 
@@ -499,9 +509,9 @@ fn neither_side_of_the_differential_reads_a_value_that_can_change_between_runs()
         );
     }
 }
-const PINNED_LIFTED_VERSIONS: usize = 8;
-const PINNED_VERSION_BEHAVIORALLY_CORRECT: usize = 64;
-const PINNED_VERSION_BEHAVIOR_POPULATION: usize = 64;
+const PINNED_LIFTED_VERSIONS: usize = 13;
+const PINNED_VERSION_BEHAVIORALLY_CORRECT: usize = 104;
+const PINNED_VERSION_BEHAVIOR_POPULATION: usize = 104;
 
 fn normalized_source(text: &str) -> String {
     let single_quoted: String = text.replace('"', "'");

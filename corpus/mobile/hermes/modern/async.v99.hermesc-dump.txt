@@ -1,0 +1,842 @@
+Bytecode File Information:
+  Bytecode version number: 99
+  Source hash: b6fd225f9fcec1d33c93200d5b6e537bfaf4227d
+  Function count: 20
+  String count: 28
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  StringSwitchImm count: 0
+  Key buffer size (bytes): 5
+  Value buffer size (bytes): 6
+  Shape table count: 1
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 5
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]: ,
+s2[ASCII, 1..1]: /
+s3[ASCII, 2..19]: ?anon_0_arrowAsync
+s4[ASCII, 10..14]: arrow
+s5[ASCII, 16..23]: sync end
+s6[ASCII, 27..39]: ?anon_0_chain
+s7[ASCII, 40..53]: ?anon_0_double
+s8[ASCII, 54..68]: ?anon_0_failing
+s9[ASCII, 68..73]: global
+s10[ASCII, 74..89]: ?anon_0_sequence
+s11[ASCII, 90..150]: Generator functions may not be called on executing generators
+s12[ASCII, 151..163]: async failure
+i13[ASCII, 10..19] #607E25A2: arrowAsync
+i14[ASCII, 23..26] #B553E7BD: done
+i15[ASCII, 35..39] #4EF27D74: chain
+i16[ASCII, 48..53] #7ABD63D8: double
+i17[ASCII, 62..68] #8F597A63: failing
+i18[ASCII, 82..89] #32F7B3E8: sequence
+i19[ASCII, 122..124] #587EA6B5: all
+i20[ASCII, 164..168] #9102A3D0: Error
+i21[ASCII, 169..175] #9D007186: Promise
+i22[ASCII, 176..179] #874F77A9: join
+i23[ASCII, 180..186] #63D87C1C: message
+i24[ASCII, 187..191] #A689F65B: print
+i25[ASCII, 191..194] #3F9C8812: then
+i26[ASCII, 195..198] #3F21B886: push
+i27[ASCII, 199..203] #DF50693D: value
+
+Literal Value Buffer:
+null
+true
+undefined
+true
+null
+false
+
+Object Key Buffer:
+[String 27]
+[String 14]
+
+Object Shape Table:
+0[0, 2]
+
+Function Source Table:
+  Function ID 15 -> s0
+  Function ID 16 -> s0
+  Function ID 17 -> s0
+  Function ID 18 -> s0
+  Function ID 19 -> s0
+
+Function<global>(1 params, 14 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0000
+    CreateFunctionEnvironment r2, 0
+    DeclareGlobalVar  "double"
+    DeclareGlobalVar  "chain"
+    DeclareGlobalVar  "failing"
+    DeclareGlobalVar  "sequence"
+    DeclareGlobalVar  "arrowAsync"
+    GetGlobalObject   r1
+    LoadConstUndefined r0
+    CreateClosure     r3, r0, NCFunction<double>
+    PutByIdLoose      r1, r3, 0, "double"
+    CreateClosure     r3, r2, NCFunction<chain>
+    PutByIdLoose      r1, r3, 1, "chain"
+    CreateClosure     r3, r0, NCFunction<failing>
+    PutByIdLoose      r1, r3, 2, "failing"
+    CreateClosure     r2, r2, NCFunction<sequence>
+    PutByIdLoose      r1, r2, 3, "sequence"
+    CreateClosure     r2, r0, NCFunction<arrowAsync>
+    PutByIdLoose      r1, r2, 4, "arrowAsync"
+    GetByIdShort      r2, r1, 0, "sequence"
+    Call1             r4, r2, r0
+    GetByIdShort      r3, r4, 1, "then"
+    CreateClosure     r2, r0, Function<>
+    Call2             r4, r3, r4, r2
+    GetByIdShort      r3, r4, 1, "then"
+    CreateClosure     r2, r0, Function<>
+    Call2             r4, r3, r4, r2
+    GetByIdShort      r3, r4, 1, "then"
+    CreateClosure     r2, r0, Function<>
+    Call2             r4, r3, r4, r2
+    GetByIdShort      r3, r4, 1, "then"
+    CreateClosure     r2, r0, Function<>
+    Call2             r2, r3, r4, r2
+    TryGetById        r2, r1, 2, "print"
+    LoadConstString   r1, "sync end"
+    Call2             r1, r2, r0, r1
+    Ret               r1
+
+NCFunction<double>(2 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0048
+    LoadConstUndefined r0
+    LoadConstUndefined r1
+    ReifyArgumentsLoose r1
+    Mov               r4, r1
+    GetBuiltinClosure r3, "HermesBuiltin.spawnAsync"
+    CreateClosure     r2, r0, NCFunction<?anon_0_double>
+    LoadThisNS        r1
+    Call4             r1, r3, r0, r2, r1, r4
+    Ret               r1
+
+NCFunction<chain>(2 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0050
+    LoadConstUndefined r0
+    LoadConstUndefined r1
+    ReifyArgumentsLoose r1
+    Mov               r4, r1
+    GetBuiltinClosure r3, "HermesBuiltin.spawnAsync"
+    GetParentEnvironment r1, 0
+    CreateClosure     r2, r1, NCFunction<?anon_0_chain>
+    LoadThisNS        r1
+    Call4             r1, r3, r0, r2, r1, r4
+    Ret               r1
+
+NCFunction<failing>(1 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0058
+    LoadConstUndefined r0
+    LoadConstUndefined r1
+    ReifyArgumentsLoose r1
+    Mov               r4, r1
+    GetBuiltinClosure r3, "HermesBuiltin.spawnAsync"
+    CreateClosure     r2, r0, NCFunction<?anon_0_failing>
+    LoadThisNS        r1
+    Call4             r1, r3, r0, r2, r1, r4
+    Ret               r1
+
+NCFunction<sequence>(1 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0060
+    LoadConstUndefined r0
+    LoadConstUndefined r1
+    ReifyArgumentsLoose r1
+    Mov               r4, r1
+    GetBuiltinClosure r3, "HermesBuiltin.spawnAsync"
+    GetParentEnvironment r1, 0
+    CreateClosure     r2, r1, NCFunction<?anon_0_sequence>
+    LoadThisNS        r1
+    Call4             r1, r3, r0, r2, r1, r4
+    Ret               r1
+
+NCFunction<arrowAsync>(2 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0068
+    LoadConstUndefined r0
+    LoadConstUndefined r1
+    ReifyArgumentsLoose r1
+    Mov               r4, r1
+    GetBuiltinClosure r3, "HermesBuiltin.spawnAsync"
+    CreateClosure     r2, r0, NCFunction<?anon_0_arrowAsync>
+    LoadThisNS        r1
+    Call4             r1, r3, r0, r2, r1, r4
+    Ret               r1
+
+Function<>(2 params, 16 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0070
+    GetGlobalObject   r2
+    TryGetById        r5, r2, 0, "print"
+    LoadConstString   r4, "sequence"
+    LoadConstUndefined r1
+    LoadParam         r3, 1
+    Call3             r3, r5, r1, r4, r3
+    GetByIdShort      r2, r2, 1, "chain"
+    LoadConstUInt8    r0, 5
+    Call2             r2, r2, r1, r0
+    Ret               r2
+
+Function<>(2 params, 16 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0081
+    GetGlobalObject   r2
+    TryGetById        r5, r2, 0, "print"
+    LoadConstString   r4, "chain"
+    LoadConstUndefined r1
+    LoadParam         r3, 1
+    Call3             r3, r5, r1, r4, r3
+    GetByIdShort      r2, r2, 1, "arrowAsync"
+    LoadConstUInt8    r0, 1
+    Call2             r2, r2, r1, r0
+    Ret               r2
+
+Function<>(2 params, 17 registers, 1 numbers, 1 non-pointers):
+Offset in debug table: source 0x0092
+    GetGlobalObject   r5
+    TryGetById        r4, r5, 0, "print"
+    LoadConstString   r3, "arrow"
+    LoadConstUndefined r1
+    LoadParam         r2, 1
+    Call3             r2, r4, r1, r3, r2
+    TryGetById        r4, r5, 1, "Promise"
+    GetByIdShort      r3, r4, 2, "all"
+    GetByIdShort      r2, r5, 3, "double"
+    LoadConstUInt8    r0, 1
+    Call2             r6, r2, r1, r0
+    NewArray          r2, 2
+    DefineOwnInDenseArray r2, r6, 0
+    GetByIdShort      r5, r5, 3, "double"
+    LoadConstUInt8    r0, 2
+    Call2             r5, r5, r1, r0
+    DefineOwnInDenseArray r2, r5, 1
+    Call2             r2, r3, r4, r2
+    Ret               r2
+
+Function<>(2 params, 15 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x00b2
+    LoadParam         r4, 1
+    GetGlobalObject   r1
+    TryGetById        r3, r1, 0, "print"
+    GetByIdShort      r2, r4, 1, "join"
+    LoadConstString   r1, "/"
+    Call2             r2, r2, r4, r1
+    LoadConstString   r1, "all"
+    LoadConstUndefined r0
+    Call3             r1, r3, r0, r1, r2
+    Ret               r0
+
+NCFunction<?anon_0_double>(2 params, 3 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 2
+    LoadParam         r2, 1
+    StoreToEnvironment r1, 0, r2
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 1, r0
+    CreateGenerator   r1, r1, Function<?anon_0_double>
+    Ret               r1
+
+NCFunction<?anon_0_chain>(2 params, 3 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 4
+    LoadParam         r2, 1
+    StoreToEnvironment r1, 0, r2
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 2, r0
+    StoreNPToEnvironment r1, 3, r0
+    CreateGenerator   r1, r1, Function<?anon_0_chain>
+    Ret               r1
+
+NCFunction<?anon_0_failing>(1 params, 2 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 2
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 1, r0
+    StoreNPToEnvironment r1, 0, r0
+    CreateGenerator   r1, r1, Function<?anon_0_failing>
+    Ret               r1
+
+NCFunction<?anon_0_sequence>(1 params, 2 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 7
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 5, r0
+    StoreNPToEnvironment r1, 6, r0
+    StoreNPToEnvironment r1, 3, r0
+    CreateGenerator   r1, r1, Function<?anon_0_sequence>
+    Ret               r1
+
+NCFunction<?anon_0_arrowAsync>(2 params, 3 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 3
+    LoadParam         r2, 1
+    StoreToEnvironment r1, 0, r2
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 2, r0
+    StoreNPToEnvironment r1, 1, r0
+    CreateGenerator   r1, r1, Function<?anon_0_arrowAsync>
+    Ret               r1
+
+Function<?anon_0_double>(2 params, 17 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x00c3
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 1
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r5, r2
+    LoadConstUInt8    r6, 3
+    JStrictEqual      L2, r5, r6
+L8:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 1, r4
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L3, r3, r5
+    JStrictEqual      L4, r3, r4
+    LoadFromEnvironment r5, r1, 0
+    Mul               r7, r5, r4
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+L9:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L4:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+L10:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L3:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+    Throw             r0
+L5:
+    Catch             r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+    Throw             r5
+L2:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L6, r3, r5
+    JStrictEqual      L7, r3, r4
+    NewObjectWithBuffer r3, 0, 2
+    Ret               r3
+L7:
+    NewObjectWithBuffer r3, 0, 0
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L6:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 1, r0
+    LoadConstString   r8, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L8, end = L9, target = L5
+1: start = L4, end = L10, target = L5
+2: start = L3, end = L5, target = L5
+
+Function<?anon_0_chain>(2 params, 19 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x00da
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 3
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r5, r2
+    LoadConstUInt8    r6, 3
+    JStrictEqualLong  L2, r5, r6
+L14:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 3, r4
+    LoadFromEnvironment r7, r1, 2
+    LoadConstZero     r5
+    JStrictEqualLong  L3, r5, r7
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L4, r5, r7
+    JStrictEqual      L5, r3, r5
+    JStrictEqual      L6, r3, r4
+    LoadFromEnvironment r7, r1, 1
+    StoreToEnvironment r7, 1, r0
+    LoadFromEnvironment r8, r7, 0
+    LoadFromEnvironment r7, r7, 1
+    Add               r8, r8, r7
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L15:
+    NewObjectWithBuffer r7, 0, 0
+    PutOwnBySlotIdx   r7, r8, 0
+    Ret               r7
+L6:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L16:
+    NewObjectWithBuffer r7, 0, 0
+    PutOwnBySlotIdx   r7, r0, 0
+    Ret               r7
+L5:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L4:
+    JStrictEqual      L7, r3, r5
+    JStrictEqual      L8, r3, r4
+    LoadFromEnvironment r7, r1, 1
+    StoreToEnvironment r7, 0, r0
+    GetGlobalObject   r8
+    GetByIdShort      r9, r8, 0, "double"
+    LoadFromEnvironment r8, r7, 0
+    LoadConstUndefined r7
+    Call2             r7, r9, r7, r8
+    StoreNPToEnvironment r1, 2, r4
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 3, r5
+L17:
+    NewObjectWithBuffer r5, 0, 4
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L8:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L18:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L7:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L3:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L9, r3, r5
+    JStrictEqual      L10, r3, r4
+    CreateTopLevelEnvironment r7, 2
+    StoreToEnvironment r1, 1, r7
+    LoadFromEnvironment r9, r1, 0
+    LoadConstUndefined r8
+    StoreNPToEnvironment r7, 0, r8
+    StoreNPToEnvironment r7, 1, r8
+    GetGlobalObject   r7
+    GetByIdShort      r7, r7, 0, "double"
+    Call2             r7, r7, r8, r9
+    StoreNPToEnvironment r1, 2, r5
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 3, r5
+L19:
+    NewObjectWithBuffer r5, 0, 4
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L10:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L20:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L9:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L11:
+    Catch             r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r5
+L2:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L12, r3, r5
+    JStrictEqual      L13, r3, r4
+    NewObjectWithBuffer r3, 0, 2
+    Ret               r3
+L13:
+    NewObjectWithBuffer r3, 0, 0
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L12:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 3, r0
+    LoadConstString   r10, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L14, end = L15, target = L11
+1: start = L6, end = L16, target = L11
+2: start = L5, end = L17, target = L11
+3: start = L8, end = L18, target = L11
+4: start = L7, end = L19, target = L11
+5: start = L10, end = L20, target = L11
+6: start = L9, end = L11, target = L11
+
+Function<?anon_0_failing>(1 params, 18 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x010f
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 0
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r5, r2
+    LoadConstUInt8    r6, 3
+    JStrictEqualLong  L2, r5, r6
+L11:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 0, r4
+    LoadFromEnvironment r7, r1, 1
+    LoadConstZero     r5
+    JStrictEqual      L3, r5, r7
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L4, r3, r5
+    JStrictEqual      L5, r3, r4
+    GetGlobalObject   r5
+    TryGetById        r8, r5, 0, "Error"
+    CreateThisForNew  r7, r8, 1
+    LoadConstString   r9, "async failure"
+    Mov               r10, r7
+    Construct         r5, r8, 2
+    SelectObject      r5, r7, r5
+    Throw             r5
+L5:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 0, r6
+L12:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L4:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 0, r6
+    Throw             r0
+L3:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L6, r3, r5
+    JStrictEqual      L7, r3, r4
+    StoreNPToEnvironment r1, 1, r5
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 0, r5
+L13:
+    NewObjectWithBuffer r5, 0, 4
+    Ret               r5
+L7:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 0, r6
+L14:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L6:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 0, r6
+    Throw             r0
+L8:
+    Catch             r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 0, r6
+    Throw             r5
+L2:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L9, r3, r5
+    JStrictEqual      L10, r3, r4
+    NewObjectWithBuffer r3, 0, 2
+    Ret               r3
+L10:
+    NewObjectWithBuffer r3, 0, 0
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L9:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 0, r0
+    LoadConstString   r9, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L11, end = L12, target = L8
+1: start = L4, end = L13, target = L8
+2: start = L7, end = L14, target = L8
+3: start = L6, end = L8, target = L8
+
+Function<?anon_0_sequence>(1 params, 24 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x0135
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 6
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r12, r2
+    LoadConstUInt8    r7, 3
+    LoadConstZero     r11
+    GetGlobalObject   r10
+    LoadConstUndefined r9
+    LoadConstUInt8    r5, 1
+    LoadConstString   r8, ","
+    JStrictEqualLong  L2, r12, r7
+L17:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 6, r4
+    LoadFromEnvironment r12, r1, 5
+    JStrictEqualLong  L3, r11, r12
+    JStrictEqualLong  L4, r5, r12
+    JStrictEqual      L5, r4, r12
+    JStrictEqual      L6, r3, r5
+    JStrictEqual      L7, r3, r4
+    StoreNPToEnvironment r1, 3, r11
+    Jmp               L8
+L7:
+    StoreNPToEnvironment r1, 3, r11
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+L20:
+    NewObjectWithBuffer r12, 0, 0
+    PutOwnBySlotIdx   r12, r0, 0
+    Ret               r12
+L6:
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+    Throw             r0
+L5:
+    LoadFromEnvironment r12, r1, 2
+    LoadFromEnvironment r13, r1, 4
+    Mov               r6, r13
+    StoreNPToEnvironment r1, 3, r11
+    StoreToEnvironment r12, 2, r13
+    LoadFromEnvironment r14, r12, 0
+    GetByIdShort      r13, r14, 0, "push"
+    LoadFromEnvironment r12, r12, 2
+    GetByIdShort      r12, r12, 1, "message"
+    Call2             r12, r13, r14, r12
+L8:
+    LoadFromEnvironment r12, r1, 2
+    LoadFromEnvironment r13, r12, 0
+    GetByIdShort      r12, r13, 2, "join"
+    Call2             r13, r12, r13, r8
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+L21:
+    NewObjectWithBuffer r12, 0, 0
+    PutOwnBySlotIdx   r12, r13, 0
+    Ret               r12
+L4:
+    JStrictEqual      L9, r3, r5
+    JStrictEqual      L10, r3, r4
+    LoadFromEnvironment r13, r1, 0
+    LoadFromEnvironment r12, r1, 1
+    Call2             r12, r13, r12, r0
+    LoadFromEnvironment r12, r1, 2
+    LoadFromEnvironment r13, r12, 1
+    AddN              r13, r13, r5
+    StoreNPToEnvironment r12, 1, r13
+    LoadFromEnvironment r13, r12, 1
+    JLessN            L11, r13, r7
+    Jmp               L12
+L10:
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+L22:
+    NewObjectWithBuffer r13, 0, 0
+    PutOwnBySlotIdx   r13, r0, 0
+    Ret               r13
+L9:
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+    Throw             r0
+L3:
+    JStrictEqualLong  L13, r3, r5
+    JStrictEqualLong  L14, r3, r4
+    CreateTopLevelEnvironment r14, 3
+    StoreToEnvironment r1, 2, r14
+    NewArray          r13, 0
+    StoreToEnvironment r14, 0, r13
+    StoreNPToEnvironment r14, 1, r11
+    LoadFromEnvironment r13, r14, 1
+    Mov               r12, r14
+    JLessN            L11, r13, r7
+L12:
+    StoreNPToEnvironment r1, 3, r5
+    GetByIdShort      r13, r10, 3, "failing"
+    Call1             r14, r13, r9
+    StoreNPToEnvironment r1, 5, r7
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 6, r5
+L23:
+    NewObjectWithBuffer r13, 0, 4
+    PutOwnBySlotIdx   r13, r14, 0
+    Ret               r13
+L11:
+    LoadFromEnvironment r13, r12, 0
+    StoreToEnvironment r1, 1, r13
+    GetByIdShort      r13, r13, 0, "push"
+    StoreToEnvironment r1, 0, r13
+    GetByIdShort      r13, r10, 4, "double"
+    LoadFromEnvironment r12, r12, 1
+    Call2             r13, r13, r9, r12
+    StoreNPToEnvironment r1, 5, r5
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 6, r5
+L24:
+    NewObjectWithBuffer r12, 0, 4
+    PutOwnBySlotIdx   r12, r13, 0
+    Ret               r12
+L14:
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+L25:
+    NewObjectWithBuffer r12, 0, 0
+    PutOwnBySlotIdx   r12, r0, 0
+    Ret               r12
+L13:
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+    Throw             r0
+L15:
+    Catch             r12
+    Mov               r6, r12
+    StoreToEnvironment r1, 4, r12
+    LoadFromEnvironment r12, r1, 3
+    JStrictEqual      L16, r11, r12
+    StoreNPToEnvironment r1, 5, r4
+    JmpLong           L17
+L16:
+    Mov               r2, r7
+    StoreNPToEnvironment r1, 6, r7
+    Throw             r6
+L2:
+    JStrictEqual      L18, r3, r5
+    JStrictEqual      L19, r3, r4
+    NewObjectWithBuffer r3, 0, 2
+    Ret               r3
+L19:
+    NewObjectWithBuffer r3, 0, 0
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L18:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 6, r0
+    LoadConstString   r15, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L17, end = L20, target = L15
+1: start = L6, end = L21, target = L15
+2: start = L4, end = L22, target = L15
+3: start = L9, end = L23, target = L15
+4: start = L11, end = L24, target = L15
+5: start = L14, end = L25, target = L15
+6: start = L13, end = L15, target = L15
+
+Function<?anon_0_arrowAsync>(2 params, 19 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x017c
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 1
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r5, r2
+    LoadConstUInt8    r6, 3
+    JStrictEqualLong  L2, r5, r6
+L11:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 1, r4
+    LoadFromEnvironment r7, r1, 2
+    LoadConstZero     r5
+    JStrictEqual      L3, r5, r7
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L4, r3, r5
+    JStrictEqual      L5, r3, r4
+    Add               r7, r0, r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+L12:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L5:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+L13:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L4:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+    Throw             r0
+L3:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L6, r3, r5
+    JStrictEqual      L7, r3, r4
+    LoadFromEnvironment r9, r1, 0
+    GetGlobalObject   r7
+    GetByIdShort      r8, r7, 0, "chain"
+    LoadConstUndefined r7
+    Call2             r7, r8, r7, r9
+    StoreNPToEnvironment r1, 2, r5
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 1, r5
+L14:
+    NewObjectWithBuffer r5, 0, 4
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L7:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+L15:
+    NewObjectWithBuffer r5, 0, 0
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L6:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+    Throw             r0
+L8:
+    Catch             r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 1, r6
+    Throw             r5
+L2:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L9, r3, r5
+    JStrictEqual      L10, r3, r4
+    NewObjectWithBuffer r3, 0, 2
+    Ret               r3
+L10:
+    NewObjectWithBuffer r3, 0, 0
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L9:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 1, r0
+    LoadConstString   r10, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L11, end = L12, target = L8
+1: start = L5, end = L13, target = L8
+2: start = L4, end = L14, target = L8
+3: start = L7, end = L15, target = L8
+4: start = L6, end = L8, target = L8

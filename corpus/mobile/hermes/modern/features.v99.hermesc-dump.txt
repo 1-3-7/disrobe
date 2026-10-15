@@ -1,0 +1,991 @@
+Bytecode File Information:
+  Bytecode version number: 99
+  Source hash: b5408f3fd51784bda698da6b508e7b9f4a68507d
+  Function count: 28
+  String count: 77
+  BigInt count: 1
+  String Kind Entry count: 2
+  RegExp count: 0
+  StringSwitchImm count: 0
+  Key buffer size (bytes): 23
+  Value buffer size (bytes): 39
+  Shape table count: 5
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 2
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..0]:  
+s2[ASCII, 1..1]: #
+s3[ASCII, 4..4]: ,
+s4[ASCII, 5..5]: :
+s5[ASCII, 6..40]: <static_elements_initializer:Shape>
+s6[ASCII, 35..39]: Shape
+s7[ASCII, 41..55]: ?anon_0_delayed
+s8[ASCII, 63..100]: Cannot initialize private field twice.
+s9[ASCII, 101..161]: Generator functions may not be called on executing generators
+s10[ASCII, 161..161]: s
+s11[ASCII, 179..181]: red
+s12[ASCII, 182..187]: Square
+s13[ASCII, 188..192]: array
+s14[ASCII, 193..221]: Trying to call a non-function
+s15[ASCII, 221..224]: null
+s16[ASCII, 230..241]: get computed
+s17[ASCII, 241..243]: dyn
+s18[ASCII, 244..247]: amic
+s19[ASCII, 253..256]: blue
+s20[ASCII, 257..264]: fallback
+s21[ASCII, 268..269]: fn
+s22[ASCII, 277..282]: get id
+s23[ASCII, 283..288]: global
+s24[ASCII, 295..297]: got
+s25[ASCII, 301..305]: green
+s26[ASCII, 311..311]: m
+s27[ASCII, 313..316]: pink
+s28[ASCII, 320..325]: object
+s29[ASCII, 326..326]: x
+s30[ASCII, 327..327]: |
+i31[ASCII, 1..3] #CFA07306: #id
+i32[ASCII, 18..18] #00019234: e
+i33[ASCII, 49..49] #00019625: d
+i34[ASCII, 49..55] #314DFFEF: delayed
+i35[ASCII, 55..58] #B553E7BD: done
+i36[ASCII, 57..62] #07E38639: nested
+i37[ASCII, 161..164] #392BA54B: side
+i38[ASCII, 163..170] #7AB7765B: describe
+i39[ASCII, 163..175] #9BD963CF: describeTypes
+i40[ASCII, 175..180] #E00A812D: square
+i41[ASCII, 185..185] #00018270: a
+i42[ASCII, 185..188] #5007F6A6: area
+i43[ASCII, 225..230] #AADFD9E8: config
+i44[ASCII, 234..241] #CD2B63AC: computed
+i45[ASCII, 241..247] #9D91E0C8: dynamic
+i46[ASCII, 247..247] #00018A52: c
+i47[ASCII, 247..252] #D200F2B2: circle
+i48[ASCII, 253..253] #00018E43: b
+i49[ASCII, 264..266] #D4703C24: key
+i50[ASCII, 264..267] #973712F5: keys
+i51[ASCII, 268..270] #92A0D15F: fns
+i52[ASCII, 271..277] #670F90EF: missing
+i53[ASCII, 281..282] #06952F11: id
+i54[ASCII, 288..294] #68CBD31D: literal
+i55[ASCII, 297..300] #3F9C8812: then
+i56[ASCII, 304..310] #6520BB89: entries
+i57[ASCII, 311..313] #5A39B07E: map
+i58[ASCII, 316..319] #B13B3CE5: kind
+i59[ASCII, 328..334] #536201E8: isArray
+i60[ASCII, 330..334] #B976BAAB: Array
+i61[ASCII, 335..340] #9615E9FA: Object
+i62[ASCII, 341..346] #FB8C3D32: Symbol
+i63[ASCII, 347..351] #075DD52E: count
+i64[ASCII, 347..353] #B9F959B1: counter
+i65[ASCII, 353..356] #2FD735CE: rest
+i66[ASCII, 357..362] #51040606: create
+i67[ASCII, 363..366] #3F21B886: push
+i68[ASCII, 366..374] #FEEE538E: hasSameId
+i69[ASCII, 375..378] #874F77A9: join
+i70[ASCII, 378..381] #E7ECD7B6: name
+i71[ASCII, 380..385] #5B8EEB7D: method
+i72[ASCII, 386..388] #DE8404AD: out
+i73[ASCII, 389..393] #1EF8AF0A: pairs
+i74[ASCII, 394..398] #A689F65B: print
+i75[ASCII, 399..407] #807C5F3D: prototype
+i76[ASCII, 408..412] #DF50693D: value
+
+Literal Value Buffer:
+[int 1]
+[int 2]
+null
+true
+[int 5]
+undefined
+[int 4]
+[int 5]
+[int 0]
+[int 0]
+undefined
+true
+null
+false
+
+Object Key Buffer:
+[String 41]
+[String 48]
+[String 36]
+[String 76]
+[String 41]
+[String 33]
+[String 32]
+[String 76]
+[String 35]
+
+Object Shape Table:
+0[0, 2]
+1[5, 1]
+2[8, 1]
+3[11, 3]
+4[18, 2]
+
+Global BigInt Table:
+ 0[0..0]: 10
+
+Function Source Table:
+  Function ID 23 -> s0
+  Function ID 27 -> s0
+
+Function<global>(1 params, 26 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x0000
+    CreateFunctionEnvironment r5, 5
+    DeclareGlobalVar  "out"
+    DeclareGlobalVar  "square"
+    DeclareGlobalVar  "circle"
+    DeclareGlobalVar  "kind"
+    DeclareGlobalVar  "fns"
+    DeclareGlobalVar  "pairs"
+    DeclareGlobalVar  "describeTypes"
+    DeclareGlobalVar  "config"
+    DeclareGlobalVar  "a"
+    DeclareGlobalVar  "c"
+    DeclareGlobalVar  "rest"
+    DeclareGlobalVar  "key"
+    DeclareGlobalVar  "literal"
+    DeclareGlobalVar  "counter"
+    DeclareGlobalVar  "delayed"
+    GetGlobalObject   r1
+    LoadConstUndefined r0
+    CreateClosure     r2, r0, Function<kind>
+    PutByIdLoose      r1, r2, 0, "kind"
+    CreateClosure     r2, r0, Function<describeTypes>
+    PutByIdLoose      r1, r2, 1, "describeTypes"
+    CreateClosure     r2, r5, NCFunction<counter>
+    PutByIdLoose      r1, r2, 2, "counter"
+    CreateClosure     r2, r5, NCFunction<delayed>
+    PutByIdLoose      r1, r2, 3, "delayed"
+    NewArray          r2, 0
+    PutByIdLoose      r1, r2, 4, "out"
+    StoreNPToEnvironment r5, 0, r0
+    CreatePrivateName r2, "#id"
+    StoreToEnvironment r5, 1, r2
+    CreateBaseClass   r3, r2, r5, 5
+    Mov               r6, r2
+    LoadConstString   r4, "id"
+    CreateClosure     r2, r5, NCFunction<get id>
+    DefineOwnGetterSetterByVal r6, r4, r2, r0, 0
+    LoadConstString   r8, "describe"
+    CreateClosure     r2, r5, NCFunction<describe>
+    DefineOwnByVal    r6, r2, r8, 0
+    LoadConstString   r4, "create"
+    CreateClosure     r2, r5, NCFunction<create>
+    DefineOwnByVal    r3, r2, r4, 0
+    LoadConstString   r4, "hasSameId"
+    CreateClosure     r2, r5, NCFunction<hasSameId>
+    DefineOwnByVal    r6, r2, r4, 0
+    StoreToEnvironment r5, 0, r3
+    StoreToEnvironment r5, 2, r3
+    LoadConstZero     r7
+    CreateClosure     r2, r5, Function<<static_elements_initializer:Shape>>
+    Call1             r2, r2, r7
+    CreateDerivedClass r4, r2, r5, r3, 11
+    LoadConstString   r9, "area"
+    CreateClosure     r6, r0, NCFunction<area>
+    DefineOwnByVal    r2, r6, r9, 0
+    CreateClosure     r6, r5, NCFunction<describe>
+    DefineOwnByVal    r2, r6, r8, 0
+    StoreToEnvironment r5, 4, r4
+    StoreToEnvironment r5, 3, r2
+    LoadConstUInt8    r17, 3
+    LoadConstUndefined r18
+    Construct         r2, r4, 2
+    PutByIdLoose      r1, r2, 5, "square"
+    GetByIdShort      r4, r3, 0, "create"
+    LoadConstString   r2, "circle"
+    Call2             r2, r4, r3, r2
+    PutByIdLoose      r1, r2, 6, "circle"
+    GetByIdShort      r9, r1, 1, "out"
+    GetByIdShort      r8, r9, 2, "push"
+    GetByIdShort      r4, r1, 3, "square"
+    GetByIdShort      r2, r4, 4, "describe"
+    Call1             r17, r2, r4
+    GetByIdShort      r4, r1, 5, "circle"
+    GetByIdShort      r2, r4, 4, "describe"
+    Call1             r16, r2, r4
+    GetByIdShort      r2, r1, 3, "square"
+    GetByIdShort      r15, r2, 6, "id"
+    GetByIdShort      r14, r3, 7, "count"
+    Mov               r18, r9
+    Call              r2, r8, 5
+    GetByIdShort      r6, r1, 1, "out"
+    GetByIdShort      r5, r6, 2, "push"
+    GetByIdShort      r2, r1, 3, "square"
+    InstanceOf        r4, r2, r3
+    GetByIdShort      r8, r1, 3, "square"
+    GetByIdShort      r3, r8, 8, "hasSameId"
+    GetByIdShort      r2, r1, 3, "square"
+    Call2             r3, r3, r8, r2
+    GetByIdShort      r9, r1, 3, "square"
+    GetByIdShort      r8, r9, 8, "hasSameId"
+    GetByIdShort      r2, r1, 5, "circle"
+    Call2             r2, r8, r9, r2
+    Call4             r2, r5, r6, r4, r3, r2
+    GetByIdShort      r8, r1, 1, "out"
+    GetByIdShort      r6, r8, 2, "push"
+    GetByIdShort      r3, r1, 9, "kind"
+    LoadConstString   r2, "red"
+    Call2             r5, r3, r0, r2
+    GetByIdShort      r3, r1, 9, "kind"
+    LoadConstString   r2, "blue"
+    Call2             r16, r3, r0, r2
+    GetByIdShort      r3, r1, 9, "kind"
+    LoadConstString   r2, "pink"
+    Call2             r15, r3, r0, r2
+    GetByIdShort      r9, r1, 9, "kind"
+    LoadConstUInt8    r2, 7
+    Call2             r14, r9, r0, r2
+    Mov               r18, r8
+    Mov               r17, r5
+    Call              r2, r6, 5
+    NewArray          r2, 0
+    PutByIdLoose      r1, r2, 7, "fns"
+    LoadConstUInt8    r3, 2
+    LoadConstUInt8    r4, 1
+    LoadConstUInt8    r5, 4
+    LoadConstZero     r2
+L1:
+    GetByIdShort      r9, r1, 10, "fns"
+    GetByIdShort      r8, r9, 2, "push"
+    CreateClosure     r10, r0, Function<>
+    MulN              r6, r2, r3
+    Call3             r6, r10, r0, r2, r6
+    Call2             r6, r8, r9, r6
+    AddN              r2, r2, r4
+    JLessN            L1, r2, r5
+    GetByIdShort      r9, r1, 1, "out"
+    GetByIdShort      r3, r9, 2, "push"
+    GetByIdShort      r11, r1, 10, "fns"
+    GetByIdShort      r10, r11, 11, "map"
+    CreateClosure     r2, r0, Function<>
+    Call2             r11, r10, r11, r2
+    GetByIdShort      r10, r11, 12, "join"
+    LoadConstString   r2, "|"
+    Call2             r2, r10, r11, r2
+    Call2             r2, r3, r9, r2
+    NewArray          r2, 0
+    PutByIdLoose      r1, r2, 8, "pairs"
+    LoadConstUndefined r8
+    LoadConstUndefined r6
+    TryGetById        r9, r1, 13, "Object"
+    GetByIdShort      r3, r9, 14, "entries"
+    NewObjectWithBuffer r2, 0, 0
+    Call2             r9, r3, r9, r2
+    Mov               r2, r9
+    IteratorBegin     r3, r2
+L7:
+    Mov               r9, r2
+    IteratorNext      r10, r3, r9
+    Mov               r9, r3
+    JStrictEqual      L2, r9, r0
+L15:
+    Mov               r12, r10
+    IteratorBegin     r9, r12
+    Mov               r10, r12
+    IteratorNext      r13, r9, r10
+    Mov               r10, r9
+    StrictEq          r10, r10, r0
+    LoadConstUndefined r11
+    JmpTrue           L3, r10
+    Mov               r11, r13
+L3:
+    Mov               r8, r11
+    LoadConstUndefined r11
+    JmpTrue           L4, r10
+    IteratorNext      r13, r9, r12
+    Mov               r12, r9
+    StrictEq          r12, r12, r0
+    LoadConstUndefined r11
+    Mov               r10, r12
+    JmpTrue           L4, r12
+    Mov               r11, r13
+    Mov               r10, r12
+L4:
+    Mov               r6, r11
+    JmpTrue           L5, r10
+    IteratorClose     r9, 0
+L5:
+    GetByIdShort      r11, r1, 15, "pairs"
+    GetByIdShort      r10, r11, 2, "push"
+    Mov               r13, r8
+    Mov               r12, r6
+    CreateClosure     r9, r0, NCFunction<>
+    Call3             r9, r9, r0, r13, r12
+    Call2             r9, r10, r11, r9
+    Jmp               L7
+L6:
+    Catch             r2
+    IteratorClose     r3, 1
+    Throw             r2
+L2:
+    GetByIdShort      r6, r1, 1, "out"
+    GetByIdShort      r3, r6, 2, "push"
+    GetByIdShort      r9, r1, 15, "pairs"
+    GetByIdShort      r8, r9, 11, "map"
+    CreateClosure     r2, r0, NCFunction<>
+    Call2             r9, r8, r9, r2
+    GetByIdShort      r8, r9, 12, "join"
+    LoadConstString   r2, ","
+    Call2             r2, r8, r9, r2
+    Call2             r2, r3, r6, r2
+    GetByIdShort      r6, r1, 1, "out"
+    GetByIdShort      r3, r6, 2, "push"
+    GetByIdShort      r2, r1, 16, "describeTypes"
+    Call1             r2, r2, r0
+    Call2             r2, r3, r6, r2
+    NewObjectWithBuffer r2, 1, 9
+    NewObjectWithBuffer r3, 2, 11
+    PutOwnBySlotIdx   r2, r3, 0
+    PutByIdLoose      r1, r2, 9, "config"
+    GetByIdShort      r10, r1, 1, "out"
+    GetByIdShort      r9, r10, 2, "push"
+    GetByIdShort      r3, r1, 17, "config"
+    LoadConstNull     r2
+    Eq                r6, r3, r2
+    LoadConstUndefined r8
+    JmpTrue           L8, r6
+    GetByIdShort      r3, r3, 18, "nested"
+    Eq                r6, r3, r2
+    LoadConstUndefined r8
+    JmpTrue           L8, r6
+    GetByIdShort      r8, r3, 19, "value"
+L8:
+    GetByIdShort      r3, r1, 17, "config"
+    Eq                r11, r3, r2
+    LoadConstUndefined r6
+    JmpTrue           L9, r11
+    GetByIdShort      r3, r3, 20, "missing"
+    Eq                r11, r3, r2
+    LoadConstUndefined r6
+    JmpTrue           L9, r11
+    GetByIdShort      r6, r3, 19, "value"
+L9:
+    GetByIdShort      r3, r1, 17, "config"
+    GetByIdShort      r3, r3, 20, "missing"
+    JNotEqual         L10, r3, r2
+    LoadConstString   r3, "fallback"
+L10:
+    Call4             r3, r9, r10, r8, r6, r3
+    NewObjectWithBuffer r6, 3, 16
+    GetByIdShort      r3, r6, 21, "a"
+    JStrictNotEqual   L11, r3, r0
+    LoadConstUInt8    r3, 10
+L11:
+    PutByIdLoose      r1, r3, 10, "a"
+    GetByIdShort      r3, r6, 22, "b"
+    JStrictNotEqual   L12, r3, r0
+    NewObject         r3
+L12:
+    GetByIdShort      r3, r3, 23, "c"
+    JStrictNotEqual   L13, r3, r0
+    LoadConstUInt8    r3, 20
+L13:
+    PutByIdLoose      r1, r3, 11, "c"
+    NewObject         r17
+    NewObjectWithBufferAndParent r15, r2, 0, 26
+    Mov               r16, r6
+    CallBuiltin       r2, "HermesBuiltin.copyDataProperties", 4
+    PutByIdLoose      r1, r2, 12, "rest"
+    GetByIdShort      r10, r1, 1, "out"
+    GetByIdShort      r9, r10, 2, "push"
+    GetByIdShort      r8, r1, 21, "a"
+    GetByIdShort      r3, r1, 23, "c"
+    TryGetById        r11, r1, 13, "Object"
+    GetByIdShort      r6, r11, 24, "keys"
+    GetByIdShort      r2, r1, 25, "rest"
+    Call2             r11, r6, r11, r2
+    GetByIdShort      r2, r11, 12, "join"
+    LoadConstString   r6, ""
+    Call2             r2, r2, r11, r6
+    Call4             r2, r9, r10, r8, r3, r2
+    LoadConstString   r2, "dyn"
+    PutByIdLoose      r1, r2, 13, "key"
+    NewObject         r2
+    GetByIdShort      r8, r1, 26, "key"
+    LoadConstString   r3, "amic"
+    Add               r3, r8, r3
+    DefineOwnByVal    r2, r4, r3, 1
+    LoadConstString   r4, "computed"
+    CreateClosure     r3, r0, Function<get computed>
+    DefineOwnGetterSetterByVal r2, r4, r3, r0, 1
+    CreateClosure     r3, r0, NCFunction<method>
+    DefineOwnById     r2, r3, 14, 71
+    PutByIdLoose      r1, r2, 15, "literal"
+    GetByIdShort      r10, r1, 1, "out"
+    GetByIdShort      r9, r10, 2, "push"
+    GetByIdShort      r2, r1, 27, "literal"
+    GetByIdShort      r17, r2, 28, "dynamic"
+    GetByIdShort      r2, r1, 27, "literal"
+    GetByIdShort      r16, r2, 29, "computed"
+    GetByIdShort      r3, r1, 27, "literal"
+    GetByIdShort      r2, r3, 30, "method"
+    Call1             r15, r2, r3
+    GetByIdShort      r2, r1, 27, "literal"
+    GetByIdShort      r2, r2, 30, "method"
+    GetByIdShort      r14, r2, 31, "name"
+    Mov               r18, r10
+    Call              r2, r9, 5
+    GetByIdShort      r4, r1, 1, "out"
+    GetByIdShort      r3, r4, 2, "push"
+    GetByIdShort      r2, r1, 32, "counter"
+    Call2             r16, r2, r0, r5
+    NewArray          r5, 0
+    Mov               r17, r5
+    LoadConstZero     r15
+    CallBuiltin       r2, "HermesBuiltin.arraySpread", 4
+    GetByIdShort      r2, r5, 12, "join"
+    Call2             r2, r2, r5, r6
+    Call2             r2, r3, r4, r2
+    GetByIdShort      r2, r1, 33, "delayed"
+    LoadConstUInt8    r1, 21
+    Call2             r2, r2, r0, r1
+    GetByIdShort      r1, r2, 34, "then"
+    CreateClosure     r0, r0, Function<>
+    Call2             r0, r1, r2, r0
+    Ret               r0
+
+Exception Handlers:
+0: start = L15, end = L6, target = L6
+
+Function<kind>(2 params, 4 registers, 2 numbers, 0 non-pointers):
+Offset in debug table: source 0x022b
+    LoadParam         r2, 1
+    LoadConstString   r3, "red"
+    JStrictEqual      L1, r3, r2
+    LoadConstString   r3, "green"
+    JStrictEqual      L2, r3, r2
+    LoadConstString   r3, "blue"
+    JStrictEqual      L3, r3, r2
+    LoadConstInt      r0, -1
+    JmpTypeOfIs       L4, r2, 507
+    LoadConstZero     r0
+L4:
+    Ret               r0
+L3:
+    LoadConstUInt8    r0, 3
+    Ret               r0
+L2:
+    LoadConstUInt8    r0, 2
+    Ret               r0
+L1:
+    LoadConstUInt8    r0, 1
+    Ret               r0
+
+Function<describeTypes>(1 params, 15 registers, 1 numbers, 2 non-pointers):
+Offset in debug table: source 0x0234
+    NewArray          r5, 10
+    LoadConstUndefined r1
+    DefineOwnByIndex  r5, r1, 0
+    LoadConstNull     r2
+    DefineOwnByIndex  r5, r2, 1
+    LoadConstUInt8    r0, 1
+    DefineOwnByIndex  r5, r0, 2
+    LoadConstString   r3, "x"
+    DefineOwnByIndex  r5, r3, 3
+    LoadConstTrue     r2
+    DefineOwnByIndex  r5, r2, 4
+    NewObject         r3
+    DefineOwnInDenseArray r5, r3, 5
+    NewArray          r3, 0
+    DefineOwnInDenseArray r5, r3, 6
+    CreateClosure     r3, r1, Function<>
+    DefineOwnInDenseArray r5, r3, 7
+    GetGlobalObject   r3
+    TryGetById        r4, r3, 0, "Symbol"
+    LoadConstString   r3, "s"
+    Call2             r3, r4, r1, r3
+    DefineOwnInDenseArray r5, r3, 8
+    LoadConstBigInt   r3, 10n
+    DefineOwnInDenseArray r5, r3, 9
+    GetByIdShort      r4, r5, 1, "map"
+    CreateClosure     r3, r1, Function<>
+    Call2             r5, r4, r5, r3
+    GetByIdShort      r4, r5, 2, "join"
+    LoadConstString   r3, ","
+    Call2             r3, r4, r5, r3
+    Ret               r3
+
+NCFunction<counter>(2 params, 3 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 4
+    LoadParam         r2, 1
+    StoreToEnvironment r1, 0, r2
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 2, r0
+    StoreNPToEnvironment r1, 3, r0
+    CreateGenerator   r1, r1, Function<counter>
+    Ret               r1
+
+NCFunction<delayed>(2 params, 16 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x025c
+    LoadConstUndefined r0
+    LoadConstUndefined r1
+    ReifyArgumentsLoose r1
+    Mov               r4, r1
+    GetBuiltinClosure r3, "HermesBuiltin.spawnAsync"
+    GetParentEnvironment r1, 0
+    CreateClosure     r2, r1, NCFunction<?anon_0_delayed>
+    LoadThisNS        r1
+    Call4             r1, r3, r0, r2, r1, r4
+    Ret               r1
+
+Constructor<Shape>(2 params, 14 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0265
+    GetParentEnvironment r2, 0
+    GetNewTarget      r1
+    GetByIdShort      r1, r1, 0, "prototype"
+    NewObjectWithParent r1, r1
+    LoadFromEnvironment r3, r2, 1
+    PrivateIsIn       r0, r3, r1, r0
+    JmpTrue           L1, r0
+    LoadConstUndefined r0
+    AddOwnPrivateBySym r1, r0, r3
+    LoadParam         r4, 1
+    PutByIdStrict     r1, r4, 0, "name"
+    LoadFromEnvironment r4, r2, 0
+    GetByIdShort      r2, r4, 1, "count"
+    Inc               r2, r2
+    PutByIdStrict     r4, r2, 1, "count"
+    PutOwnPrivateBySym r1, r2, 1, r3
+    Ret               r1
+L1:
+    LoadConstString   r5, "Cannot initialize"...
+    CallBuiltin       r1, "HermesBuiltin.throwTypeError", 2
+
+NCFunction<get id>(1 params, 2 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x027c
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r1, r0, 1
+    LoadParam         r0, 0
+    GetOwnPrivateBySym r0, r0, 0, r1
+    Ret               r0
+
+NCFunction<describe>(1 params, 3 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x0284
+    LoadParam         r2, 0
+    GetByIdShort      r1, r2, 0, "name"
+    LoadConstString   r0, "#"
+    Add               r1, r1, r0
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r0, r0, 1
+    GetOwnPrivateBySym r0, r2, 0, r0
+    Add               r0, r1, r0
+    Ret               r0
+
+NCFunction<create>(2 params, 14 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0295
+    GetParentEnvironment r2, 0
+    LoadFromEnvironment r4, r2, 0
+    CreateThisForNew  r1, r4, 0
+    JmpTypeOfIs       L1, r4, 128
+    LoadConstString   r5, "Trying to call a "...
+    CallBuiltin       r1, "HermesBuiltin.throwTypeError", 2
+L1:
+    GetByIdShort      r1, r4, 0, "prototype"
+    NewObjectWithParent r1, r1
+    LoadFromEnvironment r3, r2, 1
+    PrivateIsIn       r0, r3, r1, r0
+    JmpTrue           L2, r0
+    LoadParam         r2, 1
+    LoadConstUndefined r0
+    AddOwnPrivateBySym r1, r0, r3
+    PutByIdStrict     r1, r2, 0, "name"
+    GetByIdShort      r2, r4, 1, "count"
+    Inc               r2, r2
+    PutByIdStrict     r4, r2, 1, "count"
+    PutOwnPrivateBySym r1, r2, 1, r3
+    Ret               r1
+L2:
+    LoadConstString   r5, "Cannot initialize"...
+    CallBuiltin       r1, "HermesBuiltin.throwTypeError", 2
+
+NCFunction<hasSameId>(2 params, 5 registers, 0 numbers, 2 non-pointers):
+Offset in debug table: source 0x02b0
+    LoadParam         r3, 1
+    GetParentEnvironment r2, 0
+    LoadFromEnvironment r4, r2, 1
+    PrivateIsIn       r0, r4, r3, r0
+    JmpFalse          L1, r0
+    LoadParam         r2, 0
+    GetOwnPrivateBySym r3, r3, 1, r4
+    GetOwnPrivateBySym r2, r2, 1, r4
+    StrictEq          r0, r3, r2
+L1:
+    Ret               r0
+
+Function<<static_elements_initializer:Shape>>(1 params, 3 registers, 1 numbers, 1 non-pointers):
+    GetParentEnvironment r2, 0
+    LoadFromEnvironment r2, r2, 2
+    LoadConstZero     r0
+    DefineOwnById     r2, r0, 0, 63
+    LoadConstUndefined r1
+    Ret               r1
+
+Constructor<Square>(2 params, 13 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x02be
+    GetNewTarget      r3
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r0, r0, 4
+    LoadParentNoTraps r2, r0
+    CreateThisForSuper r1, r2, r3, 0
+    LoadConstString   r4, "square"
+    Mov               r5, r1
+    CallWithNewTarget r0, r2, r3, 2
+    SelectObject      r0, r1, r0
+    LoadConstEmpty    r1
+    ThrowIfThisInitialized r1
+    LoadParam         r1, 1
+    PutByIdStrict     r0, r1, 0, "side"
+    Ret               r0
+
+NCFunction<area>(1 params, 2 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x02cf
+    LoadParam         r0, 0
+    GetByIdShort      r1, r0, 0, "side"
+    GetByIdShort      r0, r0, 0, "side"
+    Mul               r0, r1, r0
+    Ret               r0
+
+NCFunction<describe>(1 params, 11 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x02dd
+    LoadParam         r2, 0
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r0, r0, 3
+    LoadParentNoTraps r0, r0
+    GetByIdWithReceiverLong r0, r0, 0, r2, "describe"
+    Call1             r1, r0, r2
+    LoadConstString   r0, ":"
+    Add               r1, r1, r0
+    GetByIdShort      r0, r2, 1, "area"
+    Call1             r0, r0, r2
+    Add               r0, r1, r0
+    Ret               r0
+
+Function<>(3 params, 2 registers, 0 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r0, 2
+    LoadParam         r1, 1
+    StoreToEnvironment r0, 0, r1
+    LoadParam         r1, 2
+    StoreToEnvironment r0, 1, r1
+    CreateClosure     r0, r0, Function<>
+    Ret               r0
+
+Function<>(2 params, 10 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x02f4
+    LoadConstUndefined r0
+    LoadParam         r1, 1
+    Call1             r1, r1, r0
+    Ret               r1
+
+NCFunction<>(3 params, 2 registers, 0 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r0, 2
+    LoadParam         r1, 1
+    StoreToEnvironment r0, 0, r1
+    LoadParam         r1, 2
+    StoreToEnvironment r0, 1, r1
+    CreateClosure     r0, r0, NCFunction<>
+    Ret               r0
+
+NCFunction<>(2 params, 10 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x02fd
+    LoadConstUndefined r0
+    LoadParam         r1, 1
+    Call1             r1, r1, r0
+    Ret               r1
+
+Function<get computed>(1 params, 1 registers, 0 numbers, 0 non-pointers):
+    LoadConstString   r0, "got"
+    Ret               r0
+
+NCFunction<method>(1 params, 1 registers, 0 numbers, 0 non-pointers):
+    LoadConstString   r0, "m"
+    Ret               r0
+
+Function<>(2 params, 14 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0306
+    GetGlobalObject   r1
+    GetByIdShort      r4, r1, 0, "out"
+    GetByIdShort      r3, r4, 1, "push"
+    LoadParam         r2, 1
+    Call2             r2, r3, r4, r2
+    TryGetById        r2, r1, 2, "print"
+    GetByIdShort      r4, r1, 0, "out"
+    GetByIdShort      r3, r4, 3, "join"
+    LoadConstString   r1, " "
+    Call2             r1, r3, r4, r1
+    LoadConstUndefined r0
+    Call2             r1, r2, r0, r1
+    Ret               r0
+
+Function<>(1 params, 1 registers, 0 numbers, 1 non-pointers):
+    LoadConstUndefined r0
+    Ret               r0
+
+Function<>(2 params, 14 registers, 0 numbers, 1 non-pointers):
+Offset in debug table: source 0x0324
+    LoadParam         r4, 1
+    JmpTypeOfIs       L1, r4, 128
+    JmpTypeOfIs       L2, r4, 258
+    TypeOf            r1, r4
+    Ret               r1
+L2:
+    LoadConstString   r1, "null"
+    LoadConstNull     r0
+    JStrictEqual      L3, r4, r0
+    GetGlobalObject   r2
+    TryGetById        r3, r2, 0, "Array"
+    GetByIdShort      r2, r3, 1, "isArray"
+    Call2             r3, r2, r3, r4
+    LoadConstString   r2, "object"
+    JmpFalse          L4, r3
+    LoadConstString   r2, "array"
+L4:
+    Mov               r1, r2
+L3:
+    Ret               r1
+L1:
+    LoadConstString   r1, "fn"
+    Ret               r1
+
+Function<counter>(2 params, 19 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x0339
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 3
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r5, r2
+    LoadConstUInt8    r6, 3
+    JStrictEqualLong  L2, r5, r6
+L13:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 3, r4
+    LoadFromEnvironment r5, r1, 2
+    LoadConstZero     r8
+    JStrictEqual      L3, r8, r5
+    LoadConstUInt8    r9, 1
+    JStrictEqual      L4, r3, r9
+    JStrictEqual      L5, r3, r4
+    LoadFromEnvironment r5, r1, 1
+    LoadFromEnvironment r7, r5, 1
+    AddN              r7, r7, r9
+    StoreNPToEnvironment r5, 1, r7
+    LoadFromEnvironment r7, r5, 1
+    LoadFromEnvironment r5, r5, 0
+    JLess             L6, r7, r5
+    Jmp               L7
+L5:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L14:
+    NewObjectWithBuffer r5, 4, 9
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L4:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L3:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L8, r3, r5
+    JStrictEqual      L9, r3, r4
+    CreateTopLevelEnvironment r5, 2
+    StoreToEnvironment r1, 1, r5
+    LoadFromEnvironment r7, r1, 0
+    StoreToEnvironment r5, 0, r7
+    StoreNPToEnvironment r5, 1, r8
+    LoadFromEnvironment r5, r5, 1
+    JLess             L6, r5, r7
+L7:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L15:
+    NewObjectWithBuffer r5, 4, 35
+    Ret               r5
+L6:
+    LoadFromEnvironment r5, r1, 1
+    LoadFromEnvironment r7, r5, 1
+    LoadConstUInt8    r5, 1
+    StoreNPToEnvironment r1, 2, r5
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 3, r5
+L16:
+    NewObjectWithBuffer r5, 4, 37
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L9:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L17:
+    NewObjectWithBuffer r5, 4, 9
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L8:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L10:
+    Catch             r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r5
+L2:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L11, r3, r5
+    JStrictEqual      L12, r3, r4
+    NewObjectWithBuffer r3, 4, 35
+    Ret               r3
+L12:
+    NewObjectWithBuffer r3, 4, 9
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L11:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 3, r0
+    LoadConstString   r10, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L13, end = L14, target = L10
+1: start = L4, end = L15, target = L10
+2: start = L6, end = L16, target = L10
+3: start = L9, end = L17, target = L10
+4: start = L8, end = L10, target = L10
+
+NCFunction<?anon_0_delayed>(2 params, 3 registers, 1 numbers, 0 non-pointers):
+    CreateFunctionEnvironment r1, 4
+    LoadParam         r2, 1
+    StoreToEnvironment r1, 0, r2
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 2, r0
+    StoreNPToEnvironment r1, 3, r0
+    CreateGenerator   r1, r1, Function<?anon_0_delayed>
+    Ret               r1
+
+Function<>(1 params, 2 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x035d
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r1, r0, 0
+    LoadFromEnvironment r0, r0, 1
+    Add               r0, r1, r0
+    Ret               r0
+
+NCFunction<>(1 params, 2 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x0365
+    GetParentEnvironment r0, 0
+    LoadFromEnvironment r1, r0, 0
+    LoadFromEnvironment r0, r0, 1
+    Add               r0, r1, r0
+    Ret               r0
+
+Function<?anon_0_delayed>(2 params, 18 registers, 0 numbers, 0 non-pointers):
+Offset in debug table: source 0x036e
+    GetParentEnvironment r1, 0
+    LoadFromEnvironment r0, r1, 3
+    Mov               r2, r0
+    LoadConstUInt8    r4, 2
+    JStrictEqualLong  L1, r0, r4
+    LoadParam         r0, 2
+    LoadParam         r3, 1
+    Mov               r5, r2
+    LoadConstUInt8    r6, 3
+    JStrictEqualLong  L2, r5, r6
+L11:
+    Mov               r2, r4
+    StoreNPToEnvironment r1, 3, r4
+    LoadFromEnvironment r7, r1, 2
+    LoadConstZero     r5
+    JStrictEqual      L3, r5, r7
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L4, r3, r5
+    JStrictEqual      L5, r3, r4
+    LoadFromEnvironment r5, r1, 1
+    LoadFromEnvironment r5, r5, 0
+    Mul               r7, r5, r4
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L12:
+    NewObjectWithBuffer r5, 4, 9
+    PutOwnBySlotIdx   r5, r7, 0
+    Ret               r5
+L5:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L13:
+    NewObjectWithBuffer r5, 4, 9
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L4:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L3:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L6, r3, r5
+    JStrictEqual      L7, r3, r4
+    CreateTopLevelEnvironment r8, 1
+    StoreToEnvironment r1, 1, r8
+    LoadFromEnvironment r7, r1, 0
+    StoreToEnvironment r8, 0, r7
+    StoreNPToEnvironment r1, 2, r5
+    Mov               r2, r5
+    StoreNPToEnvironment r1, 3, r5
+L14:
+    NewObjectWithBuffer r5, 4, 37
+    Ret               r5
+L7:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+L15:
+    NewObjectWithBuffer r5, 4, 9
+    PutOwnBySlotIdx   r5, r0, 0
+    Ret               r5
+L6:
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r0
+L8:
+    Catch             r5
+    Mov               r2, r6
+    StoreNPToEnvironment r1, 3, r6
+    Throw             r5
+L2:
+    LoadConstUInt8    r5, 1
+    JStrictEqual      L9, r3, r5
+    JStrictEqual      L10, r3, r4
+    NewObjectWithBuffer r3, 4, 35
+    Ret               r3
+L10:
+    NewObjectWithBuffer r3, 4, 9
+    PutOwnBySlotIdx   r3, r0, 0
+    Ret               r3
+L9:
+    Throw             r0
+L1:
+    LoadConstUInt8    r0, 3
+    Mov               r2, r0
+    StoreNPToEnvironment r1, 3, r0
+    LoadConstString   r9, "Generator functio"...
+    CallBuiltin       r0, "HermesBuiltin.throwTypeError", 2
+
+Exception Handlers:
+0: start = L11, end = L12, target = L8
+1: start = L5, end = L13, target = L8
+2: start = L4, end = L14, target = L8
+3: start = L7, end = L15, target = L8
+4: start = L6, end = L8, target = L8

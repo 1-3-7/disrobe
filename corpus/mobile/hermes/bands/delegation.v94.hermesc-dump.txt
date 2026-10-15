@@ -1,0 +1,1233 @@
+Bytecode File Information:
+  Bytecode version number: 94
+  Source hash: 375ed1cea690ea5e86b754ee356042d88bf9a20b
+  Function count: 19
+  String count: 75
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 5
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..11]: custom next 
+s2[ASCII, 9..9]: x
+s3[ASCII, 11..15]:  got 
+s4[ASCII, 15..22]:  caught 
+s5[ASCII, 22..29]:  finally
+s6[ASCII, 29..29]: y
+s7[ASCII, 29..71]: yield* delegate must have a .throw() method
+s8[ASCII, 80..83]: end:
+s9[ASCII, 83..84]: :1
+s10[ASCII, 85..90]: outer:
+s11[ASCII, 90..91]: :2
+s12[ASCII, 92..103]: :after-catch
+s13[ASCII, 102..102]: c
+s14[ASCII, 104..108]: :done
+s15[ASCII, 107..112]: never 
+s16[ASCII, 113..122]: :recovered
+s17[ASCII, 123..135]: ?anon_0_inner
+s18[ASCII, 135..136]: r1
+s19[ASCII, 137..154]: ?anon_0_lazyReturn
+s20[ASCII, 145..148]: lazy
+s21[ASCII, 154..160]: not yet
+s22[ASCII, 161..173]: ?anon_0_outer
+s23[ASCII, 169..176]: outer a=
+s24[ASCII, 177..195]: ?anon_0_passThrough
+s25[ASCII, 196..214]: ?anon_0_usesNoThrow
+s26[ASCII, 222..227]: global
+s27[ASCII, 226..226]: a
+s28[ASCII, 227..238]: lazy return 
+s29[ASCII, 239..239]: b
+s30[ASCII, 239..242]: boom
+s31[ASCII, 242..242]: m
+s32[ASCII, 248..254]: ignored
+s33[ASCII, 255..279]: iterator is not an object
+s34[ASCII, 280..319]: iterator.next() did not return an object
+s35[ASCII, 320..361]: iterator.return() did not return an object
+s36[ASCII, 362..402]: iterator.throw() did not return an object
+s37[ASCII, 406..412]: nothrow
+s38[ASCII, 413..416]: stop
+s39[ASCII, 419..420]: nt
+s40[ASCII, 419..427]: nt closed
+s41[ASCII, 428..435]: outer b=
+s42[ASCII, 444..445]: r2
+s43[ASCII, 446..446]: |
+i44[ASCII, 0..5] #A04FD2E1: custom
+i45[ASCII, 7..10] #C62208C8: next
+i46[ASCII, 72..80] #807C5F3D: prototype
+i47[ASCII, 103..103] #0001A6E9: h
+i48[ASCII, 105..108] #B553E7BD: done
+i49[ASCII, 131..135] #2094DEA9: inner
+i50[ASCII, 145..154] #CE616795: lazyReturn
+i51[ASCII, 169..173] #7403DEAA: outer
+i52[ASCII, 185..195] #DCFF3D28: passThrough
+i53[ASCII, 194..194] #00019A16: g
+i54[ASCII, 204..204] #0001D324: u
+i55[ASCII, 204..214] #B89795A9: usesNoThrow
+i56[ASCII, 215..220] #FB8C3D32: Symbol
+i57[ASCII, 220..222] #1C35E808: log
+i58[ASCII, 242..247] #687CE461: marker
+i59[ASCII, 255..262] #1F1F1786: iterator
+i60[ASCII, 304..309] #44B120DB: return
+i61[ASCII, 371..375] #E14FDC36: throw
+i62[ASCII, 403..406] #874F77A9: join
+i63[ASCII, 416..420] #A689F65B: print
+i64[ASCII, 436..444] #931326BA: TypeError
+i65[ASCII, 440..444] #9102A3D0: Error
+i66[ASCII, 447..450] #971CE5C7: JSON
+i67[ASCII, 451..455] #DF50693D: value
+i68[ASCII, 455..459] #E95F2A72: extra
+i69[ASCII, 460..470] #310A4BCA: firstResult
+i70[ASCII, 471..472] #06C54BD3: lr
+i71[ASCII, 473..479] #07E5FBCA: noThrow
+i72[ASCII, 480..481] #073DDE8A: pt
+i73[ASCII, 482..485] #3F21B886: push
+i74[ASCII, 486..494] #8D1543BD: stringify
+
+Array Buffer:
+[int 10]
+[int 20]
+Object Key Buffer:
+[String 67]
+[String 48]
+[String 68]
+[String 67]
+[String 48]
+Object Value Buffer:
+[String 31]
+false
+[int 42]
+[String 21]
+false
+[String 39]
+false
+Function Source Table:
+  Function ID 2 -> s0
+  Function ID 4 -> s0
+  Function ID 6 -> s0
+  Function ID 8 -> s0
+  Function ID 10 -> s0
+
+Function<global>(1 params, 24 registers, 0 symbols):
+Offset in debug table: source 0x0000, scope 0x0000, textified callees 0x0000
+    DeclareGlobalVar  "log"
+    DeclareGlobalVar  "g"
+    DeclareGlobalVar  "h"
+    DeclareGlobalVar  "noThrow"
+    DeclareGlobalVar  "u"
+    DeclareGlobalVar  "marker"
+    DeclareGlobalVar  "custom"
+    DeclareGlobalVar  "pt"
+    DeclareGlobalVar  "firstResult"
+    DeclareGlobalVar  "lr"
+    DeclareGlobalVar  "inner"
+    DeclareGlobalVar  "outer"
+    DeclareGlobalVar  "usesNoThrow"
+    DeclareGlobalVar  "passThrough"
+    DeclareGlobalVar  "lazyReturn"
+    CreateEnvironment r1
+    CreateGeneratorClosure r2, r1, NCFunction<inner>
+    GetGlobalObject   r0
+    PutById           r0, r2, 1, "inner"
+    CreateGeneratorClosure r2, r1, NCFunction<outer>
+    PutById           r0, r2, 2, "outer"
+    CreateGeneratorClosure r2, r1, NCFunction<usesNoThrow>
+    PutById           r0, r2, 3, "usesNoThrow"
+    CreateGeneratorClosure r2, r1, NCFunction<passThrough>
+    PutById           r0, r2, 4, "passThrough"
+    CreateGeneratorClosure r2, r1, NCFunction<lazyReturn>
+    PutById           r0, r2, 5, "lazyReturn"
+    NewArray          r2, 0
+    PutById           r0, r2, 6, "log"
+    GetByIdShort      r2, r0, 1, "outer"
+    LoadConstUndefined r6
+    Call1             r2, r2, r6
+    PutById           r0, r2, 7, "g"
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 5, "g"
+    GetByIdShort      r7, r8, 6, "next"
+    LoadConstString   r2, "ignored"
+    Call2             r2, r7, r8, r2
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 5, "g"
+    GetByIdShort      r2, r8, 6, "next"
+    LoadConstString   r7, "x"
+    Call2             r2, r2, r8, r7
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r9, r0, 5, "g"
+    GetByIdShort      r8, r9, 6, "next"
+    LoadConstString   r2, "y"
+    Call2             r2, r8, r9, r2
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 5, "g"
+    GetByIdShort      r2, r8, 6, "next"
+    Call1             r2, r2, r8
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 5, "g"
+    GetByIdShort      r2, r8, 6, "next"
+    Call1             r2, r2, r8
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r9, r0, 5, "g"
+    GetByIdShort      r8, r9, 7, "throw"
+    LoadConstString   r2, "boom"
+    Call2             r2, r8, r9, r2
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    TryGetById        r5, r0, 3, "JSON"
+    GetByIdShort      r4, r5, 4, "stringify"
+    GetByIdShort      r8, r0, 5, "g"
+    GetByIdShort      r2, r8, 6, "next"
+    Call1             r2, r2, r8
+    Call2             r2, r4, r5, r2
+    Call2             r2, r3, r6, r2
+    TryGetById        r3, r0, 2, "print"
+    GetByIdShort      r4, r0, 8, "log"
+    GetByIdShort      r2, r4, 9, "join"
+    LoadConstString   r8, "|"
+    Call2             r2, r2, r4, r8
+    Call2             r2, r3, r6, r2
+    NewArray          r2, 0
+    PutById           r0, r2, 6, "log"
+    GetByIdShort      r2, r0, 1, "outer"
+    Call1             r2, r2, r6
+    PutById           r0, r2, 8, "h"
+    GetByIdShort      r3, r0, 10, "h"
+    GetByIdShort      r2, r3, 6, "next"
+    Call1             r2, r2, r3
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r4, r0, 3, "JSON"
+    GetByIdShort      r3, r4, 4, "stringify"
+    GetByIdShort      r10, r0, 10, "h"
+    GetByIdShort      r9, r10, 11, "return"
+    LoadConstString   r2, "stop"
+    Call2             r2, r9, r10, r2
+    Call2             r4, r3, r4, r2
+    TryGetById        r9, r0, 3, "JSON"
+    GetByIdShort      r3, r9, 4, "stringify"
+    GetByIdShort      r10, r0, 10, "h"
+    GetByIdShort      r2, r10, 6, "next"
+    Call1             r2, r2, r10
+    Call2             r3, r3, r9, r2
+    GetByIdShort      r9, r0, 8, "log"
+    GetByIdShort      r2, r9, 9, "join"
+    Call2             r2, r2, r9, r8
+    Call4             r2, r5, r6, r4, r3, r2
+    NewObject         r2
+    PutById           r0, r2, 9, "noThrow"
+    GetByIdShort      r4, r0, 12, "noThrow"
+    TryGetById        r2, r0, 13, "Symbol"
+    GetByIdShort      r3, r2, 14, "iterator"
+    CreateClosure     r2, r1, Function<>
+    PutByVal          r4, r3, r2
+    NewArray          r2, 0
+    PutById           r0, r2, 6, "log"
+    GetByIdShort      r2, r0, 15, "usesNoThrow"
+    Call1             r2, r2, r6
+    PutById           r0, r2, 10, "u"
+    GetByIdShort      r3, r0, 16, "u"
+    GetByIdShort      r2, r3, 6, "next"
+    Call1             r2, r2, r3
+L4:
+    GetByIdShort      r4, r0, 16, "u"
+    GetByIdShort      r3, r4, 7, "throw"
+    TryGetById        r2, r0, 17, "Error"
+    GetByIdShort      r5, r2, 18, "prototype"
+    CreateThis        r5, r5, r2
+    Mov               r17, r5
+    Mov               r16, r7
+    Construct         r2, r2, 2
+    SelectObject      r2, r5, r2
+    Call2             r2, r3, r4, r2
+L5:
+    Jmp               L2
+L1:
+    Catch             r3
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r2, r0, 19, "TypeError"
+    InstanceOf        r4, r3, r2
+    GetByIdShort      r3, r0, 8, "log"
+    GetByIdShort      r2, r3, 9, "join"
+    Call2             r3, r2, r3, r8
+    LoadConstString   r2, "nothrow"
+    Call4             r2, r5, r6, r2, r4, r3
+L2:
+    NewObjectWithBuffer r2, 3, 3, 0, 0
+    PutById           r0, r2, 11, "marker"
+    NewObject         r2
+    PutById           r0, r2, 12, "custom"
+    GetByIdShort      r3, r0, 20, "custom"
+    TryGetById        r2, r0, 13, "Symbol"
+    GetByIdShort      r2, r2, 14, "iterator"
+    CreateClosure     r1, r1, Function<>
+    PutByVal          r3, r2, r1
+    NewArray          r1, 0
+    PutById           r0, r1, 6, "log"
+    GetByIdShort      r1, r0, 21, "passThrough"
+    Call1             r1, r1, r6
+    PutById           r0, r1, 13, "pt"
+    GetByIdShort      r3, r0, 22, "pt"
+    GetByIdShort      r2, r3, 6, "next"
+    LoadConstString   r1, "a"
+    Call2             r1, r2, r3, r1
+    PutById           r0, r1, 14, "firstResult"
+    TryGetById        r5, r0, 2, "print"
+    GetByIdShort      r7, r0, 23, "firstResult"
+    GetByIdShort      r1, r0, 24, "marker"
+    GetByIdShort      r2, r0, 23, "firstResult"
+    GetByIdShort      r15, r2, 25, "extra"
+    TryGetById        r9, r0, 3, "JSON"
+    GetByIdShort      r3, r9, 4, "stringify"
+    GetByIdShort      r11, r0, 22, "pt"
+    GetByIdShort      r10, r11, 6, "next"
+    LoadConstString   r2, "b"
+    Call2             r2, r10, r11, r2
+    Call2             r14, r3, r9, r2
+    GetByIdShort      r9, r0, 8, "log"
+    GetByIdShort      r2, r9, 9, "join"
+    Call2             r13, r2, r9, r8
+    StrictEq          r16, r7, r1
+    LoadConstUndefined r17
+    Call              r1, r5, 5
+    NewArray          r1, 0
+    PutById           r0, r1, 6, "log"
+    GetByIdShort      r1, r0, 26, "lazyReturn"
+    Call1             r1, r1, r6
+    PutById           r0, r1, 15, "lr"
+    TryGetById        r5, r0, 2, "print"
+    TryGetById        r3, r0, 3, "JSON"
+    GetByIdShort      r2, r3, 4, "stringify"
+    GetByIdShort      r4, r0, 27, "lr"
+    GetByIdShort      r1, r4, 6, "next"
+    Call1             r1, r1, r4
+    Call2             r4, r2, r3, r1
+    TryGetById        r3, r0, 3, "JSON"
+    GetByIdShort      r2, r3, 4, "stringify"
+    GetByIdShort      r9, r0, 27, "lr"
+    GetByIdShort      r7, r9, 11, "return"
+    LoadConstString   r1, "r1"
+    Call2             r1, r7, r9, r1
+    Call2             r15, r2, r3, r1
+    TryGetById        r7, r0, 3, "JSON"
+    GetByIdShort      r2, r7, 4, "stringify"
+    GetByIdShort      r9, r0, 27, "lr"
+    GetByIdShort      r1, r9, 6, "next"
+    Call1             r1, r1, r9
+    Call2             r14, r2, r7, r1
+    TryGetById        r9, r0, 3, "JSON"
+    GetByIdShort      r7, r9, 4, "stringify"
+    GetByIdShort      r11, r0, 27, "lr"
+    GetByIdShort      r10, r11, 11, "return"
+    LoadConstString   r1, "r2"
+    Call2             r1, r10, r11, r1
+    Call2             r13, r7, r9, r1
+    GetByIdShort      r7, r0, 8, "log"
+    GetByIdShort      r0, r7, 9, "join"
+    Call2             r12, r0, r7, r8
+    LoadConstUndefined r17
+    Mov               r16, r4
+    Call              r0, r5, 6
+    Ret               r0
+
+Exception Handlers:
+0: start = L4, end = L5, target = L1
+
+NCFunction<inner>(2 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_inner>
+    Ret               r0
+
+Function<?anon_0_inner>(2 params, 17 registers, 0 symbols):
+Offset in debug table: source 0x03a0, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadParam         r5, 1
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+L11:
+    LoadConstString   r1, ":1"
+    Add               r1, r5, r1
+    SaveGenerator     L2
+    Ret               r1
+L2:
+    ResumeGenerator   r1, r2
+    JmpTrueLong       L3, r2
+    GetGlobalObject   r3
+    GetByIdShort      r7, r3, 1, "log"
+    GetByIdShort      r6, r7, 2, "push"
+    LoadConstString   r4, " got "
+    Add               r2, r5, r4
+    Add               r2, r2, r1
+    Call2             r2, r6, r7, r2
+    LoadConstString   r2, ":2"
+    Add               r2, r5, r2
+    SaveGenerator     L4
+    Ret               r2
+L4:
+    ResumeGenerator   r2, r6
+    JmpTrue           L5, r6
+    GetByIdShort      r7, r3, 1, "log"
+    GetByIdShort      r6, r7, 2, "push"
+    Add               r4, r5, r4
+    Add               r4, r4, r2
+    Call2             r4, r6, r7, r4
+    LoadConstString   r4, ":done"
+    Add               r4, r5, r4
+L12:
+    GetByIdShort      r8, r3, 1, "log"
+    GetByIdShort      r7, r8, 2, "push"
+    LoadConstString   r6, " finally"
+    Add               r6, r5, r6
+    Call2             r6, r7, r8, r6
+    CompleteGenerator
+    Ret               r4
+L5:
+    GetByIdShort      r6, r3, 1, "log"
+    GetByIdShort      r4, r6, 2, "push"
+    LoadConstString   r3, " finally"
+    Add               r3, r5, r3
+    Call2             r3, r4, r6, r3
+    CompleteGenerator
+    Ret               r2
+L3:
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, " finally"
+    Add               r2, r5, r2
+    Call2             r2, r3, r4, r2
+    CompleteGenerator
+    Ret               r1
+L6:
+    Catch             r6
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r1, " caught "
+    Add               r1, r5, r1
+    Add               r1, r1, r6
+    Call2             r1, r3, r4, r1
+    LoadConstString   r1, ":recovered"
+    Add               r1, r5, r1
+    SaveGenerator     L7
+    Ret               r1
+L7:
+    ResumeGenerator   r1, r3
+    JmpTrue           L8, r3
+    LoadConstString   r3, ":after-catch"
+    Add               r3, r5, r3
+L13:
+    GetByIdShort      r7, r2, 1, "log"
+    GetByIdShort      r6, r7, 2, "push"
+    LoadConstString   r4, " finally"
+    Add               r4, r5, r4
+    Call2             r4, r6, r7, r4
+    CompleteGenerator
+    Ret               r3
+L8:
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, " finally"
+    Add               r2, r5, r2
+    Call2             r2, r3, r4, r2
+    CompleteGenerator
+    Ret               r1
+L9:
+    Catch             r1
+    GetGlobalObject   r2
+    GetByIdShort      r4, r2, 1, "log"
+    GetByIdShort      r3, r4, 2, "push"
+    LoadConstString   r2, " finally"
+    Add               r2, r5, r2
+    Call2             r2, r3, r4, r2
+    Throw             r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L11, end = L12, target = L6
+1: start = L11, end = L12, target = L9
+2: start = L6, end = L13, target = L9
+
+NCFunction<outer>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_outer>
+    Ret               r0
+
+Function<?anon_0_outer>(1 params, 27 registers, 0 symbols):
+Offset in debug table: source 0x058a, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstString   r14, "iterator.next() d"...
+    LoadConstString   r13, "throw"
+    LoadConstUndefined r2
+    LoadConstString   r3, "return"
+    LoadConstString   r4, "iterator.return()"...
+    LoadConstString   r12, "iterator.throw() "...
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+    GetGlobalObject   r5
+    GetByIdShort      r6, r5, 1, "inner"
+    LoadConstString   r1, "a"
+    Call2             r6, r6, r2, r1
+    TryGetById        r1, r5, 2, "Symbol"
+    GetByIdShort      r1, r1, 3, "iterator"
+    GetByVal          r1, r6, r1
+    Call1             r8, r1, r6
+    LoadConstString   r1, "iterator is not a"...
+    Mov               r19, r8
+    Mov               r18, r1
+    CallBuiltin       r6, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r16, r8, 4, "next"
+    LoadConstUndefined r15
+L7:
+    Mov               r7, r15
+    Call2             r7, r16, r8, r7
+    Mov               r19, r7
+    Mov               r18, r14
+    CallBuiltin       r9, "HermesBuiltin.ensureObject", 3
+    Mov               r6, r7
+    GetByIdShort      r9, r7, 5, "done"
+    JmpTrueLong       L2, r9
+L30:
+    CallBuiltin       r9, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r7
+L4:
+    Catch             r9
+    Mov               r19, r8
+    Mov               r18, r13
+    CallBuiltin       r7, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L5, r7, r2
+    Call2             r7, r7, r8, r9
+    Mov               r19, r7
+    Mov               r18, r12
+    CallBuiltin       r9, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r9, r7, 5, "done"
+    JmpTrue           L6, r9
+    CallBuiltin       r9, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r7
+L3:
+    ResumeGenerator   r9, r11
+    Mov               r15, r9
+    Mov               r10, r11
+    JmpFalse          L7, r10
+    Mov               r15, r9
+L31:
+    Mov               r19, r8
+    Mov               r18, r3
+    CallBuiltin       r17, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L8, r17, r2
+    Mov               r10, r15
+    Call2             r10, r17, r8, r10
+    Mov               r19, r10
+    Mov               r18, r4
+    CallBuiltin       r17, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r17, r10, 5, "done"
+    JmpTrue           L9, r17
+    CallBuiltin       r17, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r10
+L9:
+    GetByIdShort      r10, r10, 6, "value"
+    CompleteGenerator
+    Ret               r10
+L8:
+    CompleteGenerator
+    Ret               r9
+L6:
+    Mov               r6, r7
+    Jmp               L2
+L5:
+    Mov               r19, r8
+    Mov               r18, r3
+    CallBuiltin       r7, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L10, r7, r2
+    Call1             r19, r7, r8
+    Mov               r18, r4
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+L10:
+    LoadConstString   r19, "yield* delegate m"...
+    CallBuiltin       r7, "HermesBuiltin.throwTypeError", 2
+    CompleteGenerator
+    Ret               r2
+L2:
+    GetByIdShort      r9, r6, 6, "value"
+    GetByIdShort      r8, r5, 7, "log"
+    GetByIdShort      r7, r8, 8, "push"
+    LoadConstString   r6, "outer a="
+    Add               r6, r6, r9
+    Call2             r6, r7, r8, r6
+    NewArrayWithBuffer r7, 2, 2, 1
+    TryGetById        r6, r5, 2, "Symbol"
+    GetByIdShort      r6, r6, 3, "iterator"
+    GetByVal          r6, r7, r6
+    Call1             r8, r6, r7
+    Mov               r19, r8
+    Mov               r18, r1
+    CallBuiltin       r6, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r16, r8, 4, "next"
+    LoadConstUndefined r15
+L16:
+    Mov               r7, r15
+    Call2             r7, r16, r8, r7
+    Mov               r19, r7
+    Mov               r18, r14
+    CallBuiltin       r9, "HermesBuiltin.ensureObject", 3
+    Mov               r6, r7
+    GetByIdShort      r9, r7, 5, "done"
+    JmpTrueLong       L11, r9
+L32:
+    CallBuiltin       r9, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L12
+    Ret               r7
+L13:
+    Catch             r9
+    Mov               r19, r8
+    Mov               r18, r13
+    CallBuiltin       r7, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L14, r7, r2
+    Call2             r7, r7, r8, r9
+    Mov               r19, r7
+    Mov               r18, r12
+    CallBuiltin       r9, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r9, r7, 5, "done"
+    JmpTrue           L15, r9
+    CallBuiltin       r9, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L12
+    Ret               r7
+L12:
+    ResumeGenerator   r9, r11
+    Mov               r15, r9
+    Mov               r10, r11
+    JmpFalse          L16, r10
+    Mov               r15, r9
+L33:
+    Mov               r19, r8
+    Mov               r18, r3
+    CallBuiltin       r17, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L17, r17, r2
+    Mov               r10, r15
+    Call2             r10, r17, r8, r10
+    Mov               r19, r10
+    Mov               r18, r4
+    CallBuiltin       r17, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r17, r10, 5, "done"
+    JmpTrue           L18, r17
+    CallBuiltin       r17, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L12
+    Ret               r10
+L18:
+    GetByIdShort      r10, r10, 6, "value"
+    CompleteGenerator
+    Ret               r10
+L17:
+    CompleteGenerator
+    Ret               r9
+L15:
+    Mov               r6, r7
+    Jmp               L11
+L14:
+    Mov               r19, r8
+    Mov               r18, r3
+    CallBuiltin       r7, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L19, r7, r2
+    Call1             r19, r7, r8
+    Mov               r18, r4
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+L19:
+    LoadConstString   r19, "yield* delegate m"...
+    CallBuiltin       r7, "HermesBuiltin.throwTypeError", 2
+    CompleteGenerator
+    Ret               r2
+L11:
+    GetByIdShort      r9, r6, 6, "value"
+    GetByIdShort      r8, r5, 7, "log"
+    GetByIdShort      r7, r8, 8, "push"
+    LoadConstString   r6, "outer b="
+    Add               r6, r6, r9
+    Call2             r6, r7, r8, r6
+    GetByIdShort      r7, r5, 1, "inner"
+    LoadConstString   r6, "c"
+    Call2             r6, r7, r2, r6
+    TryGetById        r5, r5, 2, "Symbol"
+    GetByIdShort      r5, r5, 3, "iterator"
+    GetByVal          r5, r6, r5
+    Call1             r5, r5, r6
+    Mov               r19, r5
+    Mov               r18, r1
+    CallBuiltin       r1, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r11, r5, 4, "next"
+    LoadConstUndefined r10
+L25:
+    Mov               r6, r10
+    Call2             r6, r11, r5, r6
+    Mov               r19, r6
+    Mov               r18, r14
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+    Mov               r1, r6
+    GetByIdShort      r7, r6, 5, "done"
+    JmpTrueLong       L20, r7
+L34:
+    CallBuiltin       r7, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L21
+    Ret               r6
+L22:
+    Catch             r7
+    Mov               r19, r5
+    Mov               r18, r13
+    CallBuiltin       r6, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L23, r6, r2
+    Call2             r6, r6, r5, r7
+    Mov               r19, r6
+    Mov               r18, r12
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r7, r6, 5, "done"
+    JmpTrue           L24, r7
+    CallBuiltin       r7, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L21
+    Ret               r6
+L21:
+    ResumeGenerator   r7, r9
+    Mov               r10, r7
+    Mov               r8, r9
+    JmpFalse          L25, r8
+    Mov               r10, r7
+L35:
+    Mov               r19, r5
+    Mov               r18, r3
+    CallBuiltin       r15, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L26, r15, r2
+    Mov               r8, r10
+    Call2             r8, r15, r5, r8
+    Mov               r19, r8
+    Mov               r18, r4
+    CallBuiltin       r15, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r15, r8, 5, "done"
+    JmpTrue           L27, r15
+    CallBuiltin       r15, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L21
+    Ret               r8
+L27:
+    GetByIdShort      r8, r8, 6, "value"
+    CompleteGenerator
+    Ret               r8
+L26:
+    CompleteGenerator
+    Ret               r7
+L24:
+    Mov               r1, r6
+    Jmp               L20
+L23:
+    Mov               r19, r5
+    Mov               r18, r3
+    CallBuiltin       r3, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L28, r3, r2
+    Call1             r19, r3, r5
+    Mov               r18, r4
+    CallBuiltin       r3, "HermesBuiltin.ensureObject", 3
+L28:
+    LoadConstString   r19, "yield* delegate m"...
+    CallBuiltin       r3, "HermesBuiltin.throwTypeError", 2
+    CompleteGenerator
+    Ret               r2
+L20:
+    GetByIdShort      r2, r1, 6, "value"
+    LoadConstString   r1, "outer:"
+    Add               r1, r1, r2
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L30, end = L4, target = L4
+1: start = L3, end = L31, target = L4
+2: start = L32, end = L13, target = L13
+3: start = L12, end = L33, target = L13
+4: start = L34, end = L22, target = L22
+5: start = L21, end = L35, target = L22
+
+NCFunction<usesNoThrow>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_usesNoThrow>
+    Ret               r0
+
+Function<?anon_0_usesNoThrow>(1 params, 25 registers, 0 symbols):
+Offset in debug table: source 0x0963, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstString   r14, "iterator.next() d"...
+    LoadConstString   r13, "throw"
+    LoadConstUndefined r1
+    LoadConstString   r3, "return"
+    LoadConstString   r4, "iterator.return()"...
+    LoadConstString   r12, "iterator.throw() "...
+    ResumeGenerator   r0, r2
+    JmpTrueLong       L1, r2
+    GetGlobalObject   r2
+    GetByIdShort      r5, r2, 1, "noThrow"
+    TryGetById        r2, r2, 2, "Symbol"
+    GetByIdShort      r2, r2, 3, "iterator"
+    GetByVal          r2, r5, r2
+    Call1             r5, r2, r5
+    LoadConstString   r16, "iterator is not a"...
+    Mov               r17, r5
+    CallBuiltin       r2, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r11, r5, 4, "next"
+    LoadConstUndefined r10
+L7:
+    Mov               r6, r10
+    Call2             r6, r11, r5, r6
+    Mov               r17, r6
+    Mov               r16, r14
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+    Mov               r2, r6
+    GetByIdShort      r7, r6, 5, "done"
+    JmpTrueLong       L2, r7
+L12:
+    CallBuiltin       r7, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r6
+L4:
+    Catch             r7
+    Mov               r17, r5
+    Mov               r16, r13
+    CallBuiltin       r6, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L5, r6, r1
+    Call2             r6, r6, r5, r7
+    Mov               r17, r6
+    Mov               r16, r12
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r7, r6, 5, "done"
+    JmpTrue           L6, r7
+    CallBuiltin       r7, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r6
+L3:
+    ResumeGenerator   r7, r9
+    Mov               r10, r7
+    Mov               r8, r9
+    JmpFalse          L7, r8
+    Mov               r10, r7
+L13:
+    Mov               r17, r5
+    Mov               r16, r3
+    CallBuiltin       r15, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L8, r15, r1
+    Mov               r8, r10
+    Call2             r8, r15, r5, r8
+    Mov               r17, r8
+    Mov               r16, r4
+    CallBuiltin       r15, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r15, r8, 5, "done"
+    JmpTrue           L9, r15
+    CallBuiltin       r15, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r8
+L9:
+    GetByIdShort      r8, r8, 6, "value"
+    CompleteGenerator
+    Ret               r8
+L8:
+    CompleteGenerator
+    Ret               r7
+L6:
+    Mov               r2, r6
+    Jmp               L2
+L5:
+    Mov               r17, r5
+    Mov               r16, r3
+    CallBuiltin       r3, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L10, r3, r1
+    Call1             r17, r3, r5
+    Mov               r16, r4
+    CallBuiltin       r3, "HermesBuiltin.ensureObject", 3
+L10:
+    LoadConstString   r17, "yield* delegate m"...
+    CallBuiltin       r3, "HermesBuiltin.throwTypeError", 2
+    CompleteGenerator
+    Ret               r1
+L2:
+    GetByIdShort      r2, r2, 6, "value"
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L12, end = L4, target = L4
+1: start = L3, end = L13, target = L4
+
+NCFunction<passThrough>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_passThrough>
+    Ret               r0
+
+Function<?anon_0_passThrough>(1 params, 25 registers, 0 symbols):
+Offset in debug table: source 0x0a90, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstString   r14, "iterator.next() d"...
+    LoadConstString   r13, "throw"
+    LoadConstUndefined r2
+    LoadConstString   r3, "return"
+    LoadConstString   r4, "iterator.return()"...
+    LoadConstString   r12, "iterator.throw() "...
+    ResumeGenerator   r0, r1
+    JmpTrueLong       L1, r1
+    GetGlobalObject   r1
+    GetByIdShort      r5, r1, 1, "custom"
+    TryGetById        r1, r1, 2, "Symbol"
+    GetByIdShort      r1, r1, 3, "iterator"
+    GetByVal          r1, r5, r1
+    Call1             r5, r1, r5
+    LoadConstString   r16, "iterator is not a"...
+    Mov               r17, r5
+    CallBuiltin       r1, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r11, r5, 4, "next"
+    LoadConstUndefined r10
+L7:
+    Mov               r6, r10
+    Call2             r6, r11, r5, r6
+    Mov               r17, r6
+    Mov               r16, r14
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+    Mov               r1, r6
+    GetByIdShort      r7, r6, 5, "done"
+    JmpTrueLong       L2, r7
+L12:
+    CallBuiltin       r7, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r6
+L4:
+    Catch             r7
+    Mov               r17, r5
+    Mov               r16, r13
+    CallBuiltin       r6, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L5, r6, r2
+    Call2             r6, r6, r5, r7
+    Mov               r17, r6
+    Mov               r16, r12
+    CallBuiltin       r7, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r7, r6, 5, "done"
+    JmpTrue           L6, r7
+    CallBuiltin       r7, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r6
+L3:
+    ResumeGenerator   r7, r9
+    Mov               r10, r7
+    Mov               r8, r9
+    JmpFalse          L7, r8
+    Mov               r10, r7
+L13:
+    Mov               r17, r5
+    Mov               r16, r3
+    CallBuiltin       r15, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L8, r15, r2
+    Mov               r8, r10
+    Call2             r8, r15, r5, r8
+    Mov               r17, r8
+    Mov               r16, r4
+    CallBuiltin       r15, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r15, r8, 5, "done"
+    JmpTrue           L9, r15
+    CallBuiltin       r15, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r8
+L9:
+    GetByIdShort      r8, r8, 6, "value"
+    CompleteGenerator
+    Ret               r8
+L8:
+    CompleteGenerator
+    Ret               r7
+L6:
+    Mov               r1, r6
+    Jmp               L2
+L5:
+    Mov               r17, r5
+    Mov               r16, r3
+    CallBuiltin       r3, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L10, r3, r2
+    Call1             r17, r3, r5
+    Mov               r16, r4
+    CallBuiltin       r3, "HermesBuiltin.ensureObject", 3
+L10:
+    LoadConstString   r17, "yield* delegate m"...
+    CallBuiltin       r3, "HermesBuiltin.throwTypeError", 2
+    CompleteGenerator
+    Ret               r2
+L2:
+    GetByIdShort      r1, r1, 6, "value"
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L12, end = L4, target = L4
+1: start = L3, end = L13, target = L4
+
+NCFunction<lazyReturn>(1 params, 1 registers, 0 symbols):
+    CreateEnvironment r0
+    CreateGenerator   r0, r0, Function<?anon_0_lazyReturn>
+    Ret               r0
+
+Function<?anon_0_lazyReturn>(1 params, 26 registers, 0 symbols):
+Offset in debug table: source 0x0bbe, scope 0x0000, textified callees 0x0000
+    StartGenerator   
+    LoadConstString   r15, "iterator.next() d"...
+    LoadConstString   r14, "throw"
+    LoadConstUndefined r1
+    LoadConstString   r4, "return"
+    LoadConstString   r5, "iterator.return()"...
+    LoadConstString   r13, "iterator.throw() "...
+    ResumeGenerator   r0, r2
+    JmpTrueLong       L1, r2
+    NewObject         r6
+    GetGlobalObject   r2
+    TryGetById        r3, r2, 1, "Symbol"
+    GetByIdShort      r7, r3, 2, "iterator"
+    CreateEnvironment r3
+    CreateClosure     r3, r3, Function<>
+    PutOwnByVal       r6, r3, r7, 1
+    TryGetById        r3, r2, 1, "Symbol"
+    GetByIdShort      r3, r3, 2, "iterator"
+    GetByVal          r3, r6, r3
+    Call1             r6, r3, r6
+    LoadConstString   r17, "iterator is not a"...
+    Mov               r18, r6
+    CallBuiltin       r3, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r12, r6, 3, "next"
+    LoadConstUndefined r11
+L7:
+    Mov               r7, r11
+    Call2             r7, r12, r6, r7
+    Mov               r18, r7
+    Mov               r17, r15
+    CallBuiltin       r8, "HermesBuiltin.ensureObject", 3
+    Mov               r3, r7
+    GetByIdShort      r8, r7, 4, "done"
+    JmpTrueLong       L2, r8
+L12:
+    CallBuiltin       r8, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r7
+L4:
+    Catch             r8
+    Mov               r18, r6
+    Mov               r17, r14
+    CallBuiltin       r7, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L5, r7, r1
+    Call2             r7, r7, r6, r8
+    Mov               r18, r7
+    Mov               r17, r13
+    CallBuiltin       r8, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r8, r7, 4, "done"
+    JmpTrue           L6, r8
+    CallBuiltin       r8, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r7
+L3:
+    ResumeGenerator   r8, r10
+    Mov               r11, r8
+    Mov               r9, r10
+    JmpFalse          L7, r9
+    Mov               r11, r8
+L13:
+    Mov               r18, r6
+    Mov               r17, r4
+    CallBuiltin       r16, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L8, r16, r1
+    Mov               r9, r11
+    Call2             r9, r16, r6, r9
+    Mov               r18, r9
+    Mov               r17, r5
+    CallBuiltin       r16, "HermesBuiltin.ensureObject", 3
+    GetByIdShort      r16, r9, 4, "done"
+    JmpTrue           L9, r16
+    CallBuiltin       r16, "HermesBuiltin.generatorSetDelegated", 1
+    SaveGenerator     L3
+    Ret               r9
+L9:
+    GetByIdShort      r9, r9, 5, "value"
+    CompleteGenerator
+    Ret               r9
+L8:
+    CompleteGenerator
+    Ret               r8
+L6:
+    Mov               r3, r7
+    Jmp               L2
+L5:
+    Mov               r18, r6
+    Mov               r17, r4
+    CallBuiltin       r4, "HermesBuiltin.getMethod", 3
+    JStrictEqual      L10, r4, r1
+    Call1             r18, r4, r6
+    Mov               r17, r5
+    CallBuiltin       r4, "HermesBuiltin.ensureObject", 3
+L10:
+    LoadConstString   r18, "yield* delegate m"...
+    CallBuiltin       r4, "HermesBuiltin.throwTypeError", 2
+    CompleteGenerator
+    Ret               r1
+L2:
+    GetByIdShort      r5, r3, 5, "value"
+    GetByIdShort      r4, r2, 6, "log"
+    GetByIdShort      r3, r4, 7, "push"
+    LoadConstString   r2, "never "
+    Add               r2, r2, r5
+    Call2             r2, r3, r4, r2
+    CompleteGenerator
+    Ret               r1
+L1:
+    CompleteGenerator
+    Ret               r0
+
+Exception Handlers:
+0: start = L12, end = L4, target = L4
+1: start = L3, end = L13, target = L4
+
+Function<>(1 params, 3 registers, 1 symbols):
+Offset in debug table: source 0x0c86, scope 0x0000, textified callees 0x0000
+    CreateEnvironment r1
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 0, r0
+    NewObject         r0
+    CreateClosure     r2, r1, Function<next>
+    PutNewOwnByIdShort r0, r2, "next"
+    CreateClosure     r1, r1, Function<return>
+    PutNewOwnByIdShort r0, r1, "return"
+    Ret               r0
+
+Function<next>(1 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x0c95, scope 0x0000, textified callees 0x0000
+    GetEnvironment    r0, 0
+    LoadFromEnvironment r1, r0, 0
+    Inc               r2, r1
+    StoreToEnvironment r0, 0, r2
+    NewObject         r0
+    LoadConstString   r1, "lazy"
+    Add               r1, r1, r2
+    PutNewOwnByIdShort r0, r1, "value"
+    LoadConstFalse    r1
+    PutNewOwnByIdShort r0, r1, "done"
+    Ret               r0
+
+Function<return>(2 params, 12 registers, 0 symbols):
+Offset in debug table: source 0x0cb5, scope 0x0000, textified callees 0x0000
+    LoadParam         r1, 1
+    GetGlobalObject   r0
+    GetByIdShort      r3, r0, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r0, "lazy return "
+    Add               r0, r0, r1
+    Call2             r0, r2, r3, r0
+    GetEnvironment    r0, 0
+    LoadFromEnvironment r2, r0, 0
+    LoadConstUInt8    r0, 2
+    JLess             L1, r2, r0
+    NewObject         r0
+    PutNewOwnByIdShort r0, r1, "value"
+    LoadConstTrue     r1
+    PutNewOwnByIdShort r0, r1, "done"
+    Jmp               L2
+L1:
+    NewObjectWithBuffer r0, 2, 2, 4, 8
+L2:
+    Ret               r0
+
+Function<>(1 params, 3 registers, 0 symbols):
+Offset in debug table: source 0x0cf9, scope 0x0000, textified callees 0x0000
+    CreateEnvironment r1
+    NewObject         r0
+    CreateClosure     r2, r1, Function<next>
+    PutNewOwnByIdShort r0, r2, "next"
+    CreateClosure     r1, r1, Function<return>
+    PutNewOwnByIdShort r0, r1, "return"
+    Ret               r0
+
+Function<next>(1 params, 1 registers, 0 symbols):
+    NewObjectWithBuffer r0, 2, 2, 4, 11
+    Ret               r0
+
+Function<return>(1 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x0d07, scope 0x0000, textified callees 0x0000
+    GetGlobalObject   r0
+    GetByIdShort      r2, r0, 1, "log"
+    GetByIdShort      r1, r2, 2, "push"
+    LoadConstString   r0, "nt closed"
+    Call2             r0, r1, r2, r0
+    NewObject         r0
+    Ret               r0
+
+Function<>(1 params, 2 registers, 1 symbols):
+Offset in debug table: source 0x0d26, scope 0x0000, textified callees 0x0000
+    CreateEnvironment r1
+    LoadConstZero     r0
+    StoreNPToEnvironment r1, 0, r0
+    NewObject         r0
+    CreateClosure     r1, r1, Function<next>
+    PutNewOwnByIdShort r0, r1, "next"
+    Ret               r0
+
+Function<next>(2 params, 14 registers, 0 symbols):
+Offset in debug table: source 0x0d30, scope 0x0000, textified callees 0x0000
+    LoadParam         r2, 1
+    GetEnvironment    r0, 0
+    LoadFromEnvironment r1, r0, 0
+    Inc               r1, r1
+    StoreToEnvironment r0, 0, r1
+    GetGlobalObject   r1
+    GetByIdShort      r5, r1, 1, "log"
+    GetByIdShort      r4, r5, 2, "push"
+    LoadConstString   r3, "custom next "
+    Add               r3, r3, r2
+    Call2             r3, r4, r5, r3
+    LoadFromEnvironment r3, r0, 0
+    LoadConstUInt8    r0, 1
+    JStrictEqual      L1, r3, r0
+    LoadConstString   r0, "end:"
+    Add               r2, r0, r2
+    NewObject         r0
+    PutNewOwnByIdShort r0, r2, "value"
+    LoadConstTrue     r2
+    PutNewOwnByIdShort r0, r2, "done"
+    Jmp               L2
+L1:
+    GetByIdShort      r0, r1, 3, "marker"
+L2:
+    Ret               r0

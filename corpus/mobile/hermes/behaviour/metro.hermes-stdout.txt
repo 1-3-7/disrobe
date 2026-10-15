@@ -1,0 +1,2 @@
+value=5 twice=10 3.14 false
+boot object 0

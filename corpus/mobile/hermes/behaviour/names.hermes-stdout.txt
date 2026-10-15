@@ -1,0 +1,3 @@
+11 label:outer 2+4 6 global 5,global 1,global 2
+report label report fact
+-12

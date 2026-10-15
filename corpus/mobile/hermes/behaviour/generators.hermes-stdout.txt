@@ -1,0 +1,6 @@
+0 3 6 9 {"value":"done","done":true}
+ready 1 2 {"value":"x+y","done":true}
+0,1,1,2,3,5,8,13,21,34
+12345
+0 {"value":42,"done":true} {"done":true}
+1 caught oops true

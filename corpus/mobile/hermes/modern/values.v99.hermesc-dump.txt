@@ -1,0 +1,526 @@
+Bytecode File Information:
+  Bytecode version number: 99
+  Source hash: dd57db19a684819488c3a2e7942a403a8baad514
+  Function count: 2
+  String count: 75
+  BigInt count: 4
+  String Kind Entry count: 2
+  RegExp count: 3
+  StringSwitchImm count: 0
+  Key buffer size (bytes): 3
+  Value buffer size (bytes): 23
+  Shape table count: 1
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..0]: ,
+s1[ASCII, 0..1]: , 
+s2[ASCII, 1..6]:  trim 
+s3[ASCII, 6..6]:  
+s4[ASCII, 6..12]:  times 
+s5[ASCII, 13..13]: !
+s6[ASCII, 14..14]: #
+s7[ASCII, 15..18]: (\d)
+s8[ASCII, 19..29]: (\d+)-(\w+)
+s9[ASCII, 30..30]: .
+s10[ASCII, 31..31]: 1
+s11[ASCII, 31..32]: 10
+s12[ASCII, 33..47]: 12-ab 34-cd 5-e
+s13[ASCII, 51..51]: 2
+s14[ASCII, 52..52]: 5
+s15[ASCII, 53..53]: 9
+s16[ASCII, 54..57]: <$1>
+s17[ASCII, 58..62]: MiXeD
+s18[ASCII, 63..70]: ^[a-z]+$
+s19[ASCII, 71..71]: a
+s20[ASCII, 71..76]: a,b,,c
+s21[ASCII, 76..76]: c
+s22[ASCII, 85..87]: abc
+s23[ASCII, 86..86]: b
+s24[ASCII, 94..96]: and
+s25[ASCII, 98..99]: ff
+s26[ASCII, 99..101]: few
+s27[ASCII, 101..105]: world
+s28[ASCII, 106..111]: filled
+s29[ASCII, 114..114]: g
+s30[ASCII, 114..119]: global
+s31[ASCII, 141..146]: hello 
+s32[ASCII, 150..154]: plain
+s33[ASCII, 153..153]: i
+s34[ASCII, 155..158]: kept
+s35[ASCII, 161..164]: many
+s36[ASCII, 170..177]: replaced
+s37[ASCII, 180..188]: undefined
+s38[ASCII, 189..189]: |
+i39[ASCII, 2..5] #CE1A0C7C: trim
+i40[ASCII, 11..11] #0001CB42: s
+i41[ASCII, 47..50] #B0F82D55: exec
+i42[ASCII, 76..81] #CB8DFA65: concat
+i43[ASCII, 81..84] #1100B6AC: test
+i44[ASCII, 87..93] #B9F959B1: counter
+i45[ASCII, 94..97] #D43BCCF3: andv
+i46[ASCII, 95..95] #0001BE8F: n
+i47[ASCII, 97..97] #0001DF17: v
+i48[ASCII, 112..114] #9B3ABDB7: big
+i49[ASCII, 119..122] #E2C4EF23: lazy
+i50[ASCII, 123..136] #85BBF6F9: HermesInternal
+i51[ASCII, 136..141] #15A9FF56: length
+i52[ASCII, 147..150] #94F4B75D: keep
+i53[ASCII, 158..160] #FDC30421: tag
+i54[ASCII, 165..170] #A8DE31F0: Number
+i55[ASCII, 170..171] #075DAD06: re
+i56[ASCII, 170..176] #72A0F126: replace
+i57[ASCII, 178..182] #EB88C08E: found
+i58[ASCII, 190..205] #0FF5572A: MAX_SAFE_INTEGER
+i59[ASCII, 206..208] #5A7E6397: arr
+i60[ASCII, 208..210] #7C21F8C8: raw
+i61[ASCII, 210..212] #D368D444: who
+i62[ASCII, 211..216] #32EADE2A: holder
+i63[ASCII, 217..220] #874F77A9: join
+i64[ASCII, 221..225] #3DA68E33: match
+i65[ASCII, 226..233] #B5042285: padStart
+i66[ASCII, 233..236] #10B7E708: text
+i67[ASCII, 235..235] #0001E7F9: x
+i68[ASCII, 237..244] #1699B2AE: parseInt
+i69[ASCII, 244..250] #720ECB63: toFixed
+i70[ASCII, 251..255] #A689F65B: print
+i71[ASCII, 255..262] #1E019520: toString
+i72[ASCII, 263..266] #3F21B886: push
+i73[ASCII, 267..271] #0EC469F8: split
+i74[ASCII, 271..281] #713A6BCE: toUpperCase
+
+Literal Value Buffer:
+[int 1]
+[int 2]
+[int 1]
+[int 10]
+[int 20]
+
+Object Key Buffer:
+[String 47]
+
+Object Shape Table:
+0[0, 1]
+
+Global BigInt Table:
+ 0[0..12]: 1234567890123456... (30 decimal digits)
+ 1[13..13]: 2
+ 2[14..14]: 97
+ 3[15..15]: 64
+
+Function<global>(1 params, 46 registers, 12 numbers, 6 non-pointers):
+Offset in debug table: source 0x0000
+    DeclareGlobalVar  "who"
+    DeclareGlobalVar  "n"
+    DeclareGlobalVar  "tag"
+    DeclareGlobalVar  "re"
+    DeclareGlobalVar  "text"
+    DeclareGlobalVar  "found"
+    DeclareGlobalVar  "match"
+    DeclareGlobalVar  "big"
+    DeclareGlobalVar  "counter"
+    DeclareGlobalVar  "holder"
+    DeclareGlobalVar  "arr"
+    DeclareGlobalVar  "s"
+    DeclareGlobalVar  "x"
+    DeclareGlobalVar  "lazy"
+    DeclareGlobalVar  "keep"
+    DeclareGlobalVar  "andv"
+    GetGlobalObject   r18
+    LoadConstUndefined r12
+    CreateClosure     r19, r12, Function<tag>
+    PutByIdLoose      r18, r19, 0, "tag"
+    LoadConstString   r19, "world"
+    PutByIdLoose      r18, r19, 1, "who"
+    LoadConstUInt8    r4, 42
+    PutByIdLoose      r18, r4, 2, "n"
+    TryGetById        r20, r18, 0, "print"
+    GetByIdShort      r26, r18, 1, "who"
+    GetByIdShort      r19, r18, 2, "n"
+    LoadConstUInt8    r4, 1
+    Add               r25, r19, r4
+    GetByIdShort      r19, r18, 2, "n"
+    LoadConstUInt8    r1, 40
+    Greater           r17, r19, r1
+    LoadConstString   r24, "few"
+    JmpFalse          L1, r17
+    LoadConstString   r24, "many"
+L1:
+    TryGetById        r19, r18, 3, "HermesInternal"
+    GetByIdShort      r23, r19, 4, "concat"
+    LoadConstString   r34, " times "
+    LoadConstString   r36, ", "
+    LoadConstString   r38, "hello "
+    Mov               r37, r26
+    Mov               r35, r25
+    Mov               r33, r24
+    Call              r19, r23, 6
+    Call2             r19, r20, r12, r19
+    TryGetById        r21, r18, 0, "print"
+    LoadConstString   r33, "c"
+    LoadConstString   r34, "b"
+    LoadConstString   r35, "a"
+    LoadConstTrue     r13
+    LoadConstZero     r3
+    LoadConstZero     r37
+    LoadConstTrue     r36
+    CallBuiltin       r20, "HermesBuiltin.getTemplateObject", 6
+    GetByIdShort      r19, r18, 5, "tag"
+    LoadConstUInt8    r1, 2
+    Call4             r20, r19, r12, r20, r4, r1
+    LoadConstString   r35, "plain"
+    Mov               r37, r4
+    LoadConstTrue     r36
+    CallBuiltin       r22, "HermesBuiltin.getTemplateObject", 4
+    GetByIdShort      r19, r18, 5, "tag"
+    Call2             r19, r19, r12, r22
+    Call3             r19, r21, r12, r20, r19
+    CreateRegExp      r19, "(\d+)-(\w+)", "g", 0
+    PutByIdLoose      r18, r19, 3, "re"
+    LoadConstString   r19, "12-ab 34-cd 5-e"
+    PutByIdLoose      r18, r19, 4, "text"
+    NewArray          r19, 0
+    PutByIdLoose      r18, r19, 5, "found"
+    GetByIdShort      r21, r18, 6, "re"
+    GetByIdShort      r20, r21, 7, "exec"
+    GetByIdShort      r19, r18, 8, "text"
+    Call2             r19, r20, r21, r19
+    PutByIdLoose      r18, r19, 6, "match"
+    LoadConstNull     r17
+    JStrictEqual      L2, r19, r17
+L3:
+    GetByIdShort      r21, r18, 9, "found"
+    GetByIdShort      r20, r21, 10, "push"
+    GetByIdShort      r19, r18, 11, "match"
+    GetByIndex        r22, r19, 2
+    GetByIdShort      r19, r18, 11, "match"
+    GetByIndex        r19, r19, 1
+    Add               r19, r22, r19
+    Call2             r19, r20, r21, r19
+    GetByIdShort      r21, r18, 6, "re"
+    GetByIdShort      r20, r21, 7, "exec"
+    GetByIdShort      r19, r18, 8, "text"
+    Call2             r19, r20, r21, r19
+    PutByIdLoose      r18, r19, 6, "match"
+    JStrictNotEqual   L3, r19, r17
+L2:
+    TryGetById        r22, r18, 0, "print"
+    GetByIdShort      r21, r18, 9, "found"
+    GetByIdShort      r20, r21, 12, "join"
+    LoadConstString   r19, " "
+    Call2             r21, r20, r21, r19
+    GetByIdShort      r24, r18, 8, "text"
+    GetByIdShort      r23, r24, 13, "replace"
+    LoadConstString   r20, "<$1>"
+    CreateRegExp      r19, "(\d)", "g", 1
+    Call3             r20, r23, r24, r19, r20
+    CreateRegExp      r24, "^[a-z]+$", "i", 2
+    GetByIdShort      r23, r24, 14, "test"
+    LoadConstString   r19, "MiXeD"
+    Call2             r19, r23, r24, r19
+    Call4             r19, r22, r12, r21, r20, r19
+    TryGetById        r23, r18, 0, "print"
+    LoadConstString   r20, "abc"
+    GetByIdShort      r19, r20, 15, "toUpperCase"
+    Call1             r22, r19, r20
+    LoadConstString   r20, "a,b,,c"
+    GetByIdShort      r19, r20, 16, "split"
+    LoadConstString   r25, ","
+    Call2             r19, r19, r20, r25
+    GetByIdShort      r21, r19, 17, "length"
+    LoadConstString   r20, " trim "
+    GetByIdShort      r19, r20, 18, "trim"
+    Call1             r20, r19, r20
+    LoadConstString   r19, "!"
+    Add               r35, r20, r19
+    LoadConstString   r26, "x"
+    GetByIdShort      r24, r26, 19, "padStart"
+    LoadConstString   r19, "."
+    LoadConstUInt8    r5, 3
+    Call3             r34, r24, r26, r5, r19
+    LoadConstUndefined r38
+    Mov               r37, r22
+    Mov               r36, r21
+    Call              r19, r23, 5
+    LoadConstBigInt   r19, 1234567890123456... (30 decimal digits)n
+    PutByIdLoose      r18, r19, 7, "big"
+    TryGetById        r24, r18, 0, "print"
+    GetByIdShort      r19, r18, 20, "big"
+    LoadConstBigInt   r26, 2n
+    Mul               r23, r19, r26
+    GetByIdShort      r19, r18, 20, "big"
+    Negate            r22, r19
+    GetByIdShort      r20, r18, 20, "big"
+    LoadConstBigInt   r19, 97n
+    Mod               r35, r20, r19
+    GetByIdShort      r19, r18, 20, "big"
+    LoadConstBigInt   r36, 64n
+    Mov               r37, r26
+    CallBuiltin       r33, "HermesBuiltin.exponentiationOperator", 3
+    TypeOf            r34, r19
+    LoadConstUndefined r38
+    Mov               r37, r23
+    Mov               r36, r22
+    Call              r19, r24, 6
+    TryGetById        r19, r18, 0, "print"
+    LoadConstDouble   r29, 9007199254740992
+    LoadConstDouble   r30, 0.30000000000000004
+    LoadConstDouble   r31, 1e-7
+    LoadConstDouble   r32, 1e+21
+    LoadConstDouble   r2, -Infinity
+    LoadConstDouble   r34, Infinity
+    LoadConstTrue     r37
+    Mov               r36, r2
+    LoadConstTrue     r35
+    Mov               r33, r2
+    Call              r19, r19, 10
+    TryGetById        r23, r18, 0, "print"
+    TryGetById        r19, r18, 21, "Number"
+    GetByIdShort      r22, r19, 22, "MAX_SAFE_INTEGER"
+    LoadConstUInt8    r2, 255
+    GetByIdShort      r19, r2, 23, "toString"
+    LoadConstUInt8    r0, 16
+    Call2             r21, r19, r2, r0
+    TryGetById        r20, r18, 24, "parseInt"
+    LoadConstString   r19, "ff"
+    Call3             r35, r20, r12, r19, r0
+    LoadConstDouble   r0, 3.14159
+    GetByIdShort      r19, r0, 25, "toFixed"
+    Call2             r34, r19, r0, r1
+    LoadConstUndefined r38
+    Mov               r37, r22
+    Mov               r36, r21
+    Call              r19, r23, 5
+    TryGetById        r19, r18, 0, "print"
+    LoadConstInt      r27, -2147483648
+    LoadConstInt      r28, 1024
+    LoadConstInt      r29, -6
+    LoadConstUInt8    r30, 6
+    LoadConstUInt8    r0, 7
+    LoadConstUInt8    r33, 15
+    LoadConstInt      r35, -2
+    LoadConstDouble   r37, 2.5
+    Mov               r36, r1
+    Mov               r34, r5
+    Mov               r32, r4
+    Mov               r31, r0
+    Call              r19, r19, 12
+    TryGetById        r22, r18, 0, "print"
+    NewObject         r20
+    NewArray          r19, 0
+    Add               r31, r19, r20
+    NewArrayWithBuffer r19, 2, 2, 0
+    AddEmptyString    r30, r19
+    LoadConstDouble   r32, NaN
+    Add               r34, r13, r4
+    LoadConstString   r24, "5"
+    Sub               r35, r24, r1
+    Add               r36, r24, r1
+    LoadConstString   r23, "2"
+    Mul               r37, r24, r23
+    Mov               r33, r4
+    Call              r19, r22, 9
+    TryGetById        r20, r18, 0, "print"
+    LoadConstString   r19, "1"
+    Eq                r32, r19, r4
+    LoadConstString   r19, "9"
+    LoadConstString   r21, "10"
+    Less              r36, r21, r19
+    LoadConstTrue     r37
+    LoadConstFalse    r35
+    LoadConstTrue     r34
+    LoadConstFalse    r33
+    LoadConstFalse    r31
+    Call              r20, r20, 8
+    PutByIdLoose      r18, r3, 8, "counter"
+    NewObjectWithBuffer r20, 0, 9
+    PutByIdLoose      r18, r20, 9, "holder"
+    NewArrayWithBuffer r20, 2, 2, 14
+    PutByIdLoose      r18, r20, 10, "arr"
+    TryGetById        r26, r18, 0, "print"
+    GetByIdShort      r20, r18, 26, "counter"
+    ToNumeric         r24, r20
+    Inc               r20, r24
+    PutByIdLoose      r18, r20, 8, "counter"
+    GetByIdShort      r20, r18, 26, "counter"
+    Inc               r23, r20
+    PutByIdLoose      r18, r23, 8, "counter"
+    GetByIdShort      r20, r18, 26, "counter"
+    ToNumeric         r22, r20
+    Dec               r20, r22
+    PutByIdLoose      r18, r20, 8, "counter"
+    GetByIdShort      r20, r18, 26, "counter"
+    Dec               r21, r20
+    PutByIdLoose      r18, r21, 8, "counter"
+    GetByIdShort      r33, r18, 26, "counter"
+    Mov               r37, r24
+    Mov               r36, r23
+    Mov               r35, r22
+    Mov               r34, r21
+    Call              r20, r26, 6
+    TryGetById        r24, r18, 0, "print"
+    GetByIdShort      r21, r18, 27, "holder"
+    GetByIdShort      r20, r21, 28, "v"
+    ToNumeric         r23, r20
+    Inc               r20, r23
+    PutByIdLoose      r21, r20, 11, "v"
+    GetByIdShort      r20, r18, 27, "holder"
+    GetByIdShort      r21, r20, 28, "v"
+    Inc               r22, r21
+    PutByIdLoose      r20, r22, 11, "v"
+    GetByIdShort      r26, r18, 27, "holder"
+    GetByIdShort      r20, r26, 28, "v"
+    ToNumeric         r21, r20
+    Dec               r20, r21
+    PutByIdLoose      r26, r20, 11, "v"
+    GetByIdShort      r20, r18, 27, "holder"
+    GetByIdShort      r34, r20, 28, "v"
+    Mov               r37, r23
+    Mov               r36, r22
+    Mov               r35, r21
+    Call              r20, r24, 5
+    TryGetById        r23, r18, 0, "print"
+    GetByIdShort      r21, r18, 29, "arr"
+    GetByIndex        r20, r21, 0
+    ToNumeric         r22, r20
+    Inc               r20, r22
+    PutByValLoose     r21, r3, r20
+    GetByIdShort      r20, r18, 29, "arr"
+    GetByIndex        r21, r20, 1
+    Inc               r21, r21
+    PutByValLoose     r20, r4, r21
+    GetByIdShort      r24, r18, 29, "arr"
+    GetByIdShort      r20, r24, 12, "join"
+    Call2             r20, r20, r24, r25
+    Call4             r20, r23, r12, r22, r21, r20
+    PutByIdLoose      r18, r19, 12, "s"
+    GetByIdShort      r19, r18, 30, "s"
+    Inc               r19, r19
+    PutByIdLoose      r18, r19, 12, "s"
+    TryGetById        r21, r18, 0, "print"
+    GetByIdShort      r20, r18, 30, "s"
+    GetByIdShort      r19, r18, 30, "s"
+    TypeOf            r19, r19
+    Call3             r19, r21, r12, r20, r19
+    LoadConstUInt8    r3, 10
+    PutByIdLoose      r18, r3, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    LoadConstUInt8    r3, 5
+    Add               r19, r19, r3
+    PutByIdLoose      r18, r19, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    Sub               r3, r19, r5
+    PutByIdLoose      r18, r3, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    Mul               r3, r19, r1
+    PutByIdLoose      r18, r3, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    LoadConstUInt8    r3, 4
+    Div               r2, r19, r3
+    PutByIdLoose      r18, r2, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    Mod               r3, r19, r3
+    PutByIdLoose      r18, r3, 13, "x"
+    GetByIdShort      r37, r18, 31, "x"
+    Mov               r36, r5
+    CallBuiltin       r5, "HermesBuiltin.exponentiationOperator", 3
+    PutByIdLoose      r18, r5, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    LShift            r5, r19, r1
+    PutByIdLoose      r18, r5, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    RShift            r5, r19, r4
+    PutByIdLoose      r18, r5, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    BitOr             r5, r19, r4
+    PutByIdLoose      r18, r5, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    BitAnd            r0, r19, r0
+    PutByIdLoose      r18, r0, 13, "x"
+    GetByIdShort      r19, r18, 31, "x"
+    BitXor            r1, r19, r1
+    PutByIdLoose      r18, r1, 13, "x"
+    TryGetById        r20, r18, 0, "print"
+    GetByIdShort      r19, r18, 31, "x"
+    Call2             r19, r20, r12, r19
+    PutByIdLoose      r18, r17, 14, "lazy"
+    GetByIdShort      r19, r18, 32, "lazy"
+    JNotEqual         L4, r19, r17
+    LoadConstString   r19, "filled"
+    PutByIdLoose      r18, r19, 14, "lazy"
+L4:
+    LoadConstString   r19, "kept"
+    PutByIdLoose      r18, r19, 15, "keep"
+    GetByIdShort      r19, r18, 33, "keep"
+    JmpTrue           L5, r19
+    LoadConstString   r19, "replaced"
+    PutByIdLoose      r18, r19, 15, "keep"
+L5:
+    PutByIdLoose      r18, r4, 16, "andv"
+    GetByIdShort      r19, r18, 34, "andv"
+    JmpFalse          L6, r19
+    LoadConstString   r19, "and"
+    PutByIdLoose      r18, r19, 16, "andv"
+L6:
+    TryGetById        r22, r18, 0, "print"
+    GetByIdShort      r37, r18, 32, "lazy"
+    GetByIdShort      r36, r18, 33, "keep"
+    GetByIdShort      r35, r18, 34, "andv"
+    LoadConstString   r33, "undefined"
+    LoadConstUndefined r38
+    LoadConstUndefined r34
+    Call              r18, r22, 6
+    Ret               r18
+
+Function<tag>(2 params, 16 registers, 1 numbers, 0 non-pointers):
+Offset in debug table: source 0x028b
+    LoadParam         r2, 1
+    LoadConstUInt8    r7, 1
+    CallBuiltin       r6, "HermesBuiltin.copyRestArgs", 2
+    GetByIdShort      r4, r2, 0, "raw"
+    GetByIdShort      r3, r4, 1, "join"
+    LoadConstString   r1, "|"
+    Call2             r1, r3, r4, r1
+    LoadConstString   r3, "#"
+    Add               r4, r1, r3
+    GetByIdShort      r5, r6, 1, "join"
+    LoadConstString   r1, ","
+    Call2             r1, r5, r6, r1
+    Add               r1, r4, r1
+    GetByIdShort      r2, r2, 2, "length"
+    AddS              r1, r1, r3
+    Add               r1, r1, r2
+    Ret               r1
+
+RegExp Bytecodes:
+0: /(\d+)-(\w+)/g
+  Header: marked: 2 loops: 2 flags: 2 constraints: 4
+  0000  BeginMarkedSubexpression: 0
+  0003  Width1Loop: 0 greedy {1, 4294967295}
+  0015  Bracket: [\d]
+  001b  EndMarkedSubexpression: 0
+  001e  MatchChar8: '-'
+  0020  BeginMarkedSubexpression: 1
+  0023  Width1Loop: 1 greedy {1, 4294967295}
+  0035  Bracket: [\w]
+  003b  EndMarkedSubexpression: 1
+  003e  Goal
+1: /(\d)/g
+  Header: marked: 1 loops: 0 flags: 2 constraints: 4
+  0000  BeginMarkedSubexpression: 0
+  0003  Bracket: [\d]
+  0009  EndMarkedSubexpression: 0
+  000c  Goal
+2: /^[a-z]+$/i
+  Header: marked: 0 loops: 1 flags: 1 constraints: 6
+  0000  LeftAnchor
+  0001  Width1Loop: 0 greedy {1, 4294967295}
+  0013  Bracket: [A-Za-z]
+  0029  RightAnchor
+  002a  Goal

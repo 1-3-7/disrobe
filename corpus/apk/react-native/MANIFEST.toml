@@ -1,0 +1,78 @@
+schema_version = 1
+crate = "disrobe-pass-mobile"
+generated = "2026-10-15"
+toolchain = "aapt2 2.20-14042983 (Android build-tools 36.1), Node.js 24.21.0, Pillow 12.3.0 (JPEG and lossless WebP pixels), Python 3 standard library (PNG pixels, IPA zip)"
+command = "python build.py <aapt2> <node>"
+purpose = "Authored React Native APKs and an IPA for tests/react_native_assets.rs. The packaged bundles are the self-authored corpus/mobile/hermes/behaviour/rnassets.js compiled by hermesc (v89, v94, v98) or written out as Metro's minifier shapes it (rnassets.min.js); each asset file sits where React Native's own asset copy step puts the packager asset it belongs to, and aapt2 compiled and linked the Android resource table."
+
+[provenance]
+records = "the packager asset records are line 2 of corpus/mobile/hermes/behaviour/rnassets.hermes-stdout.txt, printed by the reference hermes interpreter running the bundle"
+paths = "asset_paths.js runs reference/saveAssets.js with reference/filterPlatformAssetScales.js, reference/getAssetDestPathAndroid.js and reference/getAssetDestPathIOS.js, copied unchanged from the dist/commands/bundle directory of npm @react-native/community-cli-plugin 0.87.1 (tarball sha256 d1d1b4309bb34273e1c2d519fdb900fe3e037251c773c38166494e212be6309b), and reference/AndroidPathUtils.js from npm @react-native/asset-utils 0.87.1 (tarball sha256 bbc0beedfa3c553ef2c7dfe99280d4850899caeefaf6cf2968f47cba1c065f03); both are MIT, licence text in reference/LICENSE. The harness hands saveAssets a recording file system and node's posix path module, as on the macOS and Linux hosts React Native builds run on, and prints one JSON array of written paths per record"
+minified = "rnassets.min.js is hand-written in the shape Metro's minifier emits (bare keys, !0, .75, factories with one-letter parameters); node running it prints exactly behaviour/rnassets.hermes-stdout.txt"
+omitted = "res/drawable-xxxhdpi/node_modules_scope_icons_assets_iconback.webp and the iOS assets/node_modules/@scope/icons/assets/Icon-Back@3x.webp are left out, as in a build whose densities moved to a split, so a correct locator reports them missing"
+font = "the ttf asset is a 12-byte sfnt header with no tables, not a usable font; aapt2 copies raw resources unchanged"
+shortening = "rnassets-short.map.txt is the --resource-path-shortening-map aapt2 optimize wrote for rnassets-short.apk, sorted; it is the reference for where each linked file went"
+
+[[fixture]]
+path = "reference/AndroidPathUtils.js"
+size_bytes = 2350
+sha256 = "eb0d942a8dd4280c8b100c332ab3e6591977eba0845513d264c0c5a997127bf2"
+
+[[fixture]]
+path = "reference/saveAssets.js"
+size_bytes = 3758
+sha256 = "76b1e314d31113eb3a8f7e83a19472f20e2e64499ee96ec36447d440822a8a61"
+
+[[fixture]]
+path = "reference/filterPlatformAssetScales.js"
+size_bytes = 764
+sha256 = "6b714893da569a4dd8b363da34a6629b551312b42b80f764fd43faa7135f346e"
+
+[[fixture]]
+path = "reference/getAssetDestPathAndroid.js"
+size_bytes = 659
+sha256 = "d2c4935030ce293bf008ffc8faa801688ded33f7da472ccffbb581e5d5801342"
+
+[[fixture]]
+path = "reference/getAssetDestPathIOS.js"
+size_bytes = 572
+sha256 = "787c18ded4f0e7d368769bc34e17ddbd5814b8cede188b0b1e9c1a79e124b5ab"
+
+[[fixture]]
+path = "asset_paths.js"
+size_bytes = 2521
+sha256 = "68223dcd46d30d67d5db1a6a5986cc47f193ae06ca423f098dc7fcdb038776ea"
+
+[[fixture]]
+path = "rnassets.min.js"
+size_bytes = 1494
+sha256 = "b5a7f9ba75fa0edbd6b3138337b4625bef74da6f5445b3768cb44d2e81038e7c"
+
+[[fixture]]
+path = "rnassets.apk"
+size_bytes = 8404
+sha256 = "ecb896dfe0dcf4f1f7a154fb49f2bce0b415663575167ef24bee795dcd4f1836"
+layout = "assets/index.android.bundle is behaviour/rnassets.hbc (HBC v89); aapt2 link put each density folder under its -v4 form, res/drawable-mdpi-v4/src_images_logo.png and so on"
+
+[[fixture]]
+path = "rnassets-js.apk"
+size_bytes = 7450
+sha256 = "2d1d8373886e9e002979b23b003745cf27602258ec0c72f1e9ee1ba9fea27a02"
+layout = "the same resources as rnassets.apk, with rnassets.min.js as assets/index.android.bundle"
+
+[[fixture]]
+path = "rnassets-short.apk"
+size_bytes = 7240
+sha256 = "7c5a92356947472f528f6cdea5c34aaaea95f71cd382a9f6e4572ecc7b6bbf3f"
+layout = "assets/index.android.bundle is modern/rnassets.hbc.v98 (HBC v98); aapt2 optimize --shorten-resource-paths renamed every res/ file, so only resources.arsc ties a file to its resource name and density"
+
+[[fixture]]
+path = "rnassets-short.map.txt"
+size_bytes = 663
+sha256 = "dd517f73850dbf6788b3094fdaaf44ba06176d7075ef4464d7ca8fe0bc6c94fe"
+
+[[fixture]]
+path = "rnassets.ipa"
+size_bytes = 4205
+sha256 = "19f16c09a91e455f7fbc7dc026061b7c1f6282277215d02734faff096292ea1c"
+layout = "Payload/RnAssets.app/main.jsbundle is bands/rnassets.hbc.v94 (HBC v94) beside an Info.plist and the asset files at the paths the iOS copy step writes under the app; entries dated 1980-01-01, deflated, sorted"

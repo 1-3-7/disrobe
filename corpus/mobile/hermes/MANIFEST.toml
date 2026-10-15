@@ -177,3 +177,1343 @@ license = "proprietary"
 size_bytes = 66978221
 sha256 = "a424dd6d6086bbf2ac56132eec4572751263f3b6911e0db4c4fbeebc12c26d2b"
 notes = "Mercurial-style binary diff (MBSDIFF43 magic) for hot-update delivery, not Hermes bytecode."
+
+[[sample]]
+name = "behaviour/mixed.hbc"
+source_url = "self-authored behaviour/mixed.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3146
+sha256 = "050ed74cb5b85ba2e4e7c3e11d289293af7b9eef29cdadaf0d320d7f83bd54c7"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/mixed.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/control.hbc"
+source_url = "self-authored behaviour/control.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2394
+sha256 = "9cfbc176a478d3cf218536b3648e217feb5eeffde916bc28b76817f1e784eb7d"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/control.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/closures.hbc"
+source_url = "self-authored behaviour/closures.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3156
+sha256 = "386c146019dd478a530422c5f8149b1b8aa83aeda676010d2a819686a0d56088"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/closures.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/objects.hbc"
+source_url = "self-authored behaviour/objects.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4937
+sha256 = "a66888da92833fe05bcee39af629db3a297a68ab006b452cf2021448809c6436"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/objects.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/exceptions.hbc"
+source_url = "self-authored behaviour/exceptions.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2672
+sha256 = "78e1bd76f657038c32f2f7799555f5394d61db0723f277bd4d4d03fb8ed417b2"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/exceptions.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/generators.hbc"
+source_url = "self-authored behaviour/generators.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2327
+sha256 = "3a8a830b64a2dcc3edbe4a6a1c243c27db0f00723fa642ded34ec270b6ad8573"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/generators.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/async.hbc"
+source_url = "self-authored behaviour/async.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2285
+sha256 = "4fa40bccd75ec4f732a0843a92db61b6b4de73d4f33d863da630397b6d18f385"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/async.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/values.hbc"
+source_url = "self-authored behaviour/values.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3662
+sha256 = "b4aee0f37c77f0f75386b862c136ef0e8e6ac4f21632ee6dc71d6b2f19618b80"
+hermes_version_detected = 89
+notes = """
+Reference output: behaviour/values.hermes-stdout.txt, printed by the hermes interpreter of the
+same release running this bytecode. tests/hermes_behaviour.rs re-executes the decompiled module
+under node and compares the two.
+"""
+
+[[sample]]
+name = "behaviour/metro.hbc"
+source_url = "self-authored behaviour/metro.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2401
+sha256 = "6d089976be0a985408026ee521d20c02d946f780b99bb35a1c80d6d16b2ef438"
+hermes_version_detected = 89
+notes = """
+A Metro-format bundle written for this fixture: a small module registry runtime defines __d and
+__r, four modules register through __d(factory, id, dependencies), and __r(0) runs the entry.
+Reference output: behaviour/metro.hermes-stdout.txt from the hermes interpreter of the same
+release. tests/hermes_behaviour.rs re-executes the decompiled module under node and checks the
+recovered module table.
+"""
+
+[[sample]]
+name = "behaviour/construct.hbc"
+source_url = "self-authored behaviour/construct.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2223
+sha256 = "2cbe5426f8d6a5d0aaa04261f88af365dc0d0a082521bd8fa408b2333257497e"
+hermes_version_detected = 89
+notes = """
+Construction shapes: new with a conditional argument, a constructor that returns an object, new
+on a member chain, new on a computed callee, and new with spread arguments. Reference output:
+behaviour/construct.hermes-stdout.txt from the hermes interpreter of the same release.
+"""
+
+[[sample]]
+name = "behaviour/cleanup.hbc"
+source_url = "self-authored behaviour/cleanup.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 7430
+sha256 = "c46530bea821375b09766edaff291034d3e87108c42818dc592c528b85c5d82b"
+hermes_version_detected = 89
+notes = """
+Generator return paths: return() on generators suspended inside try/finally, nested finally,
+a finally that overrides the return value, for-of loops whose iterators must be closed, a cleanup
+that throws, a cleanup with branches and a loop, and a cleanup that yields. Reference output:
+behaviour/cleanup.hermes-stdout.txt from the hermes interpreter of the same release.
+"""
+
+[[sample]]
+name = "behaviour/delegation.hbc"
+source_url = "self-authored behaviour/delegation.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6947
+sha256 = "879a2cbff9e05ce46eae688fc7a9f318e573ce93623da07e533641778a9d3a2a"
+hermes_version_detected = 89
+notes = """
+yield* delegation: next, throw and return forwarded to an inner generator, to an array, to an
+iterator without a throw method, to an iterator whose results pass through by identity, and to an
+iterator whose return() declines to finish. Reference output:
+behaviour/delegation.hermes-stdout.txt from the hermes interpreter of the same release.
+"""
+
+[[sample]]
+name = "modern/sample.hbc.v98"
+source_url = "self-authored sample/sample.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1426
+sha256 = "9c58ee4d169eeb1dd84fc433ca7c00688daf8058e9d65e4ac51e22566e1925d0"
+hermes_version_detected = 98
+notes = """
+Reference: modern/sample.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/sample.hbc.v99"
+source_url = "self-authored sample/sample.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1394
+sha256 = "e216c1e64d27c40f43bf5f23c11191ce96813f7b083a3859b072d5ec92ef809b"
+hermes_version_detected = 99
+notes = """
+Reference: modern/sample.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/mixed.hbc.v98"
+source_url = "self-authored behaviour/mixed.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4261
+sha256 = "7d5924f63d3f6d99fcd2e1c501ce9cb04e7f0196346838967593602512d924e7"
+hermes_version_detected = 98
+notes = """
+Reference: modern/mixed.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/mixed.hbc.v99"
+source_url = "self-authored behaviour/mixed.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4213
+sha256 = "321943514646d3de5d9954b9fc643085cc5be7cda50cd650cdf135018d1fa926"
+hermes_version_detected = 99
+notes = """
+Reference: modern/mixed.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/control.hbc.v98"
+source_url = "self-authored behaviour/control.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2624
+sha256 = "bad1855e5e067a4019fb7ee9ef0f3b30ccc214949c8d3b50408f3e3082e79ec2"
+hermes_version_detected = 98
+notes = """
+Reference: modern/control.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/control.hbc.v99"
+source_url = "self-authored behaviour/control.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2600
+sha256 = "74ee3587b394d455ce7fbcb38c4a741958f17f0f8e37f9b1afc74e319f7fbce0"
+hermes_version_detected = 99
+notes = """
+Reference: modern/control.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/closures.hbc.v98"
+source_url = "self-authored behaviour/closures.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3389
+sha256 = "3b2d289ea655381a14042321183261ab2a10c4c779ab4fffbaf293b63af126cb"
+hermes_version_detected = 98
+notes = """
+Reference: modern/closures.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/closures.hbc.v99"
+source_url = "self-authored behaviour/closures.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3329
+sha256 = "b0851b31ed72abb848a49aeb883ca50270646515c83578fb2b6aefb6fdde0ea6"
+hermes_version_detected = 99
+notes = """
+Reference: modern/closures.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/objects.hbc.v98"
+source_url = "self-authored behaviour/objects.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 5412
+sha256 = "1d3c14e518c7349eee0a207d0513b7980b6fd893e537a5cc3cfc58c3ffe71128"
+hermes_version_detected = 98
+notes = """
+Reference: modern/objects.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/objects.hbc.v99"
+source_url = "self-authored behaviour/objects.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 5356
+sha256 = "eee8f92041c5bf6601ead293517e4bd83139307bf3d76cb752b45eecb16e5b35"
+hermes_version_detected = 99
+notes = """
+Reference: modern/objects.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/exceptions.hbc.v98"
+source_url = "self-authored behaviour/exceptions.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2991
+sha256 = "02a8079abe9be120167520af4a6e8be9b923ef0cf97eefeaa350c233c50e3077"
+hermes_version_detected = 98
+notes = """
+Reference: modern/exceptions.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/exceptions.hbc.v99"
+source_url = "self-authored behaviour/exceptions.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2959
+sha256 = "7006e77cd732215c85778c2b8dac5e6c81e83931476f16eac92f38b511c72da1"
+hermes_version_detected = 99
+notes = """
+Reference: modern/exceptions.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/generators.hbc.v98"
+source_url = "self-authored behaviour/generators.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4153
+sha256 = "f71bb819def8ed426c3289eae8e399bf676d39b7eb6780ad15d1d9ec4320d320"
+hermes_version_detected = 98
+notes = """
+Reference: modern/generators.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/generators.hbc.v99"
+source_url = "self-authored behaviour/generators.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4129
+sha256 = "30e124e607af27aec447fa3932985fbd88ac329577d38076360275c3a0cdb436"
+hermes_version_detected = 99
+notes = """
+Reference: modern/generators.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/async.hbc.v98"
+source_url = "self-authored behaviour/async.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4514
+sha256 = "6bc07a14d882092a365d7c0a7be32e76e870f40ca6265e644a7822de4116395d"
+hermes_version_detected = 98
+notes = """
+Reference: modern/async.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/async.hbc.v99"
+source_url = "self-authored behaviour/async.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4454
+sha256 = "778d7c4f8c44e9c3b183ad1b91f9ede0c3d49b41ae73d22c20a7ad7a7663f5ff"
+hermes_version_detected = 99
+notes = """
+Reference: modern/async.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/values.hbc.v98"
+source_url = "self-authored behaviour/values.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3699
+sha256 = "29565fe51ede2fb655635f79b5747e8c5f65172f012ad3e146edf63e038bc80d"
+hermes_version_detected = 98
+notes = """
+Reference: modern/values.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/values.hbc.v99"
+source_url = "self-authored behaviour/values.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3691
+sha256 = "5646d0a229ac8295774b7f174d06823031f7b0e451b1ac8d344b0a2125954f55"
+hermes_version_detected = 99
+notes = """
+Reference: modern/values.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/metro.hbc.v98"
+source_url = "self-authored behaviour/metro.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3080
+sha256 = "524926896cc84c3fa0c913d7f34c63590b8de12380038d47c46ed76dd8e03802"
+hermes_version_detected = 98
+notes = """
+Reference: modern/metro.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/metro.hbc.v99"
+source_url = "self-authored behaviour/metro.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3028
+sha256 = "7ee590e74cf0561ea8e36a7291ab2675b99bcb308a8e69c26c2cc43a8ecee23b"
+hermes_version_detected = 99
+notes = """
+Reference: modern/metro.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/construct.hbc.v98"
+source_url = "self-authored behaviour/construct.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2493
+sha256 = "381deca2253f1093c532b112b6750cfbaa8f065e57c2792159d8dcd9ffbc229d"
+hermes_version_detected = 98
+notes = """
+Reference: modern/construct.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/construct.hbc.v99"
+source_url = "self-authored behaviour/construct.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2441
+sha256 = "8f8b4d51855347781773f4f1d1858bba727756efa49e0b5d4782a72cf4535ced"
+hermes_version_detected = 99
+notes = """
+Reference: modern/construct.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/cleanup.hbc.v98"
+source_url = "self-authored behaviour/cleanup.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 11622
+sha256 = "55b728916d8dde7f84762bb3f5f48d8b505eb719c1c8be870bccf04c242ee611"
+hermes_version_detected = 98
+notes = """
+Reference: modern/cleanup.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/cleanup.hbc.v99"
+source_url = "self-authored behaviour/cleanup.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 11566
+sha256 = "bf0fb064dcb1004c6be7f11144f89080dda98af3f1e9e08f57de2484d784e71f"
+hermes_version_detected = 99
+notes = """
+Reference: modern/cleanup.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/delegation.hbc.v98"
+source_url = "self-authored behaviour/delegation.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 9903
+sha256 = "f8fe8315cce5563fb7037a2150dab8163fb431400c7780c04dd285385824fe7c"
+hermes_version_detected = 98
+notes = """
+Reference: modern/delegation.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/delegation.hbc.v99"
+source_url = "self-authored behaviour/delegation.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 9889
+sha256 = "7e8e557930879c1f031fb52b5c35493e2b02eb6ae2f68e753843b6da3b6b7003"
+hermes_version_detected = 99
+notes = """
+Reference: modern/delegation.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables. tests/hermes_modern_disassembly.rs grades the string table,
+literal buffers, shape table, function names, instruction sequences and exception handlers.
+"""
+
+[[sample]]
+name = "modern/features.hbc.v98"
+source_url = "self-authored modern/features.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6274
+sha256 = "f1da727ca78fde9063d142d23fa71366e21a2c49e35f1aaa4607c82d17d6e3a3"
+hermes_version_detected = 98
+notes = """
+Classes with a derived class, super calls and super property reads, private fields and `#x in`,
+static fields and methods, a string switch, typeof checks, optional chaining, destructuring with
+defaults, computed and accessor keys, a generator and an async function. Reference:
+modern/features.v98.hermesc-dump.txt for the disassembly; node running modern/features.js for the
+re-executed output (hermesc compiles without -Xes6-block-scoping, as React Native does, so the
+program captures loop variables through function parameters).
+"""
+
+[[sample]]
+name = "modern/features.hbc.v99"
+source_url = "self-authored modern/features.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6206
+sha256 = "513eb51b6bc254742b0a5d094d9dc7be3ae6da73149cd62d28df892f027da16e"
+hermes_version_detected = 99
+notes = """
+Classes with a derived class, super calls and super property reads, private fields and `#x in`,
+static fields and methods, a string switch, typeof checks, optional chaining, destructuring with
+defaults, computed and accessor keys, a generator and an async function. Reference:
+modern/features.v99.hermesc-dump.txt for the disassembly; node running modern/features.js for the
+re-executed output (hermesc compiles without -Xes6-block-scoping, as React Native does, so the
+program captures loop variables through function parameters).
+"""
+
+[[sample]]
+name = "behaviour/names.hbc"
+source_url = "self-authored behaviour/names.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1472
+sha256 = "b8aad3e2bfadbfd44a0801fb3c3ce9e4eabd0b34ee844e7ca9eb60b1479e9c79"
+hermes_version_detected = 89
+notes = """
+Function names against the scope they are read from: object methods named like the global
+functions they call, a named function expression that recurses through its own name, and a
+global function reassigned after another binding kept it. Reference output:
+behaviour/names.hermes-stdout.txt from the hermes interpreter of the same release.
+"""
+
+[[sample]]
+name = "modern/names.hbc.v98"
+source_url = "self-authored behaviour/names.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1802
+sha256 = "5561c860b938d7c2aa9ef819435b65879a0d279067eed0dbf4e0c8e727116008"
+hermes_version_detected = 98
+notes = """
+Reference: modern/names.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables, and node running behaviour/names.js.
+"""
+
+[[sample]]
+name = "modern/names.hbc.v99"
+source_url = "self-authored behaviour/names.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1766
+sha256 = "4fe48b6fe5e488972fbf573386126876d4ebac803ca5832a6007bd6809aa587a"
+hermes_version_detected = 99
+notes = """
+Reference: modern/names.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler for
+these bytes up to its debug tables, and node running behaviour/names.js.
+"""
+
+[[sample]]
+name = "behaviour/rnassets.hbc"
+source_url = "self-authored behaviour/rnassets.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2551
+sha256 = "8db21e4f906ad458b314779291190507a98d6316997e045accf7acceb69fcf86"
+hermes_version_detected = 89
+notes = """
+A Metro-shaped bundle whose asset modules register React Native packager asset records (image
+scales, a font, a location with a parent segment and a name with a space) with an asset
+registry module, as Metro emits for require() of an image or font. Reference output:
+behaviour/rnassets.hermes-stdout.txt from the hermes interpreter of the same release, which
+prints the registered records as JSON.
+"""
+
+[[sample]]
+name = "modern/rnassets.hbc.v98"
+source_url = "self-authored behaviour/rnassets.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2926
+sha256 = "a692d9d8fdb7bbd99ef53c3fbafb43e59016ddf8dc4ec1cf73a82a66d8f35b2d"
+hermes_version_detected = 98
+notes = """
+Reference: modern/rnassets.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler
+for these bytes up to its debug tables, and node running behaviour/rnassets.js.
+"""
+
+[[sample]]
+name = "modern/rnassets.hbc.v99"
+source_url = "self-authored behaviour/rnassets.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2882
+sha256 = "ca6d997a56ef477b2f968184ccd5c8e4dd4790235f5c564bbfe1b72b38cf8f5b"
+hermes_version_detected = 99
+notes = """
+Reference: modern/rnassets.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler
+for these bytes up to its debug tables, and node running behaviour/rnassets.js.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v85"
+source_url = "self-authored sample.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1158
+sha256 = "c5916c2e01141de879e3d8552f72feb4c23b70e8c3687ec4e67c7b29a45d16b7"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: sample/upstream-disasm/hbc85.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v90"
+source_url = "self-authored sample.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1158
+sha256 = "2ac49683d02a59cc22e6665be705a0f36d1e7110fd3bfaaaec46b0ae9c3d97b1"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: sample/upstream-disasm/hbc90.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v94"
+source_url = "self-authored sample.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1418
+sha256 = "0a947d2600f617279bc4a0f644169e3ce53107b69c65aa6aaa668660e4eae65a"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: sample/upstream-disasm/hbc94.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/mixed.hbc.v85"
+source_url = "self-authored behaviour/mixed.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3154
+sha256 = "45bb24622b288cf2b70acf59be645cb81e03d826dfa6da77b89a5e9c8ae72300"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/mixed.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/mixed.hbc.v90"
+source_url = "self-authored behaviour/mixed.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3146
+sha256 = "f35de7d7c24f99cf8837f0bf91ccd05858440fb56a652c03ad9f174a2c155cc4"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/mixed.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/mixed.hbc.v94"
+source_url = "self-authored behaviour/mixed.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3666
+sha256 = "7e93776830c75c53356b28ab4ef25a93466ed15f3e950b4e5ef7bb03455d8128"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/mixed.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/control.hbc.v85"
+source_url = "self-authored behaviour/control.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2394
+sha256 = "a6f2eece5f893775a47e00429af5ce5138834cf2ea26197861370ce265d5627a"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/control.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/control.hbc.v90"
+source_url = "self-authored behaviour/control.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2398
+sha256 = "dd9a8e31605bbc2a7d6c2bcc442caaa668467a09e506a24e59d05d568c4b6b91"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/control.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/control.hbc.v94"
+source_url = "self-authored behaviour/control.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2802
+sha256 = "79f2741b6406f34b17d87f3e90c6d8a31fd0b58abc1dfe3c5037d85ab2ea00a5"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/control.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/closures.hbc.v85"
+source_url = "self-authored behaviour/closures.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3160
+sha256 = "0ddd56e490c8c96cbf3a270f2e56dde0f46e535ed1d1e6f12119693ccb7dc2b2"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/closures.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/closures.hbc.v90"
+source_url = "self-authored behaviour/closures.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3156
+sha256 = "760ca12aa38088b26cfd09d1187da8023875507360ecedbf234e94fbfbe8960b"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/closures.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/closures.hbc.v94"
+source_url = "self-authored behaviour/closures.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3728
+sha256 = "9ee82b316c22fd5ec1342d6315417ec0d850788647f9aa3081d5d3963405c059"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/closures.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/objects.hbc.v90"
+source_url = "self-authored behaviour/objects.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4933
+sha256 = "ebe79568a331cbc9e846c64d9cf4114c22a1a404b135264a121dbf8cdb1155fc"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/objects.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/objects.hbc.v94"
+source_url = "self-authored behaviour/objects.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 5719
+sha256 = "ab878b525c8c71c0d4ac79720d2a5f402285cbcb185a07638ec89c27b7fdb9a8"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/objects.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/exceptions.hbc.v85"
+source_url = "self-authored behaviour/exceptions.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2672
+sha256 = "58e22f842651ce53069f5873a10f8855b6d17ee09c20ade4da8331cd04d837dd"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/exceptions.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/exceptions.hbc.v90"
+source_url = "self-authored behaviour/exceptions.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2672
+sha256 = "d0ecb6a05515be7328c1732d3104965d34d870df2bf7eac9f96d2ef1acedb199"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/exceptions.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/exceptions.hbc.v94"
+source_url = "self-authored behaviour/exceptions.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3386
+sha256 = "3a5f3ff480731d8e76f0515ac02ae1b4558dbe4e3d38c1960937598d20eb06a4"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/exceptions.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/generators.hbc.v85"
+source_url = "self-authored behaviour/generators.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2327
+sha256 = "7cbe1842c0cdb2e3cfb733db2c1932be846a63b274ae78676e87c56e3e3fbced"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/generators.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/generators.hbc.v90"
+source_url = "self-authored behaviour/generators.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2331
+sha256 = "7a77705ceb2442f32792e25eb1ba5ae8bf047d90180feee303924c8b78a2ac2a"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/generators.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/generators.hbc.v94"
+source_url = "self-authored behaviour/generators.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2791
+sha256 = "440d641688af8e174fcb4b417b792e40edfd4bba51c357d6fed20ae6ce435965"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/generators.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/async.hbc.v85"
+source_url = "self-authored behaviour/async.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2285
+sha256 = "e624ede2a1a3b9fad8c9d6f6c4e5e80ebf20d5e348fdd93d0ef4b54de0f6e6b4"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/async.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/async.hbc.v90"
+source_url = "self-authored behaviour/async.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2289
+sha256 = "51ecd844210e4b0ec2681059fc07cd4ff5c1f3f8932c4c33da77eb6f05a63df7"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/async.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/async.hbc.v94"
+source_url = "self-authored behaviour/async.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2781
+sha256 = "50fc5028c66f997da63bc19266cd4906c66e1c02e87c2c50bee5b537de7223f4"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/async.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/values.hbc.v90"
+source_url = "self-authored behaviour/values.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3662
+sha256 = "8b7d63f24b0f7008a46e2ca712e28355eb682f5fdec4368436f6617ab09ca17d"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/values.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/values.hbc.v94"
+source_url = "self-authored behaviour/values.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 4156
+sha256 = "503ab5455760309ce364b4359df420f17e751f91e3e7b77292ebe2f4fd711298"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/values.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/metro.hbc.v85"
+source_url = "self-authored behaviour/metro.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2401
+sha256 = "db19cf22cb6f0c9d856c44d0ee32d26604cae9c95f5d6c71107b84d5c2505da3"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/metro.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/metro.hbc.v90"
+source_url = "self-authored behaviour/metro.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2401
+sha256 = "77617ccd740206dfaf1ab32944a6fab5ed4fa22aec414561edae0cf7271d2435"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/metro.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/metro.hbc.v94"
+source_url = "self-authored behaviour/metro.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2931
+sha256 = "5be4e56d7a9c633b34f05e1acfadb0b2e83f5dd4a5231e3e3b8f46a8c498ae82"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/metro.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/construct.hbc.v85"
+source_url = "self-authored behaviour/construct.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2231
+sha256 = "9272e12eb8f11cfd35a10979d47cd5022dd9199d53f0d3ba090323f3423f97d5"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/construct.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/construct.hbc.v90"
+source_url = "self-authored behaviour/construct.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2223
+sha256 = "d7e35525719a11f7844b0a81e476c956ceaf7e0f875f0e424772b84b3d2575ea"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/construct.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/construct.hbc.v94"
+source_url = "self-authored behaviour/construct.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2577
+sha256 = "0830925a56310284062d310550f54fe49b3aed15762bf6089b8e80231467aa02"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/construct.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/cleanup.hbc.v85"
+source_url = "self-authored behaviour/cleanup.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 7430
+sha256 = "af61d0b2f04bbaa1fcfd1498c187dc287cc0cbbae5f047eb1c517bacf940e16b"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/cleanup.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/cleanup.hbc.v90"
+source_url = "self-authored behaviour/cleanup.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 7430
+sha256 = "4ee8a989cfbf772bd18abcc1c97962bc024fbb248120bbc09ec3d9f6b539bcdb"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/cleanup.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/cleanup.hbc.v94"
+source_url = "self-authored behaviour/cleanup.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 9514
+sha256 = "15d19392f1002ba3a30893ab8a5e5974440b0061c9db6f7f4f1d4ca621e29f79"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/cleanup.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/delegation.hbc.v85"
+source_url = "self-authored behaviour/delegation.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6947
+sha256 = "d59e3dfd059f57d4c8763d1ce2bdcaf1c2133ba0c4bffcfacb84e5e860337ee8"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/delegation.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/delegation.hbc.v90"
+source_url = "self-authored behaviour/delegation.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6947
+sha256 = "66164c631ff94d527e5886d77a2eb95e1277b8d46161ad38ed9a39ec8f291497"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/delegation.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/delegation.hbc.v94"
+source_url = "self-authored behaviour/delegation.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 8971
+sha256 = "2c9ae967000e1bc0b6b73263bc96a291384727a9cca47b966256a3012891c242"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/delegation.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/names.hbc.v85"
+source_url = "self-authored behaviour/names.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1472
+sha256 = "96172e43ce3bc9ceb0ec4516ec5323a9a8663d3a84c41a7e206cfbf1c9cced44"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/names.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/names.hbc.v90"
+source_url = "self-authored behaviour/names.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1472
+sha256 = "cfe959d1116351781d5ed0550a9a8d5493d551b58d82d26967b0dc0c2efe045c"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/names.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/names.hbc.v94"
+source_url = "self-authored behaviour/names.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1752
+sha256 = "6cca2c97030250205ba82b3aece361dc105c1795a2558975cc8a08dbd1dd7b20"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/names.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/rnassets.hbc.v85"
+source_url = "self-authored behaviour/rnassets.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2551
+sha256 = "07489dc453eb30d0019fd39c53d9068e77d1831350df70f206cfcb6b0a79ea28"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/rnassets.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/rnassets.hbc.v90"
+source_url = "self-authored behaviour/rnassets.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 2551
+sha256 = "4287743b129aa13d44ca756b885048b7cbadca657bf0197003446a2412f3dbb6"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/rnassets.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/rnassets.hbc.v94"
+source_url = "self-authored behaviour/rnassets.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 3115
+sha256 = "65365d56350bb32feb8a7d099af386cf2e8ab10eb8bab96c9a6c338faefe1819"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/rnassets.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/branches.hbc.v85"
+source_url = "self-authored behaviour/branches.js compiled with the win64 hermesc in npm react-native 0.69.12 (sdks/hermesc, HBC v85); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6024
+sha256 = "d13f2da5e96c24fdba09564f5b8deb1e6dbbaf352d28248a135d053031a9a4be"
+hermes_version_detected = 85
+notes = """
+Hermes tag hermes-2022-05-20-RNv0.69.0-ee8941b8874132b8f83e4486b63ed5c19fc3f111, the compiler React Native 0.69 apps
+ship, graded through its 187-opcode BytecodeList.def. Reference: bands/branches.v85.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/branches.hbc.v90"
+source_url = "self-authored behaviour/branches.js compiled with the win64 hermesc in npm react-native 0.71.19 (sdks/hermesc, HBC v90); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6020
+sha256 = "6d5b8667fce84ce8e7d4db4382358242e6cfafb675ce8f8f1fa6c18e05f08dea"
+hermes_version_detected = 90
+notes = """
+Hermes tag hermes-2024-04-26-RNv0.71.19-b34632e6c603fb375ac4c8f423b2ee9cc45bed97, the compiler React Native 0.71 apps
+ship, graded through its 190-opcode BytecodeList.def. Reference: bands/branches.v90.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "bands/branches.hbc.v94"
+source_url = "self-authored behaviour/branches.js compiled with the win64 hermesc in npm react-native 0.72.17 (sdks/hermesc, HBC v94); see bands/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 7288
+sha256 = "a35f3bff11172b3f395c874a489134bdf8c65b8459354318811633a0c46fd2d9"
+hermes_version_detected = 94
+notes = """
+Hermes tag hermes-2024-04-29-RNv0.72.14-3815fec63d1a6667ca3195160d6e12fee6a0d8d5, the compiler React Native 0.72 apps
+ship, graded through its 192-opcode BytecodeList.def. Reference: bands/branches.v94.hermesc-dump.txt,
+the -dump-bytecode output of the same compiler for these bytes up to its debug tables.
+"""
+
+[[sample]]
+name = "behaviour/branches.hbc"
+source_url = "self-authored behaviour/branches.js compiled with hermesc from hermes-engine-cli 0.12.0 (HBC v89); see behaviour/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6020
+sha256 = "c4d47b1e3b616ce590e339570b555a06504053667016da493a35db3281e6e88a"
+hermes_version_detected = 89
+notes = """
+Short-circuit conditions feeding ternaries and ifs (the shapes of interop helpers, defaultTo and
+plural selectors in production bundles), nullish and optional chains, side-effect order in
+conditions, labelled breaks out of nested loops, switch fall-through with a conditional break,
+continue and break through finally, for-in with skips, and while/do-while loops on compound
+conditions. Reference output: behaviour/branches.hermes-stdout.txt from the hermes interpreter
+of the same release.
+"""
+
+[[sample]]
+name = "modern/branches.hbc.v98"
+source_url = "self-authored behaviour/branches.js compiled with hermesc from npm hermes-compiler 250829098.0.19 (HBC v98); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6611
+sha256 = "59404a268a636a083d0d0f6d3828bdb56189365b33cd03eaa1e4611b7277ca2e"
+hermes_version_detected = 98
+notes = """
+Reference: modern/branches.v98.hermesc-dump.txt, the -dump-bytecode output of the same compiler
+for these bytes up to its debug tables, and node running behaviour/branches.js.
+"""
+
+[[sample]]
+name = "modern/branches.hbc.v99"
+source_url = "self-authored behaviour/branches.js compiled with hermesc from npm hermes-compiler 260318099.0.4 (HBC v99); see modern/build.py"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 6543
+sha256 = "98f436d8892bde50dd43f8d4a1b47bc8f6b411ad85ba83718a1eeee78bc03c89"
+hermes_version_detected = 99
+notes = """
+Reference: modern/branches.v99.hermesc-dump.txt, the -dump-bytecode output of the same compiler
+for these bytes up to its debug tables, and node running behaviour/branches.js.
+"""

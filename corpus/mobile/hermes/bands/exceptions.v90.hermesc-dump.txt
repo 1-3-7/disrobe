@@ -1,0 +1,414 @@
+Bytecode File Information:
+  Bytecode version number: 90
+  Source hash: 935b8db8af7fe3772f255da9a37f829356887ec0
+  Function count: 7
+  String count: 46
+  BigInt count: 0
+  String Kind Entry count: 2
+  RegExp count: 0
+  Segment ID: 0
+  CommonJS module count: 0
+  CommonJS module count (static): 0
+  Function source count: 0
+  Bytecode options:
+    staticBuiltins: 0
+    cjsModulesStaticallyResolved: 0
+
+Global String Table:
+s0[ASCII, 0..-1]: 
+s1[ASCII, 0..6]: caught 
+s2[ASCII, 6..6]:  
+s3[ASCII, 7..7]: ,
+s4[ASCII, 8..8]: /
+s5[ASCII, 9..11]: f1;
+s6[ASCII, 11..11]: ;
+s7[ASCII, 12..16]: after
+s8[ASCII, 16..23]: rethrown
+s9[ASCII, 23..32]: no binding
+s10[ASCII, 32..37]: global
+s11[ASCII, 43..46]: boom
+s12[ASCII, 47..49]: c1:
+s13[ASCII, 50..52]: c2:
+s14[ASCII, 53..62]: from-catch
+s15[ASCII, 58..62]: catch
+s16[ASCII, 63..69]: cleanup
+s17[ASCII, 73..81]: too big: 
+s18[ASCII, 91..95]: early
+s19[ASCII, 120..122]: end
+s20[ASCII, 123..129]: finally
+s21[ASCII, 132..136]: inner
+s22[ASCII, 141..143]: ok 
+s23[ASCII, 144..146]: try
+i24[ASCII, 37..42] #15A9FF56: length
+i25[ASCII, 69..73] #A689F65B: print
+i26[ASCII, 82..91] #D21A90DD: finalValue
+i27[ASCII, 96..112] #503DECEE: undefinedFunction
+i28[ASCII, 112..115] #E7ECD7B6: name
+i29[ASCII, 114..120] #63D87C1C: message
+i30[ASCII, 130..133] #874F77A9: join
+i31[ASCII, 136..140] #CE5FC8AC: risky
+i32[ASCII, 147..156] #86528635: RangeError
+i33[ASCII, 152..156] #9102A3D0: Error
+i34[ASCII, 157..170] #5B6517BF: ReferenceError
+i35[ASCII, 171..179] #931326BA: TypeError
+i36[ASCII, 180..182] #1C35E808: log
+i37[ASCII, 182..188] #30CCEBB5: guarded
+i38[ASCII, 189..199] #E83BE04D: loopWithTry
+i39[ASCII, 200..208] #BE0AF6D9: nestedTry
+i40[ASCII, 209..212] #7FF26F9D: prop
+i41[ASCII, 211..223] #4D8D589D: optionalCatch
+i42[ASCII, 224..232] #807C5F3D: prototype
+i43[ASCII, 233..236] #3F21B886: push
+i44[ASCII, 237..247] #BDC6775C: withFinally
+i45[ASCII, 248..248] #0001E7F9: x
+
+Array Buffer:
+[int 1]
+Function<global>(1 params, 22 registers, 0 symbols):
+Offset in debug table: source 0x0000, lexical 0x0000
+    DeclareGlobalVar  "log"
+    DeclareGlobalVar  "finalValue"
+    DeclareGlobalVar  "risky"
+    DeclareGlobalVar  "guarded"
+    DeclareGlobalVar  "withFinally"
+    DeclareGlobalVar  "nestedTry"
+    DeclareGlobalVar  "loopWithTry"
+    DeclareGlobalVar  "optionalCatch"
+    CreateEnvironment r0
+    CreateClosure     r2, r0, Function<risky>
+    GetGlobalObject   r1
+    PutById           r1, r2, 1, "risky"
+    CreateClosure     r2, r0, Function<guarded>
+    PutById           r1, r2, 2, "guarded"
+    CreateClosure     r2, r0, Function<withFinally>
+    PutById           r1, r2, 3, "withFinally"
+    CreateClosure     r2, r0, Function<nestedTry>
+    PutById           r1, r2, 4, "nestedTry"
+    CreateClosure     r2, r0, Function<loopWithTry>
+    PutById           r1, r2, 5, "loopWithTry"
+    CreateClosure     r0, r0, Function<optionalCatch>
+    PutById           r1, r0, 6, "optionalCatch"
+    NewArray          r0, 0
+    PutById           r1, r0, 7, "log"
+    TryGetById        r5, r1, 1, "print"
+    GetByIdShort      r2, r1, 2, "guarded"
+    LoadConstUndefined r3
+    LoadConstUInt8    r0, 1
+    Call2             r4, r2, r3, r0
+    GetByIdShort      r2, r1, 2, "guarded"
+    LoadConstUInt8    r6, 5
+    Call2             r2, r2, r3, r6
+    Call3             r2, r5, r3, r4, r2
+    TryGetById        r8, r1, 1, "print"
+    GetByIdShort      r4, r1, 3, "withFinally"
+    LoadConstZero     r2
+    Call2             r7, r4, r3, r2
+    GetByIdShort      r2, r1, 3, "withFinally"
+    Call2             r13, r2, r3, r0
+    GetByIdShort      r4, r1, 3, "withFinally"
+    LoadConstUInt8    r2, 2
+    Call2             r12, r4, r3, r2
+    GetByIdShort      r10, r1, 4, "log"
+    GetByIdShort      r9, r10, 5, "join"
+    LoadConstString   r2, ","
+    Call2             r11, r9, r10, r2
+    LoadConstUndefined r15
+    Mov               r14, r7
+    Call              r2, r8, 5
+    TryGetById        r4, r1, 1, "print"
+    GetByIdShort      r2, r1, 6, "nestedTry"
+    Call1             r2, r2, r3
+    Call2             r2, r4, r3, r2
+    TryGetById        r4, r1, 1, "print"
+    GetByIdShort      r5, r1, 7, "loopWithTry"
+    NewArrayWithBuffer r2, 5, 1, 1
+    LoadConstInt      r7, -2
+    PutOwnByIndex     r2, r7, 1
+    LoadConstUInt8    r7, 3
+    PutOwnByIndex     r2, r7, 2
+    LoadConstInt      r7, -4
+    PutOwnByIndex     r2, r7, 3
+    PutOwnByIndex     r2, r6, 4
+    Call2             r2, r5, r3, r2
+    Call2             r2, r4, r3, r2
+    TryGetById        r4, r1, 1, "print"
+    GetByIdShort      r2, r1, 8, "optionalCatch"
+    Call1             r2, r2, r3
+    Call2             r2, r4, r3, r2
+L7:
+    TryGetById        r2, r1, 9, "undefinedFunction"
+    Call1             r2, r2, r3
+L8:
+    Jmp               L2
+L1:
+    Catch             r5
+    TryGetById        r4, r1, 1, "print"
+    TryGetById        r2, r1, 10, "ReferenceError"
+    InstanceOf        r2, r5, r2
+    Call2             r2, r4, r3, r2
+L2:
+    GetByIdShort      r2, r3, 11, "prop"
+L9:
+    Jmp               L4
+L3:
+    Catch             r5
+    TryGetById        r4, r1, 1, "print"
+    TryGetById        r2, r1, 12, "TypeError"
+    InstanceOf        r2, r5, r2
+    Call2             r2, r4, r3, r2
+L4:
+    TryGetById        r4, r1, 1, "print"
+    LoadConstString   r2, "cleanup"
+    Call2             r2, r4, r3, r2
+    PutById           r1, r0, 8, "finalValue"
+    TryGetById        r2, r1, 1, "print"
+    GetByIdShort      r0, r1, 13, "finalValue"
+    Call2             r0, r2, r3, r0
+    Ret               r0
+L5:
+    Catch             r0
+    TryGetById        r2, r1, 1, "print"
+    LoadConstString   r1, "cleanup"
+    Call2             r1, r2, r3, r1
+    Throw             r0
+
+Exception Handlers:
+0: start = L7, end = L8, target = L1
+1: start = L2, end = L9, target = L3
+
+Function<risky>(2 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x00c8, lexical 0x0000
+    LoadParam         r1, 1
+    LoadConstUInt8    r0, 2
+    JGreater          L1, r1, r0
+    Mul               r0, r1, r0
+    Ret               r0
+L1:
+    GetGlobalObject   r0
+    TryGetById        r2, r0, 1, "RangeError"
+    LoadConstString   r0, "too big: "
+    Add               r3, r0, r1
+    GetByIdShort      r1, r2, 2, "prototype"
+    CreateThis        r1, r1, r2
+    Mov               r4, r1
+    Construct         r0, r2, 2
+    SelectObject      r0, r1, r0
+    Throw             r0
+
+Function<guarded>(2 params, 11 registers, 0 symbols):
+Offset in debug table: source 0x00e4, lexical 0x0000
+L3:
+    GetGlobalObject   r0
+    GetByIdShort      r2, r0, 1, "risky"
+    LoadConstUndefined r1
+    LoadParam         r0, 1
+    Call2             r1, r2, r1, r0
+    LoadConstString   r0, "ok "
+    Add               r0, r0, r1
+L4:
+    Ret               r0
+L1:
+    Catch             r0
+    GetByIdShort      r2, r0, 2, "name"
+    LoadConstString   r1, "caught "
+    Add               r2, r1, r2
+    GetByIdShort      r1, r0, 3, "message"
+    LoadConstString   r0, " "
+    Add               r0, r2, r0
+    Add               r0, r0, r1
+    Ret               r0
+
+Exception Handlers:
+0: start = L3, end = L4, target = L1
+
+Function<withFinally>(2 params, 13 registers, 0 symbols):
+Offset in debug table: source 0x0103, lexical 0x0000
+    LoadParam         r4, 1
+L6:
+    GetGlobalObject   r0
+    GetByIdShort      r3, r0, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "try"
+    Add               r1, r1, r4
+    Call2             r1, r2, r3, r1
+    LoadConstUInt8    r1, 1
+    JStrictEqual      L1, r4, r1
+    LoadConstUInt8    r1, 2
+    JStrictEqual      L2, r4, r1
+    GetByIdShort      r3, r0, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "after"
+    Add               r1, r1, r4
+    Call2             r1, r2, r3, r1
+L7:
+    GetByIdShort      r3, r0, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "finally"
+    Add               r1, r1, r4
+    Call2             r1, r2, r3, r1
+    LoadConstString   r1, "end"
+    Ret               r1
+L2:
+    TryGetById        r3, r0, 3, "Error"
+    GetByIdShort      r1, r3, 4, "prototype"
+    CreateThis        r2, r1, r3
+    LoadConstString   r5, "boom"
+    Mov               r6, r2
+    Construct         r1, r3, 2
+    SelectObject      r1, r2, r1
+    Throw             r1
+L1:
+    GetByIdShort      r2, r0, 1, "log"
+    GetByIdShort      r1, r2, 2, "push"
+    LoadConstString   r0, "finally"
+    Add               r0, r0, r4
+    Call2             r0, r1, r2, r0
+    LoadConstString   r0, "early"
+    Ret               r0
+L3:
+    Catch             r0
+    GetGlobalObject   r0
+    GetByIdShort      r3, r0, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "catch"
+    Add               r1, r1, r4
+    Call2             r1, r2, r3, r1
+L8:
+    GetByIdShort      r2, r0, 1, "log"
+    GetByIdShort      r1, r2, 2, "push"
+    LoadConstString   r0, "finally"
+    Add               r0, r0, r4
+    Call2             r0, r1, r2, r0
+    LoadConstString   r0, "from-catch"
+    Ret               r0
+L4:
+    Catch             r0
+    GetGlobalObject   r1
+    GetByIdShort      r3, r1, 1, "log"
+    GetByIdShort      r2, r3, 2, "push"
+    LoadConstString   r1, "finally"
+    Add               r1, r1, r4
+    Call2             r1, r2, r3, r1
+    Throw             r0
+
+Exception Handlers:
+0: start = L6, end = L7, target = L3
+1: start = L2, end = L1, target = L3
+2: start = L6, end = L7, target = L4
+3: start = L2, end = L1, target = L4
+4: start = L3, end = L8, target = L4
+
+Function<nestedTry>(1 params, 12 registers, 0 symbols):
+Offset in debug table: source 0x0173, lexical 0x0000
+    LoadConstString   r1, ""
+L5:
+    GetGlobalObject   r0
+    TryGetById        r3, r0, 1, "TypeError"
+    GetByIdShort      r0, r3, 2, "prototype"
+    CreateThis        r2, r0, r3
+    LoadConstString   r4, "inner"
+    Mov               r5, r2
+    Construct         r0, r3, 2
+    SelectObject      r0, r2, r0
+    Throw             r0
+L1:
+    Catch             r0
+    Mov               r2, r1
+    GetByIdShort      r3, r0, 3, "message"
+    LoadConstString   r0, "c1:"
+    Add               r3, r0, r3
+    LoadConstString   r0, ";"
+    Add               r0, r3, r0
+    Add               r1, r2, r0
+    GetGlobalObject   r0
+    TryGetById        r3, r0, 4, "Error"
+    GetByIdShort      r0, r3, 2, "prototype"
+    CreateThis        r2, r0, r3
+    LoadConstString   r4, "rethrown"
+    Mov               r5, r2
+    Construct         r0, r3, 2
+    SelectObject      r0, r2, r0
+    Throw             r0
+L2:
+    Catch             r0
+    Mov               r3, r1
+    LoadConstString   r2, "f1;"
+    Add               r1, r3, r2
+    Throw             r0
+L3:
+    Catch             r0
+    Mov               r2, r1
+    GetByIdShort      r3, r0, 3, "message"
+    LoadConstString   r0, "c2:"
+    Add               r3, r0, r3
+    LoadConstString   r0, ";"
+    Add               r0, r3, r0
+    Add               r0, r2, r0
+    Mov               r1, r0
+    Ret               r0
+
+Exception Handlers:
+0: start = L5, end = L1, target = L1
+1: start = L5, end = L2, target = L2
+2: start = L5, end = L3, target = L3
+
+Function<loopWithTry>(2 params, 7 registers, 0 symbols):
+Offset in debug table: source 0x01ad, lexical 0x0000
+    LoadParam         r6, 1
+    LoadConstZero     r5
+    LoadConstZero     r1
+    LoadConstZero     r0
+    LoadConstZero     r4
+    GetByIdShort      r2, r6, 1, "length"
+    JNotLess          L1, r5, r2
+L5:
+    Mov               r2, r4
+    GetByVal          r2, r6, r2
+    JLess             L2, r2, r5
+    Mov               r3, r1
+    Mov               r2, r4
+    GetByVal          r2, r6, r2
+    Add               r1, r3, r2
+L7:
+    Jmp               L3
+L2:
+    Mov               r2, r4
+    GetByVal          r2, r6, r2
+    Throw             r2
+L4:
+    Catch             r3
+    Mov               r2, r0
+    Add               r0, r2, r3
+L3:
+    Mov               r2, r4
+    Inc               r3, r2
+    Mov               r4, r3
+    GetByIdShort      r2, r6, 1, "length"
+    JLess             L5, r3, r2
+L1:
+    Mov               r2, r1
+    Mov               r1, r0
+    LoadConstString   r0, "/"
+    Add               r0, r2, r0
+    Add               r0, r0, r1
+    Ret               r0
+
+Exception Handlers:
+0: start = L5, end = L7, target = L4
+1: start = L2, end = L4, target = L4
+
+Function<optionalCatch>(1 params, 1 registers, 0 symbols):
+Offset in debug table: source 0x01d8, lexical 0x0000
+L3:
+    LoadConstNull     r0
+    GetByIdShort      r0, r0, 1, "x"
+L4:
+    LoadConstUndefined r0
+    Ret               r0
+L1:
+    Catch             r0
+    LoadConstString   r0, "no binding"
+    Ret               r0
+
+Exception Handlers:
+0: start = L3, end = L4, target = L1

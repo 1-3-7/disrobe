@@ -1,0 +1,5 @@
+sync end
+sequence 0,2,4,async failure
+chain 30
+arrow 7
+all 2/4

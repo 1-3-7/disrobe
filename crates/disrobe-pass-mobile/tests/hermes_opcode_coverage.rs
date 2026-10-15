@@ -31,7 +31,7 @@ const TRACKED_SAMPLES: [[&str; 2]; TRACKED_SAMPLE_COUNT] = [
 
 const BUNDLE_OPCODES_DECODED: usize = 5_765_066;
 const BUNDLE_DISTINCT_OPCODES: usize = 167;
-const BUNDLE_STRUCTURED_FLOOR: usize = 112_823;
+const BUNDLE_STRUCTURED_FLOOR: usize = 122_625;
 const BUNDLE_TAIL_REPORT_WIDTH: usize = 12;
 
 fn corpus(parts: &[&str]) -> PathBuf {
@@ -168,7 +168,7 @@ fn a_version_with_no_opcode_table_refuses_to_disassemble_rather_than_guess() {
             path.display()
         )
     });
-    let unlifted: u32 = 90;
+    let unlifted: u32 = 87;
     let mut restamped: Vec<u8> = committed.clone();
     restamped.splice(8..12, unlifted.to_le_bytes());
     let module: HermesModule = parse_hermes_module(&restamped)
