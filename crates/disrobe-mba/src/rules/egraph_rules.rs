@@ -595,17 +595,12 @@ fn validate_provenance(name: &str, provenance: &str) -> Result<(), EgraphRuleErr
     Ok(())
 }
 
-static EGRAPH_RULES: OnceLock<EgraphRuleSet> = OnceLock::new();
+static EGRAPH_RULES: OnceLock<Result<EgraphRuleSet, EgraphRuleError>> = OnceLock::new();
 
-#[allow(
-    clippy::panic,
-    reason = "the e-graph rule table is a compile-time include_str! const proven to load and validate by the shipped_egraph_rules_load test; a parse failure here is a build-integrity bug, and failing loud beats silently disabling the saturation layer"
-)]
-pub(crate) fn egraph_rules() -> &'static EgraphRuleSet {
-    EGRAPH_RULES.get_or_init(|| match load_egraph_rules(MBA_EGRAPH_RULES) {
-        Ok(set) => set,
-        Err(error) => panic!("shipped mba e-graph rules must validate: {error}"),
-    })
+pub(crate) fn egraph_rules() -> Result<&'static EgraphRuleSet, &'static EgraphRuleError> {
+    EGRAPH_RULES
+        .get_or_init(|| load_egraph_rules(MBA_EGRAPH_RULES))
+        .as_ref()
 }
 
 #[cfg(test)]

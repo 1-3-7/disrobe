@@ -34,21 +34,14 @@ pub fn mba_peephole_rules() -> Result<RuleSet, LoadError> {
 
 use std::sync::OnceLock;
 
-static MIGRATED_RULES: OnceLock<RuleSet> = OnceLock::new();
+static MIGRATED_RULES: OnceLock<Result<RuleSet, LoadError>> = OnceLock::new();
 
-#[allow(
-    clippy::panic,
-    reason = "the rule set is a compile-time include_str! const proven to load and validate by the shipped_rules_load_and_have_six_migrated_rules test; a parse failure here is a build-integrity bug, and failing loud beats silently disabling the production rewrite path"
-)]
-#[must_use]
-pub(crate) fn migrated_peephole_rules() -> &'static RuleSet {
-    MIGRATED_RULES.get_or_init(|| match mba_peephole_rules() {
-        Ok(set) => set,
-        Err(error) => panic!("shipped mba peephole rules must validate: {error}"),
-    })
+pub(crate) fn migrated_peephole_rules() -> Result<&'static RuleSet, &'static LoadError> {
+    MIGRATED_RULES.get_or_init(mba_peephole_rules).as_ref()
 }
 
 #[must_use]
 pub(crate) fn apply_migrated(expr: &Expr, width: crate::expr::Width) -> Option<Expr> {
-    apply_root(migrated_peephole_rules(), expr, width).map(|hit: RuleHit| hit.result)
+    let rules: &RuleSet = migrated_peephole_rules().ok()?;
+    apply_root(rules, expr, width).map(|hit: RuleHit| hit.result)
 }

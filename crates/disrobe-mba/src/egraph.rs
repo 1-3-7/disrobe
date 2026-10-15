@@ -1,6 +1,6 @@
 use crate::expr::{BinOp, Expr, MAX_MBA_DEPTH, UnOp, Width, shift_left, shift_right};
 use crate::rewrite::canonicalize;
-use crate::rules::egraph_rules::{EgraphRule, Term, egraph_rules};
+use crate::rules::egraph_rules::{EgraphRuleSet, Term, egraph_rules};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
@@ -127,6 +127,9 @@ pub(crate) enum Refusal {
     LeafBudgetExhausted { max: usize },
     ClassBudgetExhausted { max: usize },
     NoExtraction,
+    EgraphRuleTableInvalid,
+    PeepholeRuleTableInvalid,
+    UnrecordedCapture { rule: &'static str },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,30 +188,34 @@ fn compile_term(term: &Term, captures: &[String]) -> Option<Pat> {
     }
 }
 
-static COMPILED_RULES: OnceLock<Vec<(Pat, Pat)>> = OnceLock::new();
+static COMPILED_RULES: OnceLock<Result<Vec<(Pat, Pat)>, Refusal>> = OnceLock::new();
 
-#[allow(
-    clippy::panic,
-    reason = "the e-graph rule table is a compile-time include_str! const whose loader guarantees every capture used by either side is recorded on the rule; an unresolvable capture here is a build-integrity bug, and failing loud beats silently running saturation on a truncated rule table"
-)]
-fn directed_rules() -> &'static [(Pat, Pat)] {
-    COMPILED_RULES.get_or_init(|| {
-        let mut compiled: Vec<(Pat, Pat)> = Vec::new();
-        for (rule, pattern, rewrite) in egraph_rules().directed_pairs() {
-            let named: &EgraphRule = rule;
-            let (Some(pattern), Some(rewrite)): (Option<Pat>, Option<Pat>) = (
-                compile_term(pattern, &named.captures),
-                compile_term(rewrite, &named.captures),
-            ) else {
-                panic!(
-                    "e-graph rule {} uses a capture the loader never recorded",
-                    named.name
-                );
-            };
-            compiled.push((pattern, rewrite));
-        }
-        compiled
-    })
+fn directed_rules() -> Result<&'static [(Pat, Pat)], Refusal> {
+    COMPILED_RULES
+        .get_or_init(compile_directed_rules)
+        .as_ref()
+        .map(Vec::as_slice)
+        .map_err(|refusal: &Refusal| *refusal)
+}
+
+fn compile_directed_rules() -> Result<Vec<(Pat, Pat)>, Refusal> {
+    let set: &'static EgraphRuleSet =
+        egraph_rules().map_err(|_| Refusal::EgraphRuleTableInvalid)?;
+    compile_rule_set(set).map_err(|rule: &'static str| Refusal::UnrecordedCapture { rule })
+}
+
+fn compile_rule_set(set: &EgraphRuleSet) -> Result<Vec<(Pat, Pat)>, &str> {
+    let mut compiled: Vec<(Pat, Pat)> = Vec::new();
+    for (rule, pattern, rewrite) in set.directed_pairs() {
+        let (Some(pattern), Some(rewrite)): (Option<Pat>, Option<Pat>) = (
+            compile_term(pattern, &rule.captures),
+            compile_term(rewrite, &rule.captures),
+        ) else {
+            return Err(rule.name.as_str());
+        };
+        compiled.push((pattern, rewrite));
+    }
+    Ok(compiled)
 }
 
 const fn enode_weight(node: &ENode) -> u64 {
@@ -904,7 +911,13 @@ fn saturate_with(expr: &Expr, width: Width, rules: &[(Pat, Pat)]) -> Saturation 
 }
 
 pub(crate) fn saturate(expr: &Expr, width: Width) -> Saturation {
-    saturate_with(expr, width, directed_rules())
+    if crate::rules::migrated_peephole_rules().is_err() {
+        return Saturation::Refused(Refusal::PeepholeRuleTableInvalid);
+    }
+    match directed_rules() {
+        Ok(rules) => saturate_with(expr, width, rules),
+        Err(refusal) => Saturation::Refused(refusal),
+    }
 }
 
 #[must_use]
@@ -920,7 +933,7 @@ pub(crate) fn saturate_simplify(expr: &Expr, width: Width) -> Option<Expr> {
 mod tests {
     use super::*;
     use crate::expr::equivalent_exhaustive;
-    use crate::rules::egraph_rules::load_egraph_rules;
+    use crate::rules::egraph_rules::{EgraphRule, load_egraph_rules};
 
     fn pat_to_expr(pat: &Pat, width: Width) -> Expr {
         match pat {
@@ -952,7 +965,7 @@ mod tests {
 
     #[test]
     fn every_shipped_rule_is_a_proven_equivalence_at_every_exhaustible_narrow_width() {
-        let rules: &[(Pat, Pat)] = directed_rules();
+        let rules: &[(Pat, Pat)] = directed_rules().expect("shipped e-graph rules compile");
         assert!(
             rules.len() >= 40,
             "compiled rule table is unexpectedly small"
@@ -978,9 +991,11 @@ mod tests {
 
     #[test]
     fn the_rule_table_is_data_not_code() {
-        let set = egraph_rules();
+        let set: &EgraphRuleSet = egraph_rules().expect("shipped e-graph rules load");
         assert!(set.rules.len() >= 30);
-        let compiled: usize = directed_rules().len();
+        let compiled: usize = directed_rules()
+            .expect("shipped e-graph rules compile")
+            .len();
         assert_eq!(compiled, set.directed_pairs().len());
         let names: BTreeSet<&str> = set
             .rules
@@ -1386,25 +1401,45 @@ mod tests {
         assert!(saturate_simplify(&genuine, Width::W8).is_none());
     }
 
-    fn probe_rules(name: &str, pattern: &str, rewrite: &str) -> Vec<(Pat, Pat)> {
-        let text: String = format!(
+    fn probe_text(name: &str, pattern: &str, rewrite: &str) -> String {
+        format!(
             "[[rules]]\nname = \"{name}\"\nprovenance = \"saturation probe\"\ndirection = \"contract\"\npattern = \"{pattern}\"\nrewrite = \"{rewrite}\"\n"
-        );
-        let set: crate::rules::egraph_rules::EgraphRuleSet = match load_egraph_rules(&text) {
+        )
+    }
+
+    fn probe_rules(name: &str, pattern: &str, rewrite: &str) -> Vec<(Pat, Pat)> {
+        let text: String = probe_text(name, pattern, rewrite);
+        let set: EgraphRuleSet = match load_egraph_rules(&text) {
             Ok(set) => set,
             Err(error) => panic!("probe rule must load: {error}"),
         };
-        let mut compiled: Vec<(Pat, Pat)> = Vec::new();
-        for (rule, pattern, rewrite) in set.directed_pairs() {
-            let (Some(pattern), Some(rewrite)): (Option<Pat>, Option<Pat>) = (
-                compile_term(pattern, &rule.captures),
-                compile_term(rewrite, &rule.captures),
-            ) else {
-                panic!("probe rule must compile");
-            };
-            compiled.push((pattern, rewrite));
+        match compile_rule_set(&set) {
+            Ok(compiled) => compiled,
+            Err(rule) => panic!("probe rule {rule} must compile"),
         }
-        compiled
+    }
+
+    #[test]
+    fn a_rule_whose_capture_was_never_recorded_is_refused_by_name() {
+        let text: String = probe_text("capture_dropped", "(and ?x ?x)", "?x");
+        let mut set: EgraphRuleSet = match load_egraph_rules(&text) {
+            Ok(set) => set,
+            Err(error) => panic!("probe rule must load: {error}"),
+        };
+        for rule in &mut set.rules {
+            rule.captures.clear();
+        }
+        assert_eq!(compile_rule_set(&set), Err("capture_dropped"));
+    }
+
+    #[test]
+    fn the_shipped_tables_load_so_saturation_never_refuses_on_them() {
+        assert!(egraph_rules().is_ok());
+        assert!(crate::rules::migrated_peephole_rules().is_ok());
+        match saturate(&Expr::add(Expr::var(0), Expr::konst(0)), Width::W8) {
+            Saturation::Refused(refusal) => panic!("shipped tables refused: {refusal:?}"),
+            Saturation::Rewritten { .. } | Saturation::Unchanged { .. } => {}
+        }
     }
 
     fn poisoned_rules() -> Vec<(Pat, Pat)> {
