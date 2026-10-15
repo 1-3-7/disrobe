@@ -94,6 +94,12 @@ pub(crate) enum JsCmd {
             help = "with --recover-sources, do not write skeleton stubs for sources whose sourcesContent is absent"
         )]
         no_stubs: bool,
+        #[arg(
+            long,
+            value_enum,
+            help = "offer same-length patches for the anti-analysis checks found in the recovered script (domain, host-environment and date locks, debugger traps, console hijacks, integrity hashes): ask (the default on a terminal), apply or skip; accepted patches go to a separate copy"
+        )]
+        neutralize: Option<NeutralizeMode>,
     },
     #[command(
         about = "reconstruct the original source tree from a JavaScript source map (.js.map, an inline data: map, or the //# sourceMappingURL comment in a .js file); writes the original files when sourcesContent is present, else a skeleton from sources[]/names[]"
@@ -160,6 +166,34 @@ pub(crate) enum LegacyFamily {
     Auto,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NeutralizeMode {
+    Ask,
+    Apply,
+    Skip,
+}
+
+impl NeutralizeMode {
+    fn resolve(explicit: Option<Self>) -> Self {
+        use std::io::IsTerminal as _;
+        explicit.unwrap_or_else(|| {
+            if std::io::stdin().is_terminal() {
+                Self::Ask
+            } else {
+                Self::Skip
+            }
+        })
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Apply => "apply",
+            Self::Skip => "skip",
+        }
+    }
+}
+
 pub(crate) fn run(action: JsCmd) -> miette::Result<()> {
     match action {
         JsCmd::V8 {
@@ -180,6 +214,7 @@ pub(crate) fn run(action: JsCmd) -> miette::Result<()> {
             emit,
             recover_sources,
             no_stubs,
+            neutralize,
         } => {
             if let Some(out_dir) = recover_sources {
                 let Some(input): Option<PathBuf> = input else {
@@ -199,6 +234,7 @@ pub(crate) fn run(action: JsCmd) -> miette::Result<()> {
                 legacy,
                 full,
                 emit,
+                neutralize,
             )
         }
         JsCmd::Sourcemap {
@@ -1074,6 +1110,7 @@ fn deob(
     legacy: Option<LegacyFamily>,
     full: bool,
     emit: Vec<String>,
+    neutralize: Option<NeutralizeMode>,
 ) -> miette::Result<()> {
     if list {
         crate::cli::emit::print_obfuscator_catalog(
@@ -1132,9 +1169,13 @@ fn deob(
         .as_ref()
         .map_or_else(|| source_text.to_owned(), |r| r.rewritten_source.clone());
 
-    let (after_legacy, jsobfu_stats, jscrambler_stats): (
+    let legacy: Option<LegacyFamily> = legacy.or_else(|| {
+        matches!(detection.family, disrobe_pass_js_deob::JsObfuscator::JsObfu)
+            .then_some(LegacyFamily::Jsobfu)
+    });
+    let (after_legacy, jsobfu_recovery, jscrambler_stats): (
         String,
-        Option<disrobe_pass_js_deob::JsObfuRewriteStats>,
+        Option<disrobe_pass_js_deob::JsObfuRecovery>,
         Option<disrobe_pass_js_deob::IntegrityStripStats>,
     ) = apply_legacy(&mid_source, legacy);
 
@@ -1210,13 +1251,29 @@ fn deob(
     } else {
         println!("  string array:       (not detected)");
     }
-    if let Some(stats) = &jsobfu_stats {
-        println!("  jsobfu rewrite:");
+    if let Some(recovered) = &jsobfu_recovery {
+        println!("  jsobfu recovery:");
+        println!(
+            "    fromCharCode folded:   {}",
+            recovered.char_fold.from_char_code_calls_folded
+        );
+        println!(
+            "    string IIFEs folded:   {}",
+            recovered.char_fold.string_iifes_folded
+        );
         println!(
             "    bracket->dot rewrites: {}",
-            stats.bracket_to_dot_rewrites
+            recovered.bracket_rewrite.bracket_to_dot_rewrites
+                + recovered.literal_settle.members_dotted
         );
-        println!("    array.join folded:     {}", stats.array_join_folded);
+        println!(
+            "    array.join folded:     {}",
+            recovered.bracket_rewrite.array_join_folded
+        );
+        println!(
+            "    literals folded:       {}",
+            recovered.literal_settle.expressions_folded
+        );
     }
     if let Some(stats) = &jscrambler_stats {
         println!("  jscrambler integrity:");
@@ -1325,6 +1382,168 @@ fn deob(
     }
     println!("  wrote:        {}", out_path.display());
     println!("  detection:    {}", detection_path.display());
+    neutralize_recovered_script(&out_path, &rewritten, neutralize)
+}
+
+fn print_js_patch(index: usize, total: usize, patch: &disrobe_core::neutralize::Patch) {
+    println!(
+        "[{}/{}] {} ({}): {}",
+        index + 1,
+        total,
+        patch.id,
+        patch.check.technique().label(),
+        patch.check.describe()
+    );
+    println!(
+        "    at byte {}: {}  <- {}",
+        patch.file_offset, patch.anchor.instruction, patch.anchor.pattern
+    );
+    println!(
+        "    {:?} -> {:?}",
+        String::from_utf8_lossy(&patch.original),
+        String::from_utf8_lossy(&patch.replacement)
+    );
+    println!("    risk: {}", patch.risk);
+}
+
+enum PatchAnswer {
+    Yes,
+    No,
+    All,
+    None,
+}
+
+fn read_patch_answer(lines: &mut std::io::Lines<std::io::StdinLock<'_>>) -> PatchAnswer {
+    loop {
+        print!("    apply this patch? [y]es / [n]o / [a]ll / [q] none: ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let Some(Ok(line)) = lines.next() else {
+            println!();
+            return PatchAnswer::None;
+        };
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return PatchAnswer::Yes,
+            "n" | "no" => return PatchAnswer::No,
+            "a" | "all" => return PatchAnswer::All,
+            "q" | "none" | "quit" => return PatchAnswer::None,
+            _ => println!("    answer y, n, a or q"),
+        }
+    }
+}
+
+fn ask_js_patches(
+    plan: &disrobe_core::neutralize::NeutralizationPlan,
+) -> disrobe_core::neutralize::Selection {
+    use std::io::BufRead as _;
+    println!(
+        "neutralization plan: {} patch(es); the recovered script is not modified, accepted patches go to a copy beside it",
+        plan.patches.len()
+    );
+    let stdin: std::io::Stdin = std::io::stdin();
+    let mut lines: std::io::Lines<std::io::StdinLock<'_>> = stdin.lock().lines();
+    let mut chosen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let total: usize = plan.patches.len();
+    for (index, patch) in plan.patches.iter().enumerate() {
+        print_js_patch(index, total, patch);
+        match read_patch_answer(&mut lines) {
+            PatchAnswer::Yes => {
+                chosen.insert(patch.id.clone());
+            }
+            PatchAnswer::No => {}
+            PatchAnswer::All => {
+                for rest in &plan.patches[index..] {
+                    chosen.insert(rest.id.clone());
+                }
+                break;
+            }
+            PatchAnswer::None => break,
+        }
+    }
+    disrobe_core::neutralize::Selection::Only(chosen)
+}
+
+fn neutralize_recovered_script(
+    script_path: &std::path::Path,
+    script: &str,
+    explicit: Option<NeutralizeMode>,
+) -> miette::Result<()> {
+    use disrobe_core::neutralize::{
+        Applied, NeutralizationPlan, NeutralizationReport, Selection, apply, neutralized_path,
+    };
+
+    let plan: NeutralizationPlan =
+        match disrobe_pass_js_deob::protectors::neutralize::plan_js_neutralization(script) {
+            Ok(plan) => plan,
+            Err(error) => {
+                if explicit.is_some() {
+                    println!("  neutralize: no plan: {error}");
+                }
+                return Ok(());
+            }
+        };
+    if explicit.is_none() && plan.is_empty() {
+        return Ok(());
+    }
+    let mode: NeutralizeMode = NeutralizeMode::resolve(explicit);
+    let selection: Selection = match mode {
+        NeutralizeMode::Apply => Selection::All,
+        NeutralizeMode::Skip => Selection::Skip,
+        NeutralizeMode::Ask if plan.patches.is_empty() => Selection::Skip,
+        NeutralizeMode::Ask => ask_js_patches(&plan),
+    };
+    let applied: Applied = apply(script.as_bytes(), &plan, &selection)
+        .map_err(|e| miette::miette!("DR-CLI-0970: neutralization refused: {e}"))?;
+    let report: &NeutralizationReport = &applied.report;
+    let output: Option<PathBuf> = if report.applied.is_empty() {
+        None
+    } else {
+        let path: PathBuf = neutralized_path(script_path);
+        std::fs::write(&path, &applied.bytes)
+            .map_err(|e| miette::miette!("DR-CLI-0971: cannot write {}: {e}", path.display()))?;
+        Some(path)
+    };
+    let document: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.js.neutralization/v1",
+        "script": script_path.display().to_string(),
+        "mode": mode.label(),
+        "plan": plan,
+        "report": report,
+        "output": output.as_ref().map(|p: &PathBuf| p.display().to_string()),
+    });
+    let report_path: PathBuf = script_path.with_extension("neutralization.json");
+    std::fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(&document)
+            .map_err(|e| miette::miette!("DR-CLI-0972: serialize neutralization report: {e}"))?,
+    )
+    .map_err(|e| miette::miette!("DR-CLI-0973: cannot write {}: {e}", report_path.display()))?;
+    let checks: Vec<&str> = plan
+        .checks()
+        .into_iter()
+        .map(disrobe_core::neutralize::RuntimeCheck::label)
+        .collect();
+    println!(
+        "  neutralize ({}): {} patch(es) offered [{}]; applied {}, declined {}, skipped {}, refused {}",
+        mode.label(),
+        plan.patches.len(),
+        checks.join(", "),
+        report.applied.len(),
+        report.declined.len(),
+        report.skipped.len(),
+        report.refusals.len()
+    );
+    for refusal in &report.refusals {
+        println!(
+            "    refused {} at byte {}: {}",
+            refusal.check.label(),
+            refusal.anchor.address,
+            refusal.reason
+        );
+    }
+    if let Some(path) = output.as_ref() {
+        println!("    wrote neutralized copy: {}", path.display());
+    }
+    println!("    report: {}", report_path.display());
     Ok(())
 }
 
@@ -1623,21 +1842,29 @@ fn deob_full_jsconfuser(
     Ok(())
 }
 
+fn recover_jsobfu_legacy(
+    source: &str,
+) -> (
+    String,
+    Option<disrobe_pass_js_deob::JsObfuRecovery>,
+    Option<disrobe_pass_js_deob::IntegrityStripStats>,
+) {
+    let recovered: disrobe_pass_js_deob::JsObfuRecovery =
+        disrobe_pass_js_deob::recover_jsobfu(source);
+    (recovered.source.clone(), Some(recovered), None)
+}
+
 fn apply_legacy(
     source: &str,
     legacy: Option<LegacyFamily>,
 ) -> (
     String,
-    Option<disrobe_pass_js_deob::JsObfuRewriteStats>,
+    Option<disrobe_pass_js_deob::JsObfuRecovery>,
     Option<disrobe_pass_js_deob::IntegrityStripStats>,
 ) {
     match legacy {
         None => (source.to_owned(), None, None),
-        Some(LegacyFamily::Jsobfu) => {
-            let (out, stats): (String, disrobe_pass_js_deob::JsObfuRewriteStats) =
-                disrobe_pass_js_deob::rewrite_bracket_access(source);
-            (out, Some(stats), None)
-        }
+        Some(LegacyFamily::Jsobfu) => recover_jsobfu_legacy(source),
         Some(LegacyFamily::JscramblerFree) => {
             let (out, stats): (String, disrobe_pass_js_deob::IntegrityStripStats) =
                 disrobe_pass_js_deob::strip_integrity_loops(source);
@@ -1649,9 +1876,7 @@ fn apply_legacy(
             let jscrambler_det: disrobe_pass_js_deob::JscramblerDetection =
                 disrobe_pass_js_deob::detect_free_tier(source);
             if jsobfu_det.matched && jsobfu_det.confidence >= jscrambler_det.confidence {
-                let (out, stats): (String, disrobe_pass_js_deob::JsObfuRewriteStats) =
-                    disrobe_pass_js_deob::rewrite_bracket_access(source);
-                (out, Some(stats), None)
+                recover_jsobfu_legacy(source)
             } else if jscrambler_det.matched {
                 let (out, stats): (String, disrobe_pass_js_deob::IntegrityStripStats) =
                     disrobe_pass_js_deob::strip_integrity_loops(source);

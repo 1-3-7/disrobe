@@ -7,7 +7,7 @@ use disrobe_pass_wasm_deob::{
     LiftTarget, ModuleSignatures, ModuleSourceLift, ModuleSummary, RecoveredModule, RecoveryReport,
     analyze_module, build_function_cfg, extract_signatures, lift_gc_module,
     lift_module_faithful_wat, lift_module_source, parse_component_manifest, recover_gc_types,
-    recover_module,
+    recover_module, recover_module_with_host_script,
 };
 
 use super::emit::{EmitKind, EmitSpec, write_applicable_payload, write_not_applicable_stub};
@@ -34,7 +34,8 @@ pub(crate) fn run(action: WasmCmd) -> miette::Result<()> {
             out,
             emit_wasm,
             list,
-        } => deob(input, out, emit_wasm, list),
+            host_script,
+        } => deob(input, out, emit_wasm, list, host_script.as_deref()),
         WasmCmd::Component { input, out } => emit_component(input, out),
         WasmCmd::Types { input, out } => emit_types(input, out),
         WasmCmd::LiftGc { input, out, json } => lift_gc(input, out, json),
@@ -136,6 +137,7 @@ fn deob(
     out: Option<PathBuf>,
     emit_wasm: Option<PathBuf>,
     list: bool,
+    host_script: Option<&Path>,
 ) -> miette::Result<()> {
     if list {
         crate::cli::emit::print_obfuscator_catalog(
@@ -150,7 +152,19 @@ fn deob(
         ));
     };
     let bytes: Vec<u8> = read_input(input.as_path())?;
-    let recovered: RecoveredModule = recover_module(&bytes).map_err(|e| miette::miette!("{e}"))?;
+    let recovered: RecoveredModule = match host_script {
+        Some(path) => {
+            let script: String = std::fs::read_to_string(path).map_err(|e| {
+                miette::miette!(
+                    "DR-CLI-0974: cannot read host script {}: {e}",
+                    path.display()
+                )
+            })?;
+            recover_module_with_host_script(&bytes, &script)
+        }
+        None => recover_module(&bytes),
+    }
+    .map_err(|e| miette::miette!("{e}"))?;
     let report: RecoveryReport = recovered.report.clone();
     let clean_bytes: Vec<u8> = recovered.bytes;
     let summary: ModuleSummary =
@@ -211,6 +225,19 @@ fn deob(
     println!(
         "  cff funcs:    {}",
         report.flattened_functions_restructured
+    );
+    println!("  cff walled:   {}", report.flattened_dispatchers_walled);
+    println!("  wobf ops:     {}", report.wobfuscator_ops_reinlined);
+    if !report.wobfuscator_host_bindings_refused.is_empty() {
+        println!(
+            "  wobf refused: {}",
+            report.wobfuscator_host_bindings_refused.len()
+        );
+    }
+    println!(
+        "  decrypted:    {} literal(s), {} stub(s) unresolved",
+        report.wasmixer_decrypted_literals.len(),
+        report.wasmixer_stubs_unresolved.len()
     );
     println!("  wat source:   {}", out_path.display());
     println!("  summary:      {}", summary_path.display());
@@ -520,6 +547,7 @@ mod tests {
             Some(out_path.clone()),
             Some(recovered_path.clone()),
             false,
+            None,
         )
         .expect("deob ok");
 

@@ -44,6 +44,12 @@ pub(crate) enum WasmCmd {
             help = "list WebAssembly obfuscators and whether they transform or classify only, then exit"
         )]
         list: bool,
+        #[arg(
+            long,
+            value_name = "SCRIPT",
+            help = "JavaScript host file whose object literal binds Wobfuscator's opaque operator imports; read statically, never run"
+        )]
+        host_script: Option<PathBuf>,
     },
     #[command(
         about = "parse a WebAssembly Component Model envelope and emit its world / adapter manifest"
