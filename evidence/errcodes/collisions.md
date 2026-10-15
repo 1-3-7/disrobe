@@ -4,16 +4,16 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2038 |
-| Emission sites | 2494 |
-| Sites carrying a message | 2406 |
-| Distinct emitted codes | 1878 |
+| Scanned source files | 2044 |
+| Emission sites | 2501 |
+| Sites carrying a message | 2413 |
+| Distinct emitted codes | 1881 |
 | Registered codes | 177 |
-| Codes with two or more distinct messages | 273 |
-| Emitted codes missing from the registry | 1701 |
+| Codes with two or more distinct messages | 275 |
+| Emitted codes missing from the registry | 1704 |
 | Registered codes no source emits | 0 |
 
-## Codes with two or more distinct messages (273)
+## Codes with two or more distinct messages (275)
 
 ### `DR-BINFMT-0009`
 
@@ -22,7 +22,7 @@
 
 ### `DR-CLI-0001`
 
-- `"DR error code, e.g. DR-CLI-0001 or just CLI-1"`: `crates/disrobe-cli/src/main.rs:1111`
+- `"DR error code, e.g. DR-CLI-0001 or just CLI-1"`: `crates/disrobe-cli/src/main.rs:1121`
 - `"cannot read wrapper at {}: {}"`: `crates/disrobe-cli/src/cli/pyarmor.rs:163`
 
 ### `DR-CLI-0016`
@@ -501,12 +501,12 @@
 ### `DR-CLI-0326`
 
 - `"annotation serialize: {}"`: `crates/disrobe-cli/src/cli/annot.rs:68`
-- `` "this binary was built without the `server` feature, so it carries no HTTP daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:2254`
+- `` "this binary was built without the `server` feature, so it carries no HTTP daemon, no gRPC surface and no LSP-over-stdio. rebuild with `--features server`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:2266`
 
 ### `DR-CLI-0327`
 
 - `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/annot.rs:71`
-- `` "this binary was built without the `prowl` feature, so it carries no archive and threat-intel harvester and no keyring for provider credentials. rebuild with `--features prowl`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:1941`
+- `` "this binary was built without the `prowl` feature, so it carries no archive and threat-intel harvester and no keyring for provider credentials. rebuild with `--features prowl`, or use the default build which enables it" ``: `crates/disrobe-cli/src/main.rs:1951`
 
 ### `DR-CLI-0328`
 
@@ -683,6 +683,11 @@
 
 - `"--engine-symbol-map requires a successful direct root Flutter AOT classification for the original input"`: `crates/disrobe-cli/src/cli/chain_v1.rs:519`
 - `` "`auto --engine-symbol-map` requires a single matching Flutter ELF input" ``: `crates/disrobe-cli/src/cli/auto.rs:66`
+
+### `DR-CLI-0448`
+
+- `"cannot read {}: {}"`: `crates/disrobe-cli/src/cli/crash.rs:14`, `crates/disrobe-cli/src/cli/crash.rs:23`
+- `"{} is {} bytes, above the {}-byte limit"`: `crates/disrobe-cli/src/cli/crash.rs:18`
 
 ### `DR-CLI-0450`
 
@@ -1080,7 +1085,7 @@
 
 ### `DR-CLI-0843`
 
-- `` "`auto --llm` / `--metadata-pack-N` is not supported; the chain engine writes a single chain.json. Run the matching per-language subcommand (e.g. `disrobe py decompile <input> --llm`) to emit the llm metadata bundle." ``: `crates/disrobe-cli/src/main.rs:2158`
+- `` "`auto --llm` / `--metadata-pack-N` is not supported; the chain engine writes a single chain.json. Run the matching per-language subcommand (e.g. `disrobe py decompile <input> --llm`) to emit the llm metadata bundle." ``: `crates/disrobe-cli/src/main.rs:2170`
 - `"{} exceeds the {} JVM hierarchy-edge limit"`: `crates/disrobe-cli/src/cli/query.rs:175`
 
 ### `DR-CLI-0844`
@@ -1258,7 +1263,7 @@
 ### `DR-MCP-0650`
 
 - `"navigation requires a Disasm- or Mir-rung .dr envelope: {}"`: `crates/disrobe-mcp/src/navigation.rs:620`
-- `"{} is a .dr envelope but not navigable: {}"`: `crates/disrobe-mcp/src/target.rs:1483`
+- `"{} is a .dr envelope but not navigable: {}"`: `crates/disrobe-mcp/src/target.rs:1502`
 
 ### `DR-MCP-0656`
 
@@ -1283,65 +1288,71 @@
 
 ### `DR-MCP-0700`
 
-- `"no workspace root: the working directory is unreadable and neither --root nor {} names one"`: `crates/disrobe-mcp/src/target.rs:126`
-- `"workspace root {} cannot be resolved: {}"`: `crates/disrobe-mcp/src/target.rs:110`
-- `"workspace root {} is not a directory"`: `crates/disrobe-mcp/src/target.rs:116`
+- `"no workspace root: the working directory is unreadable and neither --root nor {} names one"`: `crates/disrobe-mcp/src/target.rs:129`
+- `"workspace root {} cannot be resolved: {}"`: `crates/disrobe-mcp/src/target.rs:113`
+- `"workspace root {} is not a directory"`: `crates/disrobe-mcp/src/target.rs:119`
 
 ### `DR-MCP-0709`
 
-- `` "pass exactly one of `bytes_b64`, `path` and `target_id`" ``: `crates/disrobe-mcp/src/target.rs:1534`
-- `` "pass exactly one of `path` and `target_id`" ``: `crates/disrobe-mcp/src/target.rs:1117`, `crates/disrobe-mcp/src/target.rs:1157`
-- `"target {} holds {} bytes; this tool reads at most {}"`: `crates/disrobe-mcp/src/target.rs:1456`
+- `` "pass exactly one of `bytes_b64`, `path` and `target_id`" ``: `crates/disrobe-mcp/src/target.rs:1565`
+- `` "pass exactly one of `path` and `target_id`" ``: `crates/disrobe-mcp/src/target.rs:1176`, `crates/disrobe-mcp/src/target.rs:1533`
+- `"target {} holds {} bytes; this tool reads at most {}"`: `crates/disrobe-mcp/src/target.rs:1475`
 
 ### `DR-MCP-0710`
 
-- `"{} is neither a navigable .dr envelope nor a disassemblable native image: {}"`: `crates/disrobe-mcp/src/target.rs:1490`
-- `"{} is not a disassemblable native image: {}"`: `crates/disrobe-mcp/src/target.rs:275`
+- `"{} is neither a navigable .dr envelope nor a disassemblable native image: {}"`: `crates/disrobe-mcp/src/target.rs:1509`
+- `"{} is not a disassemblable native image: {}"`: `crates/disrobe-mcp/src/target.rs:278`
 
 ### `DR-MCP-0715`
 
-- `` "`function` must be 1..={} bytes: a name, a 0x-prefixed address or a function_id" ``: `crates/disrobe-mcp/src/target.rs:1618`
-- `"no discovered function contains {}"`: `crates/disrobe-mcp/src/target.rs:1640`
-- `"no function is named {}; list_functions with name_contains finds candidates"`: `crates/disrobe-mcp/src/target.rs:1647`
-- `"{} is not a hex address: {}"`: `crates/disrobe-mcp/src/target.rs:1634`
-- `"{}: {}"`: `crates/disrobe-mcp/src/target.rs:1625`
+- `` "`function` must be 1..={} bytes: a name, a 0x-prefixed address or a function_id" ``: `crates/disrobe-mcp/src/target.rs:1649`
+- `"no discovered function contains {}"`: `crates/disrobe-mcp/src/target.rs:1671`
+- `"no function is named {}; list_functions with name_contains finds candidates"`: `crates/disrobe-mcp/src/target.rs:1678`
+- `"{} is not a hex address: {}"`: `crates/disrobe-mcp/src/target.rs:1665`
+- `"{}: {}"`: `crates/disrobe-mcp/src/target.rs:1656`
 
 ### `DR-MCP-0716`
 
-- `"max_hits must be in 1..={}"`: `crates/disrobe-mcp/src/target.rs:1067`
-- `"pattern {}"`: `crates/disrobe-mcp/src/target.rs:1757`
+- `"max_hits must be in 1..={}"`: `crates/disrobe-mcp/src/target.rs:1070`
+- `"pattern {}"`: `crates/disrobe-mcp/src/target.rs:1788`
 
 ### `DR-MCP-0718`
 
-- `` "`address` must be 0x-prefixed hex" ``: `crates/disrobe-mcp/src/target.rs:1699`
-- `` "pass exactly one of `address` and `offset`" ``: `crates/disrobe-mcp/src/target.rs:1738`
-- `` "virtual addresses need a native image; pass a file `offset` instead" ``: `crates/disrobe-mcp/src/target.rs:1708`
-- `"{}: {}"`: `crates/disrobe-mcp/src/target.rs:1704`
+- `` "`address` must be 0x-prefixed hex" ``: `crates/disrobe-mcp/src/target.rs:1730`
+- `` "pass exactly one of `address` and `offset`" ``: `crates/disrobe-mcp/src/target.rs:1769`
+- `` "virtual addresses need a native image; pass a file `offset` instead" ``: `crates/disrobe-mcp/src/target.rs:1739`
+- `"{}: {}"`: `crates/disrobe-mcp/src/target.rs:1735`
 
 ### `DR-MCP-0722`
 
-- `"contains must be at most {} bytes"`: `crates/disrobe-mcp/src/target.rs:1353`
-- `"limit must be in 1..={}"`: `crates/disrobe-mcp/src/target.rs:1329`
-- `"min_len must be in 1..={}"`: `crates/disrobe-mcp/src/target.rs:1339`
+- `"contains must be at most {} bytes"`: `crates/disrobe-mcp/src/target.rs:1372`
+- `"limit must be in 1..={}"`: `crates/disrobe-mcp/src/target.rs:1348`
+- `"min_len must be in 1..={}"`: `crates/disrobe-mcp/src/target.rs:1358`
 
 ### `DR-MCP-0723`
 
-- `"cannot read the clock: {}"`: `crates/disrobe-mcp/src/target.rs:1215`
-- `"identify report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1238`
-- `"identify serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1220`
+- `"cannot read the clock: {}"`: `crates/disrobe-mcp/src/target.rs:1234`
+- `"identify report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1257`
+- `"identify serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1239`
 
 ### `DR-MCP-0724`
 
-- `"SQLite report serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1199`
-- `"SQLite report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1195`
-- `"rows must be at most {}"`: `crates/disrobe-mcp/src/target.rs:1175`
-- `"{}"`: `crates/disrobe-mcp/src/target.rs:1190`
+- `"SQLite report serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1218`
+- `"SQLite report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1214`
+- `"rows must be at most {}"`: `crates/disrobe-mcp/src/target.rs:1194`
+- `"{}"`: `crates/disrobe-mcp/src/target.rs:1209`
 
 ### `DR-MCP-0725`
 
-- `"capture report serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1132`
-- `"capture report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1128`
-- `"{}"`: `crates/disrobe-mcp/src/target.rs:1123`
+- `"capture report serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1125`
+- `"capture report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1121`
+- `"{}"`: `crates/disrobe-mcp/src/target.rs:1116`
+
+### `DR-MCP-0726`
+
+- `"crash report serialize: {}"`: `crates/disrobe-mcp/src/target.rs:1151`
+- `"crash report serialized to a non-object value"`: `crates/disrobe-mcp/src/target.rs:1147`
+- `"{}"`: `crates/disrobe-mcp/src/target.rs:1142`
 
 ### `DR-MCP-0731`
 
@@ -1576,7 +1587,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:159`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1701)
+## Emitted codes missing from the registry (1704)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -1837,8 +1848,8 @@
 - `DR-CLI-0268`: `crates/disrobe-cli/src/cli/install_deps.rs:106`
 - `DR-CLI-0269`: `crates/disrobe-cli/src/cli/self_update.rs:45`
 - `DR-CLI-0270`: `crates/disrobe-cli/src/cli/install/mod.rs:120`
-- `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2306`
-- `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2270`
+- `DR-CLI-0271`: `crates/disrobe-cli/src/main.rs:2318`
+- `DR-CLI-0290`: `crates/disrobe-cli/src/main.rs:2282`
 - `DR-CLI-0291`: `crates/disrobe-cli/src/cli/chain_v1.rs:612`, `crates/disrobe-cli/src/cli/chain_v1.rs:1320`
 - `DR-CLI-0292`: `crates/disrobe-cli/src/cli/chain_v1.rs:616`, `crates/disrobe-cli/src/cli/chain_v1.rs:628`
 - `DR-CLI-0293`: `crates/disrobe-cli/src/cli/chain_v1.rs:651`, `crates/disrobe-cli/src/cli/chain_v1.rs:758`, `crates/disrobe-cli/src/cli/chain_v1.rs:1379`
@@ -1868,8 +1879,8 @@
 - `DR-CLI-0323`: `crates/disrobe-cli/src/cli/annot.rs:39`, `crates/disrobe-cli/src/cli/context.rs:164`
 - `DR-CLI-0324`: `crates/disrobe-cli/src/cli/annot.rs:52`, `crates/disrobe-cli/src/cli/annot.rs:89`, `crates/disrobe-cli/src/cli/annot.rs:120`, `crates/disrobe-cli/src/cli/context.rs:186`
 - `DR-CLI-0325`: `crates/disrobe-cli/src/cli/annot.rs:64`, `crates/disrobe-cli/src/cli/context.rs:145`
-- `DR-CLI-0326`: `crates/disrobe-cli/src/cli/annot.rs:68`, `crates/disrobe-cli/src/main.rs:2254`
-- `DR-CLI-0327`: `crates/disrobe-cli/src/cli/annot.rs:71`, `crates/disrobe-cli/src/main.rs:1941`
+- `DR-CLI-0326`: `crates/disrobe-cli/src/cli/annot.rs:68`, `crates/disrobe-cli/src/main.rs:2266`
+- `DR-CLI-0327`: `crates/disrobe-cli/src/cli/annot.rs:71`, `crates/disrobe-cli/src/main.rs:1951`
 - `DR-CLI-0328`: `crates/disrobe-cli/src/cli/annot.rs:81`, `crates/disrobe-cli/src/cli/install_deps.rs:227`
 - `DR-CLI-0329`: `crates/disrobe-cli/src/cli/annot.rs:107`, `crates/disrobe-cli/src/cli/annot.rs:131`, `crates/disrobe-cli/src/cli/annot.rs:150`, `crates/disrobe-cli/src/cli/install_deps.rs:277`
 - `DR-CLI-0330`: `crates/disrobe-cli/src/cli/config.rs:145`, `crates/disrobe-cli/src/cli/rename.rs:54`
@@ -1879,7 +1890,7 @@
 - `DR-CLI-0334`: `crates/disrobe-cli/src/cli/config.rs:278`, `crates/disrobe-cli/src/cli/rename.rs:88`
 - `DR-CLI-0335`: `crates/disrobe-cli/src/cli/config.rs:287`, `crates/disrobe-cli/src/cli/rename.rs:90`
 - `DR-CLI-0336`: `crates/disrobe-cli/src/cli/config.rs:294`
-- `DR-CLI-0337`: `crates/disrobe-cli/src/main.rs:1782`
+- `DR-CLI-0337`: `crates/disrobe-cli/src/main.rs:1792`
 - `DR-CLI-0340`: `crates/disrobe-cli/src/cli/batch.rs:405`
 - `DR-CLI-0341`: `crates/disrobe-cli/src/cli/batch.rs:418`
 - `DR-CLI-0342`: `crates/disrobe-cli/src/cli/batch.rs:420`
@@ -1949,6 +1960,8 @@
 - `DR-CLI-0445`: `crates/disrobe-cli/src/cli/chain_v1.rs:528`
 - `DR-CLI-0446`: `crates/disrobe-cli/src/cli/auto.rs:66`, `crates/disrobe-cli/src/cli/chain_v1.rs:519`
 - `DR-CLI-0447`: `crates/disrobe-cli/src/cli/chain_v1.rs:550`
+- `DR-CLI-0448`: `crates/disrobe-cli/src/cli/crash.rs:14`, `crates/disrobe-cli/src/cli/crash.rs:18`, `crates/disrobe-cli/src/cli/crash.rs:23`
+- `DR-CLI-0449`: `crates/disrobe-cli/src/cli/crash.rs:25`
 - `DR-CLI-0450`: `crates/disrobe-cli/src/cli/dotnet.rs:1023`, `crates/disrobe-cli/src/cli/hermes.rs:73`
 - `DR-CLI-0451`: `crates/disrobe-cli/src/cli/dotnet.rs:1031`, `crates/disrobe-cli/src/cli/hermes.rs:87`
 - `DR-CLI-0452`: `crates/disrobe-cli/src/cli/dotnet.rs:1054`, `crates/disrobe-cli/src/cli/hermes.rs:91`
@@ -2222,7 +2235,7 @@
 - `DR-CLI-0840`: `crates/disrobe-cli/src/cli/capabilities.rs:14`, `crates/disrobe-cli/src/cli/query.rs:111`
 - `DR-CLI-0841`: `crates/disrobe-cli/src/cli/capabilities.rs:28`, `crates/disrobe-cli/src/cli/query.rs:117`
 - `DR-CLI-0842`: `crates/disrobe-cli/src/cli/capabilities.rs:41`, `crates/disrobe-cli/src/cli/query.rs:143`
-- `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:175`, `crates/disrobe-cli/src/main.rs:2158`
+- `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:175`, `crates/disrobe-cli/src/main.rs:2170`
 - `DR-CLI-0844`: `crates/disrobe-cli/src/cli/chain_v1.rs:620`, `crates/disrobe-cli/src/cli/extract.rs:40`, `crates/disrobe-cli/src/cli/luks1_input.rs:43`, `crates/disrobe-cli/src/cli/luks1_input.rs:46`, `crates/disrobe-cli/src/cli/luks1_input.rs:55`, `crates/disrobe-cli/src/cli/luks1_input.rs:62`, `crates/disrobe-cli/src/cli/query.rs:182`, `crates/disrobe-cli/src/cli/taint.rs:244`
 - `DR-CLI-0850`: `crates/disrobe-cli/src/cli/taint.rs:101`
 - `DR-CLI-0851`: `crates/disrobe-cli/src/cli/nir_source.rs:41`
@@ -2598,7 +2611,7 @@
 - `DR-MCP-0640`: `crates/disrobe-mcp/src/lib.rs:974`
 - `DR-MCP-0641`: `crates/disrobe-mcp/src/lib.rs:1279`
 - `DR-MCP-0642`: `crates/disrobe-mcp/src/lib.rs:1281`
-- `DR-MCP-0650`: `crates/disrobe-mcp/src/navigation.rs:620`, `crates/disrobe-mcp/src/target.rs:1483`
+- `DR-MCP-0650`: `crates/disrobe-mcp/src/navigation.rs:620`, `crates/disrobe-mcp/src/target.rs:1502`
 - `DR-MCP-0651`: `crates/disrobe-mcp/src/navigation.rs:630`
 - `DR-MCP-0652`: `crates/disrobe-mcp/src/navigation.rs:756`, `crates/disrobe-mcp/src/navigation.rs:801`
 - `DR-MCP-0653`: `crates/disrobe-mcp/src/navigation.rs:774`
@@ -2613,32 +2626,33 @@
 - `DR-MCP-0662`: `crates/disrobe-mcp/src/navigation.rs:664`
 - `DR-MCP-0670`: `crates/disrobe-mcp/src/lib.rs:1143`
 - `DR-MCP-0680`: `crates/disrobe-mcp/src/lib.rs:752`, `crates/disrobe-mcp/src/lib.rs:756`
-- `DR-MCP-0700`: `crates/disrobe-mcp/src/target.rs:110`, `crates/disrobe-mcp/src/target.rs:116`, `crates/disrobe-mcp/src/target.rs:126`
-- `DR-MCP-0701`: `crates/disrobe-mcp/src/target.rs:138`
-- `DR-MCP-0702`: `crates/disrobe-mcp/src/target.rs:148`
-- `DR-MCP-0703`: `crates/disrobe-mcp/src/target.rs:157`
-- `DR-MCP-0704`: `crates/disrobe-mcp/src/target.rs:170`
-- `DR-MCP-0705`: `crates/disrobe-mcp/src/target.rs:181`, `crates/disrobe-mcp/src/target.rs:185`
-- `DR-MCP-0706`: `crates/disrobe-mcp/src/target.rs:252`
-- `DR-MCP-0707`: `crates/disrobe-mcp/src/target.rs:211`
-- `DR-MCP-0708`: `crates/disrobe-mcp/src/target.rs:1511`
-- `DR-MCP-0709`: `crates/disrobe-mcp/src/target.rs:1117`, `crates/disrobe-mcp/src/target.rs:1157`, `crates/disrobe-mcp/src/target.rs:1456`, `crates/disrobe-mcp/src/target.rs:1534`
-- `DR-MCP-0710`: `crates/disrobe-mcp/src/target.rs:275`, `crates/disrobe-mcp/src/target.rs:1490`
-- `DR-MCP-0711`: `crates/disrobe-mcp/src/target.rs:1579`
-- `DR-MCP-0712`: `crates/disrobe-mcp/src/target.rs:869`
-- `DR-MCP-0713`: `crates/disrobe-mcp/src/target.rs:1015`
-- `DR-MCP-0714`: `crates/disrobe-mcp/src/target.rs:1024`
-- `DR-MCP-0715`: `crates/disrobe-mcp/src/target.rs:1618`, `crates/disrobe-mcp/src/target.rs:1625`, `crates/disrobe-mcp/src/target.rs:1634`, `crates/disrobe-mcp/src/target.rs:1640`, `crates/disrobe-mcp/src/target.rs:1647`
-- `DR-MCP-0716`: `crates/disrobe-mcp/src/target.rs:1067`, `crates/disrobe-mcp/src/target.rs:1757`
-- `DR-MCP-0717`: `crates/disrobe-mcp/src/target.rs:1259`
-- `DR-MCP-0718`: `crates/disrobe-mcp/src/target.rs:1699`, `crates/disrobe-mcp/src/target.rs:1704`, `crates/disrobe-mcp/src/target.rs:1708`, `crates/disrobe-mcp/src/target.rs:1738`
-- `DR-MCP-0719`: `crates/disrobe-mcp/src/target.rs:1721`
-- `DR-MCP-0720`: `crates/disrobe-mcp/src/target.rs:902`
-- `DR-MCP-0721`: `crates/disrobe-mcp/src/target.rs:919`
-- `DR-MCP-0722`: `crates/disrobe-mcp/src/target.rs:1329`, `crates/disrobe-mcp/src/target.rs:1339`, `crates/disrobe-mcp/src/target.rs:1353`
-- `DR-MCP-0723`: `crates/disrobe-mcp/src/target.rs:1215`, `crates/disrobe-mcp/src/target.rs:1220`, `crates/disrobe-mcp/src/target.rs:1238`
-- `DR-MCP-0724`: `crates/disrobe-mcp/src/target.rs:1175`, `crates/disrobe-mcp/src/target.rs:1190`, `crates/disrobe-mcp/src/target.rs:1195`, `crates/disrobe-mcp/src/target.rs:1199`
-- `DR-MCP-0725`: `crates/disrobe-mcp/src/target.rs:1123`, `crates/disrobe-mcp/src/target.rs:1128`, `crates/disrobe-mcp/src/target.rs:1132`
+- `DR-MCP-0700`: `crates/disrobe-mcp/src/target.rs:113`, `crates/disrobe-mcp/src/target.rs:119`, `crates/disrobe-mcp/src/target.rs:129`
+- `DR-MCP-0701`: `crates/disrobe-mcp/src/target.rs:141`
+- `DR-MCP-0702`: `crates/disrobe-mcp/src/target.rs:151`
+- `DR-MCP-0703`: `crates/disrobe-mcp/src/target.rs:160`
+- `DR-MCP-0704`: `crates/disrobe-mcp/src/target.rs:173`
+- `DR-MCP-0705`: `crates/disrobe-mcp/src/target.rs:184`, `crates/disrobe-mcp/src/target.rs:188`
+- `DR-MCP-0706`: `crates/disrobe-mcp/src/target.rs:255`
+- `DR-MCP-0707`: `crates/disrobe-mcp/src/target.rs:214`
+- `DR-MCP-0708`: `crates/disrobe-mcp/src/target.rs:1542`
+- `DR-MCP-0709`: `crates/disrobe-mcp/src/target.rs:1176`, `crates/disrobe-mcp/src/target.rs:1475`, `crates/disrobe-mcp/src/target.rs:1533`, `crates/disrobe-mcp/src/target.rs:1565`
+- `DR-MCP-0710`: `crates/disrobe-mcp/src/target.rs:278`, `crates/disrobe-mcp/src/target.rs:1509`
+- `DR-MCP-0711`: `crates/disrobe-mcp/src/target.rs:1610`
+- `DR-MCP-0712`: `crates/disrobe-mcp/src/target.rs:872`
+- `DR-MCP-0713`: `crates/disrobe-mcp/src/target.rs:1018`
+- `DR-MCP-0714`: `crates/disrobe-mcp/src/target.rs:1027`
+- `DR-MCP-0715`: `crates/disrobe-mcp/src/target.rs:1649`, `crates/disrobe-mcp/src/target.rs:1656`, `crates/disrobe-mcp/src/target.rs:1665`, `crates/disrobe-mcp/src/target.rs:1671`, `crates/disrobe-mcp/src/target.rs:1678`
+- `DR-MCP-0716`: `crates/disrobe-mcp/src/target.rs:1070`, `crates/disrobe-mcp/src/target.rs:1788`
+- `DR-MCP-0717`: `crates/disrobe-mcp/src/target.rs:1278`
+- `DR-MCP-0718`: `crates/disrobe-mcp/src/target.rs:1730`, `crates/disrobe-mcp/src/target.rs:1735`, `crates/disrobe-mcp/src/target.rs:1739`, `crates/disrobe-mcp/src/target.rs:1769`
+- `DR-MCP-0719`: `crates/disrobe-mcp/src/target.rs:1752`
+- `DR-MCP-0720`: `crates/disrobe-mcp/src/target.rs:905`
+- `DR-MCP-0721`: `crates/disrobe-mcp/src/target.rs:922`
+- `DR-MCP-0722`: `crates/disrobe-mcp/src/target.rs:1348`, `crates/disrobe-mcp/src/target.rs:1358`, `crates/disrobe-mcp/src/target.rs:1372`
+- `DR-MCP-0723`: `crates/disrobe-mcp/src/target.rs:1234`, `crates/disrobe-mcp/src/target.rs:1239`, `crates/disrobe-mcp/src/target.rs:1257`
+- `DR-MCP-0724`: `crates/disrobe-mcp/src/target.rs:1194`, `crates/disrobe-mcp/src/target.rs:1209`, `crates/disrobe-mcp/src/target.rs:1214`, `crates/disrobe-mcp/src/target.rs:1218`
+- `DR-MCP-0725`: `crates/disrobe-mcp/src/target.rs:1116`, `crates/disrobe-mcp/src/target.rs:1121`, `crates/disrobe-mcp/src/target.rs:1125`
+- `DR-MCP-0726`: `crates/disrobe-mcp/src/target.rs:1142`, `crates/disrobe-mcp/src/target.rs:1147`, `crates/disrobe-mcp/src/target.rs:1151`
 - `DR-MCP-0730`: `crates/disrobe-mcp/src/notes.rs:92`, `crates/disrobe-mcp/src/notes.rs:95`, `crates/disrobe-mcp/src/notes.rs:100`, `crates/disrobe-mcp/src/notes.rs:103`
 - `DR-MCP-0731`: `crates/disrobe-mcp/src/notes.rs:114`, `crates/disrobe-mcp/src/notes.rs:123`, `crates/disrobe-mcp/src/notes.rs:130`, `crates/disrobe-mcp/src/notes.rs:136`
 - `DR-MCP-0732`: `crates/disrobe-mcp/src/notes.rs:144`

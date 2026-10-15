@@ -56,6 +56,7 @@ disrobe is proprietary, source-available software under the Disrobe Source-Avail
 - [Containers and archives](https://1-3-7.github.io/disrobe/latest/languages/containers.html): Before disrobe can decompile anything, it often has to get inside a container.
 - [SQLite databases](https://1-3-7.github.io/disrobe/latest/languages/sqlite.html): disrobe sqlite <database> reads a SQLite 3 database file without opening it through SQLite, so a damaged, locked or deliberately malformed file still yields what can be read, and deleted records come back alongside the live ones.
 - [Network captures](https://1-3-7.github.io/disrobe/latest/languages/captures.html): disrobe capture <file> decodes a saved capture without Wireshark: pcap (either byte order, microsecond or nanosecond timestamps), pcapng (any section byte order, several interfaces, if_tsresol timestamps), HAR 1.2 and Fiddler SAZ archives.
+- [Crash records](https://1-3-7.github.io/disrobe/latest/languages/crashes.html): disrobe crash <file> triages a crash record without a debugger: Linux ELF core files (32- and 64-bit, either byte order) and minidumps written by Windows (MiniDumpWriteDump, Task Manager, WER), Breakpad or Crashpad.
 
 ## Reference
 

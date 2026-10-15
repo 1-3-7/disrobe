@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1503,
+    "entry_points": 1505,
     "parse_shaped": 620,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 647,
     "named_by_a_suite_recording_seed_reach": 132,
-    "named_by_neither": 820
+    "named_by_neither": 822
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -254,7 +254,7 @@
     },
     {
       "crate": "disrobe-dataforensics",
-      "entry_points": 2,
+      "entry_points": 4,
       "parse_shaped": 0,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
@@ -262,6 +262,8 @@
       "named_by_a_suite_recording_seed_reach": 0,
       "named_by_neither": [
         "disrobe-dataforensics/src/capture/mod.rs::inspect",
+        "disrobe-dataforensics/src/crash/mod.rs::inspect",
+        "disrobe-dataforensics/src/crash/mod.rs::looks_like_crash_record",
         "disrobe-dataforensics/src/sqlite/mod.rs::inspect"
       ]
     },

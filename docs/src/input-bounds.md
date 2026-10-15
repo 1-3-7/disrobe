@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2332 bounds (count 225, other 1094, output 69, recursion 232, size 525, work 187).
+2336 bounds (count 225, other 1096, output 69, recursion 232, size 527, work 187).
 
-Exceeded: error 960, recorded 197, panic 0, delegated 49, silent 1067, unclassified 18, allocation 33, unused 8.
+Exceeded: error 961, recorded 197, panic 0, delegated 49, silent 1070, unclassified 18, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -252,6 +252,7 @@ Exceeded: error 960, recorded 197, panic 0, delegated 49, silent 1067, unclassif
 | `disrobe-cli` | `MAX_SIDECAR_REDACTION_BYTES` | size | silent: `return` in `sidecar_shape` | `usize` | `64 << 20` | `crates/disrobe-cli/src/cli/chain_v1.rs` |
 | `disrobe-cli` | `MAX_REPORTS_GRADED` | other | silent: `break` in `find_reports` | `usize` | `4096` | `crates/disrobe-cli/src/cli/context.rs` |
 | `disrobe-cli` | `MAX_REPORT_SEARCH_DEPTH` | recursion | silent: `for` range in `find_reports` | `usize` | `4` | `crates/disrobe-cli/src/cli/context.rs` |
+| `disrobe-cli` | `MAX_CRASH_BYTES` | size | error: untyped `miette!` | `u64` | `8 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/crash.rs` |
 | `disrobe-cli` | `MAX_CYCLONEDX_COMPONENTS` | other | error: `CycloneDxError::TooManyComponents` | `usize` | `MAX_CYCLONEDX_PACKAGES + 1` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
 | `disrobe-cli` | `MAX_CYCLONEDX_COMPONENT_TEXT_BYTES` | size | error: `CycloneDxError::ComponentTextTooLong` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
 | `disrobe-cli` | `MAX_CYCLONEDX_OUTPUT_BYTES` | output | error: `CycloneDxError::OutputTooLong`; `Error::other()` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
@@ -375,6 +376,9 @@ Exceeded: error 960, recorded 197, panic 0, delegated 49, silent 1067, unclassif
 | `disrobe-dataforensics` | `MAX_INTERFACES` | other | silent: fallback value in `pcapng` | `usize` | `4096` | `crates/disrobe-dataforensics/src/capture/container.rs` |
 | `disrobe-dataforensics` | `MAX_IPV6_EXTENSIONS` | other | silent: `for` range in `ipv6` | `usize` | `8` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
 | `disrobe-dataforensics` | `MAX_VLAN_TAGS` | other | silent: `while` condition in `decode` | `usize` | `4` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
+| `disrobe-dataforensics` | `MAX_AUX_STRING` | other | silent: `.min()` clamp in `read_up_to`; `?` on a checked operation in `c_string` | `usize` | `4096` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_COMMAND_LINE` | other | silent: slice in `command_line` | `usize` | `64 * 1024` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
+| `disrobe-dataforensics` | `MAX_STRING_BYTES` | size | silent: `return` in `utf16_string` | `usize` | `64 * 1024` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
 | `disrobe-dataforensics` | `MAX_PAGE_SIZE` | size | error: `SqliteError::BadHeader`; `SqliteError::PageOutOfRange`; `SqliteError::Wal`; 2 more | `u32` | `65_536` | `crates/disrobe-dataforensics/src/sqlite/format.rs` |
 | `disrobe-dataforensics` | `MAX_VARINT_BYTES` | size | error: untyped error | `usize` | `9` | `crates/disrobe-dataforensics/src/sqlite/format.rs` |
 | `disrobe-dataforensics` | `MAX_COLUMNS` | other | silent: `return` in `parse_header` | `usize` | `32_767` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
@@ -2356,7 +2360,7 @@ Exceeded: error 960, recorded 197, panic 0, delegated 49, silent 1067, unclassif
 
 ## Silent stops
 
-1067 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1070 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2479,6 +2483,9 @@ Exceeded: error 960, recorded 197, panic 0, delegated 49, silent 1067, unclassif
 | `disrobe-dataforensics` | `MAX_INTERFACES` | fallback value in `pcapng` | `crates/disrobe-dataforensics/src/capture/container.rs` |
 | `disrobe-dataforensics` | `MAX_IPV6_EXTENSIONS` | `for` range in `ipv6` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
 | `disrobe-dataforensics` | `MAX_VLAN_TAGS` | `while` condition in `decode` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
+| `disrobe-dataforensics` | `MAX_AUX_STRING` | `.min()` clamp in `read_up_to`; `?` on a checked operation in `c_string` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_COMMAND_LINE` | slice in `command_line` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
+| `disrobe-dataforensics` | `MAX_STRING_BYTES` | `return` in `utf16_string` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
 | `disrobe-dataforensics` | `MAX_COLUMNS` | `return` in `parse_header` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
 | `disrobe-dataforensics` | `MAX_INLINE_TEXT` | `return` in `decode_text` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
 | `disrobe-dataforensics` | `MAX_SQL_BYTES` | `return` in `table_shape` | `crates/disrobe-dataforensics/src/sqlite/schema.rs` |
