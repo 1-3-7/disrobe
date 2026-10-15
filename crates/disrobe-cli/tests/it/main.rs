@@ -395,6 +395,7 @@ mod native_export_ghidra;
 #[path = "../native_match_e2e.rs"]
 mod native_match_e2e;
 
+#[cfg(windows)]
 #[path = "../native_neutralize.rs"]
 mod native_neutralize;
 
