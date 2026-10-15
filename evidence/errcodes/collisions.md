@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2093 |
-| Emission sites | 2637 |
-| Sites carrying a message | 2549 |
-| Distinct emitted codes | 1951 |
+| Scanned source files | 2094 |
+| Emission sites | 2647 |
+| Sites carrying a message | 2559 |
+| Distinct emitted codes | 1961 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 298 |
-| Emitted codes missing from the registry | 1774 |
+| Emitted codes missing from the registry | 1784 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (298)
@@ -1723,7 +1723,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:173`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1774)
+## Emitted codes missing from the registry (1784)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -3109,6 +3109,16 @@
 - `DR-NATIVE-0241`: `crates/disrobe-cli/src/cli/native.rs:232`
 - `DR-NATIVE-0242`: `crates/disrobe-cli/src/cli/native.rs:238`
 - `DR-NATIVE-0243`: `crates/disrobe-cli/src/cli/native.rs:198`
+- `DR-NATIVE-0250`: `crates/disrobe-pass-native/src/verify_function.rs:34`
+- `DR-NATIVE-0251`: `crates/disrobe-pass-native/src/verify_function.rs:37`
+- `DR-NATIVE-0252`: `crates/disrobe-pass-native/src/verify_function.rs:40`
+- `DR-NATIVE-0253`: `crates/disrobe-pass-native/src/verify_function.rs:42`
+- `DR-NATIVE-0254`: `crates/disrobe-pass-native/src/verify_function.rs:44`
+- `DR-NATIVE-0255`: `crates/disrobe-pass-native/src/verify_function.rs:46`
+- `DR-NATIVE-0256`: `crates/disrobe-pass-native/src/verify_function.rs:49`
+- `DR-NATIVE-0257`: `crates/disrobe-pass-native/src/verify_function.rs:56`
+- `DR-NATIVE-0258`: `crates/disrobe-pass-native/src/verify_function.rs:58`
+- `DR-NATIVE-0259`: `crates/disrobe-pass-native/src/verify_function.rs:61`
 - `DR-NATIVELANG-0001`: `crates/disrobe-pass-nativelang/src/error.rs:8`
 - `DR-NATIVELANG-0002`: `crates/disrobe-pass-nativelang/src/error.rs:11`
 - `DR-NATIVELANG-0003`: `crates/disrobe-pass-nativelang/src/error.rs:14`

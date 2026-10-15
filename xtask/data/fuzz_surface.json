@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1545,
+    "entry_points": 1546,
     "parse_shaped": 632,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 657,
     "named_by_a_suite_recording_seed_reach": 133,
-    "named_by_neither": 852
+    "named_by_neither": 853
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -626,7 +626,7 @@
     },
     {
       "crate": "disrobe-pass-mobile",
-      "entry_points": 69,
+      "entry_points": 70,
       "parse_shaped": 35,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
@@ -637,6 +637,7 @@
         "disrobe-pass-mobile/src/flutter/aot_lift.rs::lift_functions",
         "disrobe-pass-mobile/src/flutter/arm64_traversal.rs::traverse",
         "disrobe-pass-mobile/src/flutter/cluster.rs::recover_declared_names",
+        "disrobe-pass-mobile/src/flutter/code_table.rs::instructions_payload_end",
         "disrobe-pass-mobile/src/flutter/disasm.rs::disassemble_functions",
         "disrobe-pass-mobile/src/flutter/disasm.rs::disassemble_range",
         "disrobe-pass-mobile/src/flutter/engine_symbols.rs::flutter_engine_identity_for_elf",

@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2443 bounds (count 233, other 1154, output 72, recursion 241, size 552, work 191).
+2444 bounds (count 233, other 1154, output 72, recursion 242, size 552, work 191).
 
-Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1123, unclassified 17, allocation 33, unused 8.
+Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1298,7 +1298,8 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1123, unclassi
 | `disrobe-pass-mobile` | `MAX_VALUE_DEPTH` | recursion | silent: `return` in `render_value` | `usize` | `6` | `crates/disrobe-pass-mobile/src/flutter/call_args.rs` |
 | `disrobe-pass-mobile` | `MAX_VALUE_NODES` | count | silent: `?` on a checked operation in `node_budget` | `usize` | `48` | `crates/disrobe-pass-mobile/src/flutter/call_args.rs` |
 | `disrobe-pass-mobile` | `CLUSTER_TAG_SCAN_LIMIT` | other | silent: `.min()` clamp in `scan_cid_tags` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/cluster.rs` |
-| `disrobe-pass-mobile` | `MAX_CODE_TABLE_ENTRIES` | count | error: `Error::DartCodeTableUnavailable` (DR-MOB-0048) | `usize` | `1 << 22` | `crates/disrobe-pass-mobile/src/flutter/code_table.rs` |
+| `disrobe-pass-mobile` | `MAX_CLOSURE_NESTING` | recursion | silent: `return` in `qualified_name` | `usize` | `64` | `crates/disrobe-pass-mobile/src/flutter/code_names.rs` |
+| `disrobe-pass-mobile` | `MAX_CODE_TABLE_ENTRIES` | count | error: `Error::DartCodeTableLengthMismatch` (DR-MOB-0049); `Error::DartCodeTableUnavailable` (DR-MOB-0048) | `usize` | `1 << 22` | `crates/disrobe-pass-mobile/src/flutter/code_table.rs` |
 | `disrobe-pass-mobile` | `HARD_CLUSTER_LIMIT` | other | error: `Error::DartGraphConfiguredLimitExceeded` (DR-MOB-0044); `Error::DartGraphLimitExceeded` (DR-MOB-0035); `Error::FlutterEngineSymbolMapDuplicateAddress` (DR-MOB-0055); 2 more | `usize` | `4096` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_OBJECT_LIMIT` | other | error: `DartPoolUnresolvedReason::ObjectOutOfRange`; `DartPoolUnresolvedReason::TypeArgumentsMalformed`; `DartPoolUnresolvedReason::TypeFlagsMissing`; 2 more | `usize` | `2_000_000` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_REFERENCE_LIMIT` | other | error: `DartPoolUnresolvedReason::Cyclic`; `DartPoolUnresolvedReason::DeclaredNameMissing`; `DartPoolUnresolvedReason::ObjectOutOfRange`; 7 more | `usize` | `16_000_000` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
@@ -1604,11 +1605,11 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1123, unclassi
 | `disrobe-pass-native` | `MAX_INFO_FILL_BYTES` | size | silent: `.min()` clamp in `dispatch`; `.min()` clamp in `query_information_process` | `u64` | `64` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
 | `disrobe-pass-native` | `MAX_NEUTRALIZED_EVENTS` | other | recorded: flag `events_dropped` | `usize` | `256` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
 | `disrobe-pass-native` | `MAX_VEH_HANDLERS` | other | silent: fallback value in `dispatch` | `usize` | `16` | `crates/disrobe-pass-native/src/stub_emu/win_api.rs` |
-| `disrobe-pass-native` | `DEFAULT_STEP_CAP` | work | error: `VerifyFunctionError::Limit` | `u64` | `100_000` | `crates/disrobe-pass-native/src/verify_function.rs` |
-| `disrobe-pass-native` | `MAX_CASES` | other | error: `VerifyFunctionError::Limit` | `u32` | `100_000` | `crates/disrobe-pass-native/src/verify_function.rs` |
-| `disrobe-pass-native` | `MAX_DIVERGENCES` | other | error: `VerifyFunctionError::Limit` | `usize` | `32` | `crates/disrobe-pass-native/src/verify_function.rs` |
-| `disrobe-pass-native` | `MAX_IMAGE_BYTES` | size | error: `VerifyFunctionError::Limit` | `u64` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/verify_function.rs` |
-| `disrobe-pass-native` | `MAX_SECTIONS` | other | error: `VerifyFunctionError::Limit` | `usize` | `256` | `crates/disrobe-pass-native/src/verify_function.rs` |
+| `disrobe-pass-native` | `DEFAULT_STEP_CAP` | work | error: `VerifyFunctionError::Limit` (DR-NATIVE-0257) | `u64` | `100_000` | `crates/disrobe-pass-native/src/verify_function.rs` |
+| `disrobe-pass-native` | `MAX_CASES` | other | error: `VerifyFunctionError::Limit` (DR-NATIVE-0257) | `u32` | `100_000` | `crates/disrobe-pass-native/src/verify_function.rs` |
+| `disrobe-pass-native` | `MAX_DIVERGENCES` | other | error: `VerifyFunctionError::Limit` (DR-NATIVE-0257) | `usize` | `32` | `crates/disrobe-pass-native/src/verify_function.rs` |
+| `disrobe-pass-native` | `MAX_IMAGE_BYTES` | size | error: `VerifyFunctionError::Limit` (DR-NATIVE-0257) | `u64` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/verify_function.rs` |
+| `disrobe-pass-native` | `MAX_SECTIONS` | other | error: `VerifyFunctionError::Limit` (DR-NATIVE-0257) | `usize` | `256` | `crates/disrobe-pass-native/src/verify_function.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_PAGES` | other | silent: `?` on a checked operation in `apply_chains` | `usize` | `65_536` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
 | `disrobe-pass-native` | `MAX_CHAIN_STEPS` | work | silent: `?` on a checked operation in `apply_chains` | `usize` | `65_536` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
 | `disrobe-pass-native` | `MAX_FIXUP_BYTES` | size | silent: `return` in `apply` | `usize` | `1 << 20` | `crates/disrobe-pass-native/src/vm_devirt/detect/chained_fixups.rs` |
@@ -2467,7 +2468,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1123, unclassi
 
 ## Silent stops
 
-1123 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1124 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2993,6 +2994,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1123, unclassi
 | `disrobe-pass-mobile` | `MAX_VALUE_DEPTH` | `return` in `render_value` | `crates/disrobe-pass-mobile/src/flutter/call_args.rs` |
 | `disrobe-pass-mobile` | `MAX_VALUE_NODES` | `?` on a checked operation in `node_budget` | `crates/disrobe-pass-mobile/src/flutter/call_args.rs` |
 | `disrobe-pass-mobile` | `CLUSTER_TAG_SCAN_LIMIT` | `.min()` clamp in `scan_cid_tags` | `crates/disrobe-pass-mobile/src/flutter/cluster.rs` |
+| `disrobe-pass-mobile` | `MAX_CLOSURE_NESTING` | `return` in `qualified_name` | `crates/disrobe-pass-mobile/src/flutter/code_names.rs` |
 | `disrobe-pass-mobile` | `MAX_POOL_SLOTS` | skipped in `fill_object_pools` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `MAX_FUNCTION_INSNS` | `while` condition in `disassemble_function`; `while` condition in `disassemble_range` | `crates/disrobe-pass-mobile/src/flutter/disasm.rs` |
 | `disrobe-pass-mobile` | `MEMBER_TABLE_CAP` | `return` in `member_table_from_count`; `return` in `parse` | `crates/disrobe-pass-mobile/src/flutter/kernel.rs` |
