@@ -937,7 +937,12 @@ fn build_name_table(
         .collect();
     let local_kinds: Vec<crate::signature::ConditionKind> =
         resolver.local_condition_kinds(body.local_var_sig_tok);
+    let returns_managed_byref: bool = matches!(
+        m.signature.return_type,
+        crate::signature::TypeSigOrVoid::Type(crate::signature::TypeSig::ByRef(_))
+    );
     NameTable::new(!m.is_static(), param_names, param_types, local_types)
+        .with_managed_byref_return(returns_managed_byref)
         .with_kinds(param_kinds, local_kinds)
 }
 

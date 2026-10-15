@@ -1364,6 +1364,10 @@ fn structure_method_core<N: TokenNamer>(
     prune_orphan_labels(&mut tree);
     let locals_used: BTreeSet<u32> = st.locals_used.clone();
     let residual_gotos: u32 = u32::try_from(st.goto_targets.len()).unwrap_or(u32::MAX);
+    let managed_byref_argument_refused: bool = st
+        .block_code
+        .iter()
+        .any(|block: &BlockCode| block.managed_byref_argument_refused);
     let mut text: String = String::with_capacity(256);
     render(&mut text, &tree, 1, lang);
     let declarations: Vec<LinearStmt> = st
@@ -1384,6 +1388,7 @@ fn structure_method_core<N: TokenNamer>(
         body: text,
         locals_used,
         residual_gotos,
+        managed_byref_argument_refused,
     }
 }
 
@@ -1392,6 +1397,7 @@ pub(crate) struct StructuredOutput {
     pub body: String,
     pub locals_used: BTreeSet<u32>,
     pub residual_gotos: u32,
+    pub managed_byref_argument_refused: bool,
 }
 
 fn stmt_text(stmt: &LinearStmt) -> Option<&str> {

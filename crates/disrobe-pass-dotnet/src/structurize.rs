@@ -9,7 +9,7 @@ use crate::cil::{
 };
 use crate::debug::dbg_kv;
 use crate::model::{IsInstTargetKind, Resolver};
-use crate::names::NameTable;
+use crate::names::{NameTable, is_managed_byref_type};
 use crate::signature::ConditionKind;
 
 mod operand_kind;
@@ -383,6 +383,7 @@ pub(crate) enum Expr {
     Field {
         text: String,
         is_boolean: bool,
+        ty: Option<String>,
         kind: ConditionKind,
     },
     Unary(&'static str, Box<Self>),
@@ -530,9 +531,19 @@ const STACK_UNDERFLOW: &str = "__stack_underflow";
 const UNDECODABLE_SLOT: &str = "__undecodable_slot";
 const UNRESOLVED_OPERAND_KIND: &str = "__unresolved_operand_kind";
 const UNRESOLVED_OPERAND_KIND_REFUSAL: &str = "__unresolved_operand_kind: an unsigned, unordered or overflow-checked opcode reads an operand whose stack type is not known, so its C# signedness cannot be chosen";
+const UNRESOLVED_MANAGED_BYREF_ARGUMENT_REFUSAL: &str = "__unresolved_managed_byref_argument_mode: the callee metadata does not identify the required C# ref, out or in argument mode";
 const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
 const UNRESOLVED_ISINST_TARGET: &str = "__unresolved_isinst_target";
 const UNRESOLVED_UNBOX_ANY_TARGET: &str = "__unresolved_unbox_any_target";
+
+#[must_use]
+pub fn is_unresolved_managed_byref_argument_refusal(body: &str) -> bool {
+    let refusal: String = format!(
+        "throw new System.NotSupportedException(\"{UNRESOLVED_MANAGED_BYREF_ARGUMENT_REFUSAL}\");"
+    );
+    body.lines()
+        .any(|line: &str| line.trim() == refusal.as_str())
+}
 
 fn runtime_handle_refusal(lang: TargetLang, handle_type: &str, detail: &str) -> String {
     match lang {
@@ -1512,8 +1523,35 @@ fn is_managed_byref_expr(e: &Expr, names: &NameTable) -> bool {
     match e {
         Expr::Arg(n) => names.arg_is_managed_byref(*n),
         Expr::Local(n) => names.local_is_managed_byref(*n),
+        Expr::Call {
+            return_type: Some(return_type),
+            ..
+        } => is_managed_byref_type(return_type),
+        Expr::Field { ty: Some(ty), .. } | Expr::Temp { ty: Some(ty), .. } => {
+            is_managed_byref_type(ty)
+        }
         _ => false,
     }
+}
+
+fn managed_byref_target(expression: &Expr, lang: TargetLang, names: &NameTable) -> Option<String> {
+    (lang == TargetLang::CSharp).then_some(())?;
+    match expression {
+        Expr::AddressOf(inner) => Some(inner.render(lang, names)),
+        other if is_managed_byref_expr(other, names) => Some(other.render(lang, names)),
+        _ => None,
+    }
+}
+
+fn render_return_value(expression: Expr, lang: TargetLang, names: &NameTable) -> String {
+    if lang != TargetLang::CSharp || !names.returns_managed_byref() {
+        return expression.render(lang, names);
+    }
+    let target: String = match &expression {
+        Expr::AddressOf(inner) => inner.render(lang, names),
+        other => other.render(lang, names),
+    };
+    format!("ref {target}")
 }
 
 fn is_singleton_field(name: &str) -> bool {
@@ -1949,6 +1987,7 @@ struct Lifter<'a, N: TokenNamer> {
     entry_deficit: usize,
     at: (u32, String),
     abstentions: Vec<String>,
+    managed_byref_argument_refused: bool,
 }
 
 impl<'a, N: TokenNamer> Lifter<'a, N> {
@@ -1976,6 +2015,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             entry_deficit: 0,
             at: (0, String::new()),
             abstentions: Vec::new(),
+            managed_byref_argument_refused: false,
         }
     }
 
@@ -2255,16 +2295,27 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 }
                 let name: String =
                     self.fresh_name(format!("__disrobe_spill_{:04X}_{index}", self.offset));
+                let ty: Option<String> = temp_type(expression, self.names);
                 let temp: Expr = Expr::Temp {
                     name: name.clone(),
                     is_boolean: expression.is_known_boolean(self.names),
                     kind: classify_cond_kind(expression, self.names),
-                    ty: temp_type(expression, self.names),
+                    ty: ty.clone(),
                 };
-                self.stmts.push(Stmt::Declare {
-                    name,
-                    value: expression.render(self.lang, self.names),
-                });
+                if let Some(target_type) = ty
+                    .as_deref()
+                    .and_then(|type_name: &str| type_name.strip_prefix("ref "))
+                    && let Some(value) = managed_byref_target(expression, self.lang, self.names)
+                {
+                    self.stmts.push(Stmt::Expr(format!(
+                        "ref {target_type} {name} = ref {value}"
+                    )));
+                } else {
+                    self.stmts.push(Stmt::Declare {
+                        name,
+                        value: expression.render(self.lang, self.names),
+                    });
+                }
                 shared.insert(origin, temp.clone());
                 temp
             };
@@ -2592,6 +2643,18 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         let spilled: BTreeMap<u64, Expr> =
             self.spill_before_store(StoreTarget::Slot(Location::Local(n)));
         let val: Expr = adopt_spill(&spilled, val);
+        if let Some(target_type) = self.names.local_managed_byref_target_type(n)
+            && let Some(value) = managed_byref_target(&val, self.lang, self.names)
+        {
+            let name: String = NameTable::local_name(n);
+            let statement: String = if self.locals_assigned.insert(n) {
+                format!("ref {target_type} {name} = ref {value}")
+            } else {
+                format!("{name} = ref {value}")
+            };
+            self.stmts.push(Stmt::Expr(statement));
+            return;
+        }
         let val: Expr = coerce_to(val, self.names.local_type(n), self.lang, self.names);
         self.locals_assigned.insert(n);
         self.stmts.push(Stmt::Assign {
@@ -2624,20 +2687,26 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 if idx == 0 && has_this {
                     return arg.clone();
                 }
-                let Expr::AddressOf(inner): &Expr = arg else {
-                    return arg.clone();
-                };
                 if !info.arg_is_byref(idx) {
                     return arg.clone();
                 }
-                let keyword: &str = match inner.as_ref() {
-                    Expr::Local(slot) if !self.locals_assigned.contains(slot) => {
-                        self.locals_assigned.insert(*slot);
-                        "out"
+                if self.lang == TargetLang::CSharp {
+                    self.managed_byref_argument_refused = true;
+                    return arg.clone();
+                }
+                match arg {
+                    Expr::AddressOf(inner) => {
+                        let keyword: &str = match inner.as_ref() {
+                            Expr::Local(slot) if !self.locals_assigned.contains(slot) => {
+                                self.locals_assigned.insert(*slot);
+                                "out"
+                            }
+                            _ => "ref",
+                        };
+                        Expr::Raw(format!("{keyword} {}", inner.render(self.lang, self.names)))
                     }
-                    _ => "ref",
-                };
-                Expr::Raw(format!("{keyword} {}", inner.render(self.lang, self.names)))
+                    _ => arg.clone(),
+                }
             })
             .collect()
     }
@@ -2797,6 +2866,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     Expr::Field {
                         text: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
                         is_boolean: returns_boolean,
+                        ty: return_type,
                         kind: return_kind,
                     },
                     result_kind,
@@ -2808,6 +2878,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     Expr::Field {
                         text: prop.to_owned(),
                         is_boolean: returns_boolean,
+                        ty: return_type,
                         kind: return_kind,
                     },
                     result_kind,
@@ -2826,6 +2897,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                     Expr::Field {
                         text: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
                         is_boolean: returns_boolean,
+                        ty: return_type,
                         kind: return_kind,
                     },
                     result_kind,
@@ -3087,16 +3159,27 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 if e.has_effect() && !is_compiler_generated_allocation(&e) {
                     let name: String =
                         self.fresh_name(format!("__disrobe_dup_{:04X}", self.offset));
+                    let ty: Option<String> = temp_type(&e, self.names);
                     let temp: Expr = Expr::Temp {
                         name: name.clone(),
                         is_boolean: e.is_known_boolean(self.names),
                         kind: classify_cond_kind(&e, self.names),
-                        ty: temp_type(&e, self.names),
+                        ty: ty.clone(),
                     };
-                    self.stmts.push(Stmt::Declare {
-                        name,
-                        value: e.render(self.lang, self.names),
-                    });
+                    if let Some(target_type) = ty
+                        .as_deref()
+                        .and_then(|type_name: &str| type_name.strip_prefix("ref "))
+                        && let Some(value) = managed_byref_target(&e, self.lang, self.names)
+                    {
+                        self.stmts.push(Stmt::Expr(format!(
+                            "ref {target_type} {name} = ref {value}"
+                        )));
+                    } else {
+                        self.stmts.push(Stmt::Declare {
+                            name,
+                            value: e.render(self.lang, self.names),
+                        });
+                    }
                     self.push_typed(temp.clone(), kind);
                     self.push_typed(temp, kind);
                 } else if e.is_atom() {
@@ -3119,7 +3202,8 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let val: Option<String> = if self.stack.is_empty() {
                     None
                 } else {
-                    Some(self.pop().render(self.lang, self.names))
+                    let expression: Expr = self.pop();
+                    Some(render_return_value(expression, self.lang, self.names))
                 };
                 self.stmts.push(Stmt::Return(val));
             }
@@ -3350,16 +3434,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "ldfld" => {
                 let obj: Expr = self.pop();
                 let fld: String = field_name(&self.token_name(ins));
-                let is_boolean: bool = self
-                    .stored_field_type(ins)
-                    .as_deref()
-                    .is_some_and(is_bool_type_name);
+                let field_type: Option<String> = self.stored_field_type(ins);
+                let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 let stack_kind: StackKind = self.loaded_field_kind(ins);
                 self.push_typed(
                     Expr::Field {
                         text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                         is_boolean,
+                        ty: field_type,
                         kind,
                     },
                     stack_kind,
@@ -3368,29 +3451,27 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             "ldflda" => {
                 let obj: Expr = self.pop();
                 let fld: String = field_name(&self.token_name(ins));
-                let is_boolean: bool = self
-                    .stored_field_type(ins)
-                    .as_deref()
-                    .is_some_and(is_bool_type_name);
+                let field_type: Option<String> = self.stored_field_type(ins);
+                let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::AddressOf(Box::new(Expr::Field {
                     text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                     is_boolean,
+                    ty: field_type,
                     kind,
                 })));
             }
             "ldsfld" => {
                 let fld: String = field_name(&self.token_name(ins));
-                let is_boolean: bool = self
-                    .stored_field_type(ins)
-                    .as_deref()
-                    .is_some_and(is_bool_type_name);
+                let field_type: Option<String> = self.stored_field_type(ins);
+                let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 let stack_kind: StackKind = self.loaded_field_kind(ins);
                 self.push_typed(
                     Expr::Field {
                         text: fld,
                         is_boolean,
+                        ty: field_type,
                         kind,
                     },
                     stack_kind,
@@ -3398,14 +3479,13 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             "ldsflda" => {
                 let fld: String = field_name(&self.token_name(ins));
-                let is_boolean: bool = self
-                    .stored_field_type(ins)
-                    .as_deref()
-                    .is_some_and(is_bool_type_name);
+                let field_type: Option<String> = self.stored_field_type(ins);
+                let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::AddressOf(Box::new(Expr::Field {
                     text: fld,
                     is_boolean,
+                    ty: field_type,
                     kind,
                 })));
             }
@@ -3620,6 +3700,7 @@ pub(crate) struct BlockCode {
     pub locals_used: BTreeSet<u32>,
     pub entry_deficit: usize,
     pub exit_stack: Vec<Expr>,
+    pub managed_byref_argument_refused: bool,
     exit_kinds: Vec<StackKind>,
 }
 
@@ -3645,6 +3726,7 @@ fn declared_type<'e>(expression: &'e Expr, names: &'e NameTable) -> Option<&'e s
 fn temp_type(expression: &Expr, names: &NameTable) -> Option<String> {
     match expression {
         Expr::Call { return_type, .. } => return_type.clone(),
+        Expr::Field { ty, .. } => ty.clone(),
         _ => declared_type(expression, names).map(str::to_owned),
     }
 }
@@ -4184,6 +4266,7 @@ pub(crate) fn lift_block_with_entry<N: TokenNamer>(
         locals_used: std::mem::take(&mut lifter.locals_used),
         entry_deficit: lifter.entry_deficit,
         exit_stack: std::mem::take(&mut lifter.stack),
+        managed_byref_argument_refused: lifter.managed_byref_argument_refused,
         exit_kinds: std::mem::take(&mut lifter.stack_kinds),
     }
 }
@@ -4314,18 +4397,23 @@ fn finish_structured(
     names: &NameTable,
     lang: TargetLang,
 ) -> StructuredMethod {
-    let refused: bool =
-        lang == TargetLang::CSharp && recovered.body.contains(UNRESOLVED_OPERAND_KIND);
-    let recovered_body: String = if refused {
-        format!(
-            "    throw new System.NotSupportedException(\"{UNRESOLVED_OPERAND_KIND_REFUSAL}\");\n"
-        )
+    let refusal: Option<&str> = if lang != TargetLang::CSharp {
+        None
+    } else if recovered.body.contains(UNRESOLVED_OPERAND_KIND) {
+        Some(UNRESOLVED_OPERAND_KIND_REFUSAL)
+    } else if recovered.managed_byref_argument_refused {
+        Some(UNRESOLVED_MANAGED_BYREF_ARGUMENT_REFUSAL)
+    } else {
+        None
+    };
+    let recovered_body: String = if let Some(reason) = refusal {
+        format!("    throw new System.NotSupportedException(\"{reason}\");\n")
     } else if lang == TargetLang::CSharp {
         canonicalize_bool_returns(&recovered.body, signature)
     } else {
         recovered.body.clone()
     };
-    let declared_locals: BTreeSet<u32> = if refused {
+    let declared_locals: BTreeSet<u32> = if refusal.is_some() {
         BTreeSet::new()
     } else {
         recovered.locals_used.clone()
@@ -4410,6 +4498,9 @@ fn write_prologue(
             let _ = writeln!(text, "{signature}");
             let _ = writeln!(text, "{{");
             for n in locals {
+                if names.local_is_managed_byref(*n) {
+                    continue;
+                }
                 let _ = writeln!(text, "    {}", names.local_decl(*n, lang));
             }
         }
@@ -5795,6 +5886,7 @@ mod tests {
         let field_recv: Expr = Expr::AddressOf(Box::new(Expr::Field {
             text: "this.x".to_owned(),
             is_boolean: false,
+            ty: Some("int".to_owned()),
             kind: ConditionKind::Unknown,
         }));
         assert_eq!(
@@ -5843,6 +5935,58 @@ mod tests {
     }
 
     #[test]
+    fn managed_byref_call_result_dereferences_as_a_csharp_value() {
+        let names: NameTable = NameTable::default();
+        let call: Expr = Expr::Call {
+            target: "span.get_Item".to_owned(),
+            args: vec![Expr::Const("0".to_owned())],
+            returns_boolean: false,
+            return_kind: ConditionKind::Unknown,
+            return_type: Some("ref int".to_owned()),
+        };
+        assert_eq!(
+            Expr::Deref(Box::new(call)).render(TargetLang::CSharp, &names),
+            "span.get_Item(0)"
+        );
+        let indexer: Expr = Expr::Field {
+            text: "span[0]".to_owned(),
+            is_boolean: false,
+            ty: Some("ref int".to_owned()),
+            kind: ConditionKind::Unknown,
+        };
+        assert_eq!(
+            Expr::Deref(Box::new(indexer)).render(TargetLang::CSharp, &names),
+            "span[0]"
+        );
+        assert_eq!(
+            managed_byref_target(
+                &Expr::Field {
+                    text: "span[0]".to_owned(),
+                    is_boolean: false,
+                    ty: Some("ref int".to_owned()),
+                    kind: ConditionKind::Unknown,
+                },
+                TargetLang::CSharp,
+                &names,
+            ),
+            Some("span[0]".to_owned())
+        );
+    }
+
+    #[test]
+    fn managed_byref_return_uses_the_csharp_ref_keyword() {
+        let names: NameTable = NameTable::default().with_managed_byref_return(true);
+        let expression: Expr = Expr::AddressOf(Box::new(Expr::LoadElem(
+            Box::new(Expr::Arg(1)),
+            Box::new(Expr::Const("0".to_owned())),
+        )));
+        assert_eq!(
+            render_return_value(expression, TargetLang::CSharp, &names),
+            "ref arg1[0]"
+        );
+    }
+
+    #[test]
     fn call_info_arg_byref_accounts_for_receiver_slot() {
         let info: CallInfo = CallInfo {
             arg_count: 3,
@@ -5854,6 +5998,51 @@ mod tests {
         assert!(!info.arg_is_byref(0));
         assert!(!info.arg_is_byref(1));
         assert!(info.arg_is_byref(2));
+    }
+
+    #[test]
+    fn managed_byref_argument_mode_is_a_named_refusal() {
+        let names: NameTable = NameTable::new(
+            false,
+            vec!["result".to_owned()],
+            vec!["ref int".to_owned()],
+            Vec::new(),
+        );
+        let mut lifter: Lifter<'_, HexNamer> = Lifter::new(&HexNamer, &names, TargetLang::CSharp);
+        let rendered: Vec<Expr> = lifter.render_byref_args(
+            &[Expr::Arg(1)],
+            Some(CallInfo {
+                arg_count: 1,
+                returns_value: false,
+                has_this: false,
+                explicit_this: false,
+                byref_param_mask: 1,
+            }),
+            false,
+        );
+        assert_eq!(rendered[0].render(TargetLang::CSharp, &names), "result");
+        assert!(lifter.managed_byref_argument_refused);
+    }
+
+    #[test]
+    fn managed_byref_locals_are_declared_at_their_binding_site() {
+        let names: NameTable = NameTable::new(
+            false,
+            Vec::new(),
+            Vec::new(),
+            vec!["ref int".to_owned(), "int".to_owned()],
+        );
+        let locals: BTreeSet<u32> = [0, 1].into_iter().collect();
+        let mut text: String = String::new();
+        write_prologue(
+            &mut text,
+            "public static void M()",
+            &locals,
+            &names,
+            TargetLang::CSharp,
+        );
+        assert!(!text.contains("ref int local0"));
+        assert!(text.contains("int local1;"));
     }
 
     fn returned_literal(sig: &str, code: &[u8]) -> String {

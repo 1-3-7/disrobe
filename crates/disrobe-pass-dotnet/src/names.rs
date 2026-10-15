@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::signature::ConditionKind;
 use crate::structurize::{TargetLang, csharp_escape_identifier, is_simple_identifier};
 
-fn is_managed_byref_type(ty: &str) -> bool {
+pub(crate) fn is_managed_byref_type(ty: &str) -> bool {
     ty.starts_with("ref ") || ty.starts_with("byref<") || ty.starts_with("ByRef ")
 }
 
@@ -96,6 +96,7 @@ pub fn canonical_parameter_names(raw: &[String], lang: TargetLang) -> Vec<String
 #[derive(Debug, Clone, Default)]
 pub struct NameTable {
     has_this: bool,
+    returns_managed_byref: bool,
     param_names: Vec<String>,
     param_types: Vec<String>,
     local_types: Vec<String>,
@@ -113,12 +114,19 @@ impl NameTable {
     ) -> Self {
         Self {
             has_this,
+            returns_managed_byref: false,
             param_names,
             param_types,
             local_types,
             param_kinds: Vec::new(),
             local_kinds: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub const fn with_managed_byref_return(mut self, returns_managed_byref: bool) -> Self {
+        self.returns_managed_byref = returns_managed_byref;
+        self
     }
 
     #[must_use]
@@ -155,6 +163,11 @@ impl NameTable {
     }
 
     #[must_use]
+    pub const fn returns_managed_byref(&self) -> bool {
+        self.returns_managed_byref
+    }
+
+    #[must_use]
     pub fn arg_name(&self, slot: u32) -> String {
         let idx: usize = (slot as usize).wrapping_sub(1);
         self.param_names
@@ -183,6 +196,11 @@ impl NameTable {
     #[must_use]
     pub fn local_is_managed_byref(&self, slot: u32) -> bool {
         self.local_type(slot).is_some_and(is_managed_byref_type)
+    }
+
+    #[must_use]
+    pub fn local_managed_byref_target_type(&self, slot: u32) -> Option<&str> {
+        self.local_type(slot)?.strip_prefix("ref ")
     }
 
     #[must_use]

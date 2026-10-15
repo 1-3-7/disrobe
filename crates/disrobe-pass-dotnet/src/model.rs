@@ -2048,17 +2048,19 @@ impl Resolver {
         if base.contains('<') {
             return Some(base);
         }
-        let inferable: bool = self
-            .callee_signature(row_ref_token(method))
-            .is_none_or(|sig: MethodSig| !sig.params.is_empty());
-        if inferable {
-            return Some(base);
-        }
         let args: Vec<crate::signature::TypeSig> = self
             .blob(row.instantiation)
             .and_then(|blob: &[u8]| crate::signature::parse_method_spec_sig(blob).ok())
             .unwrap_or_default();
         if args.is_empty() {
+            return Some(base);
+        }
+        if self
+            .callee_signature(row_ref_token(method))
+            .is_some_and(|signature: MethodSig| {
+                method_generic_params_are_inferable(&signature, args.len())
+            })
+        {
             return Some(base);
         }
         let rendered: String = args
@@ -2546,47 +2548,44 @@ impl Resolver {
     #[must_use]
     pub fn callee_instantiated_return(&self, token: u32) -> Option<TypeSigOrVoid> {
         let sig: MethodSig = self.callee_signature(token)?;
-        let generic: TypeSig = match sig.return_type {
-            TypeSigOrVoid::Type(TypeSig::Var(index)) => {
-                let method: u32 = match token_table(token)? {
-                    TableId::MethodSpec => {
-                        let row: &MethodSpecRow = self
-                            .tables
-                            .method_specs
-                            .get(token_rid(token)?.checked_sub(1)? as usize)?;
-                        row_ref_token(row.method?)
-                    }
-                    _ => token,
-                };
-                (token_table(method)? == TableId::MemberRef).then_some(())?;
-                let member: &MemberRefRow = self
-                    .tables
-                    .member_refs
-                    .get(token_rid(method)?.checked_sub(1)? as usize)?;
-                let parent: RowRef = member.parent?;
-                (parent.table == TableId::TypeSpec).then_some(())?;
-                let TypeSig::GenericInst { args, .. } =
-                    self.type_spec_signature_strict(parent.row)?
-                else {
-                    return None;
-                };
-                args.get(usize::try_from(index).ok()?)?.clone()
-            }
-            TypeSigOrVoid::Type(TypeSig::MVar(index)) => {
-                (token_table(token)? == TableId::MethodSpec).then_some(())?;
-                let row: &MethodSpecRow = self
-                    .tables
-                    .method_specs
-                    .get(token_rid(token)?.checked_sub(1)? as usize)?;
-                let args: Vec<TypeSig> = self
-                    .blob(row.instantiation)
-                    .and_then(|blob: &[u8]| crate::signature::parse_method_spec_sig(blob).ok())?;
-                args.get(usize::try_from(index).ok()?)?.clone()
-            }
-            other => return Some(other),
+        let TypeSigOrVoid::Type(return_type) = sig.return_type else {
+            return Some(TypeSigOrVoid::Void);
         };
-        (!matches!(generic, TypeSig::Var(_) | TypeSig::MVar(_)))
-            .then_some(TypeSigOrVoid::Type(generic))
+        let method_token: u32 = if token_table(token) == Some(TableId::MethodSpec) {
+            let row: &MethodSpecRow = self
+                .tables
+                .method_specs
+                .get(token_rid(token)?.checked_sub(1)? as usize)?;
+            row_ref_token(row.method?)
+        } else {
+            token
+        };
+        let type_args: Vec<TypeSig> = if token_table(method_token) == Some(TableId::MemberRef) {
+            self.tables
+                .member_refs
+                .get(token_rid(method_token)?.checked_sub(1)? as usize)
+                .and_then(|member: &MemberRefRow| member.parent)
+                .filter(|parent: &RowRef| parent.table == TableId::TypeSpec)
+                .and_then(|parent: RowRef| self.type_spec_signature_strict(parent.row))
+                .and_then(|signature: TypeSig| match signature {
+                    TypeSig::GenericInst { args, .. } => Some(args),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let method_args: Vec<TypeSig> = if token_table(token) == Some(TableId::MethodSpec) {
+            let row: &MethodSpecRow = self
+                .tables
+                .method_specs
+                .get(token_rid(token)?.checked_sub(1)? as usize)?;
+            self.blob(row.instantiation)
+                .and_then(|blob: &[u8]| crate::signature::parse_method_spec_sig(blob).ok())?
+        } else {
+            Vec::new()
+        };
+        instantiate_signature_type(return_type, &type_args, &method_args).map(TypeSigOrVoid::Type)
     }
 
     #[must_use]
@@ -3528,6 +3527,104 @@ fn generic_arity(name: &str) -> usize {
     }
 }
 
+fn method_generic_params_are_inferable(signature: &MethodSig, argument_count: usize) -> bool {
+    usize::try_from(signature.generic_param_count).ok() == Some(argument_count)
+        && (0..signature.generic_param_count).all(|index: u32| {
+            signature
+                .params
+                .iter()
+                .any(|parameter: &TypeSig| type_sig_mentions_method_generic(parameter, index))
+        })
+}
+
+fn type_sig_mentions_method_generic(signature: &TypeSig, index: u32) -> bool {
+    match signature {
+        TypeSig::MVar(candidate) => *candidate == index,
+        TypeSig::SzArray(element)
+        | TypeSig::Ptr(element)
+        | TypeSig::ByRef(element)
+        | TypeSig::Pinned(element)
+        | TypeSig::Array { element, .. } => type_sig_mentions_method_generic(element, index),
+        TypeSig::GenericInst { base, args } => {
+            type_sig_mentions_method_generic(base, index)
+                || args
+                    .iter()
+                    .any(|argument: &TypeSig| type_sig_mentions_method_generic(argument, index))
+        }
+        TypeSig::Void
+        | TypeSig::Boolean
+        | TypeSig::Char
+        | TypeSig::I1
+        | TypeSig::U1
+        | TypeSig::I2
+        | TypeSig::U2
+        | TypeSig::I4
+        | TypeSig::U4
+        | TypeSig::I8
+        | TypeSig::U8
+        | TypeSig::R4
+        | TypeSig::R8
+        | TypeSig::String
+        | TypeSig::IntPtr
+        | TypeSig::UIntPtr
+        | TypeSig::Object
+        | TypeSig::TypedByRef
+        | TypeSig::NamedType { .. }
+        | TypeSig::Var(_)
+        | TypeSig::FnPtr
+        | TypeSig::Unknown => false,
+    }
+}
+
+fn instantiate_signature_type(
+    signature: TypeSig,
+    type_args: &[TypeSig],
+    method_args: &[TypeSig],
+) -> Option<TypeSig> {
+    match signature {
+        TypeSig::Var(index) => type_args.get(usize::try_from(index).ok()?).cloned(),
+        TypeSig::MVar(index) => method_args.get(usize::try_from(index).ok()?).cloned(),
+        TypeSig::SzArray(element) => Some(TypeSig::SzArray(Box::new(instantiate_signature_type(
+            *element,
+            type_args,
+            method_args,
+        )?))),
+        TypeSig::Ptr(element) => Some(TypeSig::Ptr(Box::new(instantiate_signature_type(
+            *element,
+            type_args,
+            method_args,
+        )?))),
+        TypeSig::ByRef(element) => Some(TypeSig::ByRef(Box::new(instantiate_signature_type(
+            *element,
+            type_args,
+            method_args,
+        )?))),
+        TypeSig::Pinned(element) => Some(TypeSig::Pinned(Box::new(instantiate_signature_type(
+            *element,
+            type_args,
+            method_args,
+        )?))),
+        TypeSig::Array { element, rank } => Some(TypeSig::Array {
+            element: Box::new(instantiate_signature_type(
+                *element,
+                type_args,
+                method_args,
+            )?),
+            rank,
+        }),
+        TypeSig::GenericInst { base, args } => Some(TypeSig::GenericInst {
+            base: Box::new(instantiate_signature_type(*base, type_args, method_args)?),
+            args: args
+                .into_iter()
+                .map(|argument: TypeSig| {
+                    instantiate_signature_type(argument, type_args, method_args)
+                })
+                .collect::<Option<Vec<TypeSig>>>()?,
+        }),
+        concrete => Some(concrete),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -3723,6 +3820,64 @@ mod tests {
         assert_eq!(generic_arity("Dictionary`2"), 2);
         assert_eq!(generic_arity("Enumerator"), 0);
         assert_eq!(generic_arity("Weird`x"), 0);
+    }
+
+    #[test]
+    fn method_spec_arguments_require_parameter_inference_for_every_generic() {
+        let inferable: MethodSig = MethodSig {
+            calling_convention: SIG_DEFAULT,
+            has_this: false,
+            explicit_this: false,
+            generic_param_count: 2,
+            return_type: TypeSigOrVoid::Void,
+            params: vec![TypeSig::GenericInst {
+                base: Box::new(TypeSig::NamedType {
+                    is_value_type: false,
+                    token: 0x0100_0001,
+                }),
+                args: vec![
+                    TypeSig::SzArray(Box::new(TypeSig::MVar(0))),
+                    TypeSig::MVar(1),
+                ],
+            }],
+        };
+        let return_only: MethodSig = MethodSig {
+            calling_convention: SIG_DEFAULT,
+            has_this: false,
+            explicit_this: false,
+            generic_param_count: 1,
+            return_type: TypeSigOrVoid::Type(TypeSig::MVar(0)),
+            params: vec![TypeSig::Object],
+        };
+        assert!(method_generic_params_are_inferable(&inferable, 2));
+        assert!(!method_generic_params_are_inferable(&return_only, 1));
+    }
+
+    #[test]
+    fn generic_arguments_are_instantiated_inside_managed_byref_returns() {
+        let signature: TypeSig = TypeSig::ByRef(Box::new(TypeSig::GenericInst {
+            base: Box::new(TypeSig::Var(0)),
+            args: vec![TypeSig::MVar(0)],
+        }));
+        let instantiated: TypeSig = instantiate_signature_type(
+            signature,
+            &[TypeSig::NamedType {
+                is_value_type: false,
+                token: 0x0100_0001,
+            }],
+            &[TypeSig::I4],
+        )
+        .expect("both generic arguments are present");
+        assert_eq!(
+            instantiated,
+            TypeSig::ByRef(Box::new(TypeSig::GenericInst {
+                base: Box::new(TypeSig::NamedType {
+                    is_value_type: false,
+                    token: 0x0100_0001,
+                }),
+                args: vec![TypeSig::I4],
+            }))
+        );
     }
 
     #[test]
