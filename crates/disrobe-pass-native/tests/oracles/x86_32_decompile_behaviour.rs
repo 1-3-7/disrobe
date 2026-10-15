@@ -1254,3 +1254,210 @@ fn x86_32_msvc_member_functions_recover_as_thiscall() {
         &MSVC_THISCALL_CASES,
     );
 }
+
+fn disrobe_cli() -> PathBuf {
+    let cli: PathBuf = std::env::var_os("DISROBE_BIN").map(PathBuf::from).expect(
+        "DISROBE_BIN is not set; build the CLI with `cargo build -p disrobe-cli --bin disrobe` \
+         and point DISROBE_BIN at it, because this test grades the user-facing native decompile command",
+    );
+    assert!(
+        cli.is_file(),
+        "DISROBE_BIN names {}, which is not a file",
+        cli.display()
+    );
+    cli
+}
+
+const fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn prefix_calls(text: &str, names: &[String], prefix: &str) -> String {
+    let mut out: String = text.to_owned();
+    for name in names {
+        let pattern: String = format!("{name}(");
+        let mut rebuilt: String = String::with_capacity(out.len());
+        let mut rest: &str = &out;
+        while let Some(found) = rest.find(&pattern) {
+            let starts_word: bool = found == 0 || !is_identifier_byte(rest.as_bytes()[found - 1]);
+            rebuilt.push_str(&rest[..found]);
+            if starts_word {
+                rebuilt.push_str(prefix);
+            }
+            rebuilt.push_str(&pattern);
+            rest = &rest[found + pattern.len()..];
+        }
+        rebuilt.push_str(rest);
+        out = rebuilt;
+    }
+    out
+}
+
+fn defined_arity(source: &str, symbol: &str) -> usize {
+    let header: &str = source
+        .lines()
+        .find(|line: &&str| {
+            !line.starts_with(' ') && line.contains(&format!(" {symbol}(")) && line.ends_with('{')
+        })
+        .unwrap_or_else(|| panic!("the CLI's C defines {symbol}"));
+    let open: usize = header.find(&format!(" {symbol}(")).expect("a header") + symbol.len() + 2;
+    let params: &str = header[open..].split(')').next().expect("a parameter list");
+    if params.trim() == "void" {
+        0
+    } else {
+        params.split(',').count()
+    }
+}
+
+fn add_one_to_the_first_return_of(source: &str, function: &str) -> String {
+    let header: String = format!(" {function}(");
+    let mut offset: usize = 0;
+    let mut start: Option<usize> = None;
+    for line in source.split_inclusive('\n') {
+        if !line.starts_with(' ') && line.contains(&header) && line.trim_end().ends_with('{') {
+            start = Some(offset);
+            break;
+        }
+        offset += line.len();
+    }
+    let Some(start) = start else {
+        return source.to_owned();
+    };
+    let (head, tail): (&str, &str) = source.split_at(start);
+    format!(
+        "{head}{}",
+        tail.replacen("    return ", "    return 1 + ", 1)
+    )
+}
+
+#[test]
+fn x86_32_cli_decompiles_an_msvc_dll_into_one_c_file_that_behaves_like_the_original() {
+    let fixture: &Build = CONVENTION_BUILDS
+        .iter()
+        .find(|build: &&Build| build.file.ends_with("conventions_msvc_o2.dll"))
+        .expect("the MSVC /O2 build is listed");
+    let image: Image = load_image(fixture);
+    let scratch: ScratchDir = scratch_dir("disrobe-x86-32-cli");
+    let out_dir: PathBuf = scratch.path().join("decompiled");
+    let args: Vec<std::ffi::OsString> = vec![
+        "native".into(),
+        "decompile".into(),
+        image.path.clone().into_os_string(),
+        "--out".into(),
+        out_dir.clone().into_os_string(),
+    ];
+    let ran: CapturedOutput = run_captured(&disrobe_cli(), &args, RUN_TIMEOUT, MAX_CAPTURE_BYTES)
+        .expect("spawn the CLI")
+        .expect("the CLI finishes within its timeout");
+    assert_eq!(
+        ran.exit_code,
+        Some(0),
+        "native decompile must accept an i386 DLL: {}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(out_dir.join("manifest.json")).expect("the CLI writes manifest.json"),
+    )
+    .expect("manifest.json is JSON");
+    assert_eq!(manifest["abi"], "I386", "{manifest}");
+    assert_eq!(manifest["backend"], "native-in-tree-x86", "{manifest}");
+    let mut emitted: BTreeMap<u64, String> = BTreeMap::new();
+    for entry in manifest["recovered"].as_array().expect("a recovered list") {
+        let address: u64 = entry["address"].as_u64().expect("an address");
+        let name: String = entry["emitted_as"]
+            .as_str()
+            .expect("an emitted name")
+            .to_owned();
+        emitted.insert(address, name);
+    }
+    for refused in ["fp_half", "fp_scale"] {
+        let address: u64 = image.names[refused];
+        let reason: String = manifest["unrecovered"]
+            .as_array()
+            .expect("an unrecovered list")
+            .iter()
+            .find(|entry: &&serde_json::Value| entry["address"].as_u64() == Some(address))
+            .and_then(|entry: &serde_json::Value| entry["reason"].as_str())
+            .unwrap_or_else(|| panic!("{refused} must be listed as unrecovered: {manifest}"))
+            .to_owned();
+        assert!(reason.contains("x87"), "{refused}: {reason}");
+    }
+    let source: String = std::fs::read_to_string(out_dir.join("conventions_msvc_o2.c"))
+        .expect("the CLI writes the recovered C");
+    let names: Vec<String> = emitted.values().cloned().collect();
+    let graded_names: [&str; 6] = [
+        "cd_chain",
+        "cd_keep",
+        "cd_calls_stdcall",
+        "cd_calls_fastcall",
+        "cd_add64",
+        "g_bump",
+    ];
+    let mut graded: Vec<Graded> = Vec::new();
+    let mut mutated_source: String = prefix_calls(&source, &names, "mut_");
+    for name in graded_names {
+        let case: Case = *CONVENTION_CASES
+            .iter()
+            .find(|case: &&Case| case.name == name)
+            .expect("a graded case");
+        let address: u64 = image.names[name];
+        let symbol: &String = emitted
+            .get(&address)
+            .unwrap_or_else(|| panic!("{name} must be recovered by the CLI: {manifest}"));
+        let arity: usize = defined_arity(&source, symbol);
+        let unmutated: String = mutated_source.clone();
+        mutated_source = add_one_to_the_first_return_of(&mutated_source, &format!("mut_{symbol}"));
+        assert_ne!(
+            mutated_source, unmutated,
+            "{name}: the mutation control must change the body of mut_{symbol}"
+        );
+        graded.push(Graded {
+            case,
+            renamed: format!("rec_{symbol}"),
+            mutated: format!("mut_{symbol}"),
+            address,
+            arity,
+        });
+    }
+    let units: Vec<Unit> = vec![
+        Unit {
+            file: "recovered.c".to_owned(),
+            text: prefix_calls(&source, &names, "rec_"),
+        },
+        Unit {
+            file: "mutated.c".to_owned(),
+            text: mutated_source,
+        },
+    ];
+    let main: String = harness(&image, &graded, &units, &BTreeMap::new());
+    let grades: BTreeMap<(String, String), Grade> =
+        run_harness(&image, &main, &units, "cli_msvc_o2");
+    for item in &graded {
+        let grade = |mode: &str| -> Grade {
+            grades
+                .get(&(item.case.name.to_owned(), mode.to_owned()))
+                .copied()
+                .unwrap_or_else(|| panic!("no {mode} result for {}", item.case.name))
+        };
+        let null: Grade = grade("null");
+        let recovered: Grade = grade("recovered");
+        let mutated: Grade = grade("mutated");
+        assert_eq!(
+            (null.valid, null.differ),
+            (VALID_INPUTS, 0),
+            "{}: the null control must agree on every input",
+            item.case.name
+        );
+        assert_eq!(
+            (recovered.valid, recovered.differ),
+            (VALID_INPUTS, 0),
+            "{}: the CLI's C must behave like the original on every input",
+            item.case.name
+        );
+        assert!(
+            mutated.differ > 0,
+            "{}: the mutation control must turn the grade red",
+            item.case.name
+        );
+    }
+}
