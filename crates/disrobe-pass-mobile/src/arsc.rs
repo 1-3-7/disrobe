@@ -467,36 +467,226 @@ fn read_config_qualifier(bytes: &[u8], pos: usize, end: usize) -> String {
     if size < 28 || (size as usize) > slice.len() {
         return String::new();
     }
-    let read_u16 = |off: usize| -> u16 {
-        slice
-            .get(off..off + 2)
-            .map(|b: &[u8]| u16::from_le_bytes([b[0], b[1]]))
-            .unwrap_or(0)
+    let config: ConfigBytes<'_> = ConfigBytes {
+        bytes: &slice[..size as usize],
     };
     let mut parts: Vec<String> = Vec::new();
-    let orientation: u8 = slice.get(16).copied().unwrap_or(0);
-    match orientation {
-        1 => parts.push("port".to_owned()),
-        2 => parts.push("land".to_owned()),
-        _ => {}
+    let mcc: u16 = config.u16_at(4);
+    if mcc != 0 {
+        parts.push(format!("mcc{mcc}"));
     }
-    let density: u16 = read_u16(22);
-    match density {
-        0 => {}
-        120 => parts.push("ldpi".to_owned()),
-        160 => parts.push("mdpi".to_owned()),
-        213 => parts.push("tvdpi".to_owned()),
-        240 => parts.push("hdpi".to_owned()),
-        320 => parts.push("xhdpi".to_owned()),
-        480 => parts.push("xxhdpi".to_owned()),
-        640 => parts.push("xxxhdpi".to_owned()),
-        other => parts.push(format!("{other}dpi")),
+    let mnc: u16 = config.u16_at(6);
+    if mnc != 0 {
+        parts.push(format!("mnc{mnc}"));
     }
-    let sdk_version: u16 = read_u16(24);
+    if let Some(locale) = config.locale() {
+        parts.push(locale);
+    }
+    let gender: u8 = config.u8_at(19) & 0x03;
+    push_named(&mut parts, gender, GRAMMATICAL_GENDERS, "grammaticalGender");
+    let screen_layout: u8 = config.u8_at(28);
+    push_named(
+        &mut parts,
+        screen_layout & 0xc0,
+        LAYOUT_DIRECTIONS,
+        "layoutDir",
+    );
+    for (offset, prefix) in [(30, "sw"), (32, "w"), (34, "h")] {
+        let dp: u16 = config.u16_at(offset);
+        if dp != 0 {
+            parts.push(format!("{prefix}{dp}dp"));
+        }
+    }
+    push_named(
+        &mut parts,
+        screen_layout & 0x0f,
+        SCREEN_SIZES,
+        "screenLayoutSize",
+    );
+    push_named(
+        &mut parts,
+        screen_layout & 0x30,
+        SCREEN_LONG,
+        "screenLayoutLong",
+    );
+    push_named(
+        &mut parts,
+        config.u8_at(48) & 0x03,
+        SCREEN_ROUND,
+        "screenLayoutRound",
+    );
+    let color_mode: u8 = config.u8_at(49);
+    push_named(
+        &mut parts,
+        color_mode & 0x03,
+        WIDE_COLOR_GAMUT,
+        "wideColorGamut",
+    );
+    push_named(&mut parts, color_mode & 0x0c, HIGH_DYNAMIC_RANGE, "hdr");
+    push_named(&mut parts, config.u8_at(12), ORIENTATIONS, "orientation");
+    let ui_mode: u8 = config.u8_at(29);
+    push_named(&mut parts, ui_mode & 0x0f, UI_MODE_TYPES, "uiModeType");
+    push_named(&mut parts, ui_mode & 0x30, UI_MODE_NIGHT, "uiModeNight");
+    let density: u16 = config.u16_at(14);
+    if density != 0 {
+        let named: Option<&(u16, &str)> = DENSITIES
+            .iter()
+            .find(|(value, _): &&(u16, &str)| *value == density);
+        parts.push(named.map_or_else(
+            || format!("{density}dpi"),
+            |(_, name): &(u16, &str)| (*name).to_owned(),
+        ));
+    }
+    push_named(&mut parts, config.u8_at(13), TOUCHSCREENS, "touchscreen");
+    let input_flags: u8 = config.u8_at(18);
+    push_named(
+        &mut parts,
+        input_flags & 0x03,
+        KEYS_HIDDEN,
+        "inputFlagsKeysHidden",
+    );
+    push_named(&mut parts, config.u8_at(16), KEYBOARDS, "keyboard");
+    push_named(
+        &mut parts,
+        input_flags & 0x0c,
+        NAV_HIDDEN,
+        "inputFlagsNavHidden",
+    );
+    push_named(&mut parts, config.u8_at(17), NAVIGATIONS, "navigation");
+    let (screen_width, screen_height): (u16, u16) = (config.u16_at(20), config.u16_at(22));
+    if screen_width != 0 || screen_height != 0 {
+        parts.push(format!("{screen_width}x{screen_height}"));
+    }
+    let sdk_version: u16 = config.u16_at(24);
     if sdk_version != 0 {
-        parts.push(format!("v{sdk_version}"));
+        let minor: u16 = config.u16_at(26);
+        if minor == 0 {
+            parts.push(format!("v{sdk_version}"));
+        } else {
+            parts.push(format!("v{sdk_version}.{minor}"));
+        }
     }
     parts.join("-")
+}
+
+const GRAMMATICAL_GENDERS: &[(u8, &str)] = &[(1, "neuter"), (2, "feminine"), (3, "masculine")];
+const LAYOUT_DIRECTIONS: &[(u8, &str)] = &[(0x40, "ldltr"), (0x80, "ldrtl")];
+const SCREEN_SIZES: &[(u8, &str)] = &[(1, "small"), (2, "normal"), (3, "large"), (4, "xlarge")];
+const SCREEN_LONG: &[(u8, &str)] = &[(0x10, "notlong"), (0x20, "long")];
+const SCREEN_ROUND: &[(u8, &str)] = &[(1, "notround"), (2, "round")];
+const WIDE_COLOR_GAMUT: &[(u8, &str)] = &[(1, "nowidecg"), (2, "widecg")];
+const HIGH_DYNAMIC_RANGE: &[(u8, &str)] = &[(0x04, "lowdr"), (0x08, "highdr")];
+const ORIENTATIONS: &[(u8, &str)] = &[(1, "port"), (2, "land"), (3, "square")];
+const UI_MODE_TYPES: &[(u8, &str)] = &[
+    (2, "desk"),
+    (3, "car"),
+    (4, "television"),
+    (5, "appliance"),
+    (6, "watch"),
+    (7, "vrheadset"),
+];
+const UI_MODE_NIGHT: &[(u8, &str)] = &[(0x10, "notnight"), (0x20, "night")];
+const DENSITIES: &[(u16, &str)] = &[
+    (120, "ldpi"),
+    (160, "mdpi"),
+    (213, "tvdpi"),
+    (240, "hdpi"),
+    (320, "xhdpi"),
+    (480, "xxhdpi"),
+    (640, "xxxhdpi"),
+    (0xfffe, "anydpi"),
+    (0xffff, "nodpi"),
+];
+const TOUCHSCREENS: &[(u8, &str)] = &[(1, "notouch"), (2, "stylus"), (3, "finger")];
+const KEYS_HIDDEN: &[(u8, &str)] = &[(1, "keysexposed"), (2, "keyshidden"), (3, "keyssoft")];
+const KEYBOARDS: &[(u8, &str)] = &[(1, "nokeys"), (2, "qwerty"), (3, "12key")];
+const NAV_HIDDEN: &[(u8, &str)] = &[(0x04, "navexposed"), (0x08, "navhidden")];
+const NAVIGATIONS: &[(u8, &str)] = &[(1, "nonav"), (2, "dpad"), (3, "trackball"), (4, "wheel")];
+
+fn push_named(parts: &mut Vec<String>, value: u8, names: &[(u8, &str)], field: &str) {
+    if value == 0 {
+        return;
+    }
+    let named: Option<&(u8, &str)> = names
+        .iter()
+        .find(|(known, _): &&(u8, &str)| *known == value);
+    parts.push(named.map_or_else(
+        || format!("{field}={value}"),
+        |(_, name): &(u8, &str)| (*name).to_owned(),
+    ));
+}
+
+struct ConfigBytes<'a> {
+    bytes: &'a [u8],
+}
+
+impl ConfigBytes<'_> {
+    fn u8_at(&self, offset: usize) -> u8 {
+        self.bytes.get(offset).copied().unwrap_or(0)
+    }
+
+    fn u16_at(&self, offset: usize) -> u16 {
+        u16::from_le_bytes([self.u8_at(offset), self.u8_at(offset + 1)])
+    }
+
+    fn text(&self, offset: usize, len: usize) -> String {
+        (offset..offset + len)
+            .map(|at: usize| self.u8_at(at))
+            .take_while(|b: &u8| *b != 0)
+            .map(char::from)
+            .collect()
+    }
+
+    fn packed(&self, offset: usize, base: u8) -> String {
+        let (first, second): (u8, u8) = (self.u8_at(offset), self.u8_at(offset + 1));
+        if first & 0x80 != 0 {
+            let letters: [u8; 3] = [
+                second & 0x1f,
+                ((second & 0xe0) >> 5) | ((first & 0x03) << 3),
+                (first & 0x7c) >> 2,
+            ];
+            return letters
+                .iter()
+                .map(|letter: &u8| char::from(base.wrapping_add(*letter)))
+                .collect();
+        }
+        self.text(offset, 2)
+    }
+
+    fn locale(&self) -> Option<String> {
+        if self.u8_at(8) == 0 {
+            return None;
+        }
+        let language: String = self.packed(8, b'a');
+        let region: Option<String> = (self.u8_at(10) != 0).then(|| self.packed(10, b'0'));
+        let script: String = if self.u8_at(52) == 0 {
+            self.text(36, 4)
+        } else {
+            String::new()
+        };
+        let variant: String = self.text(40, 8);
+        let numbering: String = self.text(53, 8);
+        if script.is_empty() && variant.is_empty() && numbering.is_empty() {
+            return Some(match region {
+                Some(region) => format!("{language}-r{region}"),
+                None => language,
+            });
+        }
+        let mut tag: String = format!("b+{language}");
+        for part in [Some(script), region, Some(variant)]
+            .into_iter()
+            .flatten()
+            .filter(|part: &String| !part.is_empty())
+        {
+            tag.push('+');
+            tag.push_str(&part);
+        }
+        if !numbering.is_empty() {
+            tag.push_str("+u+nu+");
+            tag.push_str(&numbering);
+        }
+        Some(tag)
+    }
 }
 
 fn read_res_value(

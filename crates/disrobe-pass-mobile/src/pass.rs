@@ -315,6 +315,16 @@ pub fn extract_android_dex_children(bytes: &[u8]) -> crate::error::Result<Vec<(S
             }
         }
     }
+    for finding in crate::apk_packers::detect_packers(bytes).unwrap_or_default() {
+        for dex in finding.recovered {
+            if !out
+                .iter()
+                .any(|(_, existing): &(String, Vec<u8>)| *existing == dex.bytes)
+            {
+                out.push((dex.source, dex.bytes));
+            }
+        }
+    }
     out.sort_by(|a: &(String, Vec<u8>), b: &(String, Vec<u8>)| a.0.cmp(&b.0));
     Ok(out)
 }

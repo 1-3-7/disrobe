@@ -6,10 +6,18 @@ use disrobe_core::recon::secret_scan::{Finding, scan_bytes};
 use serde::{Deserialize, Serialize};
 use zip::ZipArchive;
 
+use crate::apk_packers::{ApkPacker, PackerFinding, RecoveredDex, detect_packers};
 use crate::apk_signing::{self, ApkSigningBlockReport};
 use crate::arsc::{self, ArscResources};
 use crate::axml::{self, AndroidManifestSummary, AxmlDocument};
 use crate::error::Result;
+use crate::hermes;
+use crate::react_native::assets::{
+    RnAsset, RnPackagedAsset, locate_android_assets, locate_ios_assets, source_assets,
+};
+use crate::react_native::{
+    RnBundleFormat, RnBundlePlatform, classify_bundle_path, detect_bundle_format,
+};
 use crate::res_decode::{self, ResDecodeReport};
 
 const MAX_TEXT_ASSET: u64 = 16 << 20;
@@ -124,7 +132,10 @@ pub struct ApkReconReport {
     pub endpoints: Vec<SurfacedEndpoint>,
     pub protector_walls: Vec<ProtectorWall>,
     pub protector_artifacts: Vec<ProtectorArtifact>,
+    pub packers: Vec<PackerFinding>,
     pub signing: ApkSigningBlockReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_native_assets: Vec<RnPackagedAsset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -379,7 +390,23 @@ pub fn analyze(bytes: &[u8]) -> Result<ApkReconReport> {
     let resources_decoded: ResDecodeReport =
         res_decode::decode_archive(&mut archive, &names, arsc_table.as_ref());
 
+    let react_native_assets: Vec<RnPackagedAsset> =
+        packaged_react_native_assets(&mut archive, &names, arsc_table.as_ref());
     let signing: ApkSigningBlockReport = apk_signing::parse(bytes);
+    let packers: Vec<PackerFinding> = detect_packers(bytes).unwrap_or_default();
+    for finding in &packers {
+        for dex in &finding.recovered {
+            let dex: &RecoveredDex = dex;
+            routed_children.push(RoutedChild {
+                container_path: dex.source.clone(),
+                target: RouteTarget::DalvikDex,
+                size: dex.size as u64,
+                abi: None,
+            });
+        }
+    }
+    crate::debug::dbg_kv("packers", || packers.len().to_string());
+    reconcile_walls(&packers, &mut protector_walls);
 
     dedup_secrets(&mut secrets);
     dedup_endpoints(&mut endpoints);
@@ -420,8 +447,47 @@ pub fn analyze(bytes: &[u8]) -> Result<ApkReconReport> {
         endpoints,
         protector_walls,
         protector_artifacts,
+        packers,
         signing,
+        react_native_assets,
     })
+}
+
+fn packaged_react_native_assets(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    names: &[(usize, String, u64)],
+    resources: Option<&ArscResources>,
+) -> Vec<RnPackagedAsset> {
+    let entries: BTreeSet<String> = names
+        .iter()
+        .map(|(_, name, _): &(usize, String, u64)| name.clone())
+        .collect();
+    let mut packaged: Vec<RnPackagedAsset> = Vec::new();
+    for (index, name, size) in names {
+        let platform: RnBundlePlatform = match classify_bundle_path(name) {
+            Some((platform @ (RnBundlePlatform::Android | RnBundlePlatform::Ios), _)) => platform,
+            _ => continue,
+        };
+        let Ok(raw) = read_entry(archive, *index, *size) else {
+            continue;
+        };
+        let assets: Vec<RnAsset> = match detect_bundle_format(&raw) {
+            RnBundleFormat::HermesBytecode => match hermes::parse(&raw) {
+                Ok(module) => hermes::react_native_assets(&module),
+                Err(_) => continue,
+            },
+            RnBundleFormat::JavaScriptSource => source_assets(&raw),
+            RnBundleFormat::Unknown => continue,
+        };
+        crate::debug::dbg_kv("react_native_assets", || {
+            format!("{name}: {}", assets.len())
+        });
+        packaged.extend(match platform {
+            RnBundlePlatform::Ios => locate_ios_assets(name, assets, &entries),
+            _ => locate_android_assets(name, assets, &entries, resources),
+        });
+    }
+    packaged
 }
 
 fn read_entry(archive: &mut ZipArchive<Cursor<&[u8]>>, index: usize, size: u64) -> Result<Vec<u8>> {
@@ -849,6 +915,38 @@ fn detect_protectors(
                 note: "packer bootstrap that loads the real application after runtime decryption"
                     .to_owned(),
             });
+        }
+    }
+}
+
+fn reconcile_walls(packers: &[PackerFinding], walls: &mut [ProtectorWall]) {
+    for finding in packers {
+        if finding.recovered.is_empty() {
+            continue;
+        }
+        let covered: &[&str] = match finding.packer {
+            ApkPacker::SecneoDexHelper | ApkPacker::Bangcle => &[
+                "secneo/bangcle native helper present",
+                "manifest declares a stub/proxy bootstrap application",
+            ],
+            ApkPacker::Jiagu360 | ApkPacker::OpenSourceJiagu => &[
+                "libjiagu native runtime present",
+                "manifest declares a stub/proxy bootstrap application",
+            ],
+            ApkPacker::Pangxie => &["manifest declares a stub/proxy bootstrap application"],
+            _ => &[],
+        };
+        for wall in walls.iter_mut() {
+            if wall.protector == AppProtector::CommercialShield
+                && covered.contains(&wall.evidence.as_str())
+            {
+                wall.recoverable = true;
+                wall.note = format!(
+                    "{} payload recovered statically ({} dex file(s)); see the packer findings",
+                    finding.label,
+                    finding.recovered.len()
+                );
+            }
         }
     }
 }

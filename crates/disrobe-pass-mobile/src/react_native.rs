@@ -5,6 +5,8 @@ use zip::ZipArchive;
 
 use crate::error::Result;
 
+pub mod assets;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RnBundlePlatform {
@@ -88,6 +90,15 @@ pub fn classify_bundle_path(path: &str) -> Option<(RnBundlePlatform, RnBundleFor
         if path == *name {
             return Some((RnBundlePlatform::Ios, RnBundleFormat::Unknown));
         }
+    }
+    if let Some(app) = path
+        .strip_prefix("Payload/")
+        .and_then(|rest: &str| rest.strip_suffix("/main.jsbundle"))
+        && app.len() > ".app".len()
+        && app.ends_with(".app")
+        && !app.contains('/')
+    {
+        return Some((RnBundlePlatform::Ios, RnBundleFormat::Unknown));
     }
     if path.ends_with(".hbc") || path.ends_with(".hbcbundle") {
         return Some((RnBundlePlatform::Unknown, RnBundleFormat::HermesBytecode));
@@ -212,6 +223,17 @@ mod tests {
         let kind: Option<(RnBundlePlatform, RnBundleFormat)> =
             classify_bundle_path("Payload/main.jsbundle");
         assert_eq!(kind, Some((RnBundlePlatform::Ios, RnBundleFormat::Unknown)));
+        let app: Option<(RnBundlePlatform, RnBundleFormat)> =
+            classify_bundle_path("Payload/My App.app/main.jsbundle");
+        assert_eq!(app, Some((RnBundlePlatform::Ios, RnBundleFormat::Unknown)));
+        for other in [
+            "Payload/.app/main.jsbundle",
+            "Payload/Outer/Inner.app/main.jsbundle",
+            "Payload/App.app/Frameworks/main.jsbundle",
+            "Payload/App/main.jsbundle",
+        ] {
+            assert_eq!(classify_bundle_path(other), None, "{other}");
+        }
     }
 
     #[test]
