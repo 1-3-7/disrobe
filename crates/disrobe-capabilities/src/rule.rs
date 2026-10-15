@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use crate::feature::{Feature, FeatureSet, Scope};
+use crate::feature::{Feature, FeatureKinds, FeatureSet, Scope};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CountBound {
@@ -84,6 +84,22 @@ impl RuleExpr {
     #[must_use]
     pub const fn matches_rule(name: String) -> Self {
         Self::Match(name)
+    }
+
+    #[must_use]
+    pub fn feature_kinds(&self, kinds: FeatureKinds) -> FeatureKinds {
+        match self {
+            Self::Feature(feature) | Self::Count { feature, .. } => {
+                kinds.with(feature.value_kind())
+            }
+            Self::And(children) | Self::Or(children) | Self::NOf { of: children, .. } => children
+                .iter()
+                .fold(kinds, |acc: FeatureKinds, child: &Self| {
+                    child.feature_kinds(acc)
+                }),
+            Self::Not(child) | Self::Optional(child) => child.feature_kinds(kinds),
+            Self::Match(_) => kinds,
+        }
     }
 
     pub(crate) fn evaluate(

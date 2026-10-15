@@ -18,10 +18,12 @@ use disrobe_query::Module;
 use serde::Serialize;
 
 pub use eval::{CapabilityMatch, evaluate};
-pub use extract::{ScopedFeatures, extract};
+pub use extract::{
+    ScopeKinds, ScopedFeatures, extract, extract_with_strings, file_string_window, file_strings,
+};
 pub use feature::{
-    Characteristic, Feature, FeatureHit, FeatureSet, FeatureValue, OperandFeature, OperandValue,
-    Scope,
+    Characteristic, Feature, FeatureHit, FeatureKind, FeatureKinds, FeatureSet, FeatureValue,
+    OperandFeature, OperandValue, Scope,
 };
 pub use imports::ImportMap;
 pub use rule::{CountBound, Evidence, Rule, RuleExpr};
@@ -58,17 +60,37 @@ pub fn analyze_with_uri(
     bytes: &[u8],
     uri: Option<&str>,
 ) -> Result<CapabilitiesReport, CapabilitiesError> {
+    let module: Module = module_from_bytes(bytes)?;
+    Ok(analyze_module(&module, bytes, uri))
+}
+
+pub fn module_from_bytes(bytes: &[u8]) -> Result<Module, CapabilitiesError> {
     let payload: DisasmPayload =
         build_disasm_payload(bytes).map_err(|e| CapabilitiesError::Disasm(e.to_string()))?;
-    let module: Module = Module::from_disasm(&payload);
-    Ok(analyze_module(&module, bytes, uri))
+    Ok(Module::from_owned_disasm(payload))
 }
 
 #[must_use]
 pub fn analyze_module(module: &Module, bytes: &[u8], uri: Option<&str>) -> CapabilitiesReport {
+    analyze_module_with_strings(module, bytes, uri, &file_strings(bytes))
+}
+
+#[must_use]
+pub fn analyze_module_with_strings(
+    module: &Module,
+    bytes: &[u8],
+    uri: Option<&str>,
+    window_strings: &[disrobe_core::strings::ExtractedString],
+) -> CapabilitiesReport {
     let imports: ImportMap = ImportMap::from_bytes(bytes);
-    let scoped: ScopedFeatures = extract(module, bytes, &imports);
     let rules: Vec<Rule> = builtin_rules();
+    let scoped: ScopedFeatures = extract_with_strings(
+        module,
+        bytes,
+        &imports,
+        window_strings,
+        ScopeKinds::for_rules(&rules),
+    );
     let capabilities: Vec<CapabilityMatch> = evaluate(&scoped, &rules);
     finalize(capabilities, scoped.functions.len(), bytes.len(), uri)
 }

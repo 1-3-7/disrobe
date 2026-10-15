@@ -91,7 +91,77 @@ pub enum Feature {
     Section(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureKind {
+    Api,
+    Number,
+    String,
+    Bytes,
+    Mnemonic,
+    Offset,
+    Characteristic,
+    Operand,
+    Os,
+    Arch,
+    Format,
+    Import,
+    Export,
+    Section,
+}
+
+impl FeatureKind {
+    const fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeatureKinds(u16);
+
+impl FeatureKinds {
+    pub const ALL: Self = Self(u16::MAX);
+    pub const NONE: Self = Self(0);
+
+    #[must_use]
+    pub const fn with(self, kind: FeatureKind) -> Self {
+        Self(self.0 | kind.bit())
+    }
+
+    #[must_use]
+    pub const fn contains(self, kind: FeatureKind) -> bool {
+        self.0 & kind.bit() != 0
+    }
+}
+
+impl Default for FeatureKinds {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 impl Feature {
+    #[must_use]
+    pub const fn value_kind(&self) -> FeatureKind {
+        match self {
+            Self::Api(_) => FeatureKind::Api,
+            Self::Number(_) => FeatureKind::Number,
+            Self::StringSubstring(_) | Self::StringExact(_) | Self::StringRegex(_) => {
+                FeatureKind::String
+            }
+            Self::Bytes(_) => FeatureKind::Bytes,
+            Self::Mnemonic(_) => FeatureKind::Mnemonic,
+            Self::Offset(_) => FeatureKind::Offset,
+            Self::Characteristic(_) => FeatureKind::Characteristic,
+            Self::Operand { .. } => FeatureKind::Operand,
+            Self::Os(_) => FeatureKind::Os,
+            Self::Arch(_) => FeatureKind::Arch,
+            Self::Format(_) => FeatureKind::Format,
+            Self::Import(_) => FeatureKind::Import,
+            Self::Export(_) => FeatureKind::Export,
+            Self::Section(_) => FeatureKind::Section,
+        }
+    }
+
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
@@ -252,6 +322,28 @@ impl PartialEq<OperandValue> for OperandFeature {
     }
 }
 
+impl FeatureValue {
+    #[must_use]
+    pub const fn kind(&self) -> FeatureKind {
+        match self {
+            Self::Api(_) => FeatureKind::Api,
+            Self::Number(_) => FeatureKind::Number,
+            Self::String(_) => FeatureKind::String,
+            Self::Bytes(_) => FeatureKind::Bytes,
+            Self::Mnemonic(_) => FeatureKind::Mnemonic,
+            Self::Offset(_) => FeatureKind::Offset,
+            Self::Characteristic(_) => FeatureKind::Characteristic,
+            Self::Operand { .. } => FeatureKind::Operand,
+            Self::Os(_) => FeatureKind::Os,
+            Self::Arch(_) => FeatureKind::Arch,
+            Self::Format(_) => FeatureKind::Format,
+            Self::Import(_) => FeatureKind::Import,
+            Self::Export(_) => FeatureKind::Export,
+            Self::Section(_) => FeatureKind::Section,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeatureHit {
     #[serde(flatten)]
@@ -269,16 +361,38 @@ impl FeatureHit {
 #[derive(Debug, Clone, Default)]
 pub struct FeatureSet {
     hits: Vec<FeatureHit>,
+    admitted: FeatureKinds,
 }
 
 impl FeatureSet {
     #[must_use]
     pub const fn new() -> Self {
-        Self { hits: Vec::new() }
+        Self::admitting(FeatureKinds::ALL)
+    }
+
+    #[must_use]
+    pub const fn admitting(admitted: FeatureKinds) -> Self {
+        Self {
+            hits: Vec::new(),
+            admitted,
+        }
+    }
+
+    #[must_use]
+    pub const fn admits(&self, kind: FeatureKind) -> bool {
+        self.admitted.contains(kind)
     }
 
     pub fn push(&mut self, hit: FeatureHit) {
-        self.hits.push(hit);
+        if self.admits(hit.value.kind()) {
+            self.hits.push(hit);
+        }
+    }
+
+    pub fn push_clone(&mut self, hit: &FeatureHit) {
+        if self.admits(hit.value.kind()) {
+            self.hits.push(hit.clone());
+        }
     }
 
     #[must_use]

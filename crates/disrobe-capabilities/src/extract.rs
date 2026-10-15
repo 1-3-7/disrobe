@@ -2,8 +2,49 @@ use disrobe_binfmt::native::{Arch, NativeFile, NativeFormat, SectionInfo, parse_
 use disrobe_core::strings::{self, ExtractedString, Options};
 use disrobe_query::{BasicBlock, Function, InsnClass, InsnView, Module, SymbolKind};
 
-use crate::feature::{Characteristic, FeatureHit, FeatureSet, FeatureValue, OperandValue};
+use crate::feature::{
+    Characteristic, FeatureHit, FeatureKind, FeatureKinds, FeatureSet, FeatureValue, OperandValue,
+    Scope,
+};
 use crate::imports::{ImportMap, parse_operand_memory_address};
+use crate::rule::Rule;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeKinds {
+    pub file: FeatureKinds,
+    pub function: FeatureKinds,
+    pub basic_block: FeatureKinds,
+    pub instruction: FeatureKinds,
+}
+
+impl ScopeKinds {
+    pub const ALL: Self = Self {
+        file: FeatureKinds::ALL,
+        function: FeatureKinds::ALL,
+        basic_block: FeatureKinds::ALL,
+        instruction: FeatureKinds::ALL,
+    };
+
+    #[must_use]
+    pub fn for_rules(rules: &[Rule]) -> Self {
+        let mut kinds: Self = Self {
+            file: FeatureKinds::NONE,
+            function: FeatureKinds::NONE,
+            basic_block: FeatureKinds::NONE,
+            instruction: FeatureKinds::NONE,
+        };
+        for rule in rules {
+            let scope: &mut FeatureKinds = match rule.scope {
+                Scope::File => &mut kinds.file,
+                Scope::Function => &mut kinds.function,
+                Scope::BasicBlock => &mut kinds.basic_block,
+                Scope::Instruction => &mut kinds.instruction,
+            };
+            *scope = rule.expr.feature_kinds(*scope);
+        }
+        kinds
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ScopedFeatures {
@@ -94,7 +135,42 @@ const fn section_contains(section: &SectionInfo, va: u64) -> bool {
 }
 
 #[must_use]
+pub fn file_string_window(bytes: &[u8]) -> &[u8] {
+    &bytes[..bytes
+        .len()
+        .min(StringFeatureLimits::production().scan_bytes)]
+}
+
+#[must_use]
+pub fn file_strings(bytes: &[u8]) -> Vec<ExtractedString> {
+    strings::extract(
+        file_string_window(bytes),
+        Options {
+            min_len: MIN_STRING_LEN,
+            decode: true,
+        },
+    )
+}
+
+#[must_use]
 pub fn extract(module: &Module, bytes: &[u8], imports: &ImportMap) -> ScopedFeatures {
+    extract_with_strings(
+        module,
+        bytes,
+        imports,
+        &file_strings(bytes),
+        ScopeKinds::ALL,
+    )
+}
+
+#[must_use]
+pub fn extract_with_strings(
+    module: &Module,
+    bytes: &[u8],
+    imports: &ImportMap,
+    window_strings: &[ExtractedString],
+    kinds: ScopeKinds,
+) -> ScopedFeatures {
     let native: Option<NativeFile> = parse_native(bytes).ok();
     let global: GlobalFeatures = global_features(native.as_ref());
     let layout: LayoutInfo = LayoutInfo {
@@ -106,16 +182,18 @@ pub fn extract(module: &Module, bytes: &[u8], imports: &ImportMap) -> ScopedFeat
             .is_none_or(|value: &NativeFile| matches!(value.arch, Arch::X86 | Arch::X86_64)),
     };
 
-    let mut file: FeatureSet = FeatureSet::new();
+    let mut file: FeatureSet = FeatureSet::admitting(kinds.file);
     push_globals(&mut file, &global, 0);
-    push_file_strings(&mut file, bytes);
+    push_extracted_strings(&mut file, window_strings, StringFeatureLimits::production());
     push_file_native(&mut file, native.as_ref(), imports);
     push_embedded_pe(&mut file, bytes);
 
     let functions: Vec<FunctionFeatures> = module
         .functions()
         .iter()
-        .map(|f: &Function| extract_function(module, f, imports, &global, &layout, &mut file))
+        .map(|f: &Function| {
+            extract_function(module, f, imports, &global, &layout, kinds, &mut file)
+        })
         .collect();
 
     ScopedFeatures { file, functions }
@@ -162,13 +240,21 @@ const fn arch_label(arch: Arch) -> &'static str {
 }
 
 fn push_globals(set: &mut FeatureSet, global: &GlobalFeatures, base: u64) {
-    if let Some(os) = &global.os {
+    if let Some(os) = global.os.as_ref().filter(|_| set.admits(FeatureKind::Os)) {
         set.push(FeatureHit::new(FeatureValue::Os(os.clone()), base));
     }
-    if let Some(arch) = &global.arch {
+    if let Some(arch) = global
+        .arch
+        .as_ref()
+        .filter(|_| set.admits(FeatureKind::Arch))
+    {
         set.push(FeatureHit::new(FeatureValue::Arch(arch.clone()), base));
     }
-    if let Some(format) = &global.format {
+    if let Some(format) = global
+        .format
+        .as_ref()
+        .filter(|_| set.admits(FeatureKind::Format))
+    {
         set.push(FeatureHit::new(FeatureValue::Format(format.clone()), base));
     }
 }
@@ -212,9 +298,10 @@ fn extract_function(
     imports: &ImportMap,
     global: &GlobalFeatures,
     layout: &LayoutInfo,
+    kinds: ScopeKinds,
     file: &mut FeatureSet,
 ) -> FunctionFeatures {
-    let mut features: FeatureSet = FeatureSet::new();
+    let mut features: FeatureSet = FeatureSet::admitting(kinds.function);
     push_globals(&mut features, global, function.address);
     let blocks: Vec<BlockFeatures> = function
         .basic_blocks()
@@ -227,6 +314,7 @@ fn extract_function(
                 imports,
                 global,
                 layout,
+                kinds,
                 &mut features,
                 file,
             )
@@ -266,10 +354,11 @@ fn extract_block(
     imports: &ImportMap,
     global: &GlobalFeatures,
     layout: &LayoutInfo,
+    kinds: ScopeKinds,
     function: &mut FeatureSet,
     file: &mut FeatureSet,
 ) -> BlockFeatures {
-    let mut features: FeatureSet = FeatureSet::new();
+    let mut features: FeatureSet = FeatureSet::admitting(kinds.basic_block);
     push_globals(&mut features, global, block.start);
     let mut instructions: Vec<InstructionFeatures> = Vec::with_capacity(block.instructions.len());
     let xor_site: XorSite = XorSite {
@@ -283,12 +372,12 @@ fn extract_block(
     };
 
     for insn in &block.instructions {
-        let mut insn_set: FeatureSet = FeatureSet::new();
+        let mut insn_set: FeatureSet = FeatureSet::admitting(kinds.instruction);
         push_globals(&mut insn_set, global, insn.offset);
         for hit in instruction_features(module, insn, imports, layout, xor_site) {
-            insn_set.push(hit.clone());
-            features.push(hit.clone());
-            function.push(hit.clone());
+            insn_set.push_clone(&hit);
+            features.push_clone(&hit);
+            function.push_clone(&hit);
             file.push(hit);
         }
         instructions.push(InstructionFeatures {
@@ -684,20 +773,12 @@ fn parse_immediate(token: &str) -> Option<u64> {
     None
 }
 
-fn push_file_strings(file: &mut FeatureSet, bytes: &[u8]) {
-    push_file_strings_with_limits(file, bytes, StringFeatureLimits::production());
-}
-
-fn push_file_strings_with_limits(file: &mut FeatureSet, bytes: &[u8], limits: StringFeatureLimits) {
-    let scan_len: usize = bytes.len().min(limits.scan_bytes);
-    let extracted: Vec<ExtractedString> = strings::extract(
-        &bytes[..scan_len],
-        Options {
-            min_len: MIN_STRING_LEN,
-            decode: true,
-        },
-    );
-    for s in extracted.into_iter().take(limits.feature_count) {
+fn push_extracted_strings(
+    file: &mut FeatureSet,
+    extracted: &[ExtractedString],
+    limits: StringFeatureLimits,
+) {
+    for s in extracted.iter().take(limits.feature_count) {
         let value: &str = strings::head(&s.value, limits.feature_bytes);
         if value.len() < MIN_STRING_LEN {
             continue;
@@ -770,6 +851,22 @@ mod tests {
     use disrobe_ir::payload::{
         DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind, InsnFlow,
     };
+
+    fn push_file_strings_with_limits(
+        file: &mut FeatureSet,
+        bytes: &[u8],
+        limits: StringFeatureLimits,
+    ) {
+        let scan_len: usize = bytes.len().min(limits.scan_bytes);
+        let extracted: Vec<ExtractedString> = strings::extract(
+            &bytes[..scan_len],
+            Options {
+                min_len: MIN_STRING_LEN,
+                decode: true,
+            },
+        );
+        push_extracted_strings(file, &extracted, limits);
+    }
 
     fn insn(
         offset: u64,

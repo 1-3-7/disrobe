@@ -1,7 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use disrobe_capabilities::{
-    CapabilitiesReport, CapabilityMatch, Evidence, Feature, ImportMap, ScopedFeatures,
+    CapabilitiesReport, CapabilityMatch, Evidence, Feature, FeatureKind, ImportMap, ScopeKinds,
+    ScopedFeatures, evaluate, extract_with_strings,
 };
 use disrobe_ir::payload::{DisasmInstruction, DisasmPayload};
 use disrobe_pass_native::build_disasm_payload;
@@ -508,5 +509,99 @@ fn report_serializes_with_schema_and_addresses() {
                 .expect("evidence feature");
             assert!(!feature.is_empty(), "evidence feature must be non-empty");
         }
+    }
+}
+
+fn admitted_hits(scoped: &ScopedFeatures) -> usize {
+    scoped.file.hits().len()
+        + scoped
+            .functions
+            .iter()
+            .map(
+                |function: &disrobe_capabilities::extract::FunctionFeatures| {
+                    function.features.hits().len()
+                        + function
+                            .blocks
+                            .iter()
+                            .map(|block: &disrobe_capabilities::extract::BlockFeatures| {
+                                block.features.hits().len()
+                                    + block
+                                        .instructions
+                                        .iter()
+                                        .map(|insn| insn.features.hits().len())
+                                        .sum::<usize>()
+                            })
+                            .sum::<usize>()
+                },
+            )
+            .sum::<usize>()
+}
+
+#[test]
+fn rule_scoped_feature_admission_keeps_every_match() {
+    let rules: Vec<disrobe_capabilities::Rule> = disrobe_capabilities::builtin_rules();
+    let kinds: ScopeKinds = ScopeKinds::for_rules(&rules);
+    let mut matched: usize = 0;
+    for (label, bytes) in [
+        ("writefile", WRITEFILE),
+        ("connect", CONNECT),
+        ("xordecrypt", XORDECRYPT),
+        ("pebcheck", PEBCHECK),
+        ("stackstr", STACKSTR),
+        ("embedpe", EMBEDPE),
+        ("clean", CLEAN),
+    ] {
+        let module: Module = Module::from_disasm(&build_disasm_payload(bytes).expect(label));
+        let imports: ImportMap = ImportMap::from_bytes(bytes);
+        let strings: Vec<disrobe_core::strings::ExtractedString> =
+            disrobe_capabilities::file_strings(bytes);
+        let every: ScopedFeatures =
+            extract_with_strings(&module, bytes, &imports, &strings, ScopeKinds::ALL);
+        let admitted: ScopedFeatures =
+            extract_with_strings(&module, bytes, &imports, &strings, kinds);
+        let expected: Vec<CapabilityMatch> = evaluate(&every, &rules);
+        assert_eq!(evaluate(&admitted, &rules), expected, "{label}");
+        assert!(
+            admitted_hits(&admitted) < admitted_hits(&every),
+            "{label}: admission must drop the hits no rule reads"
+        );
+        matched += expected.len();
+    }
+    assert!(
+        matched > 0,
+        "the fixtures must fire rules for the comparison to mean anything"
+    );
+}
+
+#[test]
+fn builtin_rules_read_only_characteristics_at_instruction_scope() {
+    let kinds: ScopeKinds = ScopeKinds::for_rules(&disrobe_capabilities::builtin_rules());
+    assert!(kinds.instruction.contains(FeatureKind::Characteristic));
+    for unread in [
+        FeatureKind::Os,
+        FeatureKind::Arch,
+        FeatureKind::Format,
+        FeatureKind::Mnemonic,
+        FeatureKind::Operand,
+    ] {
+        assert!(!kinds.instruction.contains(unread), "{unread:?}");
+    }
+}
+
+#[test]
+fn an_owned_payload_builds_the_same_module_as_a_borrowed_one() {
+    for (label, bytes) in [
+        ("writefile", WRITEFILE),
+        ("connect", CONNECT),
+        ("embedpe", EMBEDPE),
+        (
+            "garble",
+            include_bytes!("../../../corpus/go/garble/gauntlet_garble.exe").as_slice(),
+        ),
+    ] {
+        let payload: DisasmPayload = build_disasm_payload(bytes).expect(label);
+        let borrowed: Module = Module::from_disasm(&payload);
+        assert!(!borrowed.functions().is_empty(), "{label}");
+        assert_eq!(Module::from_owned_disasm(payload), borrowed, "{label}");
     }
 }
