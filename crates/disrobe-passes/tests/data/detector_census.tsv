@@ -635,6 +635,7 @@ corpus/go/versions/go126_linux_arm64	go.classify	go-pclntab-1.20+	native-format	
 corpus/go/versions/go126_linux_arm64.nm.txt	scriptlang.classify	win-script	source	medium	-	-	-
 corpus/go/versions/go126_linux_arm64.objdump.txt	-	-	-	-	-	-	-
 corpus/go/versions/src/main.go	-	-	-	-	-	-	-
+corpus/installers/nsis/layered_members.nsi	-	-	-	-	-	-	-
 corpus/installers/nsis/payload/docs/changes.txt	-	-	-	-	-	-	-
 corpus/installers/nsis/payload/stations.csv	-	-	-	-	-	-	-
 corpus/installers/nsis/tide_viewer.nsi	-	-	-	-	-	-	-

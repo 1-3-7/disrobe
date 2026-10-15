@@ -14,6 +14,8 @@ The script takes its compressor, solid mode, string encoding and output path as 
 | non-solid zlib, Unicode | `-DCOMPRESSOR=zlib -DUNICODE_STRINGS` |
 | non-solid BZip2, Unicode | `-DCOMPRESSOR=bzip2 -DUNICODE_STRINGS` |
 
+`layered_members.nsi` writes the same payload through several `SetOutPath` directories, writes a file under a name another file already used (`File /oname=`), and writes one file twice with the same bytes. `tests/real_nsis_solid.rs` builds it as solid LZMA and as non-solid zlib (`-DCOMPRESSOR=lzma -DSOLID`, `-DCOMPRESSOR=zlib`) and checks that extraction keeps each file's output directory, gives the second file under a repeated path a numbered name (`readme~2.txt`), and writes the repeated identical file once, both through `disrobe extract` and through the container step of `disrobe auto`.
+
 Each build is one command; makensis changes into the script's directory, so the `File` paths resolve here wherever it is started from:
 
 ```sh
@@ -29,3 +31,4 @@ Toolchain: NSIS 3.11 for Windows, `nsis-3.11.zip` from the project's SourceForge
 | `payload/readme.txt` | 1428 | `f6fe7073810fc8bc57daf6f5285b09f289dddf49c7e4f3835e647b740f42a7c4` |
 | `payload/stations.csv` | 786 | `692fc21e130d1cd1a1048f263f5b1ec46fee69012e216b2388ddaf321a3d4df8` |
 | `payload/docs/changes.txt` | 554 | `2fa2ec4deb6b1d9b3d986df28298bf66c997dc41eba68d41edacf6984c1bbaf9` |
+| `layered_members.nsi` | 807 | `a07a9c31f6df5406ebca7897a8f696fb2242656dc46bb4288cc1ca5a0a39fe1f` |
