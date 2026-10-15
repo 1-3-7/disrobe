@@ -1864,7 +1864,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::Corpus(NIM_ELF),
         functions: 185,
         recovered: 88,
-        rust: 83,
+        rust: 88,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1874,7 +1874,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_arc.exe"),
         functions: 559,
         recovered: 243,
-        rust: 207,
+        rust: 243,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1884,7 +1884,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_orc.exe"),
         functions: 583,
         recovered: 251,
-        rust: 214,
+        rust: 251,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1894,7 +1894,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_refc.exe"),
         functions: 620,
         recovered: 274,
-        rust: 232,
+        rust: 274,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1904,7 +1904,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_boehm.exe"),
         functions: 255,
         recovered: 87,
-        rust: 67,
+        rust: 87,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1914,7 +1914,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_markAndSweep.exe"),
         functions: 600,
         recovered: 263,
-        rust: 228,
+        rust: 263,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1924,7 +1924,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_go.exe"),
         functions: 528,
         recovered: 256,
-        rust: 206,
+        rust: 256,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1934,7 +1934,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::CrateFixture("nim_mm/mm_none.exe"),
         functions: 539,
         recovered: 237,
-        rust: 202,
+        rust: 237,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1944,7 +1944,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::Corpus(ZIG_ELF),
         functions: 1356,
         recovered: 378,
-        rust: 369,
+        rust: 374,
         analysis: OnceLock::new(),
     },
     ModeRate {
@@ -1964,7 +1964,7 @@ static MODE_RATES: [ModeRate; 11] = [
         origin: Origin::Corpus(CRYSTAL_PE),
         functions: 438,
         recovered: 62,
-        rust: 59,
+        rust: 62,
         analysis: OnceLock::new(),
     },
 ];
