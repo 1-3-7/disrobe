@@ -8,6 +8,7 @@ use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_dotnet::aot::{AotMethod, AotMethodBody, AotReport, detect as detect_native_aot};
 use disrobe_pass_dotnet::decompile::{Decompiled, decompile_assembly_detailed};
+use disrobe_pass_dotnet::interop::{InteropReport, interop_report};
 use disrobe_pass_dotnet::unprotect::neutralize::{
     Applied, NeutralizationPlan, NeutralizationReport, Patch, RefusedPatch, Selection, Technique,
     apply as apply_plan, neutralized_path,
@@ -506,6 +507,15 @@ pub(crate) enum DotnetCmd {
         name = "native-aot",
         about = "recover NativeAOT names, types, method boundaries and managed signatures from an ahead-of-time compiled .NET image (PE, ELF or Mach-O)"
     )]
+    #[command(
+        about = "list the native boundaries of a .NET assembly: P/Invoke imports with module, entry point, character set and calling convention, LibraryImport declarations, UnmanagedCallersOnly exports and COM imports with their GUIDs"
+    )]
+    Interop {
+        #[arg(help = "input .NET assembly")]
+        input: PathBuf,
+        #[arg(long, help = "print the report as JSON")]
+        json: bool,
+    },
     NativeAot {
         #[arg(help = "input NativeAOT image (PE, ELF, or Mach-O)")]
         input: PathBuf,
@@ -607,6 +617,7 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
             protector,
         } => deobfuscate(input, out, protector),
         DotnetCmd::Analyze { input, out } => analyze(input, out),
+        DotnetCmd::Interop { input, json } => interop(&input, json),
         DotnetCmd::NativeAot { input, out, json } => native_aot(input, out, json),
         DotnetCmd::Backends => backends(),
     }
@@ -1381,6 +1392,91 @@ impl SignatureSplit {
             refused,
         }
     }
+}
+
+fn interop(input: &Path, json: bool) -> miette::Result<()> {
+    let meta: std::fs::Metadata = std::fs::metadata(input)
+        .map_err(|e| miette::miette!("DR-CLI-0504: cannot stat {}: {e}", input.display()))?;
+    if meta.len() > NATIVE_AOT_INPUT_MAX_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0504: {} is {} bytes, above the {NATIVE_AOT_INPUT_MAX_BYTES}-byte cap",
+            input.display(),
+            meta.len()
+        ));
+    }
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-CLI-0504: cannot read {}: {e}", input.display()))?;
+    let report: InteropReport = interop_report(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0505: {}: {e}", input.display()))?;
+    if json {
+        let rendered: String = serde_json::to_string_pretty(&report)
+            .map_err(|e| miette::miette!("DR-CLI-0505: serialize: {e}"))?;
+        println!("{rendered}");
+        return Ok(());
+    }
+    println!(
+        "{} P/Invoke imports from {} modules, {} LibraryImport declarations, {} UnmanagedCallersOnly exports, {} COM imports",
+        report.pinvokes.len(),
+        report.modules.len(),
+        report.library_imports.len(),
+        report.native_callable.len(),
+        report.com_imports.len()
+    );
+    for pinvoke in &report.pinvokes {
+        let mut traits: Vec<&str> =
+            vec![pinvoke.char_set.label(), pinvoke.calling_convention.label()];
+        if pinvoke.set_last_error {
+            traits.push("set-last-error");
+        }
+        if pinvoke.exact_spelling {
+            traits.push("exact-spelling");
+        }
+        if !pinvoke.preserve_sig {
+            traits.push("hresult-to-exception");
+        }
+        println!(
+            "  {}!{} <- {} [{}]",
+            pinvoke.module,
+            pinvoke.entry_point,
+            pinvoke.method,
+            traits.join(", ")
+        );
+    }
+    for import in &report.library_imports {
+        println!(
+            "  library-import {}!{} <- {}",
+            import.library,
+            import.entry_point.as_deref().unwrap_or("(method name)"),
+            import.method
+        );
+    }
+    for export in &report.native_callable {
+        println!(
+            "  export {} -> {}{}",
+            export
+                .entry_point
+                .as_deref()
+                .unwrap_or("(function pointer only)"),
+            export.method,
+            if export.calling_conventions.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", export.calling_conventions.join(", "))
+            }
+        );
+    }
+    for com in &report.com_imports {
+        println!(
+            "  com-import {} {} {}",
+            if com.interface { "interface" } else { "class" },
+            com.type_name,
+            com.guid.as_deref().unwrap_or("(no GUID)")
+        );
+    }
+    for problem in &report.problems {
+        println!("  problem: {problem}");
+    }
+    Ok(())
 }
 
 fn native_aot(input: PathBuf, out: Option<PathBuf>, json: bool) -> miette::Result<()> {

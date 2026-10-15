@@ -256,6 +256,9 @@ mod disrobe_guard_deny;
 #[path = "../dotnet_decompile_deobfuscate.rs"]
 mod dotnet_decompile_deobfuscate;
 
+#[path = "../dotnet_interop_cli.rs"]
+mod dotnet_interop_cli;
+
 #[path = "../dotnet_native_aot_cli.rs"]
 mod dotnet_native_aot_cli;
 
