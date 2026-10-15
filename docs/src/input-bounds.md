@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2429 bounds (count 233, other 1145, output 72, recursion 241, size 549, work 189).
+2435 bounds (count 233, other 1149, output 72, recursion 241, size 550, work 190).
 
-Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassified 17, allocation 33, unused 8.
+Exceeded: error 999, recorded 207, panic 0, delegated 51, silent 1120, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -237,9 +237,9 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-binfmt` | `MAX_TABLE_ENTRIES` | count | error: `Error::CoverageUnsupported` (DR-BINFMT-0073); `Error::RewriteUnsupported` (DR-BINFMT-0075); untyped `format!` | `u64` | `262_144` | `crates/disrobe-binfmt/src/rewrite/mod.rs` |
 | `disrobe-binfmt` | `MAX_DIRECTORY_SLOTS` | other | silent: `.min()` clamp in `plan` | `u64` | `8_192` | `crates/disrobe-binfmt/src/rewrite/pe.rs` |
 | `disrobe-bytes` | `MAX_ENTRY_PREALLOC` | other | allocation: `with_capacity` in `new`; `with_capacity` in `read_to_limit` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-bytes/src/quota.rs` |
-| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURES` | other | silent: `.take()` in `push_file_strings_with_limits` | `usize` | `4096` | `crates/disrobe-capabilities/src/extract.rs` |
-| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURE_BYTES` | size | silent: `continue` in `push_file_strings_with_limits` | `usize` | `4096` | `crates/disrobe-capabilities/src/extract.rs` |
-| `disrobe-capabilities` | `MAX_FILE_STRING_SCAN_BYTES` | size | silent: `.min()` clamp in `push_file_strings_with_limits` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-capabilities/src/extract.rs` |
+| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURES` | other | silent: `.take()` in `push_extracted_strings` | `usize` | `4096` | `crates/disrobe-capabilities/src/extract.rs` |
+| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURE_BYTES` | size | silent: `continue` in `push_extracted_strings` | `usize` | `4096` | `crates/disrobe-capabilities/src/extract.rs` |
+| `disrobe-capabilities` | `MAX_FILE_STRING_SCAN_BYTES` | size | silent: slice in `file_string_window` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-capabilities/src/extract.rs` |
 | `disrobe-capabilities` | `MAX_NUMBER_FEATURES_PER_INSN` | other | silent: skipped in `instruction_features` | `usize` | `4` | `crates/disrobe-capabilities/src/extract.rs` |
 | `disrobe-capabilities` | `PE_HEADER_SCAN_CAP` | other | silent: `.min()` clamp in `embedded_pe_offset` | `usize` | `1 << 20` | `crates/disrobe-capabilities/src/extract.rs` |
 | `disrobe-capabilities` | `MAX_IMPORT_ENTRIES` | count | silent: `break` in `from_elf`; `break` in `from_pe` | `usize` | `1 << 17` | `crates/disrobe-capabilities/src/imports.rs` |
@@ -300,7 +300,7 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-cli` | `MAX_REJECTED_ARTIFACT_DIAGNOSTIC_BYTES` | size | recorded: `JvmHierarchyDiagnostic::RejectedArtifactDiagnosticLimit`; flag `rejected_artifacts_truncated` | `usize` | `65_536` | `crates/disrobe-cli/src/cli/query.rs` |
 | `disrobe-cli` | `MAX_ARTIFACT_WALK_DEPTH` | recursion | recorded: flag `truncated` | `u32` | `32` | `crates/disrobe-cli/src/cli/report.rs` |
 | `disrobe-cli` | `MAX_CITED_ARTIFACTS` | other | recorded: flag `truncated` | `usize` | `4_096` | `crates/disrobe-cli/src/cli/report.rs` |
-| `disrobe-cli` | `MAX_REPORT_ANALYSIS_INPUT_BYTES` | size | error: untyped `format!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/report.rs` |
+| `disrobe-cli` | `MAX_REPORT_ANALYSIS_INPUT_BYTES` | size | error: `exceeds_analysis_limit()` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/report.rs` |
 | `disrobe-cli` | `MAX_BEHAVIOR_EVIDENCE` | other | silent: `.take()` in `render_behavior_row`; no action in `render_behavior_row` | `usize` | `6` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-cli` | `MAX_IOC_ROWS` | other | silent: `.take()` in `render_indicators`; no action in `render_indicators` | `usize` | `200` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-cli` | `MAX_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `4 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/resources.rs` |
@@ -318,7 +318,7 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-cli` | `MAX_ANALYSIS_NODES` | count | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `50_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
 | `disrobe-cli` | `MAX_ANALYSIS_STEPS` | work | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `2_000_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
 | `disrobe-cli` | `MAX_VULNMATCH_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
-| `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | other | silent: slice in `scan_with_chain` | `usize` | `96 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
+| `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | other | silent: slice in `string_scan_window` | `usize` | `96 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `CODE_SCAN_BUDGET` | work | recorded: flag `budget` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `MAX_EXEMPLARS_PER_KIND` | other | silent: `.take()` in `cap_evidence`; no action in `cap_evidence` | `usize` | `5` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `MAX_MACHO_LOAD_CMDS` | other | silent: `.min()` clamp in `macho_code_layout` | `usize` | `4096` | `crates/disrobe-core/src/anti_analysis.rs` |
@@ -1847,6 +1847,10 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-pass-py-deob` | `LAYER_OUTPUT_LIMIT` | output | error: `Error::DecompressionTooLarge` (DR-PYDEOB-0013) | `u64` | `64 * 1024 * 1024` | `crates/disrobe-pass-py-deob/src/obfuscators/blankobf_layers.rs` |
 | `disrobe-pass-py-deob` | `MAX_LAYERS` | other | recorded: flag `layer_limit_reached` | `usize` | `16` | `crates/disrobe-pass-py-deob/src/obfuscators/blankobf_layers.rs` |
 | `disrobe-pass-py-deob` | `MAX_CODEPOINT` | other | silent: `return` in `apply_shift`; `return` in `stage1_codepoints` | `u32` | `0x0010_FFFF` | `crates/disrobe-pass-py-deob/src/obfuscators/de4py_family.rs` |
+| `disrobe-pass-py-deob` | `MAX_CHUNKS` | other | error: `EngineRefusal::Table` | `usize` | `65_536` | `crates/disrobe-pass-py-deob/src/obfuscators/manglify_engine.rs` |
+| `disrobe-pass-py-deob` | `MAX_CIPHER_BYTES` | size | error: `EngineRefusal::Table` | `usize` | `32 * 1024 * 1024` | `crates/disrobe-pass-py-deob/src/obfuscators/manglify_engine.rs` |
+| `disrobe-pass-py-deob` | `MAX_KEYS` | other | error: `EngineRefusal::KeyRange` | `u64` | `100_000` | `crates/disrobe-pass-py-deob/src/obfuscators/manglify_engine.rs` |
+| `disrobe-pass-py-deob` | `MAX_LAYERS` | other | silent: `for` range in `peel_engine` | `usize` | `8` | `crates/disrobe-pass-py-deob/src/obfuscators/manglify_engine.rs` |
 | `disrobe-pass-py-deob` | `MAX_NESTED_CODE_DEPTH` | recursion | silent: `return` in `walk` | `usize` | `32` | `crates/disrobe-pass-py-deob/src/obfuscators/obfuxtreme.rs` |
 | `disrobe-pass-py-deob` | `MAX_LIFT_DEPTH` | recursion | error: `LiftError` | `usize` | `64` | `crates/disrobe-pass-py-deob/src/obfuscators/patchwork/abyss/lift.rs` |
 | `disrobe-pass-py-deob` | `MAX_STORE_TARGET_NESTING` | recursion | error: `LiftError` | `usize` | `64` | `crates/disrobe-pass-py-deob/src/obfuscators/patchwork/abyss/lift.rs` |
@@ -1855,9 +1859,11 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-pass-py-deob` | `MAX_CODE_DEPTH` | recursion | recorded: flag `depth_limited` | `usize` | `64` | `crates/disrobe-pass-py-deob/src/obfuscators/pyc_zipper/reverse.rs` |
 | `disrobe-pass-py-deob` | `MAX_STORE_DISTANCE` | other | silent: `.take()` in `store_target` | `usize` | `64` | `crates/disrobe-pass-py-deob/src/obfuscators/pyc_zipper/reverse.rs` |
 | `disrobe-pass-py-deob` | `MAX_GENERATED_SOURCE_BYTES` | size | error: `Error::AstCleanup` (DR-PYDEOB-0009) | `usize` | `8 << 20` | `crates/disrobe-pass-py-deob/src/obfuscators/pyobfus.rs` |
+| `disrobe-pass-py-deob` | `MAX_ROUNDS` | work | silent: `for` range in `fold_payload` | `usize` | `8` | `crates/disrobe-pass-py-deob/src/obfuscators/pyobfuscator_fold.rs` |
 | `disrobe-pass-py-deob` | `MAX_NESTED_CODE_DEPTH` | recursion | silent: `return` in `count_code_objects` | `usize` | `32` | `crates/disrobe-pass-py-deob/src/obfuscators/pypacker.rs` |
 | `disrobe-pass-py-deob` | `JUNK_INT_LIMIT` | other | delegated: passed to `.retain` | `u64` | `1_000` | `crates/disrobe-pass-py-deob/src/obfuscators/python_obfuscator_junk.rs` |
 | `disrobe-pass-py-deob` | `MAX_SWEEPS` | other | silent: `for` range in `clean_inner_source` | `usize` | `4_096` | `crates/disrobe-pass-py-deob/src/obfuscators/python_obfuscator_junk.rs` |
+| `disrobe-pass-py-deob` | `MAX_STATES` | other | silent: `return` in `machine` | `usize` | `65_536` | `crates/disrobe-pass-py-deob/src/obfuscators/state_machine.rs` |
 | `disrobe-pass-py-deob` | `MAX_DEPTH` | recursion | error: `Error::DepthLimit` (DR-PYDEOB-0003) | `usize` | `32` | `crates/disrobe-pass-py-deob/src/peel.rs` |
 | `disrobe-pass-py-deob` | `MAX_TOKEN_CHARS` | other | silent: `return` in `recover` | `usize` | `8 * 1024 * 1024` | `crates/disrobe-pass-py-deob/src/shuffled_base64.rs` |
 | `disrobe-pass-py-deob` | `MAX_OUTER_PASSES` | other | silent: `for` range in `cleanup_source` | `usize` | `8` | `crates/disrobe-pass-py-deob/src/source_cleanup.rs` |
@@ -2453,7 +2459,7 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 
 ## Silent stops
 
-1117 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1120 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2513,9 +2519,9 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-binfmt` | `MAX_ENTRIES` | `break` in `read` | `crates/disrobe-binfmt/src/pe_resources.rs` |
 | `disrobe-binfmt` | `MAX_NOTES_PER_SEGMENT` | `for` range in `find_build_ids` | `crates/disrobe-binfmt/src/rewrite/elf.rs` |
 | `disrobe-binfmt` | `MAX_DIRECTORY_SLOTS` | `.min()` clamp in `plan` | `crates/disrobe-binfmt/src/rewrite/pe.rs` |
-| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURES` | `.take()` in `push_file_strings_with_limits` | `crates/disrobe-capabilities/src/extract.rs` |
-| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURE_BYTES` | `continue` in `push_file_strings_with_limits` | `crates/disrobe-capabilities/src/extract.rs` |
-| `disrobe-capabilities` | `MAX_FILE_STRING_SCAN_BYTES` | `.min()` clamp in `push_file_strings_with_limits` | `crates/disrobe-capabilities/src/extract.rs` |
+| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURES` | `.take()` in `push_extracted_strings` | `crates/disrobe-capabilities/src/extract.rs` |
+| `disrobe-capabilities` | `MAX_FILE_STRING_FEATURE_BYTES` | `continue` in `push_extracted_strings` | `crates/disrobe-capabilities/src/extract.rs` |
+| `disrobe-capabilities` | `MAX_FILE_STRING_SCAN_BYTES` | slice in `file_string_window` | `crates/disrobe-capabilities/src/extract.rs` |
 | `disrobe-capabilities` | `MAX_NUMBER_FEATURES_PER_INSN` | skipped in `instruction_features` | `crates/disrobe-capabilities/src/extract.rs` |
 | `disrobe-capabilities` | `PE_HEADER_SCAN_CAP` | `.min()` clamp in `embedded_pe_offset` | `crates/disrobe-capabilities/src/extract.rs` |
 | `disrobe-capabilities` | `MAX_IMPORT_ENTRIES` | `break` in `from_elf`; `break` in `from_pe` | `crates/disrobe-capabilities/src/imports.rs` |
@@ -2537,7 +2543,7 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-cli` | `LITERAL_PREVIEW_LIMIT` | `.take()` in `preview`; `return` in `preview` | `crates/disrobe-cli/src/cli/native_match.rs` |
 | `disrobe-cli` | `MAX_BEHAVIOR_EVIDENCE` | `.take()` in `render_behavior_row`; no action in `render_behavior_row` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-cli` | `MAX_IOC_ROWS` | `.take()` in `render_indicators`; no action in `render_indicators` | `crates/disrobe-cli/src/cli/report_html.rs` |
-| `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | slice in `scan_with_chain` | `crates/disrobe-core/src/anti_analysis.rs` |
+| `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | slice in `string_scan_window` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `MAX_EXEMPLARS_PER_KIND` | `.take()` in `cap_evidence`; no action in `cap_evidence` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `MAX_MACHO_LOAD_CMDS` | `.min()` clamp in `macho_code_layout` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `MAX_PARSED_SECTIONS` | `.min()` clamp in `elf_code_layout`; `.min()` clamp in `macho_segment_sections`; `.min()` clamp in `pe_code_layout` | `crates/disrobe-core/src/anti_analysis.rs` |
@@ -3300,11 +3306,14 @@ Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1117, unclassif
 | `disrobe-pass-py-deob` | `MAX_CHAIN_DEPTH` | `for` range in `peel_to_marshal_blob` | `crates/disrobe-pass-py-deob/src/marshal.rs` |
 | `disrobe-pass-py-deob` | `MAX_NESTED_CODE_DEPTH` | `return` in `collect_nested_blobs`; no action in `decompile_code` | `crates/disrobe-pass-py-deob/src/marshal.rs` |
 | `disrobe-pass-py-deob` | `MAX_CODEPOINT` | `return` in `apply_shift`; `return` in `stage1_codepoints` | `crates/disrobe-pass-py-deob/src/obfuscators/de4py_family.rs` |
+| `disrobe-pass-py-deob` | `MAX_LAYERS` | `for` range in `peel_engine` | `crates/disrobe-pass-py-deob/src/obfuscators/manglify_engine.rs` |
 | `disrobe-pass-py-deob` | `MAX_NESTED_CODE_DEPTH` | `return` in `walk` | `crates/disrobe-pass-py-deob/src/obfuscators/obfuxtreme.rs` |
 | `disrobe-pass-py-deob` | `MAX_LOADER_BYTECODE` | `return` in `looks_like_loader` | `crates/disrobe-pass-py-deob/src/obfuscators/pyc_zipper.rs` |
 | `disrobe-pass-py-deob` | `MAX_STORE_DISTANCE` | `.take()` in `store_target` | `crates/disrobe-pass-py-deob/src/obfuscators/pyc_zipper/reverse.rs` |
+| `disrobe-pass-py-deob` | `MAX_ROUNDS` | `for` range in `fold_payload` | `crates/disrobe-pass-py-deob/src/obfuscators/pyobfuscator_fold.rs` |
 | `disrobe-pass-py-deob` | `MAX_NESTED_CODE_DEPTH` | `return` in `count_code_objects` | `crates/disrobe-pass-py-deob/src/obfuscators/pypacker.rs` |
 | `disrobe-pass-py-deob` | `MAX_SWEEPS` | `for` range in `clean_inner_source` | `crates/disrobe-pass-py-deob/src/obfuscators/python_obfuscator_junk.rs` |
+| `disrobe-pass-py-deob` | `MAX_STATES` | `return` in `machine` | `crates/disrobe-pass-py-deob/src/obfuscators/state_machine.rs` |
 | `disrobe-pass-py-deob` | `MAX_TOKEN_CHARS` | `return` in `recover` | `crates/disrobe-pass-py-deob/src/shuffled_base64.rs` |
 | `disrobe-pass-py-deob` | `MAX_OUTER_PASSES` | `for` range in `cleanup_source` | `crates/disrobe-pass-py-deob/src/source_cleanup.rs` |
 | `disrobe-pass-py-deob` | `MAX_CANONICAL_NAMES` | `continue` in `canonicalize_homoglyph_names` | `crates/disrobe-pass-py-deob/src/unrename.rs` |

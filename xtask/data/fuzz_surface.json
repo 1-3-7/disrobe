@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1536,
-    "parse_shaped": 630,
+    "entry_points": 1544,
+    "parse_shaped": 632,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 657,
     "named_by_a_suite_recording_seed_reach": 133,
-    "named_by_neither": 843
+    "named_by_neither": 851
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -162,21 +162,26 @@
     },
     {
       "crate": "disrobe-capabilities",
-      "entry_points": 5,
-      "parse_shaped": 1,
+      "entry_points": 10,
+      "parse_shaped": 2,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 3,
       "named_by_a_suite_recording_seed_reach": 1,
       "named_by_neither": [
+        "disrobe-capabilities/src/extract.rs::extract_with_strings",
+        "disrobe-capabilities/src/extract.rs::file_string_window",
+        "disrobe-capabilities/src/extract.rs::file_strings",
         "disrobe-capabilities/src/imports.rs::from_bytes",
-        "disrobe-capabilities/src/lib.rs::analyze_with_uri"
+        "disrobe-capabilities/src/lib.rs::analyze_module_with_strings",
+        "disrobe-capabilities/src/lib.rs::analyze_with_uri",
+        "disrobe-capabilities/src/lib.rs::module_from_bytes"
       ]
     },
     {
       "crate": "disrobe-core",
-      "entry_points": 107,
-      "parse_shaped": 16,
+      "entry_points": 110,
+      "parse_shaped": 17,
       "with_declared_coverage_guided_target": 12,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 33,
@@ -184,6 +189,8 @@
       "named_by_neither": [
         "disrobe-core/src/anti_analysis.rs::classify_family",
         "disrobe-core/src/anti_analysis.rs::scan_with_chain",
+        "disrobe-core/src/anti_analysis.rs::scan_with_strings",
+        "disrobe-core/src/anti_analysis.rs::string_scan_window",
         "disrobe-core/src/behavior.rs::analyze_with_anti_analysis",
         "disrobe-core/src/behavior.rs::analyze_with_uri",
         "disrobe-core/src/codec/alphabets.rs::base122_decode",
@@ -254,6 +261,7 @@
         "disrobe-core/src/recon/secret_scan.rs::scan_bytes_with_work",
         "disrobe-core/src/recon/secret_scan.rs::scan_report",
         "disrobe-core/src/recon/string_emu.rs::text_runs",
+        "disrobe-core/src/strings.rs::extract_with_work",
         "disrobe-core/src/yara_gen.rs::generate"
       ]
     },
