@@ -250,6 +250,7 @@ const TAG_ARJ: &str = "arj";
 const TAG_LZH: &str = "lzh";
 const TAG_STUFFIT: &str = "stuffit";
 const TAG_INNOSETUP: &str = "inno-setup";
+const TAG_NSIS: &str = "nsis";
 const TAG_APPIMAGE: &str = "appimage";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
@@ -299,6 +300,7 @@ const fn tag_specificity(tag: &str) -> u16 {
         tag.as_bytes(),
         b"dotnet-single-file"
             | b"inno-setup"
+            | b"nsis"
             | b"appimage"
             | b"uefi-fv"
             | b"erofs"
@@ -317,6 +319,7 @@ const fn tag_marker(tag: &str) -> &'static str {
     match tag.as_bytes() {
         b"dotnet-single-file" => "bundle-signature+header",
         b"inno-setup" => "pe-resource+setup-data-header",
+        b"nsis" => "pe+nsis-firstheader+parsed-header-block",
         b"appimage" => "elf+validated-filesystem",
         b"uefi-fv" => "fv-header+checksum",
         b"erofs" => "superblock+root-inode",
@@ -699,6 +702,7 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<MemberExtraction> {
         | TAG_LZH
         | TAG_STUFFIT
         | TAG_INNOSETUP
+        | TAG_NSIS
         | TAG_INSTALLSHIELD
         | TAG_ENIGMA
         | TAG_APPIMAGE
@@ -786,6 +790,7 @@ fn extract_members_with_direct_policy(tag: &str, bytes: &[u8]) -> CoreResult<Mem
         TAG_LZH => crate::container::ContainerKind::Lzh,
         TAG_STUFFIT => crate::container::ContainerKind::StuffIt,
         TAG_INNOSETUP => crate::container::ContainerKind::InnoSetup,
+        TAG_NSIS => crate::container::ContainerKind::Nsis,
         TAG_INSTALLSHIELD => crate::container::ContainerKind::InstallShield,
         TAG_ENIGMA => crate::container::ContainerKind::EnigmaVirtualBox,
         TAG_APPIMAGE => crate::container::ContainerKind::AppImage,
@@ -1079,6 +1084,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if crate::containers::detect_innosetup(bytes).is_some() {
         return Some(TAG_INNOSETUP);
+    }
+    if bytes.starts_with(b"MZ") && crate::containers::nsis::parse_nsis_archive(bytes).is_ok() {
+        return Some(TAG_NSIS);
     }
     if crate::containers::detect_installshield(bytes).is_some() {
         return Some(TAG_INSTALLSHIELD);
@@ -1882,6 +1890,62 @@ mod tests {
         assert!(
             manifest.contains("requires-extraction"),
             "compressed container must defer entry listing: {manifest}"
+        );
+    }
+
+    const REAL_PE64: &[u8] = include_bytes!("../../../corpus/native/formats/hello.pe64.exe");
+
+    fn installer_with_overlay(overlay: &[u8]) -> Vec<u8> {
+        let mut installer: Vec<u8> = REAL_PE64.to_vec();
+        installer.resize(installer.len().next_multiple_of(512), 0);
+        installer.extend_from_slice(overlay);
+        installer
+    }
+
+    #[test]
+    fn a_large_nsis_installer_is_claimed_and_its_payload_extracted() {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let payload: Vec<u8> = (0..24usize << 20)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(0x5851_f42d_4c95_7f2d)
+                    .wrapping_add(0x1405_7b7e_f767_814f);
+                (state >> 56) as u8
+            })
+            .collect();
+        let installer: Vec<u8> = installer_with_overlay(&crate::containers::nsis::build_test_nsis(
+            r"$INSTDIR\app\payload.bin",
+            &payload,
+        ));
+        assert!(installer.len() > 24 << 20, "{}", installer.len());
+        let verdict: DetectVerdict = ContainerDetector
+            .detect(&ctx(&installer))
+            .expect("the chain claims the installer as a container");
+        assert_eq!(verdict.format_tag, TAG_NSIS);
+        assert_eq!(verdict.specificity, SPECIFICITY_VERIFIED_SIGNATURE);
+        let artifact: Artifact = Artifact::new(Rung::Raw, installer, [0u8; 32]);
+        let children: Vec<ChildArtifact> = CONTAINER_PASS
+            .extract_children(&artifact)
+            .expect("the installer payload extracts");
+        let members: Vec<(&str, bool)> = children
+            .iter()
+            .map(|child: &ChildArtifact| {
+                (child.handle.relative_path.as_str(), child.bytes == payload)
+            })
+            .collect();
+        assert_eq!(members, [("app/payload.bin", true)]);
+    }
+
+    #[test]
+    fn an_nsis_signature_without_a_parsable_header_is_not_claimed() {
+        let mut overlay: Vec<u8> = vec![0u8; 4];
+        overlay.extend_from_slice(&[0xEF, 0xBE, 0xAD, 0xDE]);
+        overlay.extend_from_slice(b"NullsoftInst");
+        overlay.extend_from_slice(&[0xFF; 64]);
+        assert!(
+            ContainerDetector
+                .detect(&ctx(&installer_with_overlay(&overlay)))
+                .is_none()
         );
     }
 }

@@ -77,16 +77,8 @@ pub struct NsisArchive {
 }
 
 pub fn detect_nsis(bytes: &[u8]) -> Option<NsisHeader> {
-    bytes
-        .windows(NSIS_FIRSTHEADER_MAGIC.len())
-        .enumerate()
-        .find_map(|(i, w): (usize, &[u8])| {
-            if w == NSIS_FIRSTHEADER_MAGIC {
-                read_firstheader(bytes, i)
-            } else {
-                None
-            }
-        })
+    memchr::memmem::find_iter(bytes, &NSIS_FIRSTHEADER_MAGIC)
+        .find_map(|offset: usize| read_firstheader(bytes, offset))
 }
 
 fn read_firstheader(bytes: &[u8], offset: usize) -> Option<NsisHeader> {
