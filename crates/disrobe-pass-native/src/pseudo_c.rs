@@ -47,6 +47,7 @@ mod idiom;
 mod invariant_branches;
 mod outgoing_args;
 mod return_channel;
+mod rust_dispatch;
 mod spill;
 mod stack_depth;
 mod stack_transfer;
@@ -6336,8 +6337,9 @@ pub fn recover_leaf_function_rust_abi(machine_code: &[u8], base: u64, abi: Abi) 
     let recovery: LeafRecovery = recover_leaf_function_abi(machine_code, base, abi)?;
     recovery.rust_source.ok_or_else(|| {
         Error::LlvmIr(
-            "recovered leaf is not in the pure-safe rust-emittable class (float, memory access, \
-             stack frame, struct return, or switch)"
+            "recovered leaf is not in the rust-emittable class (a struct returned through a \
+             hidden pointer, a rep movs or rep stos block move or fill, a SIMD vector value, or \
+             a loop-resume transfer)"
                 .to_owned(),
         )
     })
@@ -19186,43 +19188,6 @@ fn sanitized_import_label(name: &str) -> String {
         .collect()
 }
 
-fn block_has_slot_call(body: &Block) -> bool {
-    body.iter().any(|node: &Node| match node {
-        Node::Stmt(Stmt::Call {
-            target: CallTarget::Slot(_) | CallTarget::Register,
-            ..
-        }) => true,
-        Node::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            block_has_slot_call(then_body)
-                || else_body
-                    .as_ref()
-                    .is_some_and(|other: &Block| block_has_slot_call(other))
-        }
-        Node::DoWhile { body, .. } | Node::While { body, .. } => block_has_slot_call(body),
-        Node::Switch { cases, default, .. } => {
-            cases
-                .iter()
-                .any(|case: &SwitchCase| block_has_slot_call(&case.body))
-                || block_has_slot_call(default)
-        }
-        Node::Stmt(_)
-        | Node::CondSnapshot { .. }
-        | Node::Break
-        | Node::Continue
-        | Node::BreakLoop(_)
-        | Node::ContinueLoop(_)
-        | Node::ResumeAt(_)
-        | Node::OuterResume(_)
-        | Node::Return
-        | Node::Label(_)
-        | Node::Goto(_) => false,
-    })
-}
-
 fn call_display_name(target: u64, name: Option<&str>) -> String {
     name.map_or_else(|| format!("sub_{target:x}"), str::to_owned)
 }
@@ -26528,6 +26493,11 @@ fn fp_h_bin(left: u16, right: u16, op: u32) -> u16 {
     fp_h_to_bits(result)
 }";
 
+fn rust_refused(reason: &'static str) -> Option<String> {
+    crate::debug::dbg_kv("pseudo-rust refused", || reason.to_owned());
+    None
+}
+
 fn emit_rust(
     body: &Block,
     signature: &FnSignature,
@@ -26535,15 +26505,17 @@ fn emit_rust(
     sret: Option<&SretPlan>,
     aggregates: &AggregatePlan,
 ) -> Option<String> {
-    let collected_variables: CollectedVariables = collect_variables(body)?;
+    let Some(collected_variables): Option<CollectedVariables> = collect_variables(body) else {
+        return rust_refused("control flow nests deeper than the variable collector bound");
+    };
     if sret.is_some() {
-        return None;
+        return rust_refused("a struct returned through a hidden pointer");
     }
     if block_string_ops_present(body) {
-        return None;
+        return rust_refused("a rep movs or rep stos block move or fill");
     }
-    if block_has_vector(body) || !signature.vec.is_empty() || block_has_slot_call(body) {
-        return None;
+    if block_has_vector(body) || !signature.vec.is_empty() {
+        return rust_refused("a SIMD vector value");
     }
 
     let mut out: String = String::new();
@@ -26761,10 +26733,18 @@ fn emit_rust(
         FnReturn::Void | FnReturn::Vec(_) => String::new(),
     };
 
-    rs_emit_block(&mut out, body, 1, &ret_expr, aggregates)?;
-
-    if !matches!(body.last(), Some(Node::Return)) {
-        let _ = writeln!(out, "    {ret_expr}");
+    let structured_start: usize = out.len();
+    if rs_emit_block(&mut out, body, 1, &ret_expr, aggregates).is_some() {
+        if !matches!(body.last(), Some(Node::Return)) {
+            let _ = writeln!(out, "    {ret_expr}");
+        }
+    } else {
+        out.truncate(structured_start);
+        if rust_dispatch::rs_emit_dispatch(&mut out, body, &ret_expr, aggregates).is_none() {
+            return rust_refused(
+                "a statement or a loop-resume transfer neither the structured nor the dispatch emitter models",
+            );
+        }
     }
     let _ = writeln!(out, "}}");
     Some(out)
@@ -28014,6 +27994,23 @@ fn rs_double_shift_stmt(
     let _ = writeln!(out, "{indent}{dst} = {body};");
 }
 
+fn rs_register_list(regs: &[Reg]) -> String {
+    regs.iter()
+        .map(|r: &Reg| reg_var(*r))
+        .collect::<Vec<&str>>()
+        .join(", ")
+}
+
+fn rs_pointer_call(out: &mut String, pointer: &str, args: &[Reg], indent: &str) {
+    let parameters: String = vec!["u64"; args.len()].join(", ");
+    let _ = writeln!(
+        out,
+        "{indent}{} = unsafe {{ (core::mem::transmute::<*const (), Option<unsafe extern \"C\" fn({parameters}) -> u64>>(({pointer}) as usize as *const ()).unwrap_or_else(|| std::process::abort()))({}) }};",
+        reg_var(Reg::Rax),
+        rs_register_list(args)
+    );
+}
+
 fn rs_call_stmt(
     out: &mut String,
     target: &CallTarget,
@@ -28021,49 +28018,60 @@ fn rs_call_stmt(
     name: Option<&str>,
     indent: &str,
 ) {
-    if let CallTarget::NoreturnLibrary(exit) = target {
-        let arg_list: String = exit
-            .parameters
-            .iter()
-            .zip(args)
-            .map(|(parameter, reg): (&NoreturnParameter, &Reg)| {
-                let value: &'static str = reg_var(*reg);
-                if parameter.is_pointer() {
-                    format!("{value} as usize as {}", parameter.rust_type())
-                } else {
-                    format!("{value} as {}", parameter.rust_type())
-                }
-            })
-            .collect::<Vec<String>>()
-            .join(", ");
-        let _ = writeln!(out, "{indent}unsafe {{ {}({arg_list}) }};", exit.name);
-        return;
+    match target {
+        CallTarget::NoreturnLibrary(exit) => {
+            let arg_list: String = exit
+                .parameters
+                .iter()
+                .zip(args)
+                .map(|(parameter, reg): (&NoreturnParameter, &Reg)| {
+                    let value: &'static str = reg_var(*reg);
+                    if parameter.is_pointer() {
+                        format!("{value} as usize as {}", parameter.rust_type())
+                    } else {
+                        format!("{value} as {}", parameter.rust_type())
+                    }
+                })
+                .collect::<Vec<String>>()
+                .join(", ");
+            let _ = writeln!(out, "{indent}unsafe {{ {}({arg_list}) }};", exit.name);
+        }
+        CallTarget::RustPanicBoundsCheck => {
+            let index: &'static str = args.first().map_or("0", |reg: &Reg| reg_var(*reg));
+            let len: &'static str = args.get(1).map_or("0", |reg: &Reg| reg_var(*reg));
+            let location: &'static str = args.get(2).map_or("0", |reg: &Reg| reg_var(*reg));
+            let _ = writeln!(
+                out,
+                "{indent}unsafe {{ panic_bounds_check({index}, {len}, {location} as usize as *const u8) }};"
+            );
+        }
+        CallTarget::Address(address) => {
+            let _ = writeln!(
+                out,
+                "{indent}{} = unsafe {{ {}({}) }};",
+                reg_var(Reg::Rax),
+                call_display_name(*address, name),
+                rs_register_list(args)
+            );
+        }
+        CallTarget::Slot(slot) => {
+            let label: String = name.map_or_else(String::new, |import: &str| {
+                format!("/* import {} */ ", sanitized_import_label(import))
+            });
+            let pointer: String =
+                format!("{label}core::ptr::read_unaligned(({slot:#x}u64 as usize) as *const u64)");
+            rs_pointer_call(out, &pointer, args, indent);
+        }
+        CallTarget::Register => match args.split_first() {
+            Some((pointer, rest)) => rs_pointer_call(out, reg_var(*pointer), rest, indent),
+            None => {
+                let _ = writeln!(out, "{indent}std::process::abort();");
+            }
+        },
+        CallTarget::DirectTrap(_) => {
+            let _ = writeln!(out, "{indent}std::process::abort();");
+        }
     }
-    if matches!(target, CallTarget::RustPanicBoundsCheck) {
-        let index: &'static str = args.first().map_or("0", |reg: &Reg| reg_var(*reg));
-        let len: &'static str = args.get(1).map_or("0", |reg: &Reg| reg_var(*reg));
-        let location: &'static str = args.get(2).map_or("0", |reg: &Reg| reg_var(*reg));
-        let _ = writeln!(
-            out,
-            "{indent}unsafe {{ panic_bounds_check({index}, {len}, {location} as usize as *const u8) }};"
-        );
-        return;
-    }
-    let CallTarget::Address(address) = target else {
-        let _ = writeln!(out, "{indent}std::process::abort();");
-        return;
-    };
-    let arg_list: String = args
-        .iter()
-        .map(|r: &Reg| reg_var(*r))
-        .collect::<Vec<&str>>()
-        .join(", ");
-    let _ = writeln!(
-        out,
-        "{indent}{} = unsafe {{ {}({arg_list}) }};",
-        reg_var(Reg::Rax),
-        call_display_name(*address, name)
-    );
 }
 
 fn rs_fp_bin_stmt(
