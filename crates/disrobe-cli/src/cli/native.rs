@@ -318,6 +318,7 @@ pub(crate) fn decompile(
     devirt: bool,
     neutralize: Option<NeutralizeMode>,
 ) -> miette::Result<()> {
+    refuse_runtime_decrypted(&input)?;
     let mode: NeutralizeMode = NeutralizeMode::resolve(neutralize);
     if neutralize.is_some() || mode == NeutralizeMode::Ask {
         let bytes: Vec<u8> = std::fs::read(&input)
@@ -336,6 +337,17 @@ pub(crate) fn decompile(
         DecompileBackend::Native => decompile_native(input, out, format, devirt),
         DecompileBackend::Ghidra => decompile_ghidra(input, out, emit),
     }
+}
+
+fn refuse_runtime_decrypted(input: &Path) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0160: cannot read input: {e}"))?;
+    disrobe_pass_native::detect_runtime_decrypted(&bytes).map_or(
+        Ok(()),
+        |runtime: disrobe_pass_native::RuntimeDecryptedImage| {
+            Err(miette::miette!("DR-NATIVE-0225: {}", runtime.refusal()))
+        },
+    )
 }
 
 fn sanitize_comment_text(text: &str) -> String {
@@ -3238,20 +3250,39 @@ pub(crate) fn disasm(
         match emit {
             DisasmEmit::Asm => render_module_asm(&module),
             DisasmEmit::CfgDot => render_module_cfg_dot(&module),
-            DisasmEmit::Json => serde_json::to_string_pretty(&disasm_json(&module))
-                .map_err(|e| miette::miette!("DR-NATIVE-0143: serialize: {e}"))?,
+            DisasmEmit::Json => {
+                let out_path: PathBuf = disasm_out_path(out, &stem, emit)?;
+                write_disasm_json(&module, &out_path)?;
+                print_disasm_summary(&input, raw, emit, syntax, &out_path);
+                return Ok(());
+            }
         }
     };
 
+    let out_path: PathBuf = disasm_out_path(out, &stem, emit)?;
+    std::fs::write(&out_path, body.as_bytes())
+        .map_err(|e| miette::miette!("DR-NATIVE-0145: cannot write disasm: {e}"))?;
+    print_disasm_summary(&input, raw, emit, syntax, &out_path);
+    Ok(())
+}
+
+fn disasm_out_path(out: Option<PathBuf>, stem: &str, emit: DisasmEmit) -> miette::Result<PathBuf> {
     let out_path: PathBuf =
         out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.{}", emit.extension())));
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-NATIVE-0144: cannot create out dir: {e}"))?;
     }
-    std::fs::write(&out_path, body.as_bytes())
-        .map_err(|e| miette::miette!("DR-NATIVE-0145: cannot write disasm: {e}"))?;
+    Ok(out_path)
+}
 
+fn print_disasm_summary(
+    input: &Path,
+    raw: bool,
+    emit: DisasmEmit,
+    syntax: DisasmSyntax,
+    out_path: &Path,
+) {
     println!("native disasm: OK");
     println!("  input:        {}", input.display());
     println!("  mode:         {}", if raw { "raw" } else { "object" });
@@ -3260,7 +3291,6 @@ pub(crate) fn disasm(
         println!("  syntax:       {}", syntax.into_syntax().label());
     }
     println!("  wrote:        {}", out_path.display());
-    Ok(())
 }
 
 fn render_raw_syntax_listing(
@@ -3401,28 +3431,64 @@ fn dot_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn disasm_json(module: &disrobe_query::Module) -> serde_json::Value {
-    let functions: Vec<serde_json::Value> = module
-        .functions()
-        .iter()
-        .map(|f: &disrobe_query::Function| {
-            serde_json::json!({
-                "name": f.name,
-                "address": f.address,
-                "end": f.end,
-                "is_export": f.is_export,
-                "instruction_count": f.instruction_count(),
-                "complexity": f.cyclomatic_complexity(),
-                "instructions": f.instructions,
-                "blocks": f.basic_blocks(),
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "schema": "disrobe.native.disasm/v2",
-        "function_count": module.functions().len(),
-        "functions": functions,
-    })
+#[derive(Serialize)]
+struct DisasmJson<'a> {
+    function_count: usize,
+    functions: DisasmFunctionsJson<'a>,
+    schema: &'static str,
+}
+
+struct DisasmFunctionsJson<'a>(&'a [disrobe_query::Function]);
+
+impl Serialize for DisasmFunctionsJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq as _;
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for f in self.0 {
+            seq.serialize_element(&DisasmFunctionJson {
+                address: f.address,
+                blocks: f.basic_blocks(),
+                complexity: f.cyclomatic_complexity(),
+                end: f.end,
+                instruction_count: f.instruction_count(),
+                instructions: &f.instructions,
+                is_export: f.is_export,
+                name: &f.name,
+            })?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Serialize)]
+struct DisasmFunctionJson<'a> {
+    address: u64,
+    blocks: Vec<disrobe_query::BasicBlock>,
+    complexity: u32,
+    end: u64,
+    instruction_count: usize,
+    instructions: &'a [disrobe_query::InsnView],
+    is_export: bool,
+    name: &'a str,
+}
+
+fn write_disasm_json(module: &disrobe_query::Module, out_path: &Path) -> miette::Result<()> {
+    use std::io::Write as _;
+    let file: std::fs::File = std::fs::File::create(out_path)
+        .map_err(|e| miette::miette!("DR-NATIVE-0145: cannot write disasm: {e}"))?;
+    let mut writer: std::io::BufWriter<std::fs::File> = std::io::BufWriter::new(file);
+    serde_json::to_writer_pretty(
+        &mut writer,
+        &DisasmJson {
+            function_count: module.functions().len(),
+            functions: DisasmFunctionsJson(module.functions()),
+            schema: "disrobe.native.disasm/v2",
+        },
+    )
+    .map_err(|e| miette::miette!("DR-NATIVE-0143: serialize: {e}"))?;
+    writer
+        .flush()
+        .map_err(|e| miette::miette!("DR-NATIVE-0145: cannot write disasm: {e}"))
 }
 
 pub(crate) fn callgraph(
@@ -3748,6 +3814,8 @@ struct SymbolRow {
 struct ImportRow {
     name: String,
     library: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    delay_load: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -3771,6 +3839,60 @@ struct SegmentRow {
 struct DebugInfoSummary {
     present: bool,
     sections: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdb: Option<PdbReference>,
+}
+
+#[derive(Debug, Serialize)]
+struct PdbReference {
+    path: String,
+    guid: String,
+    age: u32,
+}
+
+const MAX_DELAY_LOAD_IMPORTS: usize = 1 << 16;
+
+fn pe_delay_load_imports<Pe: object::read::pe::ImageNtHeaders>(bytes: &[u8]) -> Vec<ImportRow> {
+    use object::LittleEndian as LE;
+    use object::read::pe::{DelayLoadImportTable, Import, PeFile};
+    let Ok(file): Result<PeFile<'_, Pe>, object::Error> = PeFile::parse(bytes) else {
+        return Vec::new();
+    };
+    let Ok(Some(table)): Result<Option<DelayLoadImportTable<'_>>, object::Error> = file
+        .data_directories()
+        .delay_load_import_table(bytes, &file.section_table())
+    else {
+        return Vec::new();
+    };
+    let Ok(mut descriptors) = table.descriptors() else {
+        return Vec::new();
+    };
+    let mut rows: Vec<ImportRow> = Vec::new();
+    while let Ok(Some(descriptor)) = descriptors.next() {
+        let library: Option<String> = table
+            .name(descriptor.dll_name_rva.get(LE))
+            .ok()
+            .map(|name: &[u8]| String::from_utf8_lossy(name).into_owned());
+        let Ok(mut thunks) = table.thunks(descriptor.import_name_table_rva.get(LE)) else {
+            continue;
+        };
+        while let Ok(Some(thunk)) = thunks.next::<Pe>() {
+            if rows.len() >= MAX_DELAY_LOAD_IMPORTS {
+                return rows;
+            }
+            let name: String = match table.import::<Pe>(thunk) {
+                Ok(Import::Name(_, name)) => String::from_utf8_lossy(name).into_owned(),
+                Ok(Import::Ordinal(ordinal)) => format!("#{ordinal}"),
+                Err(_) => continue,
+            };
+            rows.push(ImportRow {
+                name,
+                library: library.clone(),
+                delay_load: true,
+            });
+        }
+    }
+    rows
 }
 
 fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
@@ -3842,6 +3964,36 @@ fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
         });
     }
 
+    if matches!(file.format(), object::BinaryFormat::Pe)
+        && let Ok(pe_exports) = file.exports()
+    {
+        let spans: Vec<(u64, u64, String)> = file
+            .sections()
+            .filter_map(|s| {
+                let name: String = s.name().ok()?.to_owned();
+                Some((s.address(), s.address().saturating_add(s.size()), name))
+            })
+            .collect();
+        for export in pe_exports {
+            let name: String = String::from_utf8_lossy(export.name()).into_owned();
+            if name.is_empty() {
+                continue;
+            }
+            let address: u64 = export.address();
+            let section: Option<String> = spans
+                .iter()
+                .find(|(start, end, _)| (*start..*end).contains(&address))
+                .map(|(_, _, name)| name.clone());
+            exports.push(SymbolRow {
+                name,
+                address,
+                size: 0,
+                kind: "export".to_owned(),
+                section,
+            });
+        }
+    }
+
     let mut imports: Vec<ImportRow> = Vec::new();
     if let Ok(import_iter) = file.imports() {
         for imp in import_iter {
@@ -3849,8 +4001,18 @@ fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
                 name: String::from_utf8_lossy(imp.name()).into_owned(),
                 library: Some(String::from_utf8_lossy(imp.library()).into_owned())
                     .filter(|s| !s.is_empty()),
+                delay_load: false,
             });
         }
+    }
+    match &file {
+        object::File::Pe32(_) => {
+            imports.extend(pe_delay_load_imports::<object::pe::ImageNtHeaders32>(bytes));
+        }
+        object::File::Pe64(_) => {
+            imports.extend(pe_delay_load_imports::<object::pe::ImageNtHeaders64>(bytes));
+        }
+        _ => {}
     }
 
     let mut sections: Vec<SectionRow> = Vec::new();
@@ -3887,9 +4049,31 @@ fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
         });
     }
 
+    let pdb: Option<PdbReference> = file.pdb_info().ok().flatten().map(|info| {
+        let g: [u8; 16] = info.guid();
+        PdbReference {
+            path: String::from_utf8_lossy(info.path()).into_owned(),
+            guid: format!(
+                "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+                u32::from_le_bytes([g[0], g[1], g[2], g[3]]),
+                u16::from_le_bytes([g[4], g[5]]),
+                u16::from_le_bytes([g[6], g[7]]),
+                g[8],
+                g[9],
+                g[10],
+                g[11],
+                g[12],
+                g[13],
+                g[14],
+                g[15]
+            ),
+            age: info.age(),
+        }
+    });
     let debug_info: DebugInfoSummary = DebugInfoSummary {
         present: !debug_sections.is_empty(),
         sections: debug_sections,
+        pdb,
     };
 
     let cxx_rtti: Option<CxxRttiSummary> = recover_cxx_rtti_summary(bytes);
@@ -3942,6 +4126,7 @@ fn dump_ne_symbols(native: disrobe_binfmt::NativeFile, input: &Path) -> SymbolDu
         .map(|import: disrobe_binfmt::ImportInfo| ImportRow {
             name: import.name,
             library: Some(import.library),
+            delay_load: false,
         })
         .collect();
     let sections: Vec<SectionRow> = native
@@ -3987,6 +4172,7 @@ fn dump_ne_symbols(native: disrobe_binfmt::NativeFile, input: &Path) -> SymbolDu
         debug_info: DebugInfoSummary {
             present: native.debug_info_present,
             sections: Vec::new(),
+            pdb: None,
         },
         cxx_rtti: None,
     }

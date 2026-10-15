@@ -400,6 +400,9 @@ mod native_pdb_cxx_headers;
 #[path = "../native_pdb_provenance.rs"]
 mod native_pdb_provenance;
 
+#[path = "../native_pe_surface.rs"]
+mod native_pe_surface;
+
 #[path = "../native_perfunction_coverage.rs"]
 mod native_perfunction_coverage;
 
