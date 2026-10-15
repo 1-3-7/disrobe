@@ -158,37 +158,63 @@ impl Pass for MobilePassAdapter {
 const IPA_NIB_CHILDREN_MAX: usize = 4096;
 const IPA_NIB_BYTES_MAX: usize = 256 * 1024 * 1024;
 const NIB_MAGIC: &[u8] = b"NIBArchive";
+const ASSET_CATALOG_MAGIC: &[u8] = b"BOMStore";
+const ASSET_CATALOG_NAME: &str = "Assets.car";
 
 fn ipa_interface_children(bytes: &[u8]) -> crate::error::Result<Vec<ChildArtifact>> {
     let mut archive: zip::ZipArchive<std::io::Cursor<&[u8]>> =
         zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let count: usize = crate::checked_zip_entry_count(archive.len())?;
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut entries: Vec<(String, Vec<u8>, &'static str)> = Vec::new();
     let mut total: usize = 0;
     for index in 0..count {
         let file: zip::read::ZipFile<'_> = archive.by_index(index)?;
         let name: String = file.name().to_owned();
-        if !file.is_file() || !name.starts_with("Payload/") || !name.ends_with(".nib") {
+        let catalog: bool = name.rsplit('/').next() == Some(ASSET_CATALOG_NAME);
+        if !file.is_file() || !name.starts_with("Payload/") || !(name.ends_with(".nib") || catalog)
+        {
             continue;
         }
         if entries.len() >= IPA_NIB_CHILDREN_MAX {
             return Err(crate::error::Error::Zip(format!(
-                "ipa holds more than {IPA_NIB_CHILDREN_MAX} compiled NIBs"
+                "ipa holds more than {IPA_NIB_CHILDREN_MAX} compiled NIBs and asset catalogs"
             )));
         }
         let data: Vec<u8> = crate::read_zip_file_bounded(file, &name)?;
-        if !data.starts_with(NIB_MAGIC) {
-            continue;
-        }
+        let hint: &'static str = if catalog {
+            if !data.starts_with(ASSET_CATALOG_MAGIC) {
+                continue;
+            }
+            "apple-asset-catalog"
+        } else {
+            if !data.starts_with(NIB_MAGIC) {
+                continue;
+            }
+            "apple-nib"
+        };
         total = total.saturating_add(data.len());
         if total > IPA_NIB_BYTES_MAX {
             return Err(crate::error::Error::Zip(format!(
-                "ipa compiled NIBs exceed {IPA_NIB_BYTES_MAX} bytes"
+                "ipa compiled NIBs and asset catalogs exceed {IPA_NIB_BYTES_MAX} bytes"
             )));
         }
-        entries.push((name, data));
+        entries.push((name, data, hint));
     }
-    Ok(to_children(entries, "apple-nib"))
+    Ok(entries
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (name, data, hint)): (usize, (String, Vec<u8>, &'static str))| ChildArtifact {
+                handle: ChildHandle {
+                    artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
+                    relative_path: name,
+                    hint: Some(hint.to_owned()),
+                    materialization: disrobe_core::chain::ChildMaterialization::default(),
+                },
+                bytes: data,
+            },
+        )
+        .collect())
 }
 
 pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
