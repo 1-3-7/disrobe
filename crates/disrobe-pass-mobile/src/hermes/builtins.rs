@@ -505,11 +505,6 @@ pub fn builtin_name(version: u32, id: u64) -> String {
     format!("$builtin{id}")
 }
 
-#[must_use]
-pub fn is_template_object_builtin(version: u32, id: u64) -> bool {
-    get_template_object_builtin(version) == Some(id)
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -638,7 +633,10 @@ mod tests {
             let version: u32 = table.version;
             let id: u64 = get_template_object_builtin(version)
                 .unwrap_or_else(|| panic!("hbc v{version} states its template-object builtin id"));
-            assert!(is_template_object_builtin(version, id), "hbc v{version}");
+            assert!(
+                get_template_object_builtin(version) == Some(id),
+                "hbc v{version}"
+            );
             match table
                 .methods
                 .iter()
@@ -684,16 +682,16 @@ mod tests {
         );
 
         assert!(
-            !is_template_object_builtin(76, 39),
+            get_template_object_builtin(76) != Some(39),
             "id 39 is String.fromCharCode at hbc v76, so reading it as the template-object builtin \
              would rewrite an ordinary call into a template literal"
         );
         assert!(
-            !is_template_object_builtin(96, 42),
+            get_template_object_builtin(96) != Some(42),
             "id 42 is not the template-object builtin at hbc v96"
         );
         assert!(
-            !is_template_object_builtin(62, 42),
+            get_template_object_builtin(62) != Some(42),
             "id 42 is past the end of the hbc v62 method table and is not its template-object \
              builtin either"
         );
@@ -703,7 +701,7 @@ mod tests {
     fn an_unknown_builtin_states_its_number_rather_than_guessing_a_name() {
         for version in HERMES_LIFTED_VERSIONS {
             assert_eq!(builtin_name(version, 200), "$builtin200");
-            assert!(!is_template_object_builtin(version, 200));
+            assert!(get_template_object_builtin(version) != Some(200));
         }
     }
 
@@ -717,7 +715,10 @@ mod tests {
                 "hbc v{absent} has no builtin table, so id 1 must stay a number rather than borrow \
                  a name from a release whose numbering may differ"
             );
-            assert!(!is_template_object_builtin(absent, 39), "hbc v{absent}");
+            assert!(
+                get_template_object_builtin(absent) != Some(39),
+                "hbc v{absent}"
+            );
             assert_eq!(get_template_object_builtin(absent), None);
         }
     }

@@ -19,14 +19,14 @@ pub mod structure;
 
 pub use assets::react_native_assets;
 pub use bigint::bigint_literal;
-pub use builtins::{builtin_name, get_template_object_builtin, is_template_object_builtin};
+pub use builtins::{builtin_name, get_template_object_builtin};
 pub use decompile::{
     DeclineCount, DecompileReport, DecompiledFunction, OpcodeCount, decompile_function,
     decompile_functions, decompile_module, decompile_module_with,
     disassemble_function_instructions,
 };
 pub use lift::MetroModule;
-pub use literals::{BufferKind, LiteralFormat, LiteralValue, decode_literals, decode_literals_in};
+pub use literals::{BufferKind, LiteralFormat, LiteralValue, decode_literals_in};
 pub use regex::{RecoveredRegExp, recover_regexp, recover_regexps};
 pub use structure::{StructureDecline, Structuring};
 

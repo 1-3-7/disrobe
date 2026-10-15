@@ -48,16 +48,6 @@ impl LiteralFormat {
 }
 
 #[must_use]
-pub fn decode_literals(
-    buffer: &[u8],
-    start: usize,
-    count: usize,
-    kind: BufferKind,
-) -> Vec<LiteralValue> {
-    decode_literals_in(LiteralFormat::ByteStrings, buffer, start, count, kind)
-}
-
-#[must_use]
 pub fn decode_literals_in(
     format: LiteralFormat,
     buffer: &[u8],
@@ -228,7 +218,8 @@ mod tests {
     fn decode_short_string_keys() {
         let mut buf: Vec<u8> = Vec::new();
         put_short_string_run(&mut buf, &[3, 7]);
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 2, BufferKind::Key);
+        let out: Vec<LiteralValue> =
+            decode_literals_in(LiteralFormat::ByteStrings, &buf, 0, 2, BufferKind::Key);
         assert_eq!(
             out,
             vec![LiteralValue::StringId(3), LiteralValue::StringId(7)]
@@ -242,7 +233,8 @@ mod tests {
         put_integer_run(&mut buf, &[42]);
         buf.push(TAG_TRUE | 1);
         buf.push(TAG_NULL_OR_PRIVATE_NAME | 1);
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 5, BufferKind::Value);
+        let out: Vec<LiteralValue> =
+            decode_literals_in(LiteralFormat::ByteStrings, &buf, 0, 5, BufferKind::Value);
         assert_eq!(
             out,
             vec![
@@ -284,7 +276,8 @@ mod tests {
     #[test]
     fn byte_string_tag_reads_a_one_byte_string_index() {
         let buf: Vec<u8> = vec![TAG_BYTE_STRING_OR_UNDEFINED | 3, 24, 25, 26];
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 3, BufferKind::Key);
+        let out: Vec<LiteralValue> =
+            decode_literals_in(LiteralFormat::ByteStrings, &buf, 0, 3, BufferKind::Key);
         assert_eq!(
             out,
             vec![
@@ -301,7 +294,8 @@ mod tests {
     #[test]
     fn null_tag_is_private_name_in_key_buffer() {
         let buf: Vec<u8> = vec![TAG_NULL_OR_PRIVATE_NAME | 1];
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 1, BufferKind::Key);
+        let out: Vec<LiteralValue> =
+            decode_literals_in(LiteralFormat::ByteStrings, &buf, 0, 1, BufferKind::Key);
         assert_eq!(out, vec![LiteralValue::PrivateName]);
     }
 
@@ -314,7 +308,13 @@ mod tests {
         for i in 0..count {
             buf.extend_from_slice(&(i as i32).to_le_bytes());
         }
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, count, BufferKind::Value);
+        let out: Vec<LiteralValue> = decode_literals_in(
+            LiteralFormat::ByteStrings,
+            &buf,
+            0,
+            count,
+            BufferKind::Value,
+        );
         assert_eq!(out.len(), count);
         assert_eq!(out[19], LiteralValue::Integer(19));
     }
@@ -323,7 +323,8 @@ mod tests {
     fn count_smaller_than_run_stops_early() {
         let mut buf: Vec<u8> = Vec::new();
         put_integer_run(&mut buf, &[1, 2, 3, 4, 5]);
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 2, BufferKind::Value);
+        let out: Vec<LiteralValue> =
+            decode_literals_in(LiteralFormat::ByteStrings, &buf, 0, 2, BufferKind::Value);
         assert_eq!(
             out,
             vec![LiteralValue::Integer(1), LiteralValue::Integer(2)]
@@ -336,14 +337,21 @@ mod tests {
         buf.push(TAG_NUMBER | 2);
         buf.extend_from_slice(&1.0f64.to_le_bytes());
         buf.extend_from_slice(&[0u8; 3]);
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 2, BufferKind::Value);
+        let out: Vec<LiteralValue> =
+            decode_literals_in(LiteralFormat::ByteStrings, &buf, 0, 2, BufferKind::Value);
         assert_eq!(out, vec![LiteralValue::Number(1.0)]);
     }
 
     #[test]
     fn forged_count_is_bounded() {
         let buf: Vec<u8> = vec![TAG_TRUE | 0x0f; 4];
-        let out: Vec<LiteralValue> = decode_literals(&buf, 0, usize::MAX, BufferKind::Value);
+        let out: Vec<LiteralValue> = decode_literals_in(
+            LiteralFormat::ByteStrings,
+            &buf,
+            0,
+            usize::MAX,
+            BufferKind::Value,
+        );
         assert!(out.len() <= MAX_DECODED_LITERALS);
     }
 
