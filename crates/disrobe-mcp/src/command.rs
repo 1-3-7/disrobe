@@ -113,6 +113,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "native export",
     "native fingerprint",
     "native graph",
+    "native hardening",
     "native identify",
     "native match",
     "native pdb",

@@ -52,6 +52,8 @@ use cli::globals::{self, Globals, ProgressMode};
 use cli::go::{self, GoCmd};
 #[cfg(feature = "auto")]
 use cli::guard;
+#[cfg(feature = "native")]
+use cli::hardening;
 #[cfg(feature = "mobile")]
 use cli::hermes::{self, HermesCmd};
 #[cfg(feature = "native")]
@@ -1471,6 +1473,13 @@ enum NativeCmd {
         out: Option<PathBuf>,
     },
     #[command(
+        about = "report the exploit mitigations an ELF, PE or Mach-O image requests (NX, PIE, RELRO, stack canary, FORTIFY, CET, CFG, XFG, SafeSEH, /GS, code signing, hardened runtime), each verdict citing the header field or import that decided it"
+    )]
+    Hardening {
+        #[arg(help = "input native binary (ELF, PE, Mach-O or universal Mach-O)")]
+        input: PathBuf,
+    },
+    #[command(
         about = "detect the runtime packer and unpack it (UPX/Petite/NSPack/MEW/FSG/MPRESS) to recovered bytes"
     )]
     Unpack {
@@ -2115,6 +2124,7 @@ fn main() -> miette::Result<()> {
             ),
             NativeCmd::Symbols { input, out } => native::symbols(input, out),
             NativeCmd::Identify { input, out } => native::identify(input, out),
+            NativeCmd::Hardening { input } => hardening::run(input, fmt),
             NativeCmd::Unpack { input, out, list } => native::unpack(input, out, list),
             NativeCmd::Devirt { input, out } => native::devirt(input, out),
             NativeCmd::Export { input, out, format } => native::export(input, out, format),

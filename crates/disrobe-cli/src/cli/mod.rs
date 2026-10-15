@@ -81,6 +81,8 @@ pub(crate) mod go;
 pub(crate) mod grpc;
 #[cfg(feature = "auto")]
 pub(crate) mod guard;
+#[cfg(feature = "native")]
+pub(crate) mod hardening;
 #[cfg(feature = "mobile")]
 pub(crate) mod hermes;
 #[cfg(feature = "native")]
