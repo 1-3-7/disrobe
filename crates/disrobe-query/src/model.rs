@@ -18,6 +18,21 @@ struct FunctionSymbol<'a> {
     is_export: bool,
 }
 
+fn disasm_symbols_by_addr(symbol_table: &[DisasmSymbol]) -> IndexMap<u64, SymbolRef> {
+    symbol_table
+        .iter()
+        .map(|s: &DisasmSymbol| {
+            (
+                s.address,
+                SymbolRef {
+                    name: s.name.clone(),
+                    kind: SymbolKind::from_disasm(s.kind),
+                },
+            )
+        })
+        .collect()
+}
+
 fn disasm_function_symbols(symbol_table: &[DisasmSymbol]) -> Vec<FunctionSymbol<'_>> {
     let mut symbols: Vec<FunctionSymbol<'_>> = symbol_table
         .iter()
@@ -41,6 +56,37 @@ fn disasm_function_symbols(symbol_table: &[DisasmSymbol]) -> Vec<FunctionSymbol<
         }
     }
     grouped
+}
+
+struct FunctionSpan {
+    start: u64,
+    end: u64,
+    lo: usize,
+    hi: usize,
+}
+
+fn function_spans(
+    symbols: &[FunctionSymbol<'_>],
+    sorted_offsets: &[u64],
+    last_end: u64,
+) -> Vec<FunctionSpan> {
+    symbols
+        .iter()
+        .enumerate()
+        .map(|(idx, sym): (usize, &FunctionSymbol<'_>)| {
+            let start: u64 = sym.address;
+            let end: u64 = symbols
+                .get(idx + 1)
+                .map_or(last_end, |next: &FunctionSymbol<'_>| next.address);
+            let lo: usize = sorted_offsets.partition_point(|offset: &u64| *offset < start);
+            let hi: usize = if end > start {
+                sorted_offsets.partition_point(|offset: &u64| *offset < end)
+            } else {
+                sorted_offsets.partition_point(|offset: &u64| *offset <= start)
+            };
+            FunctionSpan { start, end, lo, hi }
+        })
+        .collect()
 }
 
 fn instruction_end(offset: u64, byte_len: usize) -> u64 {
@@ -252,6 +298,41 @@ impl InsnView {
             isa: IsaView::from_disasm(insn),
             stack_effect: StackEffectView::from_disasm(insn),
             segments: InsnSegmentsView::from_disasm(insn),
+        }
+    }
+
+    fn from_owned_disasm(
+        insn: DisasmInstruction,
+        lang: SourceLang,
+        context: &EffectContext,
+    ) -> Self {
+        let nir: NirInstr = crate::lift::lift_instruction(&insn, lang);
+        let effects: EffectRow = derive_effect_row(&nir, context);
+        let class: InsnClass = InsnClass::from_flow(insn.flow);
+        let stack_effect: StackEffectView = StackEffectView::from_disasm(&insn);
+        let segments: InsnSegmentsView = InsnSegmentsView::from_disasm(&insn);
+        let DisasmInstruction {
+            offset,
+            mnemonic,
+            operands,
+            branch_target,
+            isa,
+            ..
+        } = insn;
+        Self {
+            offset,
+            mnemonic,
+            operands,
+            class,
+            branch_target,
+            switch_targets: Vec::new(),
+            effects,
+            isa: IsaView {
+                encoding: isa.encoding.label(),
+                cpuid_features: isa.cpuid_features,
+            },
+            stack_effect,
+            segments,
         }
     }
 
@@ -667,6 +748,10 @@ impl Module {
 
         let mut sorted_insns: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
         sorted_insns.sort_by_key(|i: &&DisasmInstruction| i.offset);
+        let sorted_offsets: Vec<u64> = sorted_insns
+            .iter()
+            .map(|i: &&DisasmInstruction| i.offset)
+            .collect();
 
         let last_end: u64 = sorted_insns.last().map_or(0, |i: &&DisasmInstruction| {
             instruction_end(i.offset, i.bytes.len())
@@ -675,52 +760,78 @@ impl Module {
         let functions: Vec<Function> = canonicalize_functions(
             function_symbols
                 .iter()
-                .enumerate()
-                .map(|(idx, sym): (usize, &FunctionSymbol<'_>)| {
-                    let start: u64 = sym.address;
-                    let end: u64 = function_symbols
-                        .get(idx + 1)
-                        .map_or(last_end, |next: &FunctionSymbol<'_>| next.address);
-                    let lo: usize =
-                        sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < start);
-                    let hi: usize = if end > start {
-                        sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < end)
-                    } else {
-                        sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset <= start)
-                    };
-                    let instructions: Vec<InsnView> = sorted_insns[lo..hi]
-                        .iter()
-                        .map(|i: &&DisasmInstruction| InsnView::from_disasm(i, lang, &context))
-                        .collect();
-                    Function {
+                .zip(function_spans(&function_symbols, &sorted_offsets, last_end))
+                .map(
+                    |(sym, span): (&FunctionSymbol<'_>, FunctionSpan)| Function {
                         name: sym.name.to_owned(),
-                        address: start,
-                        end,
+                        address: span.start,
+                        end: span.end,
                         is_export: sym.is_export,
-                        instructions,
-                    }
-                })
-                .collect(),
-        );
-
-        let symbols_by_addr: IndexMap<u64, SymbolRef> = payload
-            .symbol_table
-            .iter()
-            .map(|s: &DisasmSymbol| {
-                (
-                    s.address,
-                    SymbolRef {
-                        name: s.name.clone(),
-                        kind: SymbolKind::from_disasm(s.kind),
+                        instructions: sorted_insns[span.lo..span.hi]
+                            .iter()
+                            .map(|i: &&DisasmInstruction| InsnView::from_disasm(i, lang, &context))
+                            .collect(),
                     },
                 )
-            })
-            .collect();
+                .collect(),
+        );
 
         Self {
             source_hash: payload.source_hash,
             functions,
-            symbols_by_addr,
+            symbols_by_addr: disasm_symbols_by_addr(&payload.symbol_table),
+        }
+    }
+
+    #[must_use]
+    pub fn from_owned_disasm(payload: DisasmPayload) -> Self {
+        let context: EffectContext = EffectContext::new();
+        let DisasmPayload {
+            source_hash,
+            mut instructions,
+            symbol_table,
+        } = payload;
+        let function_symbols: Vec<FunctionSymbol<'_>> = disasm_function_symbols(&symbol_table);
+        instructions.sort_by_key(|i: &DisasmInstruction| i.offset);
+        let sorted_offsets: Vec<u64> = instructions
+            .iter()
+            .map(|i: &DisasmInstruction| i.offset)
+            .collect();
+        let last_end: u64 = instructions.last().map_or(0, |i: &DisasmInstruction| {
+            instruction_end(i.offset, i.bytes.len())
+        });
+        let spans: Vec<FunctionSpan> = function_spans(&function_symbols, &sorted_offsets, last_end);
+        drop(sorted_offsets);
+
+        let mut remaining: std::vec::IntoIter<DisasmInstruction> = instructions.into_iter();
+        let mut position: usize = 0;
+        let mut functions: Vec<Function> = Vec::with_capacity(spans.len());
+        for (sym, span) in function_symbols.iter().zip(spans) {
+            while position < span.lo && remaining.next().is_some() {
+                position += 1;
+            }
+            let views: Vec<InsnView> = remaining
+                .by_ref()
+                .take(span.hi.saturating_sub(position))
+                .map(|i: DisasmInstruction| {
+                    InsnView::from_owned_disasm(i, SourceLang::Unknown, &context)
+                })
+                .collect();
+            position += views.len();
+            functions.push(Function {
+                name: sym.name.to_owned(),
+                address: span.start,
+                end: span.end,
+                is_export: sym.is_export,
+                instructions: views,
+            });
+        }
+        drop(remaining);
+
+        Self {
+            source_hash,
+            functions: canonicalize_functions(functions),
+            symbols_by_addr: disasm_symbols_by_addr(&symbol_table),
         }
     }
 
