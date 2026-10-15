@@ -3,7 +3,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::run_disrobe;
+use common::{run_disrobe, temp_dir};
 
 fn flutter_corpus(relative: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -80,4 +80,35 @@ fn disrobe_flutter_identity_refuses_a_non_library_by_name() {
         .collect();
     assert!(flat.contains("DR-CLI-0779"), "{}", run.stderr);
     assert!(flat.contains("DR-MOB-0065"), "{}", run.stderr);
+}
+
+#[test]
+fn mobile_extract_records_the_flutter_identity_in_its_manifest() {
+    let oracle: serde_json::Value = oracle();
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("mobile-extract-flutter");
+    let out: PathBuf = scratch.path().join("out");
+    let run: common::Run = run_disrobe(&[
+        "mobile",
+        "extract",
+        &flutter_corpus("pinned_graph_fixture/receipt_validator_arm64.so"),
+        "--out",
+        out.to_str().expect("utf8 path"),
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("manifest.json")).expect("manifest"))
+            .expect("manifest json");
+    assert_eq!(
+        manifest["identity"]["snapshot_hash"],
+        oracle["snapshot_compatibility_hash"]
+    );
+    assert!(manifest["identity_error"].is_null(), "{manifest}");
+    assert!(
+        run.stdout.contains(&format!(
+            "dart sdk:     3.12.1, {}",
+            oracle["dart_version"].as_str().expect("version")
+        )),
+        "{}",
+        run.stdout
+    );
 }

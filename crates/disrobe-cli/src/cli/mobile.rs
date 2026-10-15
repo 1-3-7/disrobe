@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 use disrobe_core::{ReconConfig, Redactor, recon_report_bytes};
 
+use disrobe_pass_mobile::flutter::{FlutterIdentityReport, flutter_identity};
 use disrobe_pass_mobile::{
     ApkReconReport, DetectedKind, DisassemblyReport, FlutterApkLayout, HermesModule, JsLiftReport,
     LibAppLayout, NativeLibrary, NativeScriptReport, ProtectorWall, RnExtractionReport,
@@ -251,6 +252,11 @@ fn extract_flutter(input: &Path, bytes: &[u8], out_dir: &Path, label: &str) -> m
             .map_err(|e| miette::miette!("DR-CLI-0826: flutter apk parse: {e}"))?;
         (apk.libapp_path, apk.layout)
     };
+    let (identity, identity_error): (Option<FlutterIdentityReport>, Option<String>) =
+        match flutter_identity(bytes) {
+            Ok(report) => (Some(report), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.mobile.extract/v1",
@@ -258,6 +264,8 @@ fn extract_flutter(input: &Path, bytes: &[u8], out_dir: &Path, label: &str) -> m
         "input": input.display().to_string(),
         "libapp_path": libapp_path,
         "layout": layout,
+        "identity": identity,
+        "identity_error": identity_error,
     });
     write_json(&manifest_path, &manifest)?;
     let recovered: usize = [
@@ -274,6 +282,18 @@ fn extract_flutter(input: &Path, bytes: &[u8], out_dir: &Path, label: &str) -> m
     println!("  framework:    {label}");
     println!("  libapp.so:    {libapp_path}");
     println!("  dart symbols: {recovered}/4 recovered");
+    if let Some(report) = &identity {
+        let versions: Vec<&str> = report
+            .dart_sdk_releases
+            .iter()
+            .map(|release| release.dart_version.as_str())
+            .collect();
+        if versions.is_empty() {
+            println!("  dart sdk:     not a stable release in the bundled table");
+        } else {
+            println!("  dart sdk:     {}", versions.join(", "));
+        }
+    }
     println!("  manifest:     {}", manifest_path.display());
     Ok(())
 }
