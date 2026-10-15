@@ -59,7 +59,8 @@ disrobe scan firmware.bin --sarif > findings.sarif
 | JVM, .NET, and mobile | `jvm`, `apk`, `dotnet`, `hermes`, `flutter`, `mobile` | [JVM and Android](../languages/jvm-android.md), [.NET](../languages/dotnet.md), [mobile](../languages/mobile.md) |
 | Script and bytecode languages | `lua`, `php`, `shell`, `ruby`, `beam`, `pickle` | [Lua](../languages/lua.md), [PHP](../languages/php.md), [shell](../languages/shell.md), [Ruby](../languages/ruby.md), [BEAM](../languages/beam.md), [pickle](../languages/pickle.md) |
 | Structured artifacts and query | `envelope`, `verify`, `query`, `yara`, `annot`, `rename` | [envelopes](../envelope.md), [query](../query.md) |
-| Project tooling and service | `serve`, `plugin`, `init`, `config`, `passes`, `doctor`, `install`, `install-deps`, `self-update`, `completions`, `man`, `explain`, `bug-report` | [service](./serve.md), [config](./config.md), [plugins](./plugin.md), [LLM sidecar](../llm-sidecar.md) |
+| Data and crash forensics | `sqlite`, `capture`, `crash`, `resources`, `electron` | [SQLite](../languages/sqlite.md), [captures](../languages/captures.md), [crash records](../languages/crashes.md), [PE resources](../languages/pe-resources.md), [Electron](../languages/electron.md) |
+| Project tooling and service | `serve`, `mcp`, `agent`, `plugin`, `init`, `config`, `passes`, `doctor`, `install`, `install-deps`, `self-update`, `completions`, `man`, `explain`, `bug-report` | [service](./serve.md), [config](./config.md), [plugins](./plugin.md), [LLM sidecar](../llm-sidecar.md) |
 | Public collection | `prowl` | [forensics safety](../forensics-safety.md) |
 
 ## Public integrations
@@ -68,7 +69,8 @@ disrobe scan firmware.bin --sarif > findings.sarif
 |---|---|---|
 | Rust library | core types and the pass registry | [Library APIs](../library.md) |
 | Python bindings | `import disrobe` | [Python bindings](../python-bindings.md) |
-| MCP over stdio | `disrobe-mcp` or `disrobe serve --mcp` | [MCP](../integrations/mcp.md) |
+| MCP over stdio | `disrobe mcp [--root <dir>]...` (also `disrobe-mcp`) | [MCP](../integrations/mcp.md) |
+| Agent registration | `disrobe agent setup\|status\|remove` | [agent setup](../integrations/agents.md) |
 | HTTP, gRPC, and LSP | `disrobe serve` | [service](./serve.md) |
 | GitHub Action | `action.yml` | [GitHub Action](../integrations/github-action.md) |
 | Editor plugins | VS Code, IDA, Ghidra, Binary Ninja | [editor plugins](../integrations/editor-plugins.md) |
@@ -124,6 +126,7 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | `disrobe dotnet analyze <dll>` | PE/CLR metadata, protector detection, R2R + NativeAOT probe. |
 | `disrobe dotnet native-aot <image>` | Recover NativeAOT names, types, method boundaries and managed signatures. Takes a PE, ELF or Mach-O image, not a managed assembly. |
 | `disrobe dotnet backends` | Report .NET backends on PATH. |
+| `disrobe dotnet interop <dll\|exe>` | List the boundaries a .NET assembly crosses into native code: P/Invoke and COM imports with their DLLs, entry points and marshalling, and unmanaged exports. |
 
 ## Native
 
@@ -166,9 +169,12 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | `disrobe pickle disasm\|decompile\|safety\|trace\|polyglot\|ml-detect <input>` | Pickle static analysis suite. |
 | `disrobe swift classdump\|shield-undo\|xor-decrypt <input>` | Swift/ObjC class-dump, SwiftShield mapping parser, explicit-key XOR blob decode. |
 | `disrobe macho dump\|classdump\|fat <input>` | Mach-O dump including `.ipa`; raw thin/fat Mach-O class-dump and slice inspection. |
+| `disrobe macho keyed-archive <plist>` | Decode an `NSKeyedArchiver` archive into its object graph. |
+| `disrobe macho nib <nib>` | Decode a compiled NIB: objects, outlet and action connections, custom classes and strings. |
 | `disrobe as3 disasm\|tags <swf>` | AS3 DoABC disasm / SWF tag list. |
 | `disrobe hermes decompile\|disasm\|info <bundle>` | Hermes JS-surface lift / disasm / header. |
 | `disrobe flutter dump\|decompile\|kernel\|disasm\|map\|inventory\|inventory-standalone <input>` | Flutter Dart AOT + kernel inspection. `flutter dump --format ghidra\|ida\|json` emits recovered function names through the shared symbol exporter. `--engine-symbol-map <path>` adds externally supplied engine names only after the map's GNU build ID and bounded addresses match the ELF input. `inventory` and `inventory-standalone` recover the full library/class/method/field declaration graph on a pinned Dart snapshot version. |
+| `disrobe flutter identity <apk\|aab\|ipa\|library>` | Name the Dart SDK and Flutter release behind a build from its snapshot hash and engine strings, with per-ABI digests and build IDs. |
 | `disrobe mobile detect\|extract\|hermes\|flutter\|recon <input>` | Mobile runtime pipeline. |
 
 ## Chain, envelope, and forensics
@@ -222,6 +228,13 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | `disrobe install <tool> [--list] [-y] [--dry-run]` | Install one optional tool via the native package manager. |
 | `disrobe install-deps [<dep>] [--all] [--dry-run]` | Install heavyweight deps (Ghidra) from upstream releases. |
 | `disrobe serve [--bind <ADDR>] [--stdio\|--mcp\|--grpc]` | Run the daemon. See [the daemon](./serve.md). |
+| `disrobe mcp [--root <dir>]...` | Serve the MCP tools over stdio for a coding agent, with the read-only command line reachable through `run_command`. See [MCP](../integrations/mcp.md). |
+| `disrobe agent setup\|status\|remove [agent]` | Register `disrobe mcp` and the investigation skill with Claude Code, Codex, Cursor, Gemini CLI, VS Code and other agents, after showing the diff. See [agent setup](../integrations/agents.md). |
+| `disrobe sqlite <db>` | Read a SQLite database's schema and live rows, and recover deleted rows from free pages and freeblocks. See [SQLite](../languages/sqlite.md). |
+| `disrobe capture <pcap\|pcapng\|har\|saz>` | Summarize a network capture: endpoints, flows, DNS, TLS names, HTTP requests and bodies (`--extract <dir>`). See [captures](../languages/captures.md). |
+| `disrobe crash <dmp\|core>` | Triage a minidump or ELF core: fault, signal, threads with their modules, mapped files. See [crash records](../languages/crashes.md). |
+| `disrobe resources <pe>` | List and decode a PE image's resources (`--extract <dir>`). See [PE resources](../languages/pe-resources.md). |
+| `disrobe electron <exe\|app>` | Read an Electron build's fuses and ASAR integrity. See [Electron](../languages/electron.md). |
 | `disrobe completions <shell> [--install] [--rc-file <PATH>]` | Generate shell completions (bash, zsh, fish, PowerShell, elvish). |
 | `disrobe man [--out <dir>]` | Generate man pages (one `.1` per subcommand). |
 | `disrobe bug-report [--out <PATH\|->]` | Collect environment, manifests, and tooling versions into a markdown bug report. |
