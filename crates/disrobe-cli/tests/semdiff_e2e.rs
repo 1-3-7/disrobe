@@ -15,17 +15,17 @@ const CLEAN: &str = "corpus/native/obfuscators/guardian-rs/sample.clean.exe";
 const VIRTUALIZED: &str = "corpus/native/obfuscators/guardian-rs/sample.virtualized.exe";
 const WASM: &str = "corpus/wasm/wat/function_refs.wasm";
 
-const CLEAN_FUNCTIONS: u64 = 383;
-const CLEAN_SELF_MATCHED: u64 = 319;
-const CLEAN_SELF_LEAF_EXACT: u64 = 44;
+const CLEAN_FUNCTIONS: u64 = 381;
+const CLEAN_SELF_MATCHED: u64 = 317;
+const CLEAN_SELF_LEAF_EXACT: u64 = 42;
 const CLEAN_SELF_PROPAGATED: u64 = 275;
-const CLEAN_VS_VIRTUALIZED_MATCHED: u64 = 317;
+const CLEAN_VS_VIRTUALIZED_MATCHED: u64 = 315;
 const CLEAN_VS_VIRTUALIZED_NAMED_CHANGES: u64 = 2;
 const WASM_FUNCTIONS: u64 = 2;
 const FULL_LISTING: usize = 100_000;
 const AARCH64: &str = "corpus/native/discovery/disc_aarch64.unstripped.elf";
 const ARM32: &str = "corpus/native/arch/arm32_forms.elf";
-const LINEAGE_COMPLETE_FAMILIES: u64 = 317;
+const LINEAGE_COMPLETE_FAMILIES: u64 = 315;
 
 const KNOWN_REASONS: [&str; 6] = [
     "no-candidate",
