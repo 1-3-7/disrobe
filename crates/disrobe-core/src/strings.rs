@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD as B64_STANDARD, STANDARD_NO_PAD as B64_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -11,6 +9,7 @@ const XOR_MIN_PRINTABLE_RATIO: f64 = 0.95;
 const XOR_MIN_DICT_HITS: usize = 2;
 const XOR_MIN_RUN_LEN: usize = 6;
 const MAX_DECODE_RECURSE_LEN: usize = 1 << 16;
+const XOR_HISTOGRAM_MIN_RUN: usize = 1024;
 
 #[must_use]
 pub fn head(text: &str, max_bytes: usize) -> &str {
@@ -156,70 +155,64 @@ fn extract_utf16le(bytes: &[u8], min_len: usize, out: &mut Vec<ExtractedString>)
     }
 }
 
-fn dictionary() -> &'static BTreeSet<&'static str> {
-    use std::sync::LazyLock;
-    static DICT: LazyLock<BTreeSet<&'static str>> = LazyLock::new(|| {
-        [
-            "http",
-            "https",
-            "www",
-            "the",
-            "com",
-            "exe",
-            "dll",
-            "cmd",
-            "powershell",
-            "kernel32",
-            "user32",
-            "advapi32",
-            "ntdll",
-            "system",
-            "windows",
-            "program",
-            "registry",
-            "shell",
-            "open",
-            "read",
-            "write",
-            "file",
-            "path",
-            "error",
-            "create",
-            "process",
-            "thread",
-            "memory",
-            "socket",
-            "connect",
-            "send",
-            "recv",
-            "host",
-            "user",
-            "admin",
-            "password",
-            "key",
-            "token",
-            "config",
-            "data",
-            "temp",
-            "load",
-            "library",
-            "function",
-            "object",
-            "string",
-            "value",
-            "null",
-            "true",
-            "false",
-            "import",
-            "export",
-            "module",
-            "class",
-        ]
-        .into_iter()
-        .collect()
-    });
-    &DICT
-}
+const DICTIONARY: [&str; 54] = [
+    "admin",
+    "advapi32",
+    "class",
+    "cmd",
+    "com",
+    "config",
+    "connect",
+    "create",
+    "data",
+    "dll",
+    "error",
+    "exe",
+    "export",
+    "false",
+    "file",
+    "function",
+    "host",
+    "http",
+    "https",
+    "import",
+    "kernel32",
+    "key",
+    "library",
+    "load",
+    "memory",
+    "module",
+    "ntdll",
+    "null",
+    "object",
+    "open",
+    "password",
+    "path",
+    "powershell",
+    "process",
+    "program",
+    "read",
+    "recv",
+    "registry",
+    "send",
+    "shell",
+    "socket",
+    "string",
+    "system",
+    "temp",
+    "the",
+    "thread",
+    "token",
+    "true",
+    "user",
+    "user32",
+    "value",
+    "windows",
+    "write",
+    "www",
+];
+
+const _: () = assert!(DICTIONARY.len() <= u64::BITS as usize);
 
 fn printable_ratio(bytes: &[u8]) -> f64 {
     if bytes.is_empty() {
@@ -229,10 +222,94 @@ fn printable_ratio(bytes: &[u8]) -> f64 {
     printable as f64 / bytes.len() as f64
 }
 
+enum XorScreen {
+    Scan,
+    Histogram(Box<[usize; 256]>),
+}
+
+impl XorScreen {
+    fn for_run(run: &[u8], work: &mut StringsWork) -> Self {
+        if run.len() < XOR_HISTOGRAM_MIN_RUN {
+            return Self::Scan;
+        }
+        let mut histogram: Box<[usize; 256]> = Box::new([0; 256]);
+        for &b in run {
+            histogram[usize::from(b)] += 1;
+        }
+        work.xor_screen_steps += run.len() as u64;
+        Self::Histogram(histogram)
+    }
+
+    fn passes(&self, run: &[u8], key: u8, work: &mut StringsWork) -> bool {
+        if run.is_empty() {
+            return false;
+        }
+        let len: f64 = run.len() as f64;
+        match self {
+            Self::Scan => {
+                let mut unprintable: usize = 0;
+                for &b in run {
+                    work.xor_screen_steps += 1;
+                    if is_printable(b ^ key) {
+                        continue;
+                    }
+                    unprintable += 1;
+                    if ((run.len() - unprintable) as f64 / len) < XOR_MIN_PRINTABLE_RATIO {
+                        return false;
+                    }
+                }
+                true
+            }
+            Self::Histogram(histogram) => {
+                work.xor_screen_steps += PRINTABLE_BYTES.len() as u64;
+                let printable: usize = PRINTABLE_BYTES
+                    .iter()
+                    .map(|&p: &u8| histogram[usize::from(p ^ key)])
+                    .sum();
+                (printable as f64 / len) >= XOR_MIN_PRINTABLE_RATIO
+            }
+        }
+    }
+}
+
+const PRINTABLE_BYTES: [u8; 98] = {
+    let mut table: [u8; 98] = [0; 98];
+    let mut next: usize = 0;
+    let mut b: u8 = 0;
+    loop {
+        if is_printable(b) {
+            table[next] = b;
+            next += 1;
+        }
+        if b == u8::MAX {
+            break;
+        }
+        b += 1;
+    }
+    assert!(next == table.len());
+    table
+};
+
 fn dict_hits(text: &str) -> usize {
-    let lower: String = text.to_ascii_lowercase();
-    let dict: &BTreeSet<&'static str> = dictionary();
-    dict.iter().filter(|w: &&&str| lower.contains(*w)).count()
+    let bytes: &[u8] = text.as_bytes();
+    let mut found: u64 = 0;
+    for (start, lead) in bytes.iter().enumerate() {
+        let lead: u8 = lead.to_ascii_lowercase();
+        let first: usize = DICTIONARY.partition_point(|word: &&str| word.as_bytes()[0] < lead);
+        for (index, word) in DICTIONARY.iter().enumerate().skip(first) {
+            let word: &[u8] = word.as_bytes();
+            if word[0] != lead {
+                break;
+            }
+            if bytes
+                .get(start..start + word.len())
+                .is_some_and(|window: &[u8]| window.eq_ignore_ascii_case(word))
+            {
+                found |= 1 << index;
+            }
+        }
+    }
+    found.count_ones() as usize
 }
 
 fn xor_runs(bytes: &[u8], min_len: usize) -> Vec<(usize, usize)> {
@@ -256,15 +333,16 @@ fn xor_runs(bytes: &[u8], min_len: usize) -> Vec<(usize, usize)> {
     runs
 }
 
-fn brute_xor(bytes: &[u8], min_len: usize, out: &mut Vec<ExtractedString>) {
+fn brute_xor(bytes: &[u8], min_len: usize, out: &mut Vec<ExtractedString>, work: &mut StringsWork) {
     let floor: usize = min_len.max(XOR_MIN_RUN_LEN);
     for (start, end) in xor_runs(bytes, min_len) {
         let run: &[u8] = &bytes[start..end];
+        let screen: XorScreen = XorScreen::for_run(run, work);
         for key in 1u8..=255 {
-            let decoded: Vec<u8> = run.iter().map(|&b: &u8| b ^ key).collect();
-            if printable_ratio(&decoded) < XOR_MIN_PRINTABLE_RATIO {
+            if !screen.passes(run, key, work) {
                 continue;
             }
+            let decoded: Vec<u8> = run.iter().map(|&b: &u8| b ^ key).collect();
             let text: String = String::from_utf8_lossy(&decoded).into_owned();
             let trimmed: &str = text.trim();
             if trimmed.chars().count() < floor {
@@ -435,20 +513,31 @@ fn dedup(mut strings: Vec<ExtractedString>) -> Vec<ExtractedString> {
 
 #[must_use]
 pub fn extract(bytes: &[u8], opts: Options) -> Vec<ExtractedString> {
+    extract_with_work(bytes, opts).0
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StringsWork {
+    pub xor_screen_steps: u64,
+}
+
+#[must_use]
+pub fn extract_with_work(bytes: &[u8], opts: Options) -> (Vec<ExtractedString>, StringsWork) {
     let min_len: usize = opts.min_len.max(1);
+    let mut work: StringsWork = StringsWork::default();
     let mut plain: Vec<ExtractedString> = Vec::new();
     extract_ascii(bytes, min_len, &mut plain);
     extract_utf16le(bytes, min_len, &mut plain);
 
     let mut out: Vec<ExtractedString> = plain.clone();
     if opts.decode {
-        brute_xor(bytes, min_len, &mut out);
+        brute_xor(bytes, min_len, &mut out, &mut work);
         recover_base64(&plain, &mut out);
         recover_rot(&plain, &mut out);
         recover_codec(&plain, &mut out);
         recover_stack_strings(bytes, min_len, &mut out);
     }
-    dedup(out)
+    (dedup(out), work)
 }
 
 #[must_use]
@@ -684,5 +773,146 @@ mod tests {
         let back: Vec<ExtractedString> =
             serde_json::from_value(value["strings"].clone()).expect("round-trip strings");
         assert_eq!(back, report.strings);
+    }
+
+    fn reference_dict_hits(text: &str) -> usize {
+        let lower: String = text.to_ascii_lowercase();
+        DICTIONARY
+            .iter()
+            .filter(|word: &&&str| lower.contains(**word))
+            .count()
+    }
+
+    fn reference_brute_xor(bytes: &[u8], min_len: usize) -> Vec<ExtractedString> {
+        let floor: usize = min_len.max(XOR_MIN_RUN_LEN);
+        let mut out: Vec<ExtractedString> = Vec::new();
+        for (start, end) in xor_runs(bytes, min_len) {
+            for key in 1u8..=255 {
+                let decoded: Vec<u8> = bytes[start..end].iter().map(|&b: &u8| b ^ key).collect();
+                if printable_ratio(&decoded) < XOR_MIN_PRINTABLE_RATIO {
+                    continue;
+                }
+                let text: String = String::from_utf8_lossy(&decoded).into_owned();
+                let trimmed: &str = text.trim();
+                if trimmed.chars().count() < floor
+                    || reference_dict_hits(trimmed) < XOR_MIN_DICT_HITS
+                {
+                    continue;
+                }
+                out.push(ExtractedString {
+                    value: trimmed.to_owned(),
+                    offset: start,
+                    tagging: Tagging::Xor { key },
+                });
+            }
+        }
+        out
+    }
+
+    fn xor_with(text: &[u8], key: u8) -> Vec<u8> {
+        text.iter().map(|&b: &u8| b ^ key).collect()
+    }
+
+    fn xor_screen_corpus() -> Vec<u8> {
+        use rand::RngExt;
+        let sentence: &[u8] =
+            b"Open the Registry key, then CreateProcess with the user password token. ";
+        let mut corpus: Vec<u8> = Vec::new();
+        let mut rng: crate::rng::SeededRng = crate::rng::seeded(0x5eed);
+        for _ in 0..64 {
+            let len: usize = rng.random_range(1..3000);
+            corpus.extend((0..len).map(|_| rng.random::<u8>()));
+        }
+        for key in [0x01u8, 0x20, 0x41, 0x5a, 0x7f, 0xaa, 0xff] {
+            corpus.push(0);
+            corpus.extend(xor_with(sentence, key));
+            corpus.push(0);
+            corpus.extend(xor_with(&sentence.repeat(30), key));
+        }
+        for (fill, len) in [(0xccu8, 900usize), (0xff, 1023), (0xff, 1024), (0x41, 4000)] {
+            corpus.push(0);
+            corpus.extend(std::iter::repeat_n(fill, len));
+        }
+        for (len, unprintable) in [(100usize, 5usize), (100, 6), (2000, 100), (2000, 101)] {
+            let mut run: Vec<u8> = sentence.iter().copied().cycle().take(len).collect();
+            for slot in run.iter_mut().step_by(len / unprintable).take(unprintable) {
+                *slot = 0x80;
+            }
+            corpus.push(0);
+            corpus.extend(xor_with(&run, 0x5a));
+        }
+        corpus.push(0);
+        corpus
+    }
+
+    #[test]
+    fn xor_screen_keeps_every_string_the_full_decode_finds() {
+        let corpus: Vec<u8> = xor_screen_corpus();
+        let mut found: Vec<ExtractedString> = Vec::new();
+        let mut work: StringsWork = StringsWork::default();
+        brute_xor(&corpus, 4, &mut found, &mut work);
+        let reference: Vec<ExtractedString> = reference_brute_xor(&corpus, 4);
+        for histogram in [false, true] {
+            assert!(
+                reference.iter().any(|s: &ExtractedString| (s.value.len()
+                    >= XOR_HISTOGRAM_MIN_RUN)
+                    == histogram),
+                "the corpus must decode runs on both sides of the histogram threshold"
+            );
+        }
+        let at_the_printable_floor: usize = reference
+            .iter()
+            .filter(|s: &&ExtractedString| {
+                s.tagging == Tagging::Xor { key: 0x5a } && s.value.contains('\u{fffd}')
+            })
+            .count();
+        assert_eq!(
+            at_the_printable_floor, 2,
+            "exactly the two runs at 95% printable decode, one per screen"
+        );
+        assert_eq!(found, reference);
+    }
+
+    #[test]
+    fn dictionary_hits_match_the_lowercase_substring_count() {
+        assert!(DICTIONARY.is_sorted());
+        let every_word: String = DICTIONARY.join(" ").to_ascii_uppercase();
+        for text in [
+            "",
+            "https://www.example.com/the/path",
+            "HTTPS KERNEL32 Advapi32 NtDll",
+            "usersuser32",
+            "keykeykey",
+            "caf\u{e9} Shell \u{20ac} socket",
+            "thethethe",
+            "Powershell -c read write",
+            every_word.as_str(),
+        ] {
+            assert_eq!(dict_hits(text), reference_dict_hits(text), "{text:?}");
+        }
+        assert_eq!(dict_hits(&every_word), DICTIONARY.len());
+    }
+
+    #[test]
+    fn xor_screen_work_stays_linear_in_the_input() {
+        use rand::RngExt;
+        let mut rng: crate::rng::SeededRng = crate::rng::seeded(7);
+        let one_run: Vec<u8> = (0..1 << 20)
+            .map(|_| rng.random_range(1..=u8::MAX))
+            .collect();
+        let short_runs: Vec<u8> = one_run
+            .iter()
+            .enumerate()
+            .map(|(index, &b): (usize, &u8)| if index % 300 == 0 { 0 } else { b })
+            .collect();
+        for (label, input) in [("one run", one_run), ("300-byte runs", short_runs)] {
+            let (_, work): (Vec<ExtractedString>, StringsWork) =
+                extract_with_work(&input, Options::default());
+            let bound: u64 = 64 * input.len() as u64;
+            assert!(
+                work.xor_screen_steps <= bound,
+                "{label}: xor screening must not decode each run once per key: {work:?}, bound {bound}"
+            );
+        }
     }
 }
