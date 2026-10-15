@@ -10,7 +10,7 @@
 | Hermes | Bytecode versions v60 through v96 parse against the documented header layout; v62, v71, v74, v76, v83, v84, v89, and v96 lift to pseudo-JavaScript against builds of one sample by the real Hermes compiler |
 | Dart kernel | `.dill` / `kernel_blob.bin` parsed to byte-exact original Dart bodies from the kernel source table |
 | Dart AOT | `libapp.so` AArch64 bodies disassembled with resolved direct-call and branch targets, plus class table, library URIs, and string pool |
-| Dart AOT declaration graph | full library/class/method/field inventory, with method parameter counts, from a `libapp.so` or four standalone snapshot blobs on a pinned Dart SDK snapshot version |
+| Dart AOT declaration graph | full library/class/method/field inventory, with method parameter counts, from a `libapp.so` or four standalone snapshot blobs built by Dart 3.3 to 3.11, 3.12.1 or 3.12.2 (Flutter 3.19 to 3.44) for Android arm64 |
 | Rename maps | Flutter `obfuscation_map.json` parsed into a typed original-to-obfuscated lookup |
 
 ## Commands
@@ -168,10 +168,13 @@ entry an absent cache fails the test by name. On this real build the RAW static 
 10,351 class-name strings, 28,952 method-name strings, and 1,489 library URIs, each
 cross-checked against an independent whole-file `package:*.dart` string scan that finds
 1,271 of its own. Every one of those counts is pinned by equality in the test, so a
-figure that moves fails the gate rather than drifting silently. RustDesk's Dart snapshot
-falls outside the pinned Dart 3.12.2 android-arm64 product tuple, so the
-declaration-graph path (`flutter inventory`) reports `unsupported-version` on it rather
-than guessing at a cluster layout it has no pin for.
+figure that moves fails the gate rather than drifting silently. RustDesk 1.4.9 was built
+by Flutter 3.24 on Dart 3.5, a pinned release, so the declaration-graph path
+(`flutter inventory`) walks all 859 isolate clusters and recovers 1,237 libraries, 6,360
+classes, 29,620 methods and 1,906 fields, each count equal to the snapshot's declared total
+once the unowned VM function and the library-less `Never` class are set aside. Every
+`package:` library URL the walk names also appears in the independent string scan, and the
+four counts are pinned by equality.
 
 **Dart kernel (`.dill` / `kernel_blob.bin`).** A kernel is the serialized Dart AST. `disrobe` parses the kernel binary format (magic `0x90abcdef`): the footer component index, the string table, per-library class and procedure offset tables, and the embedded `UriSource` table. From the source table it recovers byte-exact original Dart bodies, sliced per procedure by the kernel file offsets. The recovered `.dart` source file is always written beside the JSON without needing `--emit-source`.
 
@@ -181,7 +184,13 @@ Beyond the disassembly, the release ARM64 path recovers class membership and met
 
 Each call in that pseudocode carries its reconstructed argument list. `disrobe` tracks the Dart argument registers, the Dart stack slots that hold arguments past the register file, and the caller's frame slots across the call sequence, then renders each argument as an expression: an immediate, a null or boolean read from the null register, a value produced by an earlier call, a field load by offset, or an object-pool entry. A tail call renders the same way, as a returned call. Pool entries are inlined as literals. On a pinned snapshot version `disrobe` deserializes the object pool per slot, so a call that loads a string, a double, an integer, a list, or a declared name reads that value back at the call site. Inlining is depth-bounded and size-bounded, and a cyclic pool reference stops at the placeholder. An argument the tracker cannot resolve renders as `?`, and an argument produced by a control-flow merge always renders as `?` rather than one branch's value. A call whose arguments cannot be recovered at all keeps the opaque `(...)` form.
 
-**Declaration graph (`flutter inventory` / `flutter inventory-standalone`).** The clustered object graph inside the snapshot data blobs carries the full library, class, method, and field declarations, keyed to the exact Dart SDK snapshot version and feature tuple that serialized them. `disrobe` reads that graph directly for the pinned Dart 3.12.2 Android arm64 build (both the plain product tuple and the `--split-debug-info` DWARF tuple): every class, method with its parameter count, and instance field name, cross-checked on real `flutter build apk --release` output against the snapshot's own cluster-header totals. A snapshot compatibility hash outside the pinned set reports `unsupported-version` rather than guessing at cluster offsets.
+**Declaration graph (`flutter inventory` / `flutter inventory-standalone`).** The clustered object graph inside the snapshot data blobs carries the full library, class, method, and field declarations, keyed to the Dart SDK snapshot version and feature tuple that serialized them. `disrobe` reads that graph for every Dart release Flutter stable has shipped since Flutter 3.19: Dart 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10 and 3.11 (all patch releases of a minor share one snapshot hash), and Dart 3.12.1 and 3.12.2, each for Android arm64 in both the plain product tuple and the `--split-debug-info` DWARF tuple. It recovers every class, method with its parameter count, and instance field name.
+
+One table describes the releases, derived from the Dart SDK sources at each tag. Across this range `runtime/vm/class_id.h` dropped the external string classes (Dart 3.4), added `Bytecode` (Dart 3.6) and moved `UnlinkedCall` (Dart 3.9), so each release has its own class-id numbering. Dart 3.3 heads each cluster with a class id and canonical bit where later releases write the object tag word, a loading unit id widened to a full word in Dart 3.5, and a field's kind bits widened to 32 bits in Dart 3.10. The object layouts the walk reads (`runtime/vm/raw_object.h`) and the per-cluster read order (`runtime/vm/app_snapshot.cc`) are otherwise the same across the range.
+
+Each release is graded on a self-authored program in `corpus/mobile/flutter/versions/`, compiled by the official Dart SDK and the `gen_snapshot` of a Flutter release that shipped it, once plain and once the way `--obfuscate --split-debug-info` compiles. Every cluster the walk reads (its kind, object count, and the offset and size of its allocation and fill sections) must equal the cluster report `gen_snapshot --print_cluster_information` wrote while building that snapshot. The declared library, class, function, and field totals must all be accounted for, and the program's classes, methods with their parameter counts, and fields must be recovered. The same bytes relabelled with a neighbouring release's hash fail that grade. The Dart 3.12.2 pin is graded the same way on real `flutter build apk --release` output against the snapshot's own cluster-header totals.
+
+A snapshot compatibility hash outside the pinned set reports `unsupported-version`, naming the Dart releases that hash belongs to, rather than guessing at cluster offsets. Object-pool literals at call sites stay pinned to Dart 3.12.2.
 
 ## Detected runtimes
 
