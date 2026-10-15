@@ -1,4 +1,3 @@
-use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 const MIN_RUN_CHARS: usize = 4;
@@ -214,89 +213,100 @@ fn unit_runs_wide(
     encoding: StringEncoding,
     limits: &RunLimits,
 ) -> Vec<DecodedString> {
-    let unit: usize = encoding.code_unit_bytes();
-    let mut out: Vec<DecodedString> = Vec::new();
-    for alignment in 0..unit {
-        if alignment >= bytes.len() {
-            break;
-        }
-        let mut reader: ByteReader<'_> = ByteReader::new(bytes);
-        if reader.seek(alignment).is_err() {
-            continue;
-        }
-        let mut run_start: Option<usize> = None;
-        let mut chars: String = String::new();
-        while reader.remaining() >= unit {
-            if out.len() >= limits.max_runs {
-                return out;
-            }
-            let position: usize = reader.position();
-            let scalar: Option<char> = read_wide_unit(&mut reader, encoding);
-            if reader.position() == position {
-                break;
-            }
-            let accepted: Option<char> = scalar
-                .filter(|&candidate: &char| is_printable_ascii_scalar(candidate))
-                .filter(|_| chars.len() * unit < limits.max_run_bytes);
-            let Some(candidate): Option<char> = accepted else {
-                push_wide_run(base, encoding, run_start, &chars, limits, out.as_mut());
-                run_start = None;
-                chars.clear();
-                continue;
-            };
-            if run_start.is_none() {
-                run_start = Some(position);
-            }
-            chars.push(candidate);
-        }
-        push_wide_run(base, encoding, run_start, &chars, limits, out.as_mut());
-    }
-    out
-}
-
-fn read_wide_unit(reader: &mut ByteReader<'_>, encoding: StringEncoding) -> Option<char> {
-    let raw: u32 = match encoding {
-        StringEncoding::Utf16Le => u32::from(reader.read_u16_le().ok()?),
-        StringEncoding::Utf16Be => u32::from(reader.read_u16_be().ok()?),
-        StringEncoding::Utf32Le => reader.read_u32_le().ok()?,
-        StringEncoding::Utf32Be => reader.read_u32_be().ok()?,
-        StringEncoding::Ascii | StringEncoding::Utf8 | StringEncoding::Bytes => return None,
+    let context: WideContext<'_> = WideContext {
+        bytes,
+        base,
+        encoding,
+        limits,
     };
-    char::from_u32(raw)
+    match encoding {
+        StringEncoding::Utf16Le => {
+            context.runs(|unit: [u8; 2]| u32::from(u16::from_le_bytes(unit)))
+        }
+        StringEncoding::Utf16Be => {
+            context.runs(|unit: [u8; 2]| u32::from(u16::from_be_bytes(unit)))
+        }
+        StringEncoding::Utf32Le => context.runs(u32::from_le_bytes),
+        StringEncoding::Utf32Be => context.runs(u32::from_be_bytes),
+        StringEncoding::Ascii | StringEncoding::Utf8 | StringEncoding::Bytes => Vec::new(),
+    }
 }
 
-fn push_wide_run(
+#[derive(Debug, Clone, Copy, Default)]
+struct WideRun {
+    start: Option<usize>,
+    chars: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WideContext<'a> {
+    bytes: &'a [u8],
     base: u64,
     encoding: StringEncoding,
-    run_start: Option<usize>,
-    chars: &str,
-    limits: &RunLimits,
-    out: &mut Vec<DecodedString>,
-) {
-    let Some(start): Option<usize> = run_start else {
-        return;
-    };
-    if chars.chars().count() < limits.min_chars || out.len() >= limits.max_runs {
-        return;
-    }
-    let unit: usize = encoding.code_unit_bytes();
-    let mut raw: Vec<u8> = Vec::with_capacity(chars.len() * unit);
-    for scalar in chars.chars() {
-        let value: u32 = scalar as u32;
-        match encoding {
-            StringEncoding::Utf16Le => raw.extend_from_slice(&(value as u16).to_le_bytes()),
-            StringEncoding::Utf16Be => raw.extend_from_slice(&(value as u16).to_be_bytes()),
-            StringEncoding::Utf32Le => raw.extend_from_slice(&value.to_le_bytes()),
-            StringEncoding::Utf32Be => raw.extend_from_slice(&value.to_be_bytes()),
-            StringEncoding::Ascii | StringEncoding::Utf8 | StringEncoding::Bytes => return,
+    limits: &'a RunLimits,
+}
+
+impl WideContext<'_> {
+    fn runs<const UNIT: usize>(self, decode: impl Fn([u8; UNIT]) -> u32) -> Vec<DecodedString> {
+        let mut out: Vec<DecodedString> = Vec::new();
+        for alignment in 0..UNIT {
+            let Some(aligned): Option<&[u8]> = self
+                .bytes
+                .get(alignment..)
+                .filter(|rest: &&[u8]| !rest.is_empty())
+            else {
+                break;
+            };
+            let mut run: WideRun = WideRun::default();
+            for (index, &code_unit) in aligned.as_chunks::<UNIT>().0.iter().enumerate() {
+                if out.len() >= self.limits.max_runs {
+                    return out;
+                }
+                if (0x20..=0x7e).contains(&decode(code_unit))
+                    && run.chars * UNIT < self.limits.max_run_bytes
+                {
+                    run.start.get_or_insert(alignment + index * UNIT);
+                    run.chars += 1;
+                    continue;
+                }
+                if run.start.is_some() {
+                    self.push(run, &decode, &mut out);
+                    run = WideRun::default();
+                }
+            }
+            self.push(run, &decode, &mut out);
         }
+        out
     }
-    out.push(DecodedString {
-        address: base.wrapping_add(start as u64),
-        encoding,
-        bytes: raw,
-        text: Some(chars.to_owned()),
-    });
+
+    fn push<const UNIT: usize>(
+        self,
+        run: WideRun,
+        decode: &impl Fn([u8; UNIT]) -> u32,
+        out: &mut Vec<DecodedString>,
+    ) {
+        let Some(start): Option<usize> = run.start else {
+            return;
+        };
+        if run.chars < self.limits.min_chars || out.len() >= self.limits.max_runs {
+            return;
+        }
+        let Some(raw): Option<&[u8]> = self.bytes.get(start..start + run.chars * UNIT) else {
+            return;
+        };
+        let text: String = raw
+            .as_chunks::<UNIT>()
+            .0
+            .iter()
+            .map(|&code_unit: &[u8; UNIT]| char::from(decode(code_unit) as u8))
+            .collect();
+        out.push(DecodedString {
+            address: self.base.wrapping_add(start as u64),
+            encoding: self.encoding,
+            bytes: raw.to_vec(),
+            text: Some(text),
+        });
+    }
 }
 
 fn merge_runs(mut runs: Vec<DecodedString>, limits: &RunLimits) -> Vec<DecodedString> {
@@ -347,4 +357,175 @@ const fn is_printable_ascii_scalar(scalar: char) -> bool {
 #[inline]
 const fn is_text_scalar(scalar: char) -> bool {
     matches!(scalar, ' '..='~' | '\u{a0}'..='\u{d7ff}' | '\u{e000}'..='\u{fffc}')
+}
+
+#[cfg(test)]
+mod tests {
+    use disrobe_bytes::ByteReader;
+
+    use super::{
+        DecodedString, RunLimits, StringEncoding, is_printable_ascii_scalar, unit_runs_wide,
+    };
+
+    fn reference_unit_runs_wide(
+        bytes: &[u8],
+        base: u64,
+        encoding: StringEncoding,
+        limits: &RunLimits,
+    ) -> Vec<DecodedString> {
+        let unit: usize = encoding.code_unit_bytes();
+        let mut out: Vec<DecodedString> = Vec::new();
+        for alignment in 0..unit {
+            if alignment >= bytes.len() {
+                break;
+            }
+            let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+            if reader.seek(alignment).is_err() {
+                continue;
+            }
+            let mut run_start: Option<usize> = None;
+            let mut chars: String = String::new();
+            while reader.remaining() >= unit {
+                if out.len() >= limits.max_runs {
+                    return out;
+                }
+                let position: usize = reader.position();
+                let raw: Option<u32> = match encoding {
+                    StringEncoding::Utf16Le => reader.read_u16_le().ok().map(u32::from),
+                    StringEncoding::Utf16Be => reader.read_u16_be().ok().map(u32::from),
+                    StringEncoding::Utf32Le => reader.read_u32_le().ok(),
+                    StringEncoding::Utf32Be => reader.read_u32_be().ok(),
+                    StringEncoding::Ascii | StringEncoding::Utf8 | StringEncoding::Bytes => None,
+                };
+                if reader.position() == position {
+                    break;
+                }
+                let accepted: Option<char> = raw
+                    .and_then(char::from_u32)
+                    .filter(|&candidate: &char| is_printable_ascii_scalar(candidate))
+                    .filter(|_| chars.len() * unit < limits.max_run_bytes);
+                let Some(candidate): Option<char> = accepted else {
+                    reference_push(base, encoding, run_start, &chars, limits, &mut out);
+                    run_start = None;
+                    chars.clear();
+                    continue;
+                };
+                if run_start.is_none() {
+                    run_start = Some(position);
+                }
+                chars.push(candidate);
+            }
+            reference_push(base, encoding, run_start, &chars, limits, &mut out);
+        }
+        out
+    }
+
+    fn reference_push(
+        base: u64,
+        encoding: StringEncoding,
+        run_start: Option<usize>,
+        chars: &str,
+        limits: &RunLimits,
+        out: &mut Vec<DecodedString>,
+    ) {
+        let Some(start): Option<usize> = run_start else {
+            return;
+        };
+        if chars.chars().count() < limits.min_chars || out.len() >= limits.max_runs {
+            return;
+        }
+        let mut raw: Vec<u8> = Vec::new();
+        for scalar in chars.chars() {
+            let value: u32 = scalar as u32;
+            match encoding {
+                StringEncoding::Utf16Le => raw.extend_from_slice(&(value as u16).to_le_bytes()),
+                StringEncoding::Utf16Be => raw.extend_from_slice(&(value as u16).to_be_bytes()),
+                StringEncoding::Utf32Le => raw.extend_from_slice(&value.to_le_bytes()),
+                StringEncoding::Utf32Be => raw.extend_from_slice(&value.to_be_bytes()),
+                StringEncoding::Ascii | StringEncoding::Utf8 | StringEncoding::Bytes => return,
+            }
+        }
+        out.push(DecodedString {
+            address: base.wrapping_add(start as u64),
+            encoding,
+            bytes: raw,
+            text: Some(chars.to_owned()),
+        });
+    }
+
+    fn wide_inputs() -> Vec<Vec<u8>> {
+        let mut inputs: Vec<Vec<u8>> = vec![Vec::new(), vec![0x41], vec![0x41, 0x00]];
+        let mut structured: Vec<u8> = Vec::new();
+        for word in [
+            "Hello",
+            "wide world",
+            "ab",
+            "x",
+            "Configuration\\Run",
+            "~ !",
+        ] {
+            for &byte in word.as_bytes() {
+                structured.extend_from_slice(&[byte, 0x00]);
+            }
+            structured.extend_from_slice(&[0x00, 0x00, 0xff]);
+            for &byte in word.as_bytes() {
+                structured.extend_from_slice(&[0x00, 0x00, 0x00, byte]);
+            }
+            structured.extend_from_slice(&[0x1f, 0x00, 0x7f, 0x00, 0x80, 0x00]);
+        }
+        inputs.push(structured);
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        for length in [7usize, 64, 333, 4096] {
+            let random: Vec<u8> = (0..length)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    let byte: u8 = state.to_le_bytes()[0];
+                    if byte < 0x80 { byte & 0x7f } else { 0x00 }
+                })
+                .collect();
+            inputs.push(random);
+        }
+        inputs
+    }
+
+    #[test]
+    fn wide_runs_match_the_reader_based_reference() {
+        let limit_sets: [RunLimits; 3] = [
+            RunLimits::default(),
+            RunLimits {
+                min_chars: 2,
+                max_runs: 3,
+                max_run_bytes: 8,
+            },
+            RunLimits {
+                min_chars: 1,
+                max_runs: 1 << 16,
+                max_run_bytes: 6,
+            },
+        ];
+        let encodings: [StringEncoding; 4] = [
+            StringEncoding::Utf16Le,
+            StringEncoding::Utf16Be,
+            StringEncoding::Utf32Le,
+            StringEncoding::Utf32Be,
+        ];
+        let mut compared_runs: usize = 0;
+        for input in wide_inputs() {
+            for limits in &limit_sets {
+                for encoding in encodings {
+                    let expected: Vec<DecodedString> =
+                        reference_unit_runs_wide(&input, 0x1000, encoding, limits);
+                    compared_runs += expected.len();
+                    assert_eq!(
+                        unit_runs_wide(&input, 0x1000, encoding, limits),
+                        expected,
+                        "{encoding:?} {input:02x?}"
+                    );
+                }
+            }
+        }
+        assert!(compared_runs > 100, "only {compared_runs} runs compared");
+    }
 }
