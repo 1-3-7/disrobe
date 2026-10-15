@@ -249,6 +249,8 @@ impl CatalogEntry for As3CatalogEntry {
 
 const ID_SWF: &str = "as3-swf";
 const ID_ABC: &str = "as3-abc";
+const ID_SECURESWF: &str = "as3-secureswf";
+const LEGACY_ID_SECURESWF: &str = "as3-securesswf";
 
 const CATALOG_COUNT: usize = 7;
 
@@ -269,9 +271,9 @@ static CATALOG: [As3CatalogEntry; CATALOG_COUNT] = [
     },
     As3CatalogEntry {
         key: As3CatalogKey::Tool(KnownTool::SecureSwf),
-        id: "as3-securesswf",
+        id: ID_SECURESWF,
         display_name: "secureSWF",
-        aliases: &["securesswf", "secureswf"],
+        aliases: &["secureswf", LEGACY_ID_SECURESWF, "securesswf"],
         quality: SupportQuality::DetectOnly,
     },
     As3CatalogEntry {
@@ -361,6 +363,15 @@ mod tests {
     use super::*;
     use disrobe_core::Rung;
 
+    fn catalog_entry(name: &str) -> Option<&'static As3CatalogEntry> {
+        CATALOG.iter().find(|e: &&As3CatalogEntry| {
+            e.id.eq_ignore_ascii_case(name)
+                || e.aliases
+                    .iter()
+                    .any(|alias: &&str| alias.eq_ignore_ascii_case(name))
+        })
+    }
+
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
             bytes,
@@ -382,8 +393,26 @@ mod tests {
         let ids: Vec<&'static str> = entries.iter().map(|e| e.id()).collect();
         assert!(ids.contains(&ID_SWF), "got {ids:?}");
         assert!(ids.contains(&ID_ABC), "got {ids:?}");
-        assert!(ids.contains(&"as3-securesswf"), "got {ids:?}");
+        assert!(ids.contains(&ID_SECURESWF), "got {ids:?}");
+        assert!(!ids.contains(&LEGACY_ID_SECURESWF), "got {ids:?}");
         assert!(ids.contains(&"as3-doswf"), "got {ids:?}");
+    }
+
+    #[test]
+    fn the_misspelled_secureswf_id_still_resolves_to_the_corrected_entry() {
+        let corrected: &As3CatalogEntry = catalog_entry("as3-secureswf").expect("corrected id");
+        assert_eq!(corrected.id(), "as3-secureswf");
+        assert_eq!(corrected.display_name(), "secureSWF");
+        for legacy in ["as3-securesswf", "securesswf", "secureswf", "AS3-SecureSWF"] {
+            let entry: &As3CatalogEntry =
+                catalog_entry(legacy).unwrap_or_else(|| panic!("{legacy} must resolve"));
+            assert!(
+                std::ptr::eq(entry, corrected),
+                "{legacy} resolved elsewhere"
+            );
+        }
+        assert_eq!(tool_entry_id(KnownTool::SecureSwf), Some("as3-secureswf"));
+        assert!(catalog_entry("as3-securesswff").is_none());
     }
 
     #[test]
