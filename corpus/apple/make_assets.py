@@ -1,7 +1,8 @@
 """Write the authored asset catalog in corpus/apple/src/Assets.xcassets: a patterned app icon,
-a three-scale patterned image set, a colour set and a data set, from deterministic stdlib-made
-PNGs whose every opaque pixel follows icon_colour or badge_colour, so a decoder is graded on
-pixel values, row order and channel order."""
+a three-scale patterned image set, a grey image set, a lossless image set, a colour set and a
+data set, from deterministic stdlib-made PNGs whose every opaque pixel follows icon_colour,
+badge_colour or mono_colour, so a decoder is graded on pixel values, row order and channel
+order."""
 
 import json
 import pathlib
@@ -18,6 +19,11 @@ def icon_colour(x, y):
 
 def badge_colour(scale, x, y):
     return ((x * 37 + scale * 11) % 256, (y * 53) % 256, ((x + y) * 29) % 256, 255)
+
+
+def mono_colour(x, y):
+    grey = (x * 4 + y * 3) & 0xff
+    return (grey, grey, grey, 255)
 
 
 def png(width, height, colour):
@@ -59,6 +65,23 @@ for scale in (1, 2, 3):
     (image / name).write_bytes(png(16 * scale, 12 * scale, lambda x, y, s=scale: badge_colour(s, x, y)))
     images.append({'filename': name, 'idiom': 'universal', 'scale': f'{scale}x'})
 write_json(image / 'Contents.json', {'images': images, 'info': info})
+
+mono = root / 'Mono.imageset'
+mono.mkdir(parents=True, exist_ok=True)
+(mono / 'mono.png').write_bytes(png(64, 48, mono_colour))
+write_json(mono / 'Contents.json', {
+    'images': [{'filename': 'mono.png', 'idiom': 'universal'}],
+    'info': info,
+})
+
+lossless = root / 'BadgeLossless.imageset'
+lossless.mkdir(parents=True, exist_ok=True)
+(lossless / 'badge-lossless.png').write_bytes(png(48, 36, lambda x, y: badge_colour(3, x, y)))
+write_json(lossless / 'Contents.json', {
+    'images': [{'filename': 'badge-lossless.png', 'idiom': 'universal'}],
+    'info': info,
+    'properties': {'compression-type': 'lossless'},
+})
 
 colour = root / 'AccentTint.colorset'
 write_json(colour / 'Contents.json', {

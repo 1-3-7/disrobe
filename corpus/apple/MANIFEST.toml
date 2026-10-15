@@ -1,2 +1,3 @@
 title = "Apple build-tool fixtures: asset catalog, compiled NIBs and a Foundation keyed archive"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
 provenance = "src/ is hand-authored for this corpus (make_assets.py writes the asset catalog from deterministic stdlib PNGs). The compiled outputs are produced only on a GitHub-hosted macOS runner by .github/workflows/real-tool-fixtures.yml recipe apple-formats (xcrun actool, xcrun ibtool, swift archive.swift); assetutil --info and the Foundation XML form of the archive are recorded beside them as references. Nothing compiled here is run on the development host."
