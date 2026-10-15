@@ -18,7 +18,7 @@
   },
   "cli": {
     "binary": "disrobe",
-    "root_command_count": 67,
+    "root_command_count": 75,
     "root_commands": [
       "pyarmor",
       "pyinstaller",
@@ -86,7 +86,15 @@
       "config",
       "report",
       "annot",
-      "rename"
+      "rename",
+      "agent",
+      "capture",
+      "crash",
+      "electron",
+      "evm",
+      "mcp",
+      "resources",
+      "sqlite"
     ],
     "hidden_commands": [
       "subcommand-tree"
@@ -199,7 +207,8 @@
       "id": "containers-and-webview-assets",
       "commands": [
         "extract",
-        "webview"
+        "webview",
+        "electron"
       ],
       "status": "partial",
       "entry_point": "crates/disrobe-cli/src/main.rs",
@@ -287,7 +296,8 @@
         "go",
         "swift",
         "as3",
-        "semdiff"
+        "semdiff",
+        "resources"
       ],
       "status": "partial",
       "entry_point": "crates/disrobe-cli/src/main.rs",
@@ -359,7 +369,8 @@
         "shell",
         "ruby",
         "beam",
-        "pickle"
+        "pickle",
+        "evm"
       ],
       "status": "partial",
       "entry_point": "crates/disrobe-cli/src/main.rs",
@@ -397,7 +408,10 @@
         "query",
         "yara",
         "annot",
-        "rename"
+        "rename",
+        "capture",
+        "crash",
+        "sqlite"
       ],
       "entry_point": "crates/disrobe-cli/src/main.rs",
       "source": [
@@ -434,7 +448,9 @@
         "completions",
         "man",
         "explain",
-        "bug-report"
+        "bug-report",
+        "agent",
+        "mcp"
       ],
       "status": "partial",
       "entry_point": "crates/disrobe-cli/src/main.rs",
