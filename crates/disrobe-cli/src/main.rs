@@ -800,6 +800,19 @@ enum Cmd {
         )]
         info_plist: Option<PathBuf>,
     },
+    #[command(
+        about = "list a PE image's resources and decode the useful ones: version info in every language, string tables, manifests (execution level, UI access, DPI awareness, dependencies), icon groups, and embedded blobs named by their content (PE, ZIP, PDF, PNG and more), with --extract to write each blob"
+    )]
+    Resources {
+        #[arg(value_name = "PE")]
+        path: PathBuf,
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "write every resource blob to this directory"
+        )]
+        extract: Option<PathBuf>,
+    },
     #[cfg(feature = "plugin")]
     #[command(
         about = "signed WebAssembly component plugin sandbox: run, verify, list (fuel/wall-deadline/memory-capped, deny-all-imports)"
@@ -2125,6 +2138,7 @@ fn main() -> miette::Result<()> {
         ),
         #[cfg(feature = "data")]
         Cmd::Capture { path, extract } => cli::capture::run(path, extract, fmt),
+        Cmd::Resources { path, extract } => cli::resources::run(path, extract, fmt),
         Cmd::Electron {
             path,
             asar,

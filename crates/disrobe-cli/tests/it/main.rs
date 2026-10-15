@@ -443,6 +443,9 @@ mod report_cli_e2e;
 #[path = "../report_forensic_e2e.rs"]
 mod report_forensic_e2e;
 
+#[path = "../resources_cli.rs"]
+mod resources_cli;
+
 #[path = "../sarif_emit.rs"]
 mod sarif_emit;
 

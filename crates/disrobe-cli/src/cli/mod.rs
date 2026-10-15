@@ -140,6 +140,7 @@ pub(crate) mod report;
 pub(crate) mod report_forensic;
 #[cfg(feature = "auto")]
 pub(crate) mod report_html;
+pub(crate) mod resources;
 #[cfg(feature = "ruby")]
 pub(crate) mod ruby;
 pub(crate) mod sarif;
