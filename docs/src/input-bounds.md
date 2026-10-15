@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2444 bounds (count 233, other 1154, output 72, recursion 242, size 552, work 191).
+2466 bounds (count 235, other 1166, output 70, recursion 246, size 556, work 193).
 
-Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassified 17, allocation 33, unused 8.
+Exceeded: error 1010, recorded 208, panic 0, delegated 52, silent 1137, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1273,6 +1273,9 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-lua` | `MAX_OPCODE_MAP_BYTES` | size | error: `Error::LuauOpcodeMap` (DR-LUA-0030) | `u64` | `64 << 10` | `crates/disrobe-pass-lua/src/reader/luau.rs` |
 | `disrobe-pass-lua` | `MAX_PROTO_DEPTH` | recursion | error: `Error::LuauOpcodeMap` (DR-LUA-0030) | `usize` | `200` | `crates/disrobe-pass-lua/src/reader/luau.rs` |
 | `disrobe-pass-lua` | `MAX_TEMPLATE_STORAGE_BYTES` | size | error: `Error::LuauTableTemplateStorageLimit` (DR-LUA-0039) | `usize` | `16 << 20` | `crates/disrobe-pass-lua/src/reader/luau.rs` |
+| `disrobe-pass-mobile` | `MAX_ENTRIES` | count | error: `PackerScanError::TooManyEntries` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/apk_packers.rs` |
+| `disrobe-pass-mobile` | `MAX_ENTRY_BYTES` | size | silent: `return` in `read_entry` | `u64` | `64 << 20` | `crates/disrobe-pass-mobile/src/apk_packers.rs` |
+| `disrobe-pass-mobile` | `MAX_RECOVERED_DEX` | other | silent: `break` in `xor_asset_payloads`; `while` condition in `open_source_jiagu_payload`; skipped in `read_view` | `usize` | `64` | `crates/disrobe-pass-mobile/src/apk_packers.rs` |
 | `disrobe-pass-mobile` | `MAX_EMBEDDED_DEX_CARVES` | other | silent: `while` condition in `collect_plain_dex_carves`; `while` condition in `collect_xor_dex_carves` | `usize` | `16` | `crates/disrobe-pass-mobile/src/apk_recon.rs` |
 | `disrobe-pass-mobile` | `MAX_PROTECTOR_CARVE_SCAN` | other | silent: skipped in `analyze`; skipped in `extract_android_dex_children` | `u64` | `64 << 20` | `crates/disrobe-pass-mobile/src/apk_recon.rs` |
 | `disrobe-pass-mobile` | `MAX_RESOLVED_RESOURCES` | other | silent: `break` in `summarise_arsc` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/apk_recon.rs` |
@@ -1300,7 +1303,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-mobile` | `CLUSTER_TAG_SCAN_LIMIT` | other | silent: `.min()` clamp in `scan_cid_tags` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/flutter/cluster.rs` |
 | `disrobe-pass-mobile` | `MAX_CLOSURE_NESTING` | recursion | silent: `return` in `qualified_name` | `usize` | `64` | `crates/disrobe-pass-mobile/src/flutter/code_names.rs` |
 | `disrobe-pass-mobile` | `MAX_CODE_TABLE_ENTRIES` | count | error: `Error::DartCodeTableLengthMismatch` (DR-MOB-0049); `Error::DartCodeTableUnavailable` (DR-MOB-0048) | `usize` | `1 << 22` | `crates/disrobe-pass-mobile/src/flutter/code_table.rs` |
-| `disrobe-pass-mobile` | `HARD_CLUSTER_LIMIT` | other | error: `Error::DartGraphConfiguredLimitExceeded` (DR-MOB-0044); `Error::DartGraphLimitExceeded` (DR-MOB-0035); `Error::FlutterEngineSymbolMapDuplicateAddress` (DR-MOB-0055); 2 more | `usize` | `4096` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
+| `disrobe-pass-mobile` | `HARD_CLUSTER_LIMIT` | other | error: `Error::DartGraphConfiguredLimitExceeded` (DR-MOB-0044); `Error::DartGraphLimitExceeded` (DR-MOB-0035); `Error::FlutterEngineSymbolMapDuplicateAddress` (DR-MOB-0055); 5 more | `usize` | `4096` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_OBJECT_LIMIT` | other | error: `DartPoolUnresolvedReason::ObjectOutOfRange`; `DartPoolUnresolvedReason::TypeArgumentsMalformed`; `DartPoolUnresolvedReason::TypeFlagsMissing`; 2 more | `usize` | `2_000_000` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_REFERENCE_LIMIT` | other | error: `DartPoolUnresolvedReason::Cyclic`; `DartPoolUnresolvedReason::DeclaredNameMissing`; `DartPoolUnresolvedReason::ObjectOutOfRange`; 7 more | `usize` | `16_000_000` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
 | `disrobe-pass-mobile` | `HARD_STRING_CODE_UNIT_LIMIT` | other | error: `Error::DartGraphConfiguredLimitExceeded` (DR-MOB-0044); `Error::DartGraphLimitExceeded` (DR-MOB-0035) | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-mobile/src/flutter/dart_graph.rs` |
@@ -1327,24 +1330,37 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-mobile` | `MAX_TAG_WORDS` | other | silent: `return` in `allocation_stub_for_class` | `usize` | `4` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
 | `disrobe-pass-mobile` | `MAX_DECIMAL_BYTES` | size | silent: fallback value in `bigint_literal` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/bigint.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_INSTRUCTIONS` | other | silent: `while` condition in `decode_instructions` | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | size | silent: no action in `closure_expr` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_DEPTH` | recursion | silent: `return` in `inlined_closure_bodies` | `usize` | `8` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_REG_EXPR_BYTES` | size | silent: no action in `set_reg` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_RENDERED_CALL_ARGS` | output | silent: `.min()` clamp in `unrecovered_arg_list`; `return` in `call_window_registers` | `u64` | `256` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_RENDER_BYTES` | output | silent: `break` in `render_block_stmts`; `break` in `render_structured` | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_SWITCH_CASES` | other | silent: `return` in `switch_table_entries` | `u64` | `4096` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_DECODED_LITERALS` | work | silent: `return` in `decode_literals`; `while` condition in `decode_literals` | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/hermes/literals.rs` |
+| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | size | silent: fallback value in `expand_capped` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_DEPTH` | recursion | silent: fallback value in `expand_capped` | `usize` | `8` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_NAME_SCAN_FUNCTIONS` | other | silent: `continue` in `references_name` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_PROGRAM_BYTES` | size | silent: `break` in `subtree_size`; fallback value in `expand_full` | `usize` | `1 << 29` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_PROGRAM_DEPTH` | recursion | silent: fallback value in `expand_full` | `usize` | `512` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_SWITCH_CASES` | other | silent: `return` in `string_switch_entries`; `return` in `switch_table_entries` | `u64` | `4096` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_CALL_ARGS` | other | silent: `return` in `call_window` | `u64` | `4096` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_ENV_SLOTS` | other | silent: `.min()` clamp in `lift_function` | `u32` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_EXPR_BYTES` | size | silent: `return` in `define_now` | `usize` | `1 << 14` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_LITERAL_ELEMENTS` | work | delegated: passed to `iter::repeat_n` | `u64` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_REACHING_BITS` | other | silent: `return` in `reaching_constants` | `usize` | `1 << 28` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_TRACKED_REGISTERS` | other | recorded: flag `pinned` | `u32` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_DECODED_LITERALS` | work | silent: `return` in `decode_literals_in`; `while` condition in `decode_literals_in` | `usize` | `1 << 20` | `crates/disrobe-pass-mobile/src/hermes/literals.rs` |
+| `disrobe-pass-mobile` | `MAX_SHAPE_PROPERTIES` | other | silent: `return` in `shape_keys` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/modern.rs` |
 | `disrobe-pass-mobile` | `MAX_REGEX_DEPTH` | recursion | recorded: flag `fully_modeled` | `usize` | `512` | `crates/disrobe-pass-mobile/src/hermes/regex.rs` |
 | `disrobe-pass-mobile` | `MAX_REGEX_INSNS` | other | silent: `while` condition in `decode_body`; `while` condition in `render_range_inner` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/regex.rs` |
 | `disrobe-pass-mobile` | `MAX_LOOP_EXTENSION_ROUNDS` | work | silent: `for` range in `extend_loop_body` | `usize` | `64` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
-| `disrobe-pass-mobile` | `MAX_LOWERED_LOOPS` | work | error: `StructureDecline::BlockBudgetExceeded` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
+| `disrobe-pass-mobile` | `MAX_LOWERED_LOOPS` | work | error: `StructureDecline::BlockBudgetExceeded` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
 | `disrobe-pass-mobile` | `MAX_REGION_DEPTH` | recursion | error: `StructureDecline::DepthExceeded` | `usize` | `64` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
 | `disrobe-pass-mobile` | `MAX_STRUCTURE_BLOCKS` | other | error: `StructureDecline::BlockBudgetExceeded` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
 | `disrobe-pass-mobile` | `MAX_STRUCTURE_STATEMENTS` | other | error: `StructureDecline::StatementBudgetExceeded` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
+| `disrobe-pass-mobile` | `MAX_STACKIFY_DEPTH` | recursion | error: `StructureDecline::DepthExceeded` | `usize` | `256` | `crates/disrobe-pass-mobile/src/hermes/structure/stackify.rs` |
 | `disrobe-pass-mobile` | `MACHO_FAT_ARCH_COUNT_CAP` | count | error: `Error::MachOFatTooManyArches` (DR-MOB-0031) | `usize` | `4096` | `crates/disrobe-pass-mobile/src/ios.rs` |
 | `disrobe-pass-mobile` | `ZIP_ENTRY_COUNT_CAP` | count | error: `Error::Zip` (DR-MOB-0002) | `usize` | `65_536` | `crates/disrobe-pass-mobile/src/lib.rs` |
 | `disrobe-pass-mobile` | `ZIP_ENTRY_PREALLOC_CAP` | other | unused: no use in the crate | `usize` | `64 << 20` | `crates/disrobe-pass-mobile/src/lib.rs` |
 | `disrobe-pass-mobile` | `ZIP_ENTRY_READ_CAP` | other | error: `Error::Zip` (DR-MOB-0002) | `usize` | `512 << 20` | `crates/disrobe-pass-mobile/src/lib.rs` |
+| `disrobe-pass-mobile` | `MAX_ASSET_LITERAL_KEYS` | work | silent: `return` in `keys_and_values`; `return` in `object` | `usize` | `64` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_RECORD_BYTES` | size | error: `DartPoolUnresolvedReason::DeclaredNameMissing`; `DartPoolUnresolvedReason::ObjectOutOfRange`; `DartPoolUnresolvedReason::TextMissing`; 2 more | `usize` | `1 << 13` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_SCALES` | other | silent: `return` in `array`; no action in `array` | `usize` | `16` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_SOURCE_RECORDS` | count | silent: `while` condition in `source_assets` | `usize` | `1 << 16` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_VALUE_DEPTH` | recursion | silent: `return` in `value` | `usize` | `16` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_XML` | other | silent: `break` in `decode_archive` | `usize` | `4096` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
 | `disrobe-pass-mobile` | `MAX_VALUES_ENTRIES` | count | silent: `break` in `reconstruct_values` | `usize` | `16384` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
 | `disrobe-pass-native` | `MAX_CODE_BYTES` | size | recorded: flag `budget` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/anti_runtime.rs` |
@@ -1513,13 +1529,13 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-native` | `EMULATED_IMAGE_EXPANSION_LIMIT` | other | recorded: flag `int3_gauntlet_cleared`; flag `left_image`; flag `returned` | `u64` | `4096` | `crates/disrobe-pass-native/src/packers/section_recovery.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | silent: `return` in `decode_elf_extents_with_budget`; `return` in `walk_block_chain` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_BRUTE_FORCE_OFFSETS` | other | silent: `.min()` clamp in `decode_image_with_budget`; `.min()` clamp in `decode_multiblock_with_budget`; `.min()` clamp in `locate_structural` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 90 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 90 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 92 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 92 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_L_INFO_SCAN` | other | silent: `.min()` clamp in `elf_first_block_offset` | `usize` | `64 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_RESYNC_OFFSETS` | other | silent: `while` condition in `decode_elf_extents_with_budget` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_STRUCTURAL_CHECKSUM_BYTES` | size | silent: `return` in `reserve` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_TAIL_SCAN` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 90 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 92 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_CANDIDATES` | other | silent: `break` in `locate_structural` | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_EXPANSION` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `u64` | `64` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_CARVED_PROTECTED_BYTES` | size | recorded: flag `blob_truncated` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/vmprotect_carve.rs` |
@@ -1558,7 +1574,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-native` | `TAIL_JOIN_WALK_BUDGET` | work | silent: `return` in `joins_every_non_tail_path` | `usize` | `4096` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `TAIL_SPLIT_BLOCK_CAP` | other | silent: `return` in `closed_loop_body`; `return` in `render_cfg_blocks_via_cns`; `return` in `split_tail_regions` | `usize` | `256` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
 | `disrobe-pass-native` | `TAIL_SUBTREE_CAP` | other | silent: `return` in `private_tail_subtree` | `usize` | `32` | `crates/disrobe-pass-native/src/pseudo_c.rs` |
-| `disrobe-pass-native` | `MAX_FRAME_BYTES` | size | error: `reject_at()` | `i64` | `1 << 20` | `crates/disrobe-pass-native/src/pseudo_c/aarch64.rs` |
+| `disrobe-pass-native` | `MAX_FRAME_BYTES` | size | unused: no use in the crate | `i64` | `1 << 20` | `crates/disrobe-pass-native/src/pseudo_c/aarch64.rs` |
 | `disrobe-pass-native` | `MAX_INSTRUCTIONS` | other | error: `reject()` | `usize` | `4096` | `crates/disrobe-pass-native/src/pseudo_c/aarch64.rs` |
 | `disrobe-pass-native` | `MAX_SWITCH_CASES` | other | silent: `return` in `readable_switch_table`; `return` in `recover_aarch64_switch` | `usize` | `4096` | `crates/disrobe-pass-native/src/pseudo_c/aarch64.rs` |
 | `disrobe-pass-native` | `MAX_SWITCH_SLICE_INSTRUCTIONS` | other | silent: `for` range in `matching_switch_guard`; `for` range in `single_block_definition`; `for` range in `single_block_pc_relative_definition`; 1 more | `usize` | `16` | `crates/disrobe-pass-native/src/pseudo_c/aarch64.rs` |
@@ -1567,6 +1583,12 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-native` | `MAX_FIXPOINT_STEPS` | work | error: `reject()` | `usize` | `1 << 20` | `crates/disrobe-pass-native/src/pseudo_c/aarch64_frame.rs` |
 | `disrobe-pass-native` | `MAX_CALLEE_BYTES` | size | silent: `return` in `clobbers` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/pseudo_c/call_clobber.rs` |
 | `disrobe-pass-native` | `MAX_CALLEE_FUNCTIONS` | other | silent: `return` in `clobbers` | `usize` | `64` | `crates/disrobe-pass-native/src/pseudo_c/call_clobber.rs` |
+| `disrobe-pass-native` | `MAX_CALLEE_DEPTH` | recursion | silent: `return` in `facts` | `usize` | `8` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
+| `disrobe-pass-native` | `MAX_CALLEE_INSTRUCTIONS` | other | silent: `return` in `scan` | `usize` | `4_096` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
+| `disrobe-pass-native` | `MAX_DATAFLOW_VISITS` | other | error: `Error::LlvmIr` (DR-NATIVE-0018) | `usize` | `1 << 20` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
+| `disrobe-pass-native` | `MAX_FRAME_BYTES` | size | error: `refusal()` | `i64` | `1 << 20` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
+| `disrobe-pass-native` | `MAX_FUNCTION_INSTRUCTIONS` | other | error: `Error::LlvmIr` (DR-NATIVE-0018) | `usize` | `16_384` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
+| `disrobe-pass-native` | `MAX_STACK_ARGUMENTS` | other | error: `Error::LlvmIr` (DR-NATIVE-0018); untyped `format!`; untyped error | `usize` | `8` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
 | `disrobe-pass-native` | `MAX_AFFINE_SHIFT` | other | silent: fallback value in `remainder_register` | `u8` | `126` | `crates/disrobe-pass-native/src/pseudo_c/idiom.rs` |
 | `disrobe-pass-native` | `MAX_DIVIDEND_BITS` | other | silent: `return` in `disjoint_or`; `return` in `divisor_reproduces_witness`; `return` in `quotient_ceiling`; 2 more | `u32` | `64` | `crates/disrobe-pass-native/src/pseudo_c/idiom.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | silent: `return` in `specialize` | `usize` | `256` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
@@ -2468,7 +2490,7 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 
 ## Silent stops
 
-1124 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1137 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2972,6 +2994,8 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-lua` | `DISPATCH_GUARD_LIMIT` | `break` in `collect_threshold_cuts` | `crates/disrobe-pass-lua/src/obfuscator/wearedevs.rs` |
 | `disrobe-pass-lua` | `DISPATCH_PARSE_DEPTH_LIMIT` | `return` in `parse_dispatch_node` | `crates/disrobe-pass-lua/src/obfuscator/wearedevs.rs` |
 | `disrobe-pass-lua` | `DISPATCH_SCAN_LIMIT` | `.min()` clamp in `lift_dispatch` | `crates/disrobe-pass-lua/src/obfuscator/wearedevs.rs` |
+| `disrobe-pass-mobile` | `MAX_ENTRY_BYTES` | `return` in `read_entry` | `crates/disrobe-pass-mobile/src/apk_packers.rs` |
+| `disrobe-pass-mobile` | `MAX_RECOVERED_DEX` | `break` in `xor_asset_payloads`; `while` condition in `open_source_jiagu_payload`; skipped in `read_view` | `crates/disrobe-pass-mobile/src/apk_packers.rs` |
 | `disrobe-pass-mobile` | `MAX_EMBEDDED_DEX_CARVES` | `while` condition in `collect_plain_dex_carves`; `while` condition in `collect_xor_dex_carves` | `crates/disrobe-pass-mobile/src/apk_recon.rs` |
 | `disrobe-pass-mobile` | `MAX_PROTECTOR_CARVE_SCAN` | skipped in `analyze`; skipped in `extract_android_dex_children` | `crates/disrobe-pass-mobile/src/apk_recon.rs` |
 | `disrobe-pass-mobile` | `MAX_RESOLVED_RESOURCES` | `break` in `summarise_arsc` | `crates/disrobe-pass-mobile/src/apk_recon.rs` |
@@ -3010,15 +3034,24 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-mobile` | `MAX_TAG_WORDS` | `return` in `allocation_stub_for_class` | `crates/disrobe-pass-mobile/src/flutter/stub_abi.rs` |
 | `disrobe-pass-mobile` | `MAX_DECIMAL_BYTES` | fallback value in `bigint_literal` | `crates/disrobe-pass-mobile/src/hermes/bigint.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_INSTRUCTIONS` | `while` condition in `decode_instructions` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | no action in `closure_expr` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_DEPTH` | `return` in `inlined_closure_bodies` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_REG_EXPR_BYTES` | no action in `set_reg` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_RENDERED_CALL_ARGS` | `.min()` clamp in `unrecovered_arg_list`; `return` in `call_window_registers` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_RENDER_BYTES` | `break` in `render_block_stmts`; `break` in `render_structured` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_SWITCH_CASES` | `return` in `switch_table_entries` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
-| `disrobe-pass-mobile` | `MAX_DECODED_LITERALS` | `return` in `decode_literals`; `while` condition in `decode_literals` | `crates/disrobe-pass-mobile/src/hermes/literals.rs` |
+| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_BYTES` | fallback value in `expand_capped` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_INLINE_CLOSURE_DEPTH` | fallback value in `expand_capped` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_NAME_SCAN_FUNCTIONS` | `continue` in `references_name` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_PROGRAM_BYTES` | `break` in `subtree_size`; fallback value in `expand_full` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_PROGRAM_DEPTH` | fallback value in `expand_full` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_SWITCH_CASES` | `return` in `string_switch_entries`; `return` in `switch_table_entries` | `crates/disrobe-pass-mobile/src/hermes/decompile.rs` |
+| `disrobe-pass-mobile` | `MAX_CALL_ARGS` | `return` in `call_window` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_ENV_SLOTS` | `.min()` clamp in `lift_function` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_EXPR_BYTES` | `return` in `define_now` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_REACHING_BITS` | `return` in `reaching_constants` | `crates/disrobe-pass-mobile/src/hermes/lift.rs` |
+| `disrobe-pass-mobile` | `MAX_DECODED_LITERALS` | `return` in `decode_literals_in`; `while` condition in `decode_literals_in` | `crates/disrobe-pass-mobile/src/hermes/literals.rs` |
+| `disrobe-pass-mobile` | `MAX_SHAPE_PROPERTIES` | `return` in `shape_keys` | `crates/disrobe-pass-mobile/src/hermes/modern.rs` |
 | `disrobe-pass-mobile` | `MAX_REGEX_INSNS` | `while` condition in `decode_body`; `while` condition in `render_range_inner` | `crates/disrobe-pass-mobile/src/hermes/regex.rs` |
 | `disrobe-pass-mobile` | `MAX_LOOP_EXTENSION_ROUNDS` | `for` range in `extend_loop_body` | `crates/disrobe-pass-mobile/src/hermes/structure.rs` |
+| `disrobe-pass-mobile` | `MAX_ASSET_LITERAL_KEYS` | `return` in `keys_and_values`; `return` in `object` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_SCALES` | `return` in `array`; no action in `array` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_SOURCE_RECORDS` | `while` condition in `source_assets` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
+| `disrobe-pass-mobile` | `MAX_VALUE_DEPTH` | `return` in `value` | `crates/disrobe-pass-mobile/src/react_native/assets.rs` |
 | `disrobe-pass-mobile` | `MAX_DECODED_XML` | `break` in `decode_archive` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
 | `disrobe-pass-mobile` | `MAX_VALUES_ENTRIES` | `break` in `reconstruct_values` | `crates/disrobe-pass-mobile/src/res_decode.rs` |
 | `disrobe-pass-native` | `MAX_DECODED_INSTRUCTIONS` | `while` condition in `decode` | `crates/disrobe-pass-native/src/anti_runtime.rs` |
@@ -3171,6 +3204,8 @@ Exceeded: error 1004, recorded 207, panic 0, delegated 51, silent 1124, unclassi
 | `disrobe-pass-native` | `REGISTER_ARGUMENT_LIMIT` | `for` range in `prove_arguments` | `crates/disrobe-pass-native/src/pseudo_c/aarch64_callsite.rs` |
 | `disrobe-pass-native` | `MAX_CALLEE_BYTES` | `return` in `clobbers` | `crates/disrobe-pass-native/src/pseudo_c/call_clobber.rs` |
 | `disrobe-pass-native` | `MAX_CALLEE_FUNCTIONS` | `return` in `clobbers` | `crates/disrobe-pass-native/src/pseudo_c/call_clobber.rs` |
+| `disrobe-pass-native` | `MAX_CALLEE_DEPTH` | `return` in `facts` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
+| `disrobe-pass-native` | `MAX_CALLEE_INSTRUCTIONS` | `return` in `scan` | `crates/disrobe-pass-native/src/pseudo_c/i386.rs` |
 | `disrobe-pass-native` | `MAX_AFFINE_SHIFT` | fallback value in `remainder_register` | `crates/disrobe-pass-native/src/pseudo_c/idiom.rs` |
 | `disrobe-pass-native` | `MAX_DIVIDEND_BITS` | `return` in `disjoint_or`; `return` in `divisor_reproduces_witness`; `return` in `quotient_ceiling`; 2 more | `crates/disrobe-pass-native/src/pseudo_c/idiom.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | `return` in `specialize` | `crates/disrobe-pass-native/src/pseudo_c/invariant_branches.rs` |
