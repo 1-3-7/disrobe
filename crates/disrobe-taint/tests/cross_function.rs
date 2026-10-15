@@ -10,17 +10,145 @@ const SYSTEM_ADDR: u64 = 0xB000;
 const READER_ADDR: u64 = 0x100;
 const ENTRY_ADDR: u64 = 0x200;
 const RUNNER_ADDR: u64 = 0x300;
+const RELAY_ADDR: u64 = 0x400;
 
 fn instr(address: u64, op: NirOp, mnemonic: &str) -> NirInstr {
+    instr_with_operands(address, op, mnemonic, &[])
+}
+
+fn instr_with_operands(address: u64, op: NirOp, mnemonic: &str, operands: &[&str]) -> NirInstr {
     NirInstr {
         address,
         op,
         mnemonic: mnemonic.to_owned(),
-        operands: Vec::new(),
+        operands: operands
+            .iter()
+            .map(|value: &&str| (*value).to_owned())
+            .collect(),
         reads_memory: false,
         writes_memory: false,
         byte_width: false,
         source: SourceRef::new(SourceLang::NativeX86, address),
+    }
+}
+
+fn memory_input_module(offset: &str) -> NirModule {
+    let source_and_caller: NirFunction = NirFunction {
+        name: "dispatch_memory".to_owned(),
+        address: ENTRY_ADDR,
+        end: ENTRY_ADDR + 0x40,
+        is_export: true,
+        instructions: vec![
+            call_extern(ENTRY_ADDR, "recv"),
+            instr_with_operands(0x208, NirOp::Store, "mov", &["[rsp+30h]", "rax"]),
+            instr_with_operands(0x210, NirOp::Load, "lea", &["rcx", "[rsp+30h]"]),
+            call_internal(0x218, RUNNER_ADDR),
+            instr(0x220, NirOp::Return, "ret"),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, ENTRY_ADDR),
+    };
+    let sink: NirFunction = NirFunction {
+        name: "memory_sink".to_owned(),
+        address: RUNNER_ADDR,
+        end: RUNNER_ADDR + 0x30,
+        is_export: false,
+        instructions: vec![
+            instr_with_operands(
+                RUNNER_ADDR,
+                NirOp::Load,
+                "mov",
+                &["rcx", &format!("[rcx{offset}]")],
+            ),
+            instr_with_operands(
+                RUNNER_ADDR + 8,
+                NirOp::ExternCall {
+                    symbol: "system".to_owned(),
+                },
+                "call",
+                &["rcx"],
+            ),
+            instr(RUNNER_ADDR + 0x10, NirOp::Return, "ret"),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, RUNNER_ADDR),
+    };
+    NirModule {
+        source_hash: [10u8; 32],
+        lang: SourceLang::NativeX86,
+        functions: vec![source_and_caller, sink],
+        symbols: vec![
+            NirSymbol {
+                address: RECV_ADDR,
+                name: "recv".to_owned(),
+                kind: SymbolKind::Import,
+            },
+            NirSymbol {
+                address: SYSTEM_ADDR,
+                name: "system".to_owned(),
+                kind: SymbolKind::Import,
+            },
+            NirSymbol {
+                address: RUNNER_ADDR,
+                name: "memory_sink".to_owned(),
+                kind: SymbolKind::Function,
+            },
+        ],
+    }
+}
+
+fn global_input_module(sink_address: &str) -> NirModule {
+    let source_and_caller: NirFunction = NirFunction {
+        name: "dispatch_global".to_owned(),
+        address: ENTRY_ADDR,
+        end: ENTRY_ADDR + 0x30,
+        is_export: true,
+        instructions: vec![
+            call_extern(ENTRY_ADDR, "recv"),
+            instr_with_operands(0x208, NirOp::Store, "mov", &["[rel 5000h]", "rax"]),
+            call_internal(0x210, RUNNER_ADDR),
+            instr(0x218, NirOp::Return, "ret"),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, ENTRY_ADDR),
+    };
+    let sink: NirFunction = NirFunction {
+        name: "global_sink".to_owned(),
+        address: RUNNER_ADDR,
+        end: RUNNER_ADDR + 0x30,
+        is_export: false,
+        instructions: vec![
+            instr_with_operands(RUNNER_ADDR, NirOp::Load, "mov", &["rcx", sink_address]),
+            instr_with_operands(
+                RUNNER_ADDR + 8,
+                NirOp::ExternCall {
+                    symbol: "system".to_owned(),
+                },
+                "call",
+                &["rcx"],
+            ),
+            instr(RUNNER_ADDR + 0x10, NirOp::Return, "ret"),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, RUNNER_ADDR),
+    };
+    NirModule {
+        source_hash: [11u8; 32],
+        lang: SourceLang::NativeX86,
+        functions: vec![source_and_caller, sink],
+        symbols: vec![
+            NirSymbol {
+                address: RECV_ADDR,
+                name: "recv".to_owned(),
+                kind: SymbolKind::Import,
+            },
+            NirSymbol {
+                address: SYSTEM_ADDR,
+                name: "system".to_owned(),
+                kind: SymbolKind::Import,
+            },
+            NirSymbol {
+                address: RUNNER_ADDR,
+                name: "global_sink".to_owned(),
+                kind: SymbolKind::Function,
+            },
+        ],
     }
 }
 
@@ -109,6 +237,33 @@ fn module() -> NirModule {
     }
 }
 
+fn tail_relay_module(relay_target: Option<u64>) -> NirModule {
+    let mut value: NirModule = module();
+    let relay_op: NirOp = relay_target.map_or(NirOp::Return, |target: u64| NirOp::Branch {
+        target: Some(target),
+    });
+    value.functions.push(NirFunction {
+        name: "relay".to_owned(),
+        address: RELAY_ADDR,
+        end: RELAY_ADDR + 0x10,
+        is_export: false,
+        instructions: vec![instr(RELAY_ADDR, relay_op, "jmp")],
+        source: SourceRef::new(SourceLang::NativeX86, RELAY_ADDR),
+    });
+    let dispatch: &mut NirFunction = value
+        .functions
+        .iter_mut()
+        .find(|function: &&mut NirFunction| function.name == "dispatch")
+        .expect("dispatch present");
+    dispatch.instructions[2] = call_internal(0x210, RELAY_ADDR);
+    value.symbols.push(NirSymbol {
+        address: RELAY_ADDR,
+        name: "relay".to_owned(),
+        kind: SymbolKind::Function,
+    });
+    value
+}
+
 fn config() -> TaintConfig {
     TaintConfig::from_lists(["recv"], ["system"])
 }
@@ -143,4 +298,52 @@ fn analysis_is_deterministic() {
     let first: TaintReport = analyze(&module(), &config());
     let second: TaintReport = analyze(&module(), &config());
     assert_eq!(first, second);
+}
+
+#[test]
+fn a_cross_function_tail_jump_composes_the_sink_summary_at_depth_two() {
+    let report: TaintReport = analyze(&tail_relay_module(Some(RUNNER_ADDR)), &config());
+    assert!(
+        report.flow_in("dispatch", "read_input", "relay"),
+        "the relay's jump to the sink wrapper is a cross-function tail transfer and must compose \
+         through the caller's source summary: {report:?}"
+    );
+
+    let severed: TaintReport = analyze(&tail_relay_module(None), &config());
+    assert!(
+        severed.is_empty(),
+        "replacing the relay's cross-function jump with a return removes the only path to the \
+         sink, so the mutation control must stay red: {severed:?}"
+    );
+}
+
+#[test]
+fn a_callee_memory_projection_resolves_the_callers_exact_pointer_target() {
+    let report: TaintReport = analyze(&memory_input_module(""), &config());
+    assert!(
+        report.flow_in("dispatch_memory", "recv", "memory_sink"),
+        "the callee dereferences its pointer argument, so its summary must resolve the caller's \
+         established stack-cell alias: {report:?}"
+    );
+
+    let severed: TaintReport = analyze(&memory_input_module("+8h"), &config());
+    assert!(
+        severed.is_empty(),
+        "changing the callee projection to a different stack cell must sever the flow: {severed:?}"
+    );
+}
+
+#[test]
+fn a_callee_global_read_resolves_the_callers_exact_global_write() {
+    let report: TaintReport = analyze(&global_input_module("[rel 5000h]"), &config());
+    assert!(
+        report.flow_in("dispatch_global", "recv", "global_sink"),
+        "the caller's tainted write and callee's read use the same global slot: {report:?}"
+    );
+
+    let severed: TaintReport = analyze(&global_input_module("[rel 6000h]"), &config());
+    assert!(
+        severed.is_empty(),
+        "a different global slot must not inherit the caller's tainted write: {severed:?}"
+    );
 }

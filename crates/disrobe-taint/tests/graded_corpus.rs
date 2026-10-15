@@ -1263,56 +1263,56 @@ fn leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss() {
 const PUBLISHED_O2_HEADING: &str = "Native taint source-to-sink flow (Juliet CWE-78 char/system corpus, gcc 16.2.0 -O2 -fno-builtin, Windows x86-64)";
 const PUBLISHED_O2_AGGREGATE_LABEL: &str = "aggregate (8 populated categories), gcc -O2";
 const PUBLISHED_O2_AGGREGATE_GROUPS: u64 = 190;
-const PUBLISHED_O2_AGGREGATE_TP_FLOOR: u64 = 93;
+const PUBLISHED_O2_AGGREGATE_TP_FLOOR: u64 = 182;
 
 const PUBLISHED_O2_CATEGORY_FLOORS: [GradeFloor; 8] = [
     GradeFloor {
         category: juliet_corpus::Category::DirectFlow,
         label: "direct flow, gcc -O2",
         groups: 15,
-        true_positive_floor: 9,
+        true_positive_floor: 15,
     },
     GradeFloor {
         category: juliet_corpus::Category::Field,
         label: "flow through a field, gcc -O2",
         groups: 10,
-        true_positive_floor: 6,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::ArrayElement,
         label: "flow through an array element, gcc -O2",
         groups: 5,
-        true_positive_floor: 1,
+        true_positive_floor: 5,
     },
     GradeFloor {
         category: juliet_corpus::Category::FunctionPointer,
         label: "flow across a function pointer, gcc -O2",
         groups: 10,
-        true_positive_floor: 6,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::ControlDependence,
         label: "implicit flow through a control dependence, gcc -O2",
         groups: 85,
-        true_positive_floor: 49,
+        true_positive_floor: 84,
     },
     GradeFloor {
         category: juliet_corpus::Category::Loop,
         label: "flow through a loop, gcc -O2",
         groups: 10,
-        true_positive_floor: 6,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthOne,
         label: "inter-procedural flow at depth one, gcc -O2",
         groups: 40,
-        true_positive_floor: 16,
+        true_positive_floor: 33,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthGtOne,
         label: "inter-procedural flow at depth greater than one, gcc -O2",
         groups: 15,
-        true_positive_floor: 0,
+        true_positive_floor: 15,
     },
 ];
 

@@ -252,6 +252,22 @@ fn indexed_write_base_read_flow() -> NirFunction {
     }
 }
 
+fn indexed_write_register_base_read_flow() -> NirFunction {
+    NirFunction {
+        name: "handle".to_owned(),
+        address: 0xE00,
+        end: 0xE80,
+        is_export: true,
+        instructions: vec![
+            op(0xE00, NirOp::Load, "lea", &["rcx", "[rbx+r9]"]),
+            call_fgets(0xE08),
+            call_system_reading(0xE10, "rbx"),
+            op(0xE18, NirOp::Return, "ret", &[]),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, 0xE00),
+    }
+}
+
 fn fgets_call_with_no_established_argument() -> NirFunction {
     NirFunction {
         name: "handle".to_owned(),
@@ -295,12 +311,34 @@ fn recv_argument_flow() -> NirFunction {
         end: 0x980,
         is_export: true,
         instructions: vec![
-            setup_buffer_argument(0x900, "rdi"),
+            setup_buffer_argument(0x900, "rsi"),
             call_recv(0x908),
-            call_system(0x910),
+            call_system_reading(0x910, "rsi"),
             op(0x918, NirOp::Return, "ret", &[]),
         ],
         source: SourceRef::new(SourceLang::NativeX86, 0x900),
+    }
+}
+
+fn recv_memory_alias_flow(sink_offset: &str) -> NirFunction {
+    NirFunction {
+        name: "handle_recv_alias".to_owned(),
+        address: 0xF00,
+        end: 0xF80,
+        is_export: true,
+        instructions: vec![
+            op(0xF00, NirOp::Load, "lea", &["rdx", "[rsp+30h]"]),
+            call_recv(0xF08),
+            op(
+                0xF10,
+                NirOp::Load,
+                "lea",
+                &["rcx", &format!("[rsp{sink_offset}]")],
+            ),
+            call_system_reading(0xF18, "rcx"),
+            op(0xF20, NirOp::Return, "ret", &[]),
+        ],
+        source: SourceRef::new(SourceLang::NativeX86, 0xF00),
     }
 }
 
@@ -476,14 +514,41 @@ fn a_source_can_taint_the_return_value_even_when_it_also_declares_an_out_argumen
 }
 
 #[test]
-fn a_source_without_a_declared_out_argument_never_taints_an_argument_register_post_call() {
+fn recv_taints_its_established_destination_buffer_argument() {
     let report: TaintReport = analyze(&module(recv_argument_flow()), &config());
     assert!(
-        report.is_empty(),
-        "recv carries no out-argument declaration, built-in or explicit, so establishing rdi \
-         before the call must not manufacture a flow into system: recv's return lands in rax, \
-         never rdi, and the only reason rdi would read as tainted is if the engine trusted the \
-         table position of a declaration recv never made: {report:?}"
+        report.reaches("recv", "system"),
+        "recv writes network bytes into argument index 1, so an established rsi destination \
+         buffer must carry the source taint even though the return register only carries the byte \
+         count: {report:?}"
+    );
+
+    let mut severed: NirFunction = recv_argument_flow();
+    severed
+        .instructions
+        .insert(2, op(0x90c, NirOp::Const, "mov", &["rsi", "0x2a"]));
+    let severed_report: TaintReport = analyze(&module(severed), &config());
+    assert!(
+        severed_report.is_empty(),
+        "overwriting recv's destination-buffer register before the sink must sever the flow: \
+         {severed_report:?}"
+    );
+}
+
+#[test]
+fn a_sink_argument_resolves_the_exact_established_source_buffer_alias() {
+    let report: TaintReport = analyze(&module(recv_memory_alias_flow("+30h")), &config());
+    assert!(
+        report.reaches("recv", "system"),
+        "recv writes through rdx into the stack buffer and the sink re-establishes rcx as that \
+         exact buffer address: {report:?}"
+    );
+
+    let severed: TaintReport = analyze(&module(recv_memory_alias_flow("+40h")), &config());
+    assert!(
+        severed.is_empty(),
+        "re-establishing the sink argument at a different stack address must not inherit recv's \
+         buffer taint: {severed:?}"
     );
 }
 
@@ -516,6 +581,31 @@ fn overwriting_the_buffer_base_before_the_reload_severs_the_indexed_write_flow()
         "storing an untainted value to [rsp+30h] between the fgets call and the reload must kill \
          the reduced base-address taint the same way an ordinary store kills any other tracked \
          location, reusing the engine's existing def liveness: {report:?}"
+    );
+}
+
+#[test]
+fn an_indexed_source_write_taints_the_non_stack_buffer_base_register() {
+    let report: TaintReport = analyze(
+        &module(indexed_write_register_base_read_flow()),
+        &out_argument_config(),
+    );
+    assert!(
+        report.reaches("fgets", "system"),
+        "fgets writes through rcx computed as rbx plus a runtime offset, while the sink later uses \
+         the buffer base in rbx directly, so the reduced out-argument alias must taint that base \
+         register: {report:?}"
+    );
+
+    let mut severed: NirFunction = indexed_write_register_base_read_flow();
+    severed
+        .instructions
+        .insert(2, op(0xE0C, NirOp::Const, "mov", &["rbx", "0x2a"]));
+    let severed_report: TaintReport = analyze(&module(severed), &out_argument_config());
+    assert!(
+        severed_report.is_empty(),
+        "overwriting the non-stack base register before the sink must sever the indexed write \
+         flow: {severed_report:?}"
     );
 }
 

@@ -835,8 +835,8 @@
       "bars": [
         {
           "label": "direct flow, gcc -O2",
-          "value": 60.0,
-          "num": 9,
+          "value": 100.0,
+          "num": 15,
           "den": 15,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -844,13 +844,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "9 of 15 labeled direct-flow command-injection cases recalled, precision 100% (9 of 9 flagged findings land on the corpus's own bad-labeled chain, 0 on a good-labeled chain).",
+          "detail": "15 of 15 labeled direct-flow command-injection cases recalled, precision 100% (15 of 15 flagged findings land on the corpus's own bad-labeled chain, 0 on a good-labeled chain).",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category direct flow; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "flow through a field, gcc -O2",
-          "value": 60.0,
-          "num": 6,
+          "value": 100.0,
+          "num": 10,
           "den": 10,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -858,13 +858,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "6 of 10 labeled struct-field flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "detail": "10 of 10 labeled struct-field flow cases recalled, precision 100% (10 of 10 flagged findings land on the corpus's own bad-labeled chain).",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through a field; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "flow through an array element, gcc -O2",
-          "value": 20.0,
-          "num": 1,
+          "value": 100.0,
+          "num": 5,
           "den": 5,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -872,13 +872,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "1 of 5 labeled array-element flow cases recalled, precision 100% (1 of 1 flagged findings lands on the corpus's own bad-labeled chain).",
+          "detail": "5 of 5 labeled array-element flow cases recalled, precision 100% (5 of 5 flagged findings land on the corpus's own bad-labeled chain).",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through an array element; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "flow across a function pointer, gcc -O2",
-          "value": 60.0,
-          "num": 6,
+          "value": 100.0,
+          "num": 10,
           "den": 10,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -886,13 +886,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "6 of 10 labeled function-pointer flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "detail": "10 of 10 labeled function-pointer flow cases recalled, precision 100% (10 of 10 flagged findings land on the corpus's own bad-labeled chain).",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow across a function pointer; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "implicit flow through a control dependence, gcc -O2",
-          "value": 57.6,
-          "num": 49,
+          "value": 98.8,
+          "num": 84,
           "den": 85,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -900,13 +900,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "49 of 85 labeled control-dependence (implicit flow) cases recalled, precision 100% (49 of 49 flagged findings land on the corpus's own bad-labeled chain). This is the largest populated category, 85 of the corpus's 190 selected groups.",
+          "detail": "84 of 85 labeled control-dependence (implicit flow) cases recalled, precision 100% (84 of 84 flagged findings land on the corpus's own bad-labeled chain). This is the largest populated category, 85 of the corpus's 190 selected groups; the remaining miss is environment variant 22.",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category implicit flow through a control dependence; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "flow through a loop, gcc -O2",
-          "value": 60.0,
-          "num": 6,
+          "value": 100.0,
+          "num": 10,
           "den": 10,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -914,13 +914,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "6 of 10 labeled loop-flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "detail": "10 of 10 labeled loop-flow cases recalled, precision 100% (10 of 10 flagged findings land on the corpus's own bad-labeled chain).",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through a loop; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "inter-procedural flow at depth one, gcc -O2",
-          "value": 40.0,
-          "num": 16,
+          "value": 82.5,
+          "num": 33,
           "den": 40,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -928,13 +928,13 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "16 of 40 labeled depth-one inter-procedural cases recalled, precision 100% (16 of 16 flagged findings land on the corpus's own bad-labeled chain).",
+          "detail": "33 of 40 labeled depth-one inter-procedural cases recalled, precision 100% (33 of 33 flagged findings land on the corpus's own bad-labeled chain). The remaining misses are console variants 63, 64 and 68; file variants 63, 64 and 68; and environment variant 61.",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category inter-procedural flow at depth one; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "inter-procedural flow at depth greater than one, gcc -O2",
-          "value": 0.0,
-          "num": 0,
+          "value": 100.0,
+          "num": 15,
           "den": 15,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
@@ -942,20 +942,20 @@
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2",
             "conditional": "Local-only measurement: CI checks the published pins but does not provision the pinned Juliet corpus."
           },
-          "detail": "0 of 15 labeled depth-greater-than-one inter-procedural cases recalled at either -O0 or -O2; precision is undefined (0 true or false positive calls in this category, since nothing was flagged). A measured ceiling: the engine does not currently propagate taint through a second call boundary on this corpus.",
+          "detail": "15 of 15 labeled depth-greater-than-one inter-procedural cases recalled, precision 100% (15 of 15 flagged findings land on the corpus's own bad-labeled chain).",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category inter-procedural flow at depth greater than one; ground truth is manifest.xml and each file's own Flow Variant header"
         },
         {
           "label": "aggregate (8 populated categories), gcc -O2",
-          "value": 48.9,
-          "num": 93,
+          "value": 95.7,
+          "num": 182,
           "den": 190,
           "verified_by": {
             "path": "crates/disrobe-taint/tests/graded_corpus.rs",
             "function": "published_juliet_o2_bars_match_the_pinned_floors",
             "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
           },
-          "detail": "93 of 190 labeled command-injection flows recalled across the 8 populated categories (48.9%), precision 100% (93 of 93 flagged findings land on a corpus-labeled bad chain, 0 false positives against any of the 190 good-labeled counterparts). The other 7 declared categories (container, callback, virtual call, string operation, sanitiser-severs, recursion, library boundary) hold 0 cases in this corpus slice. The same corpus and engine at -O0 recall only 12 of 190 (6.3%); the move from a prior 39 of 190 (20.5%) to 93 of 190 came from teaching the engine to track a source call's out-argument register, not from this row's own wiring.",
+          "detail": "182 of 190 labeled command-injection flows recalled across the 8 populated categories (95.789%, published as 95.7% without upward rounding), precision 100% (182 of 182 flagged findings land on a corpus-labeled bad chain, 0 false positives against any of the 190 good-labeled counterparts). The other 7 declared categories (container, callback, virtual call, string operation, sanitiser-severs, recursion, library boundary) hold 0 cases in this corpus slice.",
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, sum over the 8 populated categories; ground truth is manifest.xml and each file's own Flow Variant header"
         }
       ]

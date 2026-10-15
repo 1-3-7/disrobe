@@ -11,7 +11,9 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_ir::payload::DisasmPayload;
 use disrobe_nir::{NirModule, NirOp, NirSymbol};
-use disrobe_taint::{TaintConfig, TaintFinding, TaintReport};
+use disrobe_query::{CallOutcome, FunctionIdentity, Module, NavigationCall, NavigationLimits};
+use disrobe_taint::{CallEdge, CallEdgeEvidence, TaintConfig, TaintFinding, TaintReport};
+use goblin::Object;
 
 pub(crate) const CORPUS_URL: &str = "https://samate.nist.gov/SARD/downloads/test-suites/2017-10-01-juliet-test-suite-for-c-cplusplus-v1-3.zip";
 pub(crate) const CORPUS_SHA256: &str =
@@ -33,6 +35,11 @@ const DEMANGLE_TIMEOUT: Duration = Duration::from_secs(20);
 const CAPTURE_CAP_BYTES: usize = 1 << 20;
 const CASE_WORKERS: usize = 8;
 const DEMANGLE_BATCH: usize = 64;
+const MAX_NAVIGATION_FUNCTIONS: usize = 8_192;
+const MAX_NAVIGATION_INSTRUCTIONS: usize = 262_144;
+const MAX_NAVIGATION_CALLS: usize = 32_768;
+const MAX_NAVIGATION_CANDIDATE_RECORDS: usize = 65_536;
+const MAX_NAVIGATION_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
 const C_COMPILER_CANDIDATES: [&str; 3] = ["cc", "gcc", "clang"];
 const CPP_COMPILER_CANDIDATES: [&str; 3] = ["c++", "g++", "clang++"];
@@ -1076,7 +1083,10 @@ pub(crate) fn analyze_with_timeout(bytes: Vec<u8>, config: TaintConfig) -> Analy
     ) = std::sync::mpsc::channel();
     let handle: std::thread::JoinHandle<()> = std::thread::spawn(move || {
         let module: NirModule = lift_native_module(&bytes);
-        let report: TaintReport = disrobe_taint::analyze(&module, &config);
+        let call_edges: Vec<CallEdge> = navigation_call_edges(&bytes, &module)
+            .unwrap_or_else(|error: String| panic!("derive navigation call edges: {error}"));
+        let report: TaintReport =
+            disrobe_taint::analyze_with_call_edges(&module, &config, &call_edges);
         let _: Result<(), _> = tx.send((module, report));
     });
     match rx.recv_timeout(ANALYZE_TIMEOUT) {
@@ -1085,6 +1095,165 @@ pub(crate) fn analyze_with_timeout(bytes: Vec<u8>, config: TaintConfig) -> Analy
             AnalyzeOutcome::Analyzed { module, report }
         }
         Err(_) => AnalyzeOutcome::TimedOut,
+    }
+}
+
+fn navigation_call_edges(bytes: &[u8], module: &NirModule) -> Result<Vec<CallEdge>, String> {
+    let import_addresses: BTreeMap<u64, String> =
+        match Object::parse(bytes).map_err(|error| format!("parse native imports: {error}"))? {
+            Object::PE(pe) => pe
+                .imports
+                .iter()
+                .filter_map(|import| {
+                    let offset: u64 = u64::try_from(import.offset).ok()?;
+                    pe.image_base
+                        .checked_add(offset)
+                        .map(|address: u64| (address, import.name.to_string()))
+                })
+                .collect(),
+            _ => BTreeMap::new(),
+        };
+    let import_edges: Vec<CallEdge> = indirect_import_edges(module, &import_addresses);
+    let import_sites: BTreeSet<u64> = import_edges
+        .iter()
+        .map(|edge: &CallEdge| edge.site)
+        .collect();
+    let query: Module = Module::from_nir(module);
+    let indirect_sites: BTreeSet<u64> = module
+        .functions
+        .iter()
+        .flat_map(|function| function.instructions.iter())
+        .filter(|instruction| matches!(instruction.op, NirOp::IndirectCall))
+        .map(|instruction| instruction.address)
+        .collect();
+    let calls: Vec<NavigationCall> = query
+        .navigation_calls(NavigationLimits {
+            functions: MAX_NAVIGATION_FUNCTIONS,
+            instructions: MAX_NAVIGATION_INSTRUCTIONS,
+            calls: MAX_NAVIGATION_CALLS,
+            candidate_records: MAX_NAVIGATION_CANDIDATE_RECORDS,
+            retained_bytes: MAX_NAVIGATION_RETAINED_BYTES,
+        })
+        .map_err(|error| format!("navigation call-edge analysis: {error}"))?;
+    let targets: BTreeSet<u64> = calls
+        .iter()
+        .filter_map(|call: &NavigationCall| call.outcome.target_address())
+        .collect();
+    let imports: BTreeMap<u64, &str> = module
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind.is_external() && targets.contains(&symbol.address))
+        .map(|symbol| (symbol.address, symbol.name.as_str()))
+        .collect();
+    let mut edges: Vec<CallEdge> = calls
+        .iter()
+        .filter(|call: &&NavigationCall| {
+            indirect_sites.contains(&call.call_site) && !import_sites.contains(&call.call_site)
+        })
+        .map(|call: &NavigationCall| {
+            if let Some(target) = call.outcome.target_address()
+                && let Some(symbol) = imports.get(&target)
+            {
+                return Ok(CallEdge::definite(
+                    call.call_site,
+                    target,
+                    CallEdgeEvidence::NamedExternal {
+                        symbol: (*symbol).to_owned(),
+                    },
+                ));
+            }
+            call_edge_from_navigation(call)
+        })
+        .collect::<Result<Vec<CallEdge>, String>>()?;
+    edges.extend(import_edges);
+    Ok(edges)
+}
+
+fn indirect_import_edges(module: &NirModule, imports: &BTreeMap<u64, String>) -> Vec<CallEdge> {
+    module
+        .functions
+        .iter()
+        .flat_map(|function| function.instructions.iter())
+        .filter_map(|instruction| {
+            if !matches!(instruction.op, NirOp::IndirectCall) {
+                return None;
+            }
+            let target: u64 = instruction
+                .operands
+                .iter()
+                .find_map(|operand: &String| indirect_memory_target(operand))?;
+            let symbol: &String = imports.get(&target)?;
+            Some(CallEdge::definite(
+                instruction.address,
+                target,
+                CallEdgeEvidence::NamedExternal {
+                    symbol: symbol.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn indirect_memory_target(operand: &str) -> Option<u64> {
+    let inner: &str = operand
+        .trim()
+        .strip_prefix("qword ")?
+        .strip_prefix('[')?
+        .strip_suffix(']')?
+        .trim()
+        .strip_prefix("rel ")?;
+    let hex: &str = inner.strip_suffix('h').unwrap_or(inner);
+    u64::from_str_radix(hex, 16).ok()
+}
+
+fn call_edge_from_navigation(call: &NavigationCall) -> Result<CallEdge, String> {
+    match call.outcome.as_ref() {
+        CallOutcome::FunctionStart { address, .. } => Ok(CallEdge::definite(
+            call.call_site,
+            *address,
+            CallEdgeEvidence::NavigationFunctionStart,
+        )),
+        CallOutcome::FunctionInterior {
+            function_address,
+            target_address,
+            ..
+        } => Ok(CallEdge::definite(
+            call.call_site,
+            *function_address,
+            CallEdgeEvidence::NavigationFunctionInterior {
+                target_address: *target_address,
+            },
+        )),
+        CallOutcome::AmbiguousFunction { candidates, .. } => CallEdge::finite_set(
+            call.call_site,
+            candidates
+                .iter()
+                .map(|candidate: &FunctionIdentity| candidate.address),
+            CallEdgeEvidence::NavigationAmbiguousFunction,
+        )
+        .map_err(|_| {
+            format!(
+                "navigation returned an empty ambiguous call target set at {:#x}",
+                call.call_site
+            )
+        }),
+        CallOutcome::Symbol { name, address, .. } => Ok(CallEdge::definite(
+            call.call_site,
+            *address,
+            CallEdgeEvidence::NamedExternal {
+                symbol: name.to_string(),
+            },
+        )),
+        CallOutcome::Unresolved { address } => Ok(CallEdge::unresolved(
+            call.call_site,
+            CallEdgeEvidence::NavigationUnresolved {
+                target_address: *address,
+            },
+        )),
+        CallOutcome::Indirect => Ok(CallEdge::unresolved(
+            call.call_site,
+            CallEdgeEvidence::NavigationIndirect,
+        )),
     }
 }
 
@@ -1613,7 +1782,46 @@ pub(crate) fn require_host_compiler(case: &str, slice: CorpusSlice) -> &'static 
 
 #[cfg(test)]
 mod tests {
+    use disrobe_nir::{NirFunction, NirInstr, SourceLang, SourceRef, SymbolKind};
+
     use super::*;
+
+    #[test]
+    fn indirect_import_edges_use_the_pe_iat_address() {
+        let module: NirModule = NirModule {
+            source_hash: [0; 32],
+            lang: SourceLang::NativeX86,
+            functions: vec![NirFunction {
+                name: "entry".to_owned(),
+                address: 0x1000,
+                end: 0x3000,
+                is_export: true,
+                instructions: vec![NirInstr {
+                    address: 0x1000,
+                    op: NirOp::IndirectCall,
+                    mnemonic: "call".to_owned(),
+                    operands: vec!["qword [rel 2000h]".to_owned()],
+                    source: SourceRef::new(SourceLang::NativeX86, 0x1000),
+                    ..NirInstr::default()
+                }],
+                source: SourceRef::new(SourceLang::NativeX86, 0x1000),
+            }],
+            symbols: vec![NirSymbol {
+                address: 0x2000,
+                name: "system".to_owned(),
+                kind: SymbolKind::Import,
+            }],
+        };
+
+        let edges: Vec<CallEdge> =
+            indirect_import_edges(&module, &BTreeMap::from([(0x2000, "system".to_owned())]));
+
+        assert_eq!(edges.len(), 1);
+        assert!(edges[0].evidence().iter().any(|evidence| matches!(
+            evidence,
+            CallEdgeEvidence::NamedExternal { symbol } if symbol == "system"
+        )));
+    }
 
     #[test]
     fn selection_predicate_accepts_only_char_system_dot_c_cwe78_files() {
