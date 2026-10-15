@@ -8,8 +8,9 @@ use disrobe_core::chain::{
     Pass, SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
-use disrobe_core::pass::PassId;
-use disrobe_core::recon::{ReconConfig, ReconReport, report_bytes};
+use disrobe_core::pass::{PassContext, PassId};
+use disrobe_core::recon::ioc::Indicator;
+use disrobe_core::recon::{ReconConfig, ReconReport, report_bytes, report_bytes_sharing};
 use indexmap::IndexSet;
 
 use crate::packers::{
@@ -99,7 +100,17 @@ impl Pass for NativeImagePass {
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let image: StructuralFormat = require_linked_image(&input.envelope)?;
-        build_image_children(image, &input.envelope)
+        build_image_children(image, &input.envelope, &mut None)
+    }
+
+    fn extract_children_sharing_indicators(
+        &self,
+        input: &Artifact,
+        _context: PassContext<'_>,
+        indicators: &mut Option<Vec<Indicator>>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
+        let image: StructuralFormat = require_linked_image(&input.envelope)?;
+        build_image_children(image, &input.envelope, indicators)
     }
 }
 
@@ -152,7 +163,11 @@ fn image_verdict_for(image: StructuralFormat) -> DetectVerdict {
     )
 }
 
-fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
+fn build_image_children(
+    image: StructuralFormat,
+    bytes: &[u8],
+    indicators: &mut Option<Vec<Indicator>>,
+) -> CoreResult<Vec<ChildArtifact>> {
     let mut children: Vec<ChildArtifact> = Vec::new();
     let identity: crate::sig_engine::SigReport = crate::sig_engine::analyze(bytes);
     let pseudo_report: Option<serde_json::Value> = native_pseudo_report(image, bytes)?;
@@ -180,7 +195,7 @@ fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec
             ))
         })?;
     push_image_terminal(&mut children, "symbols.json", symbols_json.into_bytes())?;
-    let recon: ReconReport = report_bytes(bytes, None, &ReconConfig::default());
+    let recon: ReconReport = report_bytes_sharing(bytes, None, &ReconConfig::default(), indicators);
     if !recon.findings.is_empty() {
         let recon_json: Vec<u8> = serialize_image_report("recon.json", &recon)?;
         push_image_terminal(&mut children, "recon.json", recon_json)?;
@@ -1558,6 +1573,31 @@ mod tests {
              image and 150s for a 2.4 mb image, which is why it is not on this path. Took \
              {elapsed:?}",
         );
+    }
+
+    #[test]
+    fn image_children_hand_back_the_recon_indicators_of_the_input() {
+        let bytes: Vec<u8> = read_fixture(PLAIN_PE);
+        let a: Artifact = Artifact::new(Rung::Raw, bytes.clone(), [0u8; 32]);
+        let mut shared: Option<Vec<Indicator>> = None;
+        let sharing: Vec<ChildArtifact> = NATIVE_IMAGE_PASS
+            .extract_children_sharing_indicators(&a, PassContext::default(), &mut shared)
+            .expect("child extraction must succeed");
+        let plain: Vec<ChildArtifact> = NATIVE_IMAGE_PASS
+            .extract_children(&a)
+            .expect("child extraction must succeed");
+        let listing = |children: &[ChildArtifact]| -> Vec<(String, Vec<u8>)> {
+            children
+                .iter()
+                .map(|child: &ChildArtifact| {
+                    (child.handle.relative_path.clone(), child.bytes.clone())
+                })
+                .collect()
+        };
+        assert_eq!(listing(&sharing), listing(&plain));
+        let indicators: Vec<Indicator> = shared.expect("the recon scan hands its indicators back");
+        assert_eq!(indicators, disrobe_core::ioc::extract(&bytes));
+        assert!(!indicators.is_empty());
     }
 
     #[test]
