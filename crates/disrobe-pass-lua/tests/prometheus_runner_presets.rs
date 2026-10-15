@@ -134,6 +134,22 @@ fn incomplete_refusal(markers: &[String]) -> &'static str {
     }) {
         return "return-helper-not-exact";
     }
+    if markers.iter().any(|marker: &String| {
+        marker.contains("instruction-pointer assignment has an unrecognized shape")
+    }) {
+        return "instruction-pointer-assignment-unrecognized";
+    }
+    if markers
+        .iter()
+        .any(|marker: &String| marker.contains("EncryptStrings per-string runtime remains"))
+    {
+        return "encryptstrings-runtime-unresolved";
+    }
+    if markers.iter().any(|marker: &String| {
+        marker.contains("fixed-one versus open-result arity is not represented")
+    }) {
+        return "parenthesized-multret-arity-unresolved";
+    }
     if markers
         .iter()
         .any(|marker: &String| marker.contains("handlers 32/93 (34%), functions 17/18"))
@@ -230,12 +246,12 @@ fn grade_cell(lua: &str, directory: &Path, program: &str, preset: &str) -> (Grad
 fn expected_grade(program: &str, preset: &str) -> Grade {
     match (program, preset) {
         ("values" | "branches", "Minify") => Grade::Refused("detection-missing"),
-        ("values", "Weak" | "Medium") => Grade::Refused("live-upvalue-box-handle"),
-        ("values" | "loops" | "branches", "Strong") => Grade::Refused("return-helper-not-exact"),
         ("loops", "Minify") => Grade::Refused("minify-only-passthrough"),
-        ("loops", "Weak") => Grade::Refused("handler-coverage-32-of-93"),
-        ("loops", "Medium") => Grade::Refused("handler-coverage-70-of-190"),
-        ("branches", "Weak" | "Medium") => Grade::Recovered,
+        ("values" | "branches", "Weak" | "Medium") => Grade::Recovered,
+        ("values" | "loops" | "branches", "Strong") => {
+            Grade::Refused("encryptstrings-runtime-unresolved")
+        }
+        ("loops", "Weak" | "Medium") => Grade::Refused("parenthesized-multret-arity-unresolved"),
         _ => panic!("unlisted Prometheus runner matrix cell {program}/{preset}"),
     }
 }
@@ -290,7 +306,7 @@ fn prometheus_runner_presets_recover_or_refuse_by_pinned_reason() {
         for preset in PRESETS {
             let (actual, recovered): (Grade, Option<String>) =
                 grade_cell(&lua, directory, program, preset);
-            if actual == Grade::Recovered && mutation_control.is_none() {
+            if actual == Grade::Recovered && program == "branches" && preset == "Weak" {
                 mutation_control = recovered.map(|source: String| (program, preset, source));
             }
             let _ = writeln!(matrix, "{}", matrix_line(program, preset, actual));
