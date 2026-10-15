@@ -833,8 +833,14 @@ fn an_image_that_parses_but_carries_no_function_is_refused_with_a_diagnostic() {
     ]);
     assert_ne!(run.code, 0, "stdout: {}", run.stdout);
     assert!(run.stderr.contains("DR-NATIVE-020"), "{}", run.stderr);
+    let unwrapped: String = run
+        .stderr
+        .split_whitespace()
+        .filter(|word: &&str| *word != "│")
+        .collect::<Vec<&str>>()
+        .join(" ");
     assert!(
-        run.stderr.contains("executable section"),
+        unwrapped.contains("executable section"),
         "the diagnostic must say what the image lacks: {}",
         run.stderr
     );
