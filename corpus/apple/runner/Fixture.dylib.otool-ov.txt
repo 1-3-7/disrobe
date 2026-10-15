@@ -1,0 +1,747 @@
+Fixture.dylib:
+Contents of (__DATA_CONST,__objc_classlist) section
+000000000000c3d8 0x10648 _OBJC_CLASS_$_FXGreeter
+    isa        0x10ba0 _OBJC_METACLASS_$_FXGreeter
+    superclass 0x0 _OBJC_CLASS_$_NSObject
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x105ea Swift class
+        flags          0x184 RO_HAS_CXX_STRUCTORS
+        instanceStart  8
+        instanceSize   32
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x8080 FXGreeter
+        baseMethods    0x7a20 __INSTANCE_METHODS_FXGreeter
+            entsize 12 (relative)
+            count   7
+            name    0x8a98 (0x104c0)
+            types   0x65e (0x808a) @16@0:8
+            imp     0xffffe5dc (0x600c) _$s7Fixture7GreeterC4nameSSvgTo
+            name    0x8a94 (0x104c8)
+            types   0x65a (0x8092) v24@0:8@16
+            imp     0xffffe68c (0x60c8) _$s7Fixture7GreeterC4nameSSvsTo
+            name    0x8a90 (0x104d0)
+            types   0x659 (0x809d) q16@0:8
+            imp     0xffffe78c (0x61d4) _$s7Fixture7GreeterC6visitsSivgTo
+            name    0x8a8c (0x104d8)
+            types   0x655 (0x80a5) v24@0:8q16
+            imp     0xffffe804 (0x6258) _$s7Fixture7GreeterC6visitsSivsTo
+            name    0x8a88 (0x104e0)
+            types   0x654 (0x80b0) @24@0:8@16
+            imp     0xffffe9d8 (0x6438) _$s7Fixture7GreeterC5greetyS2SFTo
+            name    0x8b2c (0x10590)
+            types   0x622 (0x808a) @16@0:8
+            imp     0xffffead4 (0x6540) _$s7Fixture7GreeterCACycfcTo
+            name    0x8a48 (0x104b8)
+            types   0x647 (0x80bb) v16@0:8
+            imp     0xffffeb34 (0x65ac) _$s7Fixture7GreeterCfETo
+        baseProtocols  0x0
+        ivars          0x10048 __IVARS_FXGreeter
+            entsize   32
+            count     2
+            offset    0x10b78 _$s7Fixture7GreeterC4nameSSvpWvd 8
+            name      0x0 _OBJC_METACLASS_$_NSObject
+            type      0x0 _OBJC_METACLASS_$_UIViewController
+            alignment 3
+            size      16
+            offset    0x10b80 _$s7Fixture7GreeterC6visitsSivpWvd 24
+            name      0x80c9 visits
+            type      0x0 _OBJC_METACLASS_$_NSObject
+            alignment 3
+            size      8
+        weakIvarLayout 0x0
+        baseProperties 0x10090 __PROPERTIES_FXGreeter
+            entsize    16
+            count      2
+            name       0x80c3 name
+            attributes 0x80d0 T@"NSString",N,C
+            name       0x80c9 visits
+            attributes 0x80e1 Tq,N,Vvisits
+Meta Class
+    isa        0x0 _OBJC_METACLASS_$_NSObject
+    superclass 0x0 _OBJC_METACLASS_$_NSObject
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x10000 __METACLASS_DATA_FXGreeter
+        flags          0x81 RO_META
+        instanceStart  40
+        instanceSize   40
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x8080 FXGreeter
+        baseMethods    0x0
+        baseProtocols  0x0
+        ivars          0x0
+        weakIvarLayout 0x0
+        baseProperties 0x0
+000000000000c3e0 0x10708 _OBJC_CLASS_$__TtC7Fixture22SettingsViewController
+    isa        0x10bc8 _OBJC_METACLASS_$__TtC7Fixture22SettingsViewController
+    superclass 0x0 _OBJC_CLASS_$_UIViewController
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x106aa Swift class
+        flags          0x184 RO_HAS_CXX_STRUCTORS
+        instanceStart  8
+        instanceSize   32
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x80f0 _TtC7Fixture22SettingsViewController
+        baseMethods    0x7a80 __INSTANCE_METHODS__TtC7Fixture22SettingsViewController
+            entsize 12 (relative)
+            count   4
+            name    0x8b18 (0x105a0)
+            types   0x62f (0x80bb) v16@0:8
+            imp     0xffffecc4 (0x6754) _$s7Fixture22SettingsViewControllerC11viewDidLoadyyFTo
+            name    0x8b14 (0x105a8)
+            types   0x67d (0x8115) @32@0:8@16@24
+            imp     0xffffeecc (0x6968) _$s7Fixture22SettingsViewControllerC7nibName6bundleACSSSg_So8NSBundleCSgtcfcTo
+            name    0x8b10 (0x105b0)
+            types   0x60c (0x80b0) @24@0:8@16
+            imp     0xfffff0b8 (0x6b60) _$s7Fixture22SettingsViewControllerC5coderACSgSo7NSCoderC_tcfcTo
+            name    0x8a0c (0x104b8)
+            types   0x60b (0x80bb) v16@0:8
+            imp     0xfffff164 (0x6c18) _$s7Fixture22SettingsViewControllerCfETo
+        baseProtocols  0x0
+        ivars          0x10100 __IVARS__TtC7Fixture22SettingsViewController
+            entsize   32
+            count     2
+            offset    0x10b88 _$s7Fixture22SettingsViewControllerC5countSivpWvd 8
+            name      0x8123 count
+            type      0x80c8 
+            alignment 3
+            size      8
+            offset    0x10b90 _$s7Fixture22SettingsViewControllerC6title2SSvpWvd 16
+            name      0x8129 title2
+            type      0x80c8 
+            alignment 3
+            size      16
+        weakIvarLayout 0x0
+        baseProperties 0x0
+Meta Class
+    isa        0x0 _OBJC_METACLASS_$_NSObject
+    superclass 0x0 _OBJC_METACLASS_$_UIViewController
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x100b8 __METACLASS_DATA__TtC7Fixture22SettingsViewController
+        flags          0x81 RO_META
+        instanceStart  40
+        instanceSize   40
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x80f0 _TtC7Fixture22SettingsViewController
+        baseMethods    0x0
+        baseProtocols  0x0
+        ivars          0x0
+        weakIvarLayout 0x0
+        baseProperties 0x0
+000000000000c3e8 0x107c8 _$s7Fixture8BaseCellCN
+    isa        0x10bf0 _OBJC_METACLASS_$__TtC7Fixture8BaseCell
+    superclass 0x0 _OBJC_CLASS_$_UITableViewCell
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x1076a Swift class
+        flags          0x80
+        instanceStart  8
+        instanceSize   8
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x8130 _TtC7Fixture8BaseCell
+        baseMethods    0x7ab8 __INSTANCE_METHODS__TtC7Fixture8BaseCell
+            entsize 12 (relative)
+            count   2
+            name    0x8b08 (0x105c8)
+            types   0x682 (0x8146) @32@0:8q16@24
+            imp     0xfffff294 (0x6d5c) _$s7Fixture8BaseCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfcTo
+            name    0x8ae4 (0x105b0)
+            types   0x5e0 (0x80b0) @24@0:8@16
+            imp     0xfffff37c (0x6e50) _$s7Fixture8BaseCellC5coderACSgSo7NSCoderC_tcfcTo
+        baseProtocols  0x0
+        ivars          0x0
+        weakIvarLayout 0x0
+        baseProperties 0x0
+Meta Class
+    isa        0x0 _OBJC_METACLASS_$_NSObject
+    superclass 0x0 _OBJC_METACLASS_$_UITableViewCell
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x10148 __METACLASS_DATA__TtC7Fixture8BaseCell
+        flags          0x81 RO_META
+        instanceStart  40
+        instanceSize   40
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x8130 _TtC7Fixture8BaseCell
+        baseMethods    0x0
+        baseProtocols  0x0
+        ivars          0x0
+        weakIvarLayout 0x0
+        baseProperties 0x0
+000000000000c3f0 0x10880 _$s7Fixture9ValueCellCN
+    isa        0x10c18 _OBJC_METACLASS_$__TtC7Fixture9ValueCell
+    superclass 0x107c8 _$s7Fixture8BaseCellCN
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x10822 Swift class
+        flags          0x80
+        instanceStart  8
+        instanceSize   16
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x8160 _TtC7Fixture9ValueCell
+        baseMethods    0x7ad8 __INSTANCE_METHODS__TtC7Fixture9ValueCell
+            entsize 12 (relative)
+            count   2
+            name    0x8ae8 (0x105c8)
+            types   0x662 (0x8146) @32@0:8q16@24
+            imp     0xfffff6d0 (0x71b8) _$s7Fixture9ValueCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfcTo
+            name    0x8ac4 (0x105b0)
+            types   0x5c0 (0x80b0) @24@0:8@16
+            imp     0xfffff7ec (0x72e0) _$s7Fixture9ValueCellC5coderACSgSo7NSCoderC_tcfcTo
+        baseProtocols  0x0
+        ivars          0x101d8 __IVARS__TtC7Fixture9ValueCell
+            entsize   32
+            count     1
+            offset    0x10b98 _$s7Fixture9ValueCellC5valueSdvpWvd 8
+            name      0x8177 value
+            type      0x80c8 
+            alignment 3
+            size      8
+        weakIvarLayout 0x0
+        baseProperties 0x0
+Meta Class
+    isa        0x0 _OBJC_METACLASS_$_NSObject
+    superclass 0x10bf0 _OBJC_METACLASS_$__TtC7Fixture8BaseCell
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x10190 __METACLASS_DATA__TtC7Fixture9ValueCell
+        flags          0x81 RO_META
+        instanceStart  40
+        instanceSize   40
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x8160 _TtC7Fixture9ValueCell
+        baseMethods    0x0
+        baseProtocols  0x0
+        ivars          0x0
+        weakIvarLayout 0x0
+        baseProperties 0x0
+000000000000c3f8 0x10908 _OBJC_CLASS_$_FXLegacyView
+    isa        0x108e0 _OBJC_METACLASS_$_FXLegacyView
+    superclass 0x0 _OBJC_CLASS_$_UIView
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x10438 __OBJC_CLASS_RO_$_FXLegacyView
+        flags          0x184 RO_HAS_CXX_STRUCTORS
+        instanceStart  8
+        instanceSize   32
+        reserved       0x0
+        ivarLayout     0x8707
+        layout map     0x21 
+        name           0x86e4 FXLegacyView
+        baseMethods    0x7b10 __OBJC_$_INSTANCE_METHODS_FXLegacyView(Debug)
+            entsize 12 (relative)
+            count   6
+            name    0x8980 (0x10498)
+            types   0xbf3 (0x870f) @16@0:8
+            imp     0xfffffb18 (0x7638) -[FXLegacyView(Debug) debugSummary]
+            name    0x897c (0x104a0)
+            types   0xc94 (0x87bc) v24@0:8q16
+            imp     0xfffffaa4 (0x75d0) -[FXLegacyView refresh:]
+            name    0x8978 (0x104a8)
+            types   0xc93 (0x87c7) q16@0:8
+            imp     0xfffffac0 (0x75f8) -[FXLegacyView ticks]
+            name    0x8954 (0x10490)
+            types   0xbcf (0x870f) @16@0:8
+            imp     0xfffffac4 (0x7608) -[FXLegacyView title]
+            name    0x8968 (0x104b0)
+            types   0xc83 (0x87cf) v24@0:8@16
+            imp     0xfffffac8 (0x7618) -[FXLegacyView setTitle:]
+            name    0x8964 (0x104b8)
+            types   0xc82 (0x87da) v16@0:8
+            imp     0xfffffac8 (0x7624) -[FXLegacyView .cxx_destruct]
+        baseProtocols  0x10308 __OBJC_CLASS_PROTOCOLS_$_FXLegacyView
+            count    1
+            list[0]  0x10ca0 __OBJC_PROTOCOL_$_FXRefreshing
+                isa       0x0
+                name      0x86f1 FXRefreshing
+                protocols 0x102e8 __OBJC_$_PROTOCOL_REFS_FXRefreshing
+                    count    1
+                    list[0]  0x10c40 __OBJC_PROTOCOL_$_NSObject
+                        isa       0x0
+                        name      0x86fe NSObject
+                        protocols 0x0
+                        instanceMethods 0x7b78 __OBJC_$_PROTOCOL_INSTANCE_METHODS_NSObject
+                            entsize 12 (relative)
+                            count   19
+                            name    0x8970 (0x104f0)
+                            types   0xb93 (0x8717) B24@0:8@16
+                            imp     0x0
+                            name    0x896c (0x104f8)
+                            types   0xb92 (0x8722) #16@0:8
+                            imp     0x0
+                            name    0x8968 (0x10500)
+                            types   0xb73 (0x870f) @16@0:8
+                            imp     0x0
+                            name    0x8964 (0x10508)
+                            types   0xb82 (0x872a) @24@0:8:16
+                            imp     0x0
+                            name    0x8960 (0x10510)
+                            types   0xb81 (0x8735) @32@0:8:16@24
+                            imp     0x0
+                            name    0x895c (0x10518)
+                            types   0xb83 (0x8743) @40@0:8:16@24@32
+                            imp     0x0
+                            name    0x8958 (0x10520)
+                            types   0xb88 (0x8754) B16@0:8
+                            imp     0x0
+                            name    0x8954 (0x10528)
+                            types   0xb84 (0x875c) B24@0:8#16
+                            imp     0x0
+                            name    0x8950 (0x10530)
+                            types   0xb78 (0x875c) B24@0:8#16
+                            imp     0x0
+                            name    0x894c (0x10538)
+                            types   0xb27 (0x8717) B24@0:8@16
+                            imp     0x0
+                            name    0x8948 (0x10540)
+                            types   0xb6b (0x8767) B24@0:8:16
+                            imp     0x0
+                            name    0x8944 (0x10548)
+                            types   0xb07 (0x870f) @16@0:8
+                            imp     0x0
+                            name    0x8940 (0x10550)
+                            types   0xb5e (0x8772) Vv16@0:8
+                            imp     0x0
+                            name    0x893c (0x10558)
+                            types   0xaef (0x870f) @16@0:8
+                            imp     0x0
+                            name    0x8938 (0x10560)
+                            types   0xb4f (0x877b) Q16@0:8
+                            imp     0x0
+                            name    0x8934 (0x10568)
+                            types   0xb4b (0x8783) ^{_NSZone=}16@0:8
+                            imp     0x0
+                            name    0x8930 (0x10570)
+                            types   0xb37 (0x877b) Q16@0:8
+                            imp     0x0
+                            name    0x892c (0x10578)
+                            types   0xad2 (0x8722) #16@0:8
+                            imp     0x0
+                            name    0x8928 (0x10580)
+                            types   0xab3 (0x870f) @16@0:8
+                            imp     0x0
+                        classMethods 0x0
+                        optionalInstanceMethods 0x7c68 __OBJC_$_PROTOCOL_INSTANCE_METHODS_OPT_NSObject
+                            entsize 12 (relative)
+                            count   1
+                            name    0x8918 (0x10588)
+                            types   0xa9b (0x870f) @16@0:8
+                            imp     0x0
+                        optionalClassMethods 0x0
+                        instanceProperties 0x10200 __OBJC_$_PROP_LIST_NSObject
+                            entsize    16
+                            count      4
+                            name       0x8264 hash
+                            attributes 0x81ec TQ,R
+                            name       0x83be superclass
+                            attributes 0x818c T#,R
+                            name       0x8251 description
+                            attributes 0x81db T@"NSString",R,C
+                            name       0x8233 debugDescription
+                            attributes 0x81af T@"NSString",?,R,C
+                instanceMethods 0x7b60 __OBJC_$_PROTOCOL_INSTANCE_METHODS_FXRefreshing
+                    entsize 12 (relative)
+                    count   1
+                    name    0x8938 (0x104a0)
+                    types   0xc50 (0x87bc) v24@0:8q16
+                    imp     0x0
+                classMethods 0x0
+                optionalInstanceMethods 0x0
+                optionalClassMethods 0x0
+                instanceProperties 0x0
+        ivars          0x10368 __OBJC_$_INSTANCE_VARIABLES_FXLegacyView
+            entsize   32
+            count     3
+            offset    0x105d8 _OBJC_IVAR_$_FXLegacyView._ticks 8
+            name      0x81ff _ticks
+            type      0x87e2 q
+            alignment 3
+            size      8
+            offset    0x105dc _OBJC_IVAR_$_FXLegacyView._scale 16
+            name      0x81f8 _scale
+            type      0x87e4 d
+            alignment 3
+            size      8
+            offset    0x105e0 _OBJC_IVAR_$_FXLegacyView._title 24
+            name      0x8206 _title
+            type      0x87e6 @"NSString"
+            alignment 3
+            size      8
+        weakIvarLayout 0x0
+        baseProperties 0x103d0 __OBJC_$_PROP_LIST_FXLegacyView
+            entsize    16
+            count      6
+            name       0x83d9 title
+            attributes 0x81c2 T@"NSString",C,N,V_title
+            name       0x83d3 ticks
+            attributes 0x81f1 Tq,R,N
+            name       0x8264 hash
+            attributes 0x81ec TQ,R
+            name       0x83be superclass
+            attributes 0x818c T#,R
+            name       0x8251 description
+            attributes 0x81db T@"NSString",R,C
+            name       0x8233 debugDescription
+            attributes 0x81af T@"NSString",?,R,C
+Meta Class
+    isa        0x0 _OBJC_METACLASS_$_NSObject
+    superclass 0x0 _OBJC_METACLASS_$_UIView
+    cache      0x0 __objc_empty_cache
+    vtable     0x0
+    data       0x10320 __OBJC_METACLASS_RO_$_FXLegacyView
+        flags          0x185 RO_META RO_HAS_CXX_STRUCTORS
+        instanceStart  40
+        instanceSize   40
+        reserved       0x0
+        ivarLayout     0x0
+        name           0x86e4 FXLegacyView
+        baseMethods    0x7af8 __OBJC_$_CLASS_METHODS_FXLegacyView
+            entsize 12 (relative)
+            count   1
+            name    0x89e8 (0x104e8)
+            types   0xc0b (0x870f) @16@0:8
+            imp     0xfffffaa0 (0x75a8) +[FXLegacyView sharedView]
+        baseProtocols  0x10308 __OBJC_CLASS_PROTOCOLS_$_FXLegacyView
+            count    1
+            list[0]  0x10ca0 __OBJC_PROTOCOL_$_FXRefreshing
+                isa       0x0
+                name      0x86f1 FXRefreshing
+                protocols 0x102e8 __OBJC_$_PROTOCOL_REFS_FXRefreshing
+                    count    1
+                    list[0]  0x10c40 __OBJC_PROTOCOL_$_NSObject
+                        isa       0x0
+                        name      0x86fe NSObject
+                        protocols 0x0
+                        instanceMethods 0x7b78 __OBJC_$_PROTOCOL_INSTANCE_METHODS_NSObject
+                            entsize 12 (relative)
+                            count   19
+                            name    0x8970 (0x104f0)
+                            types   0xb93 (0x8717) B24@0:8@16
+                            imp     0x0
+                            name    0x896c (0x104f8)
+                            types   0xb92 (0x8722) #16@0:8
+                            imp     0x0
+                            name    0x8968 (0x10500)
+                            types   0xb73 (0x870f) @16@0:8
+                            imp     0x0
+                            name    0x8964 (0x10508)
+                            types   0xb82 (0x872a) @24@0:8:16
+                            imp     0x0
+                            name    0x8960 (0x10510)
+                            types   0xb81 (0x8735) @32@0:8:16@24
+                            imp     0x0
+                            name    0x895c (0x10518)
+                            types   0xb83 (0x8743) @40@0:8:16@24@32
+                            imp     0x0
+                            name    0x8958 (0x10520)
+                            types   0xb88 (0x8754) B16@0:8
+                            imp     0x0
+                            name    0x8954 (0x10528)
+                            types   0xb84 (0x875c) B24@0:8#16
+                            imp     0x0
+                            name    0x8950 (0x10530)
+                            types   0xb78 (0x875c) B24@0:8#16
+                            imp     0x0
+                            name    0x894c (0x10538)
+                            types   0xb27 (0x8717) B24@0:8@16
+                            imp     0x0
+                            name    0x8948 (0x10540)
+                            types   0xb6b (0x8767) B24@0:8:16
+                            imp     0x0
+                            name    0x8944 (0x10548)
+                            types   0xb07 (0x870f) @16@0:8
+                            imp     0x0
+                            name    0x8940 (0x10550)
+                            types   0xb5e (0x8772) Vv16@0:8
+                            imp     0x0
+                            name    0x893c (0x10558)
+                            types   0xaef (0x870f) @16@0:8
+                            imp     0x0
+                            name    0x8938 (0x10560)
+                            types   0xb4f (0x877b) Q16@0:8
+                            imp     0x0
+                            name    0x8934 (0x10568)
+                            types   0xb4b (0x8783) ^{_NSZone=}16@0:8
+                            imp     0x0
+                            name    0x8930 (0x10570)
+                            types   0xb37 (0x877b) Q16@0:8
+                            imp     0x0
+                            name    0x892c (0x10578)
+                            types   0xad2 (0x8722) #16@0:8
+                            imp     0x0
+                            name    0x8928 (0x10580)
+                            types   0xab3 (0x870f) @16@0:8
+                            imp     0x0
+                        classMethods 0x0
+                        optionalInstanceMethods 0x7c68 __OBJC_$_PROTOCOL_INSTANCE_METHODS_OPT_NSObject
+                            entsize 12 (relative)
+                            count   1
+                            name    0x8918 (0x10588)
+                            types   0xa9b (0x870f) @16@0:8
+                            imp     0x0
+                        optionalClassMethods 0x0
+                        instanceProperties 0x10200 __OBJC_$_PROP_LIST_NSObject
+                            entsize    16
+                            count      4
+                            name       0x8264 hash
+                            attributes 0x81ec TQ,R
+                            name       0x83be superclass
+                            attributes 0x818c T#,R
+                            name       0x8251 description
+                            attributes 0x81db T@"NSString",R,C
+                            name       0x8233 debugDescription
+                            attributes 0x81af T@"NSString",?,R,C
+                instanceMethods 0x7b60 __OBJC_$_PROTOCOL_INSTANCE_METHODS_FXRefreshing
+                    entsize 12 (relative)
+                    count   1
+                    name    0x8938 (0x104a0)
+                    types   0xc50 (0x87bc) v24@0:8q16
+                    imp     0x0
+                classMethods 0x0
+                optionalInstanceMethods 0x0
+                optionalClassMethods 0x0
+                instanceProperties 0x0
+        ivars          0x0
+        weakIvarLayout 0x0
+        baseProperties 0x0
+Contents of (__DATA,__objc_classrefs) section
+00000000000105d0 0x0 _OBJC_CLASS_$_NSString
+Contents of (__DATA_CONST,__objc_protolist) section
+000000000000c400 0x10c40 __OBJC_PROTOCOL_$_NSObject
+    isa       0x0
+    name      0x86fe NSObject
+    protocols 0x0
+    instanceMethods 0x7b78 __OBJC_$_PROTOCOL_INSTANCE_METHODS_NSObject
+        entsize 12 (relative)
+        count   19
+        name    0x8970 (0x104f0)
+        types   0xb93 (0x8717) B24@0:8@16
+        imp     0x0
+        name    0x896c (0x104f8)
+        types   0xb92 (0x8722) #16@0:8
+        imp     0x0
+        name    0x8968 (0x10500)
+        types   0xb73 (0x870f) @16@0:8
+        imp     0x0
+        name    0x8964 (0x10508)
+        types   0xb82 (0x872a) @24@0:8:16
+        imp     0x0
+        name    0x8960 (0x10510)
+        types   0xb81 (0x8735) @32@0:8:16@24
+        imp     0x0
+        name    0x895c (0x10518)
+        types   0xb83 (0x8743) @40@0:8:16@24@32
+        imp     0x0
+        name    0x8958 (0x10520)
+        types   0xb88 (0x8754) B16@0:8
+        imp     0x0
+        name    0x8954 (0x10528)
+        types   0xb84 (0x875c) B24@0:8#16
+        imp     0x0
+        name    0x8950 (0x10530)
+        types   0xb78 (0x875c) B24@0:8#16
+        imp     0x0
+        name    0x894c (0x10538)
+        types   0xb27 (0x8717) B24@0:8@16
+        imp     0x0
+        name    0x8948 (0x10540)
+        types   0xb6b (0x8767) B24@0:8:16
+        imp     0x0
+        name    0x8944 (0x10548)
+        types   0xb07 (0x870f) @16@0:8
+        imp     0x0
+        name    0x8940 (0x10550)
+        types   0xb5e (0x8772) Vv16@0:8
+        imp     0x0
+        name    0x893c (0x10558)
+        types   0xaef (0x870f) @16@0:8
+        imp     0x0
+        name    0x8938 (0x10560)
+        types   0xb4f (0x877b) Q16@0:8
+        imp     0x0
+        name    0x8934 (0x10568)
+        types   0xb4b (0x8783) ^{_NSZone=}16@0:8
+        imp     0x0
+        name    0x8930 (0x10570)
+        types   0xb37 (0x877b) Q16@0:8
+        imp     0x0
+        name    0x892c (0x10578)
+        types   0xad2 (0x8722) #16@0:8
+        imp     0x0
+        name    0x8928 (0x10580)
+        types   0xab3 (0x870f) @16@0:8
+        imp     0x0
+    classMethods 0x0
+    optionalInstanceMethods 0x7c68 __OBJC_$_PROTOCOL_INSTANCE_METHODS_OPT_NSObject
+        entsize 12 (relative)
+        count   1
+        name    0x8918 (0x10588)
+        types   0xa9b (0x870f) @16@0:8
+        imp     0x0
+    optionalClassMethods 0x0
+    instanceProperties 0x10200 __OBJC_$_PROP_LIST_NSObject
+        entsize    16
+        count      4
+        name       0x8264 hash
+        attributes 0x81ec TQ,R
+        name       0x83be superclass
+        attributes 0x818c T#,R
+        name       0x8251 description
+        attributes 0x81db T@"NSString",R,C
+        name       0x8233 debugDescription
+        attributes 0x81af T@"NSString",?,R,C
+000000000000c408 0x10ca0 __OBJC_PROTOCOL_$_FXRefreshing
+    isa       0x0
+    name      0x86f1 FXRefreshing
+    protocols 0x102e8 __OBJC_$_PROTOCOL_REFS_FXRefreshing
+        count    1
+        list[0]  0x10c40 __OBJC_PROTOCOL_$_NSObject
+            isa       0x0
+            name      0x86fe NSObject
+            protocols 0x0
+            instanceMethods 0x7b78 __OBJC_$_PROTOCOL_INSTANCE_METHODS_NSObject
+                entsize 12 (relative)
+                count   19
+                name    0x8970 (0x104f0)
+                types   0xb93 (0x8717) B24@0:8@16
+                imp     0x0
+                name    0x896c (0x104f8)
+                types   0xb92 (0x8722) #16@0:8
+                imp     0x0
+                name    0x8968 (0x10500)
+                types   0xb73 (0x870f) @16@0:8
+                imp     0x0
+                name    0x8964 (0x10508)
+                types   0xb82 (0x872a) @24@0:8:16
+                imp     0x0
+                name    0x8960 (0x10510)
+                types   0xb81 (0x8735) @32@0:8:16@24
+                imp     0x0
+                name    0x895c (0x10518)
+                types   0xb83 (0x8743) @40@0:8:16@24@32
+                imp     0x0
+                name    0x8958 (0x10520)
+                types   0xb88 (0x8754) B16@0:8
+                imp     0x0
+                name    0x8954 (0x10528)
+                types   0xb84 (0x875c) B24@0:8#16
+                imp     0x0
+                name    0x8950 (0x10530)
+                types   0xb78 (0x875c) B24@0:8#16
+                imp     0x0
+                name    0x894c (0x10538)
+                types   0xb27 (0x8717) B24@0:8@16
+                imp     0x0
+                name    0x8948 (0x10540)
+                types   0xb6b (0x8767) B24@0:8:16
+                imp     0x0
+                name    0x8944 (0x10548)
+                types   0xb07 (0x870f) @16@0:8
+                imp     0x0
+                name    0x8940 (0x10550)
+                types   0xb5e (0x8772) Vv16@0:8
+                imp     0x0
+                name    0x893c (0x10558)
+                types   0xaef (0x870f) @16@0:8
+                imp     0x0
+                name    0x8938 (0x10560)
+                types   0xb4f (0x877b) Q16@0:8
+                imp     0x0
+                name    0x8934 (0x10568)
+                types   0xb4b (0x8783) ^{_NSZone=}16@0:8
+                imp     0x0
+                name    0x8930 (0x10570)
+                types   0xb37 (0x877b) Q16@0:8
+                imp     0x0
+                name    0x892c (0x10578)
+                types   0xad2 (0x8722) #16@0:8
+                imp     0x0
+                name    0x8928 (0x10580)
+                types   0xab3 (0x870f) @16@0:8
+                imp     0x0
+            classMethods 0x0
+            optionalInstanceMethods 0x7c68 __OBJC_$_PROTOCOL_INSTANCE_METHODS_OPT_NSObject
+                entsize 12 (relative)
+                count   1
+                name    0x8918 (0x10588)
+                types   0xa9b (0x870f) @16@0:8
+                imp     0x0
+            optionalClassMethods 0x0
+            instanceProperties 0x10200 __OBJC_$_PROP_LIST_NSObject
+                entsize    16
+                count      4
+                name       0x8264 hash
+                attributes 0x81ec TQ,R
+                name       0x83be superclass
+                attributes 0x818c T#,R
+                name       0x8251 description
+                attributes 0x81db T@"NSString",R,C
+                name       0x8233 debugDescription
+                attributes 0x81af T@"NSString",?,R,C
+    instanceMethods 0x7b60 __OBJC_$_PROTOCOL_INSTANCE_METHODS_FXRefreshing
+        entsize 12 (relative)
+        count   1
+        name    0x8938 (0x104a0)
+        types   0xc50 (0x87bc) v24@0:8q16
+        imp     0x0
+    classMethods 0x0
+    optionalInstanceMethods 0x0
+    optionalClassMethods 0x0
+    instanceProperties 0x0
+Contents of (__DATA,__objc_selrefs) section
+    0x827d initWithFrame:
+    0x83ac stringWithFormat:
+    0x83d9 title
+    0x8244 debugSummary
+    0x8345 refresh:
+    0x83d3 ticks
+    0x838c setTitle:
+    0x8199 .cxx_destruct
+    0x82ec name
+    0x837a setName:
+    0x83eb visits
+    0x8396 setVisits:
+    0x825d greet:
+    0x83a1 sharedView
+    0x82c3 isEqual:
+    0x8219 class
+    0x8375 self
+    0x82f1 performSelector:
+    0x8302 performSelector:withObject:
+    0x831e performSelector:withObject:withObject:
+    0x81a7 isProxy
+    0x82cc isKindOfClass:
+    0x82db isMemberOfClass:
+    0x821f conformsToProtocol:
+    0x834e respondsToSelector:
+    0x8362 retain
+    0x8191 release
+    0x820d autorelease
+    0x8369 retainCount
+    0x83f2 zone
+    0x8264 hash
+    0x83be superclass
+    0x8251 description
+    0x8233 debugDescription
+    0x8269 init
+    0x8184 dealloc
+    0x83df viewDidLoad
+    0x828c initWithNibName:bundle:
+    0x826e initWithCoder:
+    0x83c9 textLabel
+    0x8383 setText:
+    0x82a4 initWithStyle:reuseIdentifier:
+Contents of (__DATA_CONST,__objc_imageinfo) section
+    version 0
+    flags   0x6010740 Swift 5 or later

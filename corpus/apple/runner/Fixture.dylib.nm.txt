@@ -1,0 +1,410 @@
+00000000000075a8 (__TEXT,__text) non-external +[FXLegacyView sharedView]
+0000000000007624 (__TEXT,__text) non-external -[FXLegacyView .cxx_destruct]
+00000000000075d0 (__TEXT,__text) non-external -[FXLegacyView refresh:]
+0000000000007618 (__TEXT,__text) non-external -[FXLegacyView setTitle:]
+00000000000075f8 (__TEXT,__text) non-external -[FXLegacyView ticks]
+0000000000007608 (__TEXT,__text) non-external -[FXLegacyView title]
+0000000000007638 (__TEXT,__text) non-external -[FXLegacyView(Debug) debugSummary]
+00000000000066e8 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC11viewDidLoadyyF
+0000000000006754 (__TEXT,__text) non-external _$s7Fixture22SettingsViewControllerC11viewDidLoadyyFTo
+0000000000006a78 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5coderACSgSo7NSCoderC_tcfC
+0000000000006abc (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5coderACSgSo7NSCoderC_tcfc
+0000000000006b60 (__TEXT,__text) non-external _$s7Fixture22SettingsViewControllerC5coderACSgSo7NSCoderC_tcfcTo
+0000000000006654 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5countSivM
+0000000000006694 (__TEXT,__text) non-external _$s7Fixture22SettingsViewControllerC5countSivM.resume.0
+00000000000065c8 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5countSivg
+0000000000008400 (__TEXT,__const) external _$s7Fixture22SettingsViewControllerC5countSivpMV
+0000000000010b88 (__DATA,__data) external _$s7Fixture22SettingsViewControllerC5countSivpWvd
+00000000000065c0 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5countSivpfi
+0000000000006608 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5countSivs
+00000000000067d8 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC5resetyyF
+00000000000066b0 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC6title2SSvg
+0000000000008400 (__TEXT,__const) external _$s7Fixture22SettingsViewControllerC6title2SSvpMV
+0000000000010b90 (__DATA,__data) external _$s7Fixture22SettingsViewControllerC6title2SSvpWvd
+0000000000006698 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC6title2SSvpfi
+0000000000006818 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC7nibName6bundleACSSSg_So8NSBundleCSgtcfC
+0000000000006894 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerC7nibName6bundleACSSSg_So8NSBundleCSgtcfc
+0000000000006968 (__TEXT,__text) non-external _$s7Fixture22SettingsViewControllerC7nibName6bundleACSSSg_So8NSBundleCSgtcfcTo
+0000000000008628 (__TEXT,__swift5_fieldmd) non-external _$s7Fixture22SettingsViewControllerCMF
+0000000000007440 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerCMa
+00000000000106f0 (__DATA,__objc_data) non-external _$s7Fixture22SettingsViewControllerCMf
+0000000000008490 (__TEXT,__constg_swiftt) external _$s7Fixture22SettingsViewControllerCMn
+0000000000010708 (__DATA,__objc_data) external _$s7Fixture22SettingsViewControllerCN
+0000000000006c14 (__TEXT,__text) external _$s7Fixture22SettingsViewControllerCfD
+0000000000006c18 (__TEXT,__text) non-external (was a private external) _$s7Fixture22SettingsViewControllerCfETo
+00000000000086a4 (__TEXT,__swift5_fieldmd) non-external _$s7Fixture4ModeOMF
+0000000000007588 (__TEXT,__text) external _$s7Fixture4ModeOMa
+000000000000c2f0 (__DATA_CONST,__const) non-external _$s7Fixture4ModeOMf
+0000000000008550 (__TEXT,__constg_swiftt) external _$s7Fixture4ModeOMn
+000000000000c300 (__DATA_CONST,__const) external _$s7Fixture4ModeON
+000000000000c280 (__DATA_CONST,__const) non-external _$s7Fixture4ModeOWV
+00000000000074fc (__TEXT,__text) non-external _$s7Fixture4ModeOwet
+000000000000751c (__TEXT,__text) non-external _$s7Fixture4ModeOwst
+000000000000754c (__TEXT,__text) non-external _$s7Fixture4ModeOwug
+0000000000007568 (__TEXT,__text) non-external _$s7Fixture4ModeOwui
+0000000000005c38 (__TEXT,__text) non-external _$s7Fixture4ModeOwup
+0000000000005c38 (__TEXT,__text) non-external (was a private external) _$s7Fixture5PointV1x1yACSi_SitcfC
+00000000000073a8 (__TEXT,__text) external _$s7Fixture5PointV1xSivM
+0000000000005c38 (__TEXT,__text) non-external _$s7Fixture5PointV1xSivM.resume.0
+0000000000005c38 (__TEXT,__text) external _$s7Fixture5PointV1xSivg
+0000000000008400 (__TEXT,__const) external _$s7Fixture5PointV1xSivpMV
+00000000000073a0 (__TEXT,__text) external _$s7Fixture5PointV1xSivs
+00000000000073c8 (__TEXT,__text) external _$s7Fixture5PointV1ySivM
+0000000000005c38 (__TEXT,__text) non-external _$s7Fixture5PointV1ySivM.resume.0
+00000000000073b8 (__TEXT,__text) external _$s7Fixture5PointV1ySivg
+0000000000008400 (__TEXT,__const) external _$s7Fixture5PointV1ySivpMV
+00000000000073c0 (__TEXT,__text) external _$s7Fixture5PointV1ySivs
+000000000000867c (__TEXT,__swift5_fieldmd) non-external _$s7Fixture5PointVMF
+00000000000074d8 (__TEXT,__text) external _$s7Fixture5PointVMa
+000000000000c258 (__DATA_CONST,__const) non-external _$s7Fixture5PointVMf
+0000000000008534 (__TEXT,__constg_swiftt) external _$s7Fixture5PointVMn
+000000000000c268 (__DATA_CONST,__const) external _$s7Fixture5PointVN
+000000000000c200 (__DATA_CONST,__const) non-external _$s7Fixture5PointVWV
+0000000000007490 (__TEXT,__text) non-external _$s7Fixture5PointVwet
+00000000000074b0 (__TEXT,__text) non-external _$s7Fixture5PointVwst
+000000000000618c (__TEXT,__text) external _$s7Fixture7GreeterC4nameSSvM
+00000000000075a0 (__TEXT,__text) non-external _$s7Fixture7GreeterC4nameSSvM.resume.0
+0000000000006074 (__TEXT,__text) external _$s7Fixture7GreeterC4nameSSvg
+000000000000600c (__TEXT,__text) non-external _$s7Fixture7GreeterC4nameSSvgTo
+0000000000008400 (__TEXT,__const) external _$s7Fixture7GreeterC4nameSSvpMV
+0000000000010b78 (__DATA,__data) external _$s7Fixture7GreeterC4nameSSvpWvd
+0000000000005ff4 (__TEXT,__text) external _$s7Fixture7GreeterC4nameSSvpfi
+0000000000006130 (__TEXT,__text) external _$s7Fixture7GreeterC4nameSSvs
+00000000000060c8 (__TEXT,__text) non-external _$s7Fixture7GreeterC4nameSSvsTo
+0000000000006334 (__TEXT,__text) external _$s7Fixture7GreeterC5greetyS2SF
+0000000000006438 (__TEXT,__text) non-external _$s7Fixture7GreeterC5greetyS2SFTo
+00000000000062f4 (__TEXT,__text) external _$s7Fixture7GreeterC6visitsSivM
+00000000000075a0 (__TEXT,__text) non-external _$s7Fixture7GreeterC6visitsSivM.resume.0
+0000000000006218 (__TEXT,__text) external _$s7Fixture7GreeterC6visitsSivg
+00000000000061d4 (__TEXT,__text) non-external _$s7Fixture7GreeterC6visitsSivgTo
+0000000000008400 (__TEXT,__const) external _$s7Fixture7GreeterC6visitsSivpMV
+0000000000010b80 (__DATA,__data) external _$s7Fixture7GreeterC6visitsSivpWvd
+00000000000061cc (__TEXT,__text) external _$s7Fixture7GreeterC6visitsSivpfi
+00000000000062a8 (__TEXT,__text) external _$s7Fixture7GreeterC6visitsSivs
+0000000000006258 (__TEXT,__text) non-external _$s7Fixture7GreeterC6visitsSivsTo
+00000000000064bc (__TEXT,__text) external _$s7Fixture7GreeterCACycfC
+00000000000064dc (__TEXT,__text) external _$s7Fixture7GreeterCACycfc
+0000000000006540 (__TEXT,__text) non-external _$s7Fixture7GreeterCACycfcTo
+0000000000008600 (__TEXT,__swift5_fieldmd) non-external _$s7Fixture7GreeterCMF
+0000000000007420 (__TEXT,__text) external _$s7Fixture7GreeterCMa
+0000000000010630 (__DATA,__objc_data) non-external _$s7Fixture7GreeterCMf
+0000000000008464 (__TEXT,__constg_swiftt) external _$s7Fixture7GreeterCMn
+0000000000010648 (__DATA,__objc_data) external _$s7Fixture7GreeterCN
+000000000000759c (__TEXT,__text) external _$s7Fixture7GreeterCfD
+000000000000736c (__TEXT,__text) non-external _$s7Fixture7GreeterCfDTm
+00000000000065ac (__TEXT,__text) non-external (was a private external) _$s7Fixture7GreeterCfETo
+00000000000075a4 (__TEXT,__text) external _$s7Fixture8BaseCellC5coderACSgSo7NSCoderC_tcfC
+0000000000006de4 (__TEXT,__text) external _$s7Fixture8BaseCellC5coderACSgSo7NSCoderC_tcfc
+0000000000006e50 (__TEXT,__text) non-external _$s7Fixture8BaseCellC5coderACSgSo7NSCoderC_tcfcTo
+0000000000006cb4 (__TEXT,__text) external _$s7Fixture8BaseCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfC
+0000000000007098 (__TEXT,__text) non-external _$s7Fixture8BaseCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfCTm
+0000000000006cb8 (__TEXT,__text) external _$s7Fixture8BaseCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfc
+0000000000006d5c (__TEXT,__text) non-external _$s7Fixture8BaseCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfcTo
+0000000000006c2c (__TEXT,__text) external _$s7Fixture8BaseCellC9configure4withySS_tF
+00000000000084f0 (__TEXT,__constg_swiftt) external _$s7Fixture8BaseCellC9configure4withySS_tFTq
+0000000000008650 (__TEXT,__swift5_fieldmd) non-external _$s7Fixture8BaseCellCMF
+0000000000006d3c (__TEXT,__text) external _$s7Fixture8BaseCellCMa
+00000000000107b0 (__DATA,__objc_data) non-external _$s7Fixture8BaseCellCMf
+00000000000084bc (__TEXT,__constg_swiftt) external _$s7Fixture8BaseCellCMn
+00000000000107c8 (__DATA,__objc_data) external _$s7Fixture8BaseCellCN
+0000000000006ed0 (__TEXT,__text) external _$s7Fixture8BaseCellCfD
+00000000000073d8 (__TEXT,__text) external _$s7Fixture8distanceySiAA5PointV_ADtF
+00000000000075a4 (__TEXT,__text) external _$s7Fixture9ValueCellC5coderACSgSo7NSCoderC_tcfC
+0000000000007264 (__TEXT,__text) external _$s7Fixture9ValueCellC5coderACSgSo7NSCoderC_tcfc
+00000000000072e0 (__TEXT,__text) non-external _$s7Fixture9ValueCellC5coderACSgSo7NSCoderC_tcfcTo
+0000000000007598 (__TEXT,__text) external _$s7Fixture9ValueCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfC
+0000000000007114 (__TEXT,__text) external _$s7Fixture9ValueCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfc
+00000000000071b8 (__TEXT,__text) non-external _$s7Fixture9ValueCellC5style15reuseIdentifierACSo011UITableViewC5StyleV_SSSgtcfcTo
+0000000000006f94 (__TEXT,__text) external _$s7Fixture9ValueCellC5valueSdvM
+00000000000075a0 (__TEXT,__text) non-external _$s7Fixture9ValueCellC5valueSdvM.resume.0
+0000000000006f08 (__TEXT,__text) external _$s7Fixture9ValueCellC5valueSdvg
+0000000000008400 (__TEXT,__const) external _$s7Fixture9ValueCellC5valueSdvpMV
+0000000000010b98 (__DATA,__data) external _$s7Fixture9ValueCellC5valueSdvpWvd
+0000000000006f00 (__TEXT,__text) external _$s7Fixture9ValueCellC5valueSdvpfi
+0000000000006f48 (__TEXT,__text) external _$s7Fixture9ValueCellC5valueSdvs
+0000000000006fd4 (__TEXT,__text) external _$s7Fixture9ValueCellC9configure4withySS_tF
+0000000000008660 (__TEXT,__swift5_fieldmd) non-external _$s7Fixture9ValueCellCMF
+0000000000007460 (__TEXT,__text) external _$s7Fixture9ValueCellCMa
+0000000000010868 (__DATA,__objc_data) non-external _$s7Fixture9ValueCellCMf
+00000000000084f8 (__TEXT,__constg_swiftt) external _$s7Fixture9ValueCellCMn
+0000000000010880 (__DATA,__objc_data) external _$s7Fixture9ValueCellCN
+000000000000759c (__TEXT,__text) external _$s7Fixture9ValueCellCfD
+0000000000008458 (__TEXT,__constg_swiftt) non-external (was a private external) _$s7FixtureMXM
+                 (undefined) external _$sBOWV (from libswiftCore)
+                 (undefined) external _$sSS10FoundationE19_bridgeToObjectiveCSo8NSStringCyF (from libswiftFoundation)
+                 (undefined) external _$sSS10FoundationE36_unconditionallyBridgeFromObjectiveCySSSo8NSStringCSgFZ (from libswiftFoundation)
+                 (undefined) external _$sSS5countSivg (from libswiftCore)
+                 (undefined) external _$sSS6appendyySSF (from libswiftCore)
+                 (undefined) external _$ss11_StringGutsV4growyySiF (from libswiftCore)
+                 (undefined) external _CGRectZero (from CoreGraphics)
+0000000000010648 (__DATA,__objc_data) external _OBJC_CLASS_$_FXGreeter
+0000000000010908 (__DATA,__objc_data) external _OBJC_CLASS_$_FXLegacyView
+                 (undefined) external _OBJC_CLASS_$_NSObject (from libobjc)
+                 (undefined) external _OBJC_CLASS_$_NSString (from Foundation)
+                 (undefined) external _OBJC_CLASS_$_UITableViewCell (from UIKit)
+                 (undefined) external _OBJC_CLASS_$_UIView (from UIKit)
+                 (undefined) external _OBJC_CLASS_$_UIViewController (from UIKit)
+0000000000010708 (__DATA,__objc_data) external _OBJC_CLASS_$__TtC7Fixture22SettingsViewController
+00000000000107c8 (__DATA,__objc_data) external _OBJC_CLASS_$__TtC7Fixture8BaseCell
+0000000000010880 (__DATA,__objc_data) external _OBJC_CLASS_$__TtC7Fixture9ValueCell
+00000000000105dc (__DATA,__objc_ivar) non-external (was a private external) _OBJC_IVAR_$_FXLegacyView._scale
+00000000000105d8 (__DATA,__objc_ivar) non-external (was a private external) _OBJC_IVAR_$_FXLegacyView._ticks
+00000000000105e0 (__DATA,__objc_ivar) non-external (was a private external) _OBJC_IVAR_$_FXLegacyView._title
+0000000000010ba0 (__DATA,__data) external _OBJC_METACLASS_$_FXGreeter
+00000000000108e0 (__DATA,__objc_data) external _OBJC_METACLASS_$_FXLegacyView
+                 (undefined) external _OBJC_METACLASS_$_NSObject (from libobjc)
+                 (undefined) external _OBJC_METACLASS_$_UITableViewCell (from UIKit)
+                 (undefined) external _OBJC_METACLASS_$_UIView (from UIKit)
+                 (undefined) external _OBJC_METACLASS_$_UIViewController (from UIKit)
+0000000000010bc8 (__DATA,__data) external _OBJC_METACLASS_$__TtC7Fixture22SettingsViewController
+0000000000010bf0 (__DATA,__data) external _OBJC_METACLASS_$__TtC7Fixture8BaseCell
+0000000000010c18 (__DATA,__data) external _OBJC_METACLASS_$__TtC7Fixture9ValueCell
+0000000000005758 (__TEXT,__text) non-external _OUTLINED_FUNCTION_0
+0000000000010930 (__DATA,__s_async_hook) non-external (was a private external) _Swift56ConcurrencyOverrides
+0000000000010ac0 (__DATA,__swift56_hooks) non-external (was a private external) _Swift56RuntimeOverrides
+00000000000105e8 (__DATA,__objc_data) non-external __DATA_FXGreeter
+00000000000106a8 (__DATA,__objc_data) non-external __DATA__TtC7Fixture22SettingsViewController
+0000000000010768 (__DATA,__objc_data) non-external __DATA__TtC7Fixture8BaseCell
+0000000000010820 (__DATA,__objc_data) non-external __DATA__TtC7Fixture9ValueCell
+0000000000007a20 (__TEXT,__objc_methlist) non-external __INSTANCE_METHODS_FXGreeter
+0000000000007a80 (__TEXT,__objc_methlist) non-external __INSTANCE_METHODS__TtC7Fixture22SettingsViewController
+0000000000007ab8 (__TEXT,__objc_methlist) non-external __INSTANCE_METHODS__TtC7Fixture8BaseCell
+0000000000007ad8 (__TEXT,__objc_methlist) non-external __INSTANCE_METHODS__TtC7Fixture9ValueCell
+0000000000010048 (__DATA,__objc_const) non-external __IVARS_FXGreeter
+0000000000010100 (__DATA,__objc_const) non-external __IVARS__TtC7Fixture22SettingsViewController
+00000000000101d8 (__DATA,__objc_const) non-external __IVARS__TtC7Fixture9ValueCell
+0000000000010000 (__DATA,__objc_const) non-external __METACLASS_DATA_FXGreeter
+00000000000100b8 (__DATA,__objc_const) non-external __METACLASS_DATA__TtC7Fixture22SettingsViewController
+0000000000010148 (__DATA,__objc_const) non-external __METACLASS_DATA__TtC7Fixture8BaseCell
+0000000000010190 (__DATA,__objc_const) non-external __METACLASS_DATA__TtC7Fixture9ValueCell
+0000000000010d68 (__DATA,__bss) non-external __MergedGlobals
+0000000000007af8 (__TEXT,__objc_methlist) non-external __OBJC_$_CLASS_METHODS_FXLegacyView
+0000000000007b10 (__TEXT,__objc_methlist) non-external __OBJC_$_INSTANCE_METHODS_FXLegacyView(Debug)
+0000000000010368 (__DATA,__objc_const) non-external __OBJC_$_INSTANCE_VARIABLES_FXLegacyView
+00000000000103d0 (__DATA,__objc_const) non-external __OBJC_$_PROP_LIST_FXLegacyView
+0000000000010200 (__DATA,__objc_const) non-external __OBJC_$_PROP_LIST_NSObject
+0000000000007b60 (__TEXT,__objc_methlist) non-external __OBJC_$_PROTOCOL_INSTANCE_METHODS_FXRefreshing
+0000000000007b78 (__TEXT,__objc_methlist) non-external __OBJC_$_PROTOCOL_INSTANCE_METHODS_NSObject
+0000000000007c68 (__TEXT,__objc_methlist) non-external __OBJC_$_PROTOCOL_INSTANCE_METHODS_OPT_NSObject
+0000000000010300 (__DATA,__objc_const) non-external __OBJC_$_PROTOCOL_METHOD_TYPES_FXRefreshing
+0000000000010248 (__DATA,__objc_const) non-external __OBJC_$_PROTOCOL_METHOD_TYPES_NSObject
+00000000000102e8 (__DATA,__objc_const) non-external __OBJC_$_PROTOCOL_REFS_FXRefreshing
+0000000000010308 (__DATA,__objc_const) non-external __OBJC_CLASS_PROTOCOLS_$_FXLegacyView
+0000000000010438 (__DATA,__objc_const) non-external __OBJC_CLASS_RO_$_FXLegacyView
+000000000000c408 (__DATA_CONST,__objc_protolist) non-external (was a private external) __OBJC_LABEL_PROTOCOL_$_FXRefreshing
+000000000000c400 (__DATA_CONST,__objc_protolist) non-external (was a private external) __OBJC_LABEL_PROTOCOL_$_NSObject
+0000000000010320 (__DATA,__objc_const) non-external __OBJC_METACLASS_RO_$_FXLegacyView
+0000000000010ca0 (__DATA,__data) non-external (was a private external) __OBJC_PROTOCOL_$_FXRefreshing
+0000000000010c40 (__DATA,__data) non-external (was a private external) __OBJC_PROTOCOL_$_NSObject
+0000000000010090 (__DATA,__objc_const) non-external __PROPERTIES_FXGreeter
+0000000000010d30 (__DATA,__bss) non-external __ZL16vouchersDisabled
+0000000000010d28 (__DATA,__bss) non-external __ZL23voucherDisableCheckOnce
+0000000000005220 (__TEXT,__text) non-external __ZL27_initializeVouchersDisabledPv
+000000000000432c (__TEXT,__text) non-external __ZL31task_future_wait_resume_adapterPN5swift12AsyncContextE
+0000000000004444 (__TEXT,__text) non-external __ZL33task_wait_throwing_resume_adapterPN5swift12AsyncContextE
+0000000000005840 (__TEXT,__text) non-external __ZL9errorNamei
+0000000000005598 (__TEXT,__text) non-external __ZN12_GLOBAL__N_115GlobalAllocatorD1Ev
+0000000000010d08 (__DATA,__common) non-external (was a private external) __ZN24FallbackTaskLocalStorage5ValueE
+000000000000564c (__TEXT,__text) non-external (was a private external) __ZN5swift14StackAllocatorILm1000EXadL_ZNS_25TaskAllocatorSlabMetadataEEEE20getSlabForAllocationEm
+000000000000559c (__TEXT,__text) non-external (was a private external) __ZN5swift14StackAllocatorILm1000EXadL_ZNS_25TaskAllocatorSlabMetadataEEEED2Ev
+00000000000051f0 (__TEXT,__text) non-external (was a private external) __ZN5swift14VoucherManager19vouchersAreDisabledEv
+0000000000005258 (__TEXT,__text) non-external (was a private external) __ZN5swift14VoucherManager9swapToJobEPNS_3JobE
+000000000000534c (__TEXT,__text) non-external __ZN5swift14VoucherManager9swapToJobEPNS_3JobE.cold.1
+0000000000005114 (__TEXT,__text) non-external (was a private external) __ZN5swift16adoptTaskVoucherEPNS_9AsyncTaskE
+0000000000005140 (__TEXT,__text) non-external (was a private external) __ZN5swift18restoreTaskVoucherEPNS_9AsyncTaskE
+000000000000534c (__TEXT,__text) non-external __ZN5swift18restoreTaskVoucherEPNS_9AsyncTaskE.cold.1
+0000000000005c30 (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper4initER16os_unfair_lock_sb
+0000000000005a0c (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper4initER23_opaque_pthread_mutex_tb
+0000000000005c3c (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper4lockER16os_unfair_lock_s
+0000000000005b2c (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper4lockER23_opaque_pthread_mutex_t
+0000000000005c50 (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper6unlockER16os_unfair_lock_s
+0000000000005b7c (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper6unlockER23_opaque_pthread_mutex_t
+0000000000005c38 (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper7destroyER16os_unfair_lock_s
+0000000000005adc (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper7destroyER23_opaque_pthread_mutex_t
+0000000000005c64 (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper8try_lockER16os_unfair_lock_s
+0000000000005bcc (__TEXT,__text) non-external (was a private external) __ZN5swift19MutexPlatformHelper8try_lockER23_opaque_pthread_mutex_t
+0000000000005364 (__TEXT,__text) non-external (was a private external) __ZN5swift19_swift_tsan_acquireEPv
+0000000000005454 (__TEXT,__text) non-external __ZN5swift19_swift_tsan_acquireEPv.cold.1
+00000000000053ac (__TEXT,__text) non-external (was a private external) __ZN5swift19_swift_tsan_releaseEPv
+000000000000546c (__TEXT,__text) non-external __ZN5swift19_swift_tsan_releaseEPv.cold.1
+00000000000050d8 (__TEXT,__text) non-external (was a private external) __ZN5swift21swift_task_getCurrentEv
+00000000000057ec (__TEXT,__text) non-external (was a private external) __ZN5swift23ConditionPlatformHelper4initER22_opaque_pthread_cond_t
+00000000000059bc (__TEXT,__text) non-external (was a private external) __ZN5swift23ConditionPlatformHelper4waitER22_opaque_pthread_cond_tR23_opaque_pthread_mutex_t
+00000000000058cc (__TEXT,__text) non-external (was a private external) __ZN5swift23ConditionPlatformHelper7destroyER22_opaque_pthread_cond_t
+000000000000596c (__TEXT,__text) non-external (was a private external) __ZN5swift23ConditionPlatformHelper9notifyAllER22_opaque_pthread_cond_t
+000000000000591c (__TEXT,__text) non-external (was a private external) __ZN5swift23ConditionPlatformHelper9notifyOneER22_opaque_pthread_cond_t
+00000000000050e0 (__TEXT,__text) non-external (was a private external) __ZN5swift24_swift_task_clearCurrentEv
+0000000000010d00 (__DATA,__common) non-external (was a private external) __ZN5swift25TaskAllocatorSlabMetadataE
+0000000000005484 (__TEXT,__text) non-external (was a private external) __ZN5swift26_swift_task_alloc_specificEPNS_9AsyncTaskEm
+000000000000577c (__TEXT,__text) non-external __ZN5swift26_swift_task_alloc_specificEPNS_9AsyncTaskEm.cold.1
+0000000000005e84 (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper10readUnlockER24_opaque_pthread_rwlock_t
+0000000000005e84 (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper11writeUnlockER24_opaque_pthread_rwlock_t
+0000000000005d6c (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper12try_readLockER24_opaque_pthread_rwlock_t
+0000000000005e20 (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper13try_writeLockER24_opaque_pthread_rwlock_t
+0000000000005c78 (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper4initER24_opaque_pthread_rwlock_t
+0000000000005ccc (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper7destroyER24_opaque_pthread_rwlock_t
+0000000000005d1c (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper8readLockER24_opaque_pthread_rwlock_t
+0000000000005dd0 (__TEXT,__text) non-external (was a private external) __ZN5swift27ReadWriteLockPlatformHelper9writeLockER24_opaque_pthread_rwlock_t
+0000000000005514 (__TEXT,__text) non-external (was a private external) __ZN5swift28_swift_task_dealloc_specificEPNS_9AsyncTaskEPv
+000000000000577c (__TEXT,__text) non-external __ZN5swift28_swift_task_dealloc_specificEPNS_9AsyncTaskEPv.cold.1
+00000000000050cc (__TEXT,__text) non-external (was a private external) __ZN5swift28swift_Concurrency_fatalErrorEjPKcz
+0000000000004f4c (__TEXT,__text) non-external (was a private external) __ZN5swift31swift_task_escalateBackdeploy56EPNS_9AsyncTaskENS_11JobPriorityE
+00000000000050b4 (__TEXT,__text) non-external __ZN5swift31swift_task_escalateBackdeploy56EPNS_9AsyncTaskENS_11JobPriorityE.cold.1
+0000000000004244 (__TEXT,__text) non-external (was a private external) __ZN5swift38swift56override_swift_task_future_waitEPNS_11OpaqueValueEPNS_12AsyncContextEPNS_9AsyncTaskEPU14swiftasynccallFvU19swift_async_contextS3_ES3_PU14swiftasynccallFvS1_U19swift_async_contextS3_S5_S7_S3_E
+0000000000004454 (__TEXT,__text) non-external (was a private external) __ZN5swift40swift56override_swift_task_create_commonEmPNS_16TaskOptionRecordEPKNS_14TargetMetadataINS_9InProcessEEEPU14swiftasynccallFvU19swift_async_contextPNS_12AsyncContextEEPvmPU9swiftcallFNS_19AsyncTaskAndContextEmS1_S6_SA_SB_mE
+0000000000005f1c (__TEXT,__text) non-external (was a private external) __ZN5swift45swift_task_exitThreadLocalContextBackdeploy56EPc
+0000000000005fdc (__TEXT,__text) non-external __ZN5swift45swift_task_exitThreadLocalContextBackdeploy56EPc.cold.1
+0000000000005ed4 (__TEXT,__text) non-external (was a private external) __ZN5swift46swift_task_enterThreadLocalContextBackdeploy56EPc
+0000000000005fc4 (__TEXT,__text) non-external __ZN5swift46swift_task_enterThreadLocalContextBackdeploy56EPc.cold.1
+0000000000004334 (__TEXT,__text) non-external (was a private external) __ZN5swift47swift56override_swift_task_future_wait_throwingEPNS_11OpaqueValueEPNS_12AsyncContextEPNS_9AsyncTaskEPU14swiftasynccallFvU19swift_async_contextS3_U13swift_contextPvES3_PU14swiftasynccallFvS1_U19swift_async_contextS3_S5_S8_S3_E
+0000000000004000 (__TEXT,__text) non-external (was a private external) __ZN5swift9AsyncTask10waitFutureEPS0_PNS_12AsyncContextEPU14swiftasynccallFvU19swift_async_contextS3_ES3_PNS_11OpaqueValueE
+0000000000004c8c (__TEXT,__text) non-external (was a private external) __ZN5swift9AsyncTask18flagAsRunning_slowEv
+0000000000004dec (__TEXT,__text) non-external (was a private external) __ZN5swift9AsyncTask20flagAsSuspended_slowEv
+0000000000004520 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal4Item10createLinkEPNS_9AsyncTaskEPKNS_10HeapObjectEPKNS_14TargetMetadataINS_9InProcessEEE
+00000000000044c8 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal4Item16createParentLinkEPNS_9AsyncTaskES3_
+00000000000045b4 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal4Item6copyToEPNS_9AsyncTaskE
+0000000000004698 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal4Item7destroyEPNS_9AsyncTaskE
+0000000000004464 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal7Storage20initializeLinkParentEPNS_9AsyncTaskES3_
+00000000000049a0 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal7Storage6copyToEPNS_9AsyncTaskE
+00000000000046f8 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal7Storage7destroyEPNS_9AsyncTaskE
+000000000000494c (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal7Storage8getValueEPNS_9AsyncTaskEPKNS_10HeapObjectE
+00000000000048c8 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal7Storage8popValueEPNS_9AsyncTaskE
+00000000000047e4 (__TEXT,__text) non-external (was a private external) __ZN5swift9TaskLocal7Storage9pushValueEPNS_9AsyncTaskEPKNS_10HeapObjectEPNS_11OpaqueValueEPKNS_14TargetMetadataINS_9InProcessEEE
+0000000000010d20 (__DATA,__bss) non-external __ZN5swiftL20StatusRecordLockLockE
+0000000000004fcc (__TEXT,__text) non-external __ZN5swiftL25waitForStatusRecordUnlockEPNS_9AsyncTaskERNS_16ActiveTaskStatusE
+0000000000004af0 (__TEXT,__text) non-external (was a private external) __ZNSt3__127__tree_balance_after_insertB8nn190102IPNS_16__tree_node_baseIPvEEEEvT_S5_
+0000000000004aac (__TEXT,__text) non-external (was a private external) __ZNSt3__16__treeIPKN5swift10HeapObjectENS_4lessIS4_EENS_9allocatorIS4_EEE7destroyEPNS_11__tree_nodeIS4_PvEE
+0000000000010d38 (__DATA,__bss) non-external __ZZZL25swift_voucher_needs_adoptP9voucher_sENKUlvE_clEvE7TheLazy
+000000000000531c (__TEXT,__text) non-external __ZZZL25swift_voucher_needs_adoptP9voucher_sENKUlvE_clEvENUlPvE_8__invokeES2_
+0000000000010d48 (__DATA,__bss) non-external __ZZZN5swift19_swift_tsan_acquireEPvENK3$_0clEvE7TheLazy
+00000000000053f4 (__TEXT,__text) non-external __ZZZN5swift19_swift_tsan_acquireEPvENK3$_0clEvENUlS0_E_8__invokeES0_
+0000000000010d58 (__DATA,__bss) non-external __ZZZN5swift19_swift_tsan_releaseEPvENK3$_0clEvE7TheLazy
+0000000000005424 (__TEXT,__text) non-external __ZZZN5swift19_swift_tsan_releaseEPvENK3$_0clEvENUlS0_E_8__invokeES0_
+0000000000010d10 (__DATA,__bss) non-external __ZZZN5swift31swift_task_escalateBackdeploy56EPNS_9AsyncTaskENS_11JobPriorityEENK3$_0clEvE7TheLazy
+0000000000004f9c (__TEXT,__text) non-external __ZZZN5swift31swift_task_escalateBackdeploy56EPNS_9AsyncTaskENS_11JobPriorityEENK3$_0clEvENUlPvE_8__invokeES4_
+0000000000010f98 (__DATA,__bss) non-external __ZZZN5swift45swift_task_exitThreadLocalContextBackdeploy56EPcENK3$_0clEvE7TheLazy
+0000000000005f94 (__TEXT,__text) non-external __ZZZN5swift45swift_task_exitThreadLocalContextBackdeploy56EPcENK3$_0clEvENUlPvE_8__invokeES2_
+0000000000010f88 (__DATA,__bss) non-external __ZZZN5swift46swift_task_enterThreadLocalContextBackdeploy56EPcENK3$_0clEvE7TheLazy
+0000000000005f64 (__TEXT,__text) non-external __ZZZN5swift46swift_task_enterThreadLocalContextBackdeploy56EPcENK3$_0clEvENUlPvE_8__invokeES2_
+                 (undefined) external __ZdlPv (from libc++)
+                 (undefined) external __Znwm (from libc++)
+                 (undefined) external ___CFConstantStringClassReference (from CoreFoundation)
+                 (undefined) external ___cxa_atexit (from libSystem)
+                 (undefined) external ___cxa_guard_acquire (from libc++)
+                 (undefined) external ___cxa_guard_release (from libc++)
+0000000000007480 (__TEXT,__text) non-external (was a private external) ___swift_memcpy16_8
+00000000000074e8 (__TEXT,__text) non-external (was a private external) ___swift_memcpy9_8
+000000000000748c (__TEXT,__text) non-external (was a private external) ___swift_noop_void_return
+0000000000008456 (__TEXT,__const) non-external (was a private external) ___swift_reflection_version
+                 (undefined) external __objc_empty_cache (from libobjc)
+0000000000010b70 (__DATA,__data) non-external (was a private external) __swift_FORCE_LOAD_$_swiftCompatibility56
+000000000000c3b0 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftCompatibility56_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftCoreFoundation (from libswiftCoreFoundation)
+000000000000c370 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftCoreFoundation_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftCoreImage (from libswiftCoreImage)
+000000000000c388 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftCoreImage_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftDarwin (from libswiftDarwin)
+000000000000c360 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftDarwin_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftDataDetection (from libswiftDataDetection)
+000000000000c3a8 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftDataDetection_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftDispatch (from libswiftDispatch)
+000000000000c378 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftDispatch_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftFoundation (from libswiftFoundation)
+000000000000c318 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftFoundation_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftMetal (from libswiftMetal)
+000000000000c390 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftMetal_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftObjectiveC (from libswiftObjectiveC)
+000000000000c368 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftObjectiveC_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftQuartzCore (from libswiftQuartzCore)
+000000000000c398 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftQuartzCore_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftUIKit (from libswiftUIKit)
+000000000000c310 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftUIKit_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftUniformTypeIdentifiers (from libswiftUniformTypeIdentifiers)
+000000000000c3a0 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftUniformTypeIdentifiers_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftXPC (from libswiftXPC)
+000000000000c380 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftXPC_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swift_Builtin_float (from libswiftDarwin)
+000000000000c358 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swift_Builtin_float_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swift_errno (from libswiftDarwin)
+000000000000c320 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swift_errno_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swift_math (from libswiftDarwin)
+000000000000c350 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swift_math_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swift_signal (from libswiftDarwin)
+000000000000c328 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swift_signal_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swift_stdio (from libswiftDarwin)
+000000000000c348 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swift_stdio_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swift_time (from libswiftDarwin)
+000000000000c338 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swift_time_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftsys_time (from libswiftDarwin)
+000000000000c330 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftsys_time_$_Fixture
+                 (undefined) weak external __swift_FORCE_LOAD_$_swiftunistd (from libswiftDarwin)
+000000000000c340 (__DATA_CONST,__const) non-external (was a private external) __swift_FORCE_LOAD_$_swiftunistd_$_Fixture
+                 (undefined) external __swift_stdlib_operatingSystemVersion (from libswiftCore)
+                 (undefined) external _abort (from libSystem)
+                 (undefined) external _dispatch_once_f (from libSystem)
+                 (undefined) external _dlsym (from libSystem)
+                 (undefined) external _free (from libSystem)
+00000000000076b4 (__TEXT,__text) external _fx_add
+00000000000076bc (__TEXT,__text) external _fx_public_twice
+                 (undefined) external _malloc (from libSystem)
+                 (undefined) external _memset_s (from libSystem)
+                 (undefined) external _objc_alloc (from libobjc)
+                 (undefined) external _objc_allocWithZone (from libobjc)
+                 (undefined) external _objc_autoreleaseReturnValue (from libobjc)
+                 (undefined) external _objc_msgSend (from libobjc)
+00000000000079c0 (__TEXT,__objc_stubs) non-external (was a private external) _objc_msgSend$initWithFrame:
+00000000000079e0 (__TEXT,__objc_stubs) non-external (was a private external) _objc_msgSend$stringWithFormat:
+0000000000007a00 (__TEXT,__objc_stubs) non-external (was a private external) _objc_msgSend$title
+                 (undefined) external _objc_msgSendSuper2 (from libobjc)
+                 (undefined) external _objc_opt_self (from libobjc)
+                 (undefined) external _objc_release (from libobjc)
+                 (undefined) external _objc_retain (from libobjc)
+                 (undefined) external _objc_retainAutoreleasedReturnValue (from libobjc)
+                 (undefined) external _objc_setProperty_nonatomic_copy (from libobjc)
+                 (undefined) external _objc_storeStrong (from libobjc)
+                 (undefined) weak external _os_release (from libSystem)
+                 (undefined) weak external _os_unfair_lock_lock (from libSystem)
+                 (undefined) weak external _os_unfair_lock_trylock (from libSystem)
+                 (undefined) weak external _os_unfair_lock_unlock (from libSystem)
+                 (undefined) external _pthread_cond_broadcast (from libSystem)
+                 (undefined) external _pthread_cond_destroy (from libSystem)
+                 (undefined) external _pthread_cond_init (from libSystem)
+                 (undefined) external _pthread_cond_signal (from libSystem)
+                 (undefined) external _pthread_cond_wait (from libSystem)
+                 (undefined) external _pthread_getspecific (from libSystem)
+                 (undefined) external _pthread_mutex_destroy (from libSystem)
+                 (undefined) external _pthread_mutex_init (from libSystem)
+                 (undefined) external _pthread_mutex_lock (from libSystem)
+                 (undefined) external _pthread_mutex_trylock (from libSystem)
+                 (undefined) external _pthread_mutex_unlock (from libSystem)
+                 (undefined) external _pthread_mutexattr_destroy (from libSystem)
+                 (undefined) external _pthread_mutexattr_init (from libSystem)
+                 (undefined) external _pthread_mutexattr_settype (from libSystem)
+                 (undefined) external _pthread_rwlock_destroy (from libSystem)
+                 (undefined) external _pthread_rwlock_init (from libSystem)
+                 (undefined) external _pthread_rwlock_rdlock (from libSystem)
+                 (undefined) external _pthread_rwlock_tryrdlock (from libSystem)
+                 (undefined) external _pthread_rwlock_trywrlock (from libSystem)
+                 (undefined) external _pthread_rwlock_unlock (from libSystem)
+                 (undefined) external _pthread_rwlock_wrlock (from libSystem)
+                 (undefined) external _pthread_setspecific (from libSystem)
+                 (undefined) external _swift_beginAccess (from libswiftCore)
+                 (undefined) external _swift_bridgeObjectRelease (from libswiftCore)
+                 (undefined) external _swift_bridgeObjectRetain (from libswiftCore)
+                 (undefined) external _swift_endAccess (from libswiftCore)
+                 (undefined) external _swift_errorRetain (from libswiftCore)
+                 (undefined) external _swift_getObjectType (from libswiftCore)
+                 (undefined) external _swift_once (from libswiftCore)
+0000000000008580 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic SS
+00000000000085c6 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic Sd
+0000000000008584 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic Si
+00000000000085a4 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic So15UITableViewCellC
+0000000000008588 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic So16UIViewControllerC
+000000000000856c (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic So8NSObjectC
+000000000000859e (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic _____ 7Fixture22SettingsViewControllerC
+00000000000085d0 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic _____ 7Fixture4ModeO
+00000000000085ca (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic _____ 7Fixture5PointV
+000000000000857a (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic _____ 7Fixture7GreeterC
+00000000000085ba (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic _____ 7Fixture8BaseCellC
+00000000000085c0 (__TEXT,__swift5_typeref) non-external (was a private external) _symbolic _____ 7Fixture9ValueCellC
+                 (undefined) weak external _voucher_adopt (from libSystem)

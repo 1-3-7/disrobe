@@ -1,0 +1,74 @@
+{
+  "files": {
+    "files/Assets.car": "f8fe9d6a2ff857e95b15ab22a0f55a17d56f9fe9d50a5d6e2100cd7affca9932",
+    "files/Assets.car.assetutil.json": "47f0de96c1cf19779f930fc42ee3e2b6a2106e9b780f10e98ce0175220916003",
+    "files/Controls.nib": "7c174bf1ac3efd40e4bdffa9252af27113d06cf955c677f1c70647d6c9c873be",
+    "files/Fixture.dylib": "39bc8580f9f9a23f2d6ab325ff5860e08625fd26ec35962e8337b06f24f23404",
+    "files/Fixture.dylib.nm-defined.txt": "1d1bb9421797ab5aebb2a76b3f7d8c85c294eb110ee1628a3078c401265d3869",
+    "files/Fixture.dylib.nm-demangled.txt": "136be1ad7536d6ec6cbabf525a70ba2e11cf67db0a2882ad59d495738488f9a6",
+    "files/Fixture.dylib.nm.txt": "a541550c5709499ff5e9826d148d37fd0cad7f400be6f8164fa3b4232f659733",
+    "files/Fixture.dylib.otool-l.txt": "014158399495190e259208b02655d1b39a8c6833005e124ececd282eee2b314b",
+    "files/Fixture.dylib.otool-ov.txt": "f009b9baf446e909546fba827992191b5d87e440ca21b4a68172e8d0e8968ba0",
+    "files/Settings.nib": "a57bff26fce57e8d48cb36e0df40e660ef0dc46c5773954ab4c39870b4d9f2f8",
+    "files/graph.archive": "c8b7af0c4107ffaaef8d99a3050548ea01436c62ef7aed2555f3fbf1c925b1b6",
+    "files/graph.archive.xml": "0a96d9c2f3f80f6f413f2f4dd6f2b38ed5c6986877542344be3a16fad533601e"
+  },
+  "outputs": [
+    {
+      "behaviour": "same",
+      "command": "xcrun actool --compile <out> --platform iphoneos --minimum-deployment-target 15.0 Assets.xcassets",
+      "input": "corpus/apple/src/Assets.xcassets",
+      "input_sha256": "bc717997b93b3c5d67ac6f4b420214d52b30bcba359eb6bfa5307002d81574b1",
+      "output": "files/Assets.car",
+      "output_bytes": 206256,
+      "output_sha256": "f8fe9d6a2ff857e95b15ab22a0f55a17d56f9fe9d50a5d6e2100cd7affca9932"
+    },
+    {
+      "behaviour": "same",
+      "command": "xcrun ibtool --compile Controls.nib Controls.xib",
+      "input": "corpus/apple/src/Controls.xib",
+      "input_sha256": "b7624a9870a99c903cd5da80b5a14a693149fef683f469838e45d30852a12913",
+      "output": "files/Controls.nib",
+      "output_bytes": 4181,
+      "output_sha256": "7c174bf1ac3efd40e4bdffa9252af27113d06cf955c677f1c70647d6c9c873be"
+    },
+    {
+      "behaviour": "same",
+      "command": "xcrun ibtool --compile Settings.nib Settings.xib",
+      "input": "corpus/apple/src/Settings.xib",
+      "input_sha256": "b78de4e214e8a784db72b3a5b322679106640ed4aac5238b339d3c08c58ba9cd",
+      "output": "files/Settings.nib",
+      "output_bytes": 3914,
+      "output_sha256": "a57bff26fce57e8d48cb36e0df40e660ef0dc46c5773954ab4c39870b4d9f2f8"
+    },
+    {
+      "behaviour": "same",
+      "command": "swift archive.swift <out>",
+      "input": "corpus/apple/src/archive.swift",
+      "input_sha256": "4d0a01089a637b21cbc04f20258e0ab075bb889992432aecc9bafee866c45fc7",
+      "output": "files/graph.archive",
+      "output_bytes": 1255,
+      "output_sha256": "c8b7af0c4107ffaaef8d99a3050548ea01436c62ef7aed2555f3fbf1c925b1b6"
+    },
+    {
+      "behaviour": "same",
+      "command": "clang -target arm64-apple-ios15.0 -fobjc-arc -c Legacy.m; swiftc -target arm64-apple-ios15.0 -emit-library -module-name Fixture Views.swift Legacy.o -o Fixture.dylib",
+      "input": "corpus/apple/src/classes",
+      "input_sha256": "4ea5e01a1f3cb595bb9697111134f9a686c0dd885593066e6e4f968aa72f8fab",
+      "output": "files/Fixture.dylib",
+      "output_bytes": 109824,
+      "output_sha256": "39bc8580f9f9a23f2d6ab325ff5860e08625fd26ec35962e8337b06f24f23404"
+    }
+  ],
+  "recipe": "apple-formats",
+  "repository_commit": "348c6c0dc5057320dc6dfe6ef71f61646e622b12",
+  "runner_image": "macos15 20260907.0337.1",
+  "tool": {
+    "commit": "Xcode 16.4 Build version 16F6 ",
+    "name": "Xcode actool, ibtool, assetutil and Foundation",
+    "runtime": "18.5",
+    "tree": "15.7.9",
+    "url": "https://developer.apple.com/xcode/"
+  },
+  "workflow_run": "https://github.com/1-3-7/disrobe/actions/runs/38700419708"
+}
