@@ -587,7 +587,7 @@ static REGEX_REWRITERS: &[RegexRewriter] = &[
     },
 ];
 
-const REGEX_CONSTRUCTORS: &[&str] = &["Regex::new(", "RegexBuilder::new("];
+const REGEX_CONSTRUCTORS: &[&str] = &["Regex::new(", "RegexBuilder::new(", "regex!("];
 
 #[test]
 fn two_runs_that_exhaust_a_limit_are_never_equivalent() {
