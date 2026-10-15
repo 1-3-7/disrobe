@@ -20,6 +20,7 @@ const BLOCK_STRINGS: usize = 3;
 const BLOCK_LANGTABLES: usize = 4;
 const ENTRY_LEN: usize = 28;
 const ENTRY_PARAM_COUNT: usize = 6;
+const EW_CREATEDIR: u32 = 11;
 const EW_EXTRACTFILE: u32 = 20;
 const NS_VAR_CODE: u16 = 1;
 const NS_SHELL_CODE: u16 = 2;
@@ -61,6 +62,7 @@ pub struct NsisBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NsisFileEntry {
     pub name: String,
+    pub output_dir: Option<String>,
     pub position: u32,
     pub mtime_low: u32,
     pub mtime_high: u32,
@@ -273,6 +275,7 @@ fn parse_entries(header: &[u8]) -> Result<(bool, Vec<NsisFileEntry>)> {
     }
     let table_start: usize = entries.offset as usize;
     let mut out: Vec<NsisFileEntry> = Vec::new();
+    let mut output_dir: Option<String> = None;
     for i in 0..entry_count {
         let base: usize = match table_start.checked_add(i * ENTRY_LEN) {
             Some(b) => b,
@@ -282,7 +285,7 @@ fn parse_entries(header: &[u8]) -> Result<(bool, Vec<NsisFileEntry>)> {
             Some(v) => v,
             None => break,
         };
-        if opcode != EW_EXTRACTFILE {
+        if opcode != EW_EXTRACTFILE && opcode != EW_CREATEDIR {
             continue;
         }
         let mut params: [u32; ENTRY_PARAM_COUNT] = [0u32; ENTRY_PARAM_COUNT];
@@ -298,20 +301,37 @@ fn parse_entries(header: &[u8]) -> Result<(bool, Vec<NsisFileEntry>)> {
         if !ok {
             break;
         }
+        if opcode == EW_CREATEDIR {
+            if params[1] != 0 {
+                let path: String = decode_nsis_string(string_block, params[0], unicode);
+                output_dir = (!path.is_empty()).then_some(path);
+            }
+            continue;
+        }
         let name_index: u32 = params[1];
         let position: u32 = params[2];
         let name: String = decode_nsis_string(string_block, name_index, unicode);
         if name.is_empty() {
             continue;
         }
+        let entry_dir: Option<String> = if is_absolute_nsis_path(&name) {
+            None
+        } else {
+            output_dir.clone()
+        };
         out.push(NsisFileEntry {
             name,
+            output_dir: entry_dir,
             position,
             mtime_low: params[3],
             mtime_high: params[4],
         });
     }
     Ok((unicode, out))
+}
+
+fn is_absolute_nsis_path(name: &str) -> bool {
+    name.starts_with('$') || name.starts_with(['\\', '/']) || name.as_bytes().get(1) == Some(&b':')
 }
 
 fn read_block_table(header: &[u8]) -> Result<[NsisBlock; BLOCK_COUNT]> {

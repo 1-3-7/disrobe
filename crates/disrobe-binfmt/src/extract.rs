@@ -2696,6 +2696,37 @@ const fn nsis_entry_compression(method: crate::containers::NsisCompression) -> E
     }
 }
 
+fn distinct_nsis_member_name(
+    name: String,
+    digest: [u8; 32],
+    written: &mut BTreeMap<String, [u8; 32]>,
+) -> Option<String> {
+    let mut candidate: String = name.clone();
+    let mut ordinal: u64 = 1;
+    loop {
+        match written.get(&candidate) {
+            None => {
+                written.insert(candidate.clone(), digest);
+                return Some(candidate);
+            }
+            Some(existing) if *existing == digest => return None,
+            Some(_) => {
+                ordinal += 1;
+                candidate = numbered_member_name(&name, ordinal);
+            }
+        }
+    }
+}
+
+fn numbered_member_name(name: &str, ordinal: u64) -> String {
+    let file_start: usize = name.rfind('/').map_or(0, |slash: usize| slash + 1);
+    let stem_end: usize = match name[file_start..].rfind('.') {
+        Some(dot) if dot > 0 => file_start + dot,
+        _ => name.len(),
+    };
+    format!("{}~{ordinal}{}", &name[..stem_end], &name[stem_end..])
+}
+
 fn nsis_relative_path(name: &str) -> String {
     let normalized: String = name.replace('\\', "/");
     let mut rest: &str = normalized.as_str();
@@ -2761,8 +2792,13 @@ fn extract_nsis(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     };
 
     let mut recovered: usize = 0;
+    let mut written: BTreeMap<String, [u8; 32]> = BTreeMap::new();
     for file in &archive.files {
-        let rel: String = nsis_relative_path(&file.name);
+        let installed: String = file.output_dir.as_ref().map_or_else(
+            || file.name.clone(),
+            |dir: &String| format!("{dir}\\{}", file.name),
+        );
+        let rel: String = nsis_relative_path(&installed);
         let safe_name: String = match sanitize_entry_path(&rel) {
             Ok(s) => s,
             Err(e) => {
@@ -2776,6 +2812,12 @@ fn extract_nsis(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
                 violations.push(format!("nsis-decode `{safe_name}`: {e}"));
                 continue;
             }
+        };
+        let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&data).into();
+        let Some(safe_name): Option<String> =
+            distinct_nsis_member_name(safe_name, digest, &mut written)
+        else {
+            continue;
         };
         let uncompressed_size: u64 = data.len() as u64;
         if let Err(e) = guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size) {
