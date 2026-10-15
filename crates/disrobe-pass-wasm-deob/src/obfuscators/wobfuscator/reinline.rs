@@ -12,8 +12,15 @@ pub struct ReinlineStats {
 }
 
 pub fn reinline_imported_ops(wasm: &[u8]) -> Result<(Vec<u8>, ReinlineStats)> {
+    reinline_with(wasm, op_for_import_name)
+}
+
+pub(crate) fn reinline_with(
+    wasm: &[u8],
+    resolve: impl Fn(&str) -> Option<BinaryOp>,
+) -> Result<(Vec<u8>, ReinlineStats)> {
     let mut module: Module = crate::recover::parse_walrus_module(wasm, &lenient_config())?;
-    let op_map: BTreeMap<FunctionId, BinaryOp> = collect_op_imports(&module);
+    let op_map: BTreeMap<FunctionId, BinaryOp> = collect_op_imports(&module, &resolve);
     if op_map.is_empty() {
         return Ok((module.emit_wasm(), ReinlineStats::default()));
     }
@@ -60,13 +67,16 @@ fn lenient_config() -> ModuleConfig {
     cfg
 }
 
-fn collect_op_imports(module: &Module) -> BTreeMap<FunctionId, BinaryOp> {
+fn collect_op_imports(
+    module: &Module,
+    resolve: &impl Fn(&str) -> Option<BinaryOp>,
+) -> BTreeMap<FunctionId, BinaryOp> {
     let mut out: BTreeMap<FunctionId, BinaryOp> = BTreeMap::new();
     for import in module.imports.iter() {
         let ImportKind::Function(fid): ImportKind = import.kind else {
             continue;
         };
-        let Some(op): Option<BinaryOp> = op_for_import_name(&import.name) else {
+        let Some(op): Option<BinaryOp> = resolve(&import.name) else {
             continue;
         };
         if function_signature_is_i32_binary(module, fid) {

@@ -29,10 +29,13 @@ pub use tigress::{
     DispatcherInfo, UnflattenStats, detect_dispatcher, unflatten, unflatten_to_fixed_point,
 };
 pub use wasmixer::{
-    DefragStats, HeapRegion, ProbeSource, StubInfo, UnresolvedReason, UnresolvedStub, UnwrapReport,
-    UnwrappedSegment, defragment, detect_decrypt_stubs, recover_heap_regions, unwrap_decryption,
+    DefragStats, HeapRegion, MAX_DECRYPT_OUTPUT, MAX_DECRYPT_SPAN, MAX_STUBS_PER_MODULE,
+    ProbeSource, StubInfo, UnresolvedReason, UnresolvedStub, UnwrapReport, UnwrappedSegment,
+    defragment, detect_decrypt_stubs, recover_heap_regions, unwrap_decryption,
 };
 pub(crate) use wobfuscator::op_for_import_name;
 pub use wobfuscator::{
-    ReinlineStats, WobfuscatorTable, extract_optable, lift_op_to_rust_fn, reinline_imported_ops,
+    HostBinding, HostOpTable, HostOperator, HostTableReinline, MAX_HOST_ENTRIES,
+    MAX_HOST_SCRIPT_BYTES, ReinlineStats, WobfuscatorTable, extract_optable, lift_op_to_rust_fn,
+    parse_host_table, reinline_host_table, reinline_imported_ops,
 };

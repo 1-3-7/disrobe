@@ -4,6 +4,10 @@ use crate::error::{Error, Result};
 
 use super::stub_detect::StubInfo;
 
+pub const MAX_STUBS_PER_MODULE: usize = 64;
+pub const MAX_DECRYPT_SPAN: i32 = 1 << 20;
+pub const MAX_DECRYPT_OUTPUT: usize = 4 << 20;
+
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 100_000_000;
 
@@ -21,6 +25,8 @@ const TABLE_ELEMENT_LIMIT: usize = 1 << 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnwrappedSegment {
+    pub fn_index: u32,
+    pub address: i32,
     pub call_site_offset: usize,
     pub off: i32,
     pub len: i32,
@@ -38,6 +44,30 @@ pub enum ProbeSource {
 pub enum UnresolvedReason {
     NoStaticSpan,
     SandboxDeclined,
+    NotExported,
+    SpanTooLarge,
+    OutputBudgetExhausted,
+    StubLimitExceeded,
+    SandboxUnavailable,
+}
+
+impl UnresolvedReason {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::NoStaticSpan => "no static data span reaches the stub",
+            Self::SandboxDeclined => {
+                "the bounded sandbox trapped, ran out of fuel or memory, or read outside memory"
+            }
+            Self::NotExported => "the stub is not exported, so the sandbox cannot call it by name",
+            Self::SpanTooLarge => "the encrypted span exceeds the per-stub decrypt cap",
+            Self::OutputBudgetExhausted => "the module's total decrypt output budget is spent",
+            Self::StubLimitExceeded => {
+                "the module holds more decrypt stubs than the per-module cap"
+            }
+            Self::SandboxUnavailable => "this build has no wasmtime sandbox feature",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,12 +161,12 @@ fn body_references_const(body: &wasmparser::FunctionBody<'_>, needle: i32) -> bo
     false
 }
 
-fn function_body_embeds_any_base(bytes: &[u8], fn_index: u32, spans: &[DataSpan]) -> bool {
+fn embedded_span<'s>(bytes: &[u8], fn_index: u32, spans: &'s [DataSpan]) -> Option<&'s DataSpan> {
     let mut imported_funcs: u32 = 0;
     let mut local_idx: u32 = 0;
     for payload in Parser::new(0).parse_all(bytes) {
         let Ok(payload): std::result::Result<Payload<'_>, _> = payload else {
-            return false;
+            return None;
         };
         match payload {
             Payload::ImportSection(reader) => {
@@ -152,13 +182,13 @@ fn function_body_embeds_any_base(bytes: &[u8], fn_index: u32, spans: &[DataSpan]
                 let current: u32 = imported_funcs.saturating_add(local_idx);
                 local_idx = local_idx.saturating_add(1);
                 if current == fn_index {
-                    return spans.iter().any(|s| body_references_const(&body, s.base));
+                    return spans.iter().find(|s| body_references_const(&body, s.base));
                 }
             }
             _ => {}
         }
     }
-    false
+    None
 }
 
 fn collect_call_site_args(bytes: &[u8], fn_index: u32) -> Result<Vec<(usize, i32, i32)>> {
@@ -216,11 +246,12 @@ fn recover_probe(
         }));
     }
 
-    let embeds_base: bool = function_body_embeds_any_base(bytes, stub.fn_index, spans);
-    let Some(span): Option<&DataSpan> = spans.first() else {
-        return Ok(None);
+    let embedded: Option<&DataSpan> = embedded_span(bytes, stub.fn_index, spans);
+    let (span, off): (&DataSpan, i32) = match (embedded, spans) {
+        (Some(span), _) => (span, 0),
+        (None, [only]) => (only, only.base),
+        (None, _) => return Ok(None),
     };
-    let off: i32 = if embeds_base { 0 } else { span.base };
     Ok(Some(DecryptProbe {
         fn_index: stub.fn_index,
         off,
@@ -234,16 +265,33 @@ fn recover_probe(
 fn collect_decrypt_probes(
     bytes: &[u8],
     stubs: &[StubInfo],
-) -> Result<(Vec<DecryptProbe>, Vec<u32>)> {
+) -> Result<(Vec<DecryptProbe>, Vec<UnresolvedStub>)> {
     let spans: Vec<DataSpan> = scan_active_data_spans(bytes)?;
-    let mut probes: Vec<DecryptProbe> = Vec::with_capacity(stubs.len());
-    let mut unresolved: Vec<u32> = Vec::new();
-    for stub in stubs {
-        match recover_probe(bytes, stub, &spans)? {
-            Some(probe) => probes.push(probe),
-            None => unresolved.push(stub.fn_index),
-        }
+    let considered: usize = stubs.len().min(MAX_STUBS_PER_MODULE);
+    let mut probes: Vec<DecryptProbe> = Vec::with_capacity(considered);
+    let mut unresolved: Vec<UnresolvedStub> = Vec::new();
+    for stub in &stubs[..considered] {
+        let reason: UnresolvedReason = match recover_probe(bytes, stub, &spans)? {
+            Some(probe) if probe.len <= MAX_DECRYPT_SPAN => {
+                probes.push(probe);
+                continue;
+            }
+            Some(_) => UnresolvedReason::SpanTooLarge,
+            None => UnresolvedReason::NoStaticSpan,
+        };
+        unresolved.push(UnresolvedStub {
+            fn_index: stub.fn_index,
+            reason,
+        });
     }
+    unresolved.extend(
+        stubs[considered..]
+            .iter()
+            .map(|stub: &StubInfo| UnresolvedStub {
+                fn_index: stub.fn_index,
+                reason: UnresolvedReason::StubLimitExceeded,
+            }),
+    );
     Ok((probes, unresolved))
 }
 
@@ -260,25 +308,19 @@ pub fn unwrap_decryption(bytes: &[u8], stubs: &[StubInfo]) -> Result<UnwrapRepor
     }
 
     crate::debug::dbg_section("wasmtime-unwrap");
-    let (probes, unresolved_spans): (Vec<DecryptProbe>, Vec<u32>) =
+    let (probes, unresolved): (Vec<DecryptProbe>, Vec<UnresolvedStub>) =
         collect_decrypt_probes(bytes, stubs)?;
     crate::debug::dbg_kv("decrypt-probes", || {
         format!(
-            "stubs={} static_probes={} no_static_span={}",
+            "stubs={} static_probes={} unresolved={}",
             stubs.len(),
             probes.len(),
-            unresolved_spans.len()
+            unresolved.len()
         )
     });
     let mut report: UnwrapReport = UnwrapReport {
         segments: Vec::with_capacity(probes.len()),
-        unresolved: unresolved_spans
-            .into_iter()
-            .map(|fn_index| UnresolvedStub {
-                fn_index,
-                reason: UnresolvedReason::NoStaticSpan,
-            })
-            .collect(),
+        unresolved,
     };
 
     if probes.is_empty() {
@@ -304,8 +346,25 @@ pub fn unwrap_decryption(bytes: &[u8], stubs: &[StubInfo]) -> Result<UnwrapRepor
         Duration::from_millis(WALL_DEADLINE_MS),
     );
 
+    let mut produced: usize = 0;
     for probe in &probes {
+        let requested: usize = usize::try_from(probe.len).unwrap_or(usize::MAX);
+        if produced.saturating_add(requested) > MAX_DECRYPT_OUTPUT {
+            report.unresolved.push(UnresolvedStub {
+                fn_index: probe.fn_index,
+                reason: UnresolvedReason::OutputBudgetExhausted,
+            });
+            continue;
+        }
+        if export_for_stub(&module, bytes, probe.fn_index).is_none() {
+            report.unresolved.push(UnresolvedStub {
+                fn_index: probe.fn_index,
+                reason: UnresolvedReason::NotExported,
+            });
+            continue;
+        }
         if let Some(decrypted) = run_probe(&engine, &module, bytes, probe) {
+            produced = produced.saturating_add(decrypted.len());
             crate::debug::dbg_kv("probe-differential", || {
                 format!(
                     "fn_index={} off={} len={} source={:?} outcome=recovered bytes={}",
@@ -317,6 +376,8 @@ pub fn unwrap_decryption(bytes: &[u8], stubs: &[StubInfo]) -> Result<UnwrapRepor
                 )
             });
             report.segments.push(UnwrappedSegment {
+                fn_index: probe.fn_index,
+                address: probe.absolute_base,
                 call_site_offset: probe.call_site_offset,
                 off: probe.off,
                 len: probe.len,
@@ -375,7 +436,7 @@ fn run_probe(
     let instance: wasmtime::Instance = linker.instantiate(&mut store, module).ok()?;
 
     let typed: wasmtime::TypedFunc<(i32, i32), i32> =
-        lookup_typed_decrypt(&instance, &mut store, bytes, probe.fn_index)?;
+        lookup_typed_decrypt(&instance, &mut store, module, bytes, probe.fn_index)?;
     let returned: i32 = typed.call(&mut store, (probe.off, probe.len)).ok()?;
 
     if let Some(decrypted) = read_instance_memory(&instance, &mut store, returned, probe.len) {
@@ -426,34 +487,29 @@ fn export_name_for_func_index(bytes: &[u8], fn_index: u32) -> Option<String> {
 }
 
 #[cfg(feature = "sandbox")]
+fn export_for_stub(module: &wasmtime::Module, bytes: &[u8], fn_index: u32) -> Option<String> {
+    export_name_for_func_index(bytes, fn_index).or_else(|| {
+        let name: String = format!("__disrobe_decrypt_{fn_index}");
+        module
+            .exports()
+            .any(|export: wasmtime::ExportType<'_>| export.name() == name)
+            .then_some(name)
+    })
+}
+
+#[cfg(feature = "sandbox")]
 fn lookup_typed_decrypt(
     instance: &wasmtime::Instance,
     store: &mut wasmtime::Store<wasmtime::StoreLimits>,
+    module: &wasmtime::Module,
     bytes: &[u8],
     fn_index: u32,
 ) -> Option<wasmtime::TypedFunc<(i32, i32), i32>> {
-    if let Some(name) = export_name_for_func_index(bytes, fn_index)
-        && let Some(func) = instance.get_func(&mut *store, &name)
-        && let Ok(typed) = func.typed::<(i32, i32), i32>(&*store)
-    {
-        return Some(typed);
-    }
-    let name: String = format!("__disrobe_decrypt_{fn_index}");
-    if let Some(func) = instance.get_func(&mut *store, &name)
-        && let Ok(typed) = func.typed::<(i32, i32), i32>(&*store)
-    {
-        return Some(typed);
-    }
-    let candidate_funcs: Vec<wasmtime::Func> = instance
-        .exports(&mut *store)
-        .filter_map(wasmtime::Export::into_func)
-        .collect();
-    for func in candidate_funcs {
-        if let Ok(typed) = func.typed::<(i32, i32), i32>(&*store) {
-            return Some(typed);
-        }
-    }
-    None
+    let name: String = export_for_stub(module, bytes, fn_index)?;
+    instance
+        .get_func(&mut *store, &name)?
+        .typed::<(i32, i32), i32>(&*store)
+        .ok()
 }
 
 #[cfg(feature = "sandbox")]

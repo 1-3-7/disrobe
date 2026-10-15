@@ -160,3 +160,43 @@ origin.authored.note = "hand-written clean original of the spec-faithful Wobfusc
 path = "real/wobfuscator_import.obf.wat"
 sha256 = "40c53af4117be0c198568b34a69ad580b6ca7c6f056fbc79507068777d0bc572"
 origin.authored.note = "hand-written spec-faithful Wobfuscator import-hoisting transform (MANIFEST.md, named-obfuscator family pairs)"
+
+[[artifact]]
+path = "authored/tigress_flatten.obf.wasm"
+sha256 = "5590ae4a6a1ac99fe13f6e7f7ca2b5d91ad995c0c9e5a555006044ee0f047593"
+origin.built.source = "src/tigress_flatten.c"
+origin.built.toolchain = "wasi-sdk 25.0 clang 19.1.5 (llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32 with its wasm-ld"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -o authored/tigress_flatten.obf.wasm src/tigress_flatten.c"
+origin.built.rebuilt_sha256 = "5590ae4a6a1ac99fe13f6e7f7ca2b5d91ad995c0c9e5a555006044ee0f047593"
+
+[[artifact]]
+path = "authored/tigress_flatten.clean.wasm"
+sha256 = "fc7eae38784a0d2dbe5e1251f4b3a3710abaef30af9bb3727e44f46069303933"
+origin.built.source = "src/tigress_flatten.clean.c"
+origin.built.toolchain = "wasi-sdk 25.0 clang 19.1.5 (llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32 with its wasm-ld"
+origin.built.command = "clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--strip-all -o authored/tigress_flatten.clean.wasm src/tigress_flatten.clean.c"
+origin.built.rebuilt_sha256 = "fc7eae38784a0d2dbe5e1251f4b3a3710abaef30af9bb3727e44f46069303933"
+
+[[artifact]]
+path = "authored/tigress_flatten.mutant.wasm"
+sha256 = "070214646f20eb54294241f165ce7daa86d744cc17cf2680d76cfd282ae2fb5b"
+origin.built.source = "src/tigress_flatten.mutant.c"
+origin.built.toolchain = "wasi-sdk 25.0 clang 19.1.5 (llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32 with its wasm-ld"
+origin.built.command = "clang --target=wasm32 -O0 -nostdlib -Wl,--no-entry -Wl,--strip-all -o authored/tigress_flatten.mutant.wasm src/tigress_flatten.mutant.c"
+origin.built.rebuilt_sha256 = "070214646f20eb54294241f165ce7daa86d744cc17cf2680d76cfd282ae2fb5b"
+
+[[artifact]]
+path = "authored/wobfuscator_hosttable.obf.wasm"
+sha256 = "7ac99ffc410aaf4d75b9d0c50e966f7026fbecfd83b2f79a139237527a47817a"
+origin.built.source = "src/wobfuscator_hosttable.c"
+origin.built.toolchain = "wasi-sdk 25.0 clang 19.1.5 (llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32 with its wasm-ld"
+origin.built.command = "clang --target=wasm32 -O1 -nostdlib -Wl,--no-entry -Wl,--strip-all -Wl,--allow-undefined -o authored/wobfuscator_hosttable.obf.wasm src/wobfuscator_hosttable.c"
+origin.built.rebuilt_sha256 = "7ac99ffc410aaf4d75b9d0c50e966f7026fbecfd83b2f79a139237527a47817a"
+
+[[artifact]]
+path = "authored/wobfuscator_hosttable.clean.wasm"
+sha256 = "b948203a52c76d7a00bfae156d1e5ea7ff56c4e1e7b3a289bbf8b5f1810b8cf8"
+origin.built.source = "src/wobfuscator_hosttable.clean.c"
+origin.built.toolchain = "wasi-sdk 25.0 clang 19.1.5 (llvm-project ab4b5a2db582958af1ee308a790cfdb42bd24720) --target=wasm32 with its wasm-ld"
+origin.built.command = "clang --target=wasm32 -O1 -nostdlib -Wl,--no-entry -Wl,--strip-all -o authored/wobfuscator_hosttable.clean.wasm src/wobfuscator_hosttable.clean.c"
+origin.built.rebuilt_sha256 = "b948203a52c76d7a00bfae156d1e5ea7ff56c4e1e7b3a289bbf8b5f1810b8cf8"

@@ -31,6 +31,7 @@ The toolchains the records pin, installed outside the repository:
 | wasm-tools | 1.250.0 (`4a72fcd2e` 2026-05-21) | `https://github.com/bytecodealliance/wasm-tools/releases/download/v1.250.0/wasm-tools-1.250.0-x86_64-windows.zip` | `e6ab7924618d1caeb6eaa9debdf2a20ad9248f830731493776b283e42e1cd62e` |
 | rustc | 1.95.0 (`59807616e` 2026-04-14) | `https://static.rust-lang.org/dist/2026-04-16/rustc-1.95.0-x86_64-pc-windows-msvc.tar.xz` | `4cb1f3b578adc6541cbe13a6f85f1fd8c0ce643d90b506a36dee24c680864c67` |
 | rust-std for `wasm32-unknown-unknown` | 1.95.0 | `https://static.rust-lang.org/dist/2026-04-16/rust-std-1.95.0-wasm32-unknown-unknown.tar.xz` | `5587b89ff69623d09e476439d44a24453b4e4ea3d5e0b53a5c0a935151ff3fd1` |
+| wasi-sdk clang and wasm-ld | 25.0, clang 19.1.5 (llvm-project `ab4b5a2db582`) | `https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-windows.tar.gz` | not recorded; the installed `bin/clang.exe` hashes to `7944128685ba8a1686364bdb01d6219c7412e2916210610e70623d125d11ecff` and `bin/wasm-ld.exe` to `622c417b04a9d207e48951059afb373a23c16983260367e5c8688b743f0ca4a4` |
 
 Run `corpus/wasm/obf/build.sh` (with `CLANG`, `WASM_TOOLS` and `RUSTC` pointing
 at the pinned tools when they are not first on `PATH`) to regenerate. It refuses
@@ -139,3 +140,20 @@ These are labeled synthetic precisely because no free, installable build of the
 three tools exists on the box; the transform shapes are taken from each tool's
 published output, and the recovery is graded against a real execution engine
 (wasmtime), not against disrobe's own output.
+
+## Family pairs built from C with wasi-sdk
+
+Two more pairs are built from hand-authored C by the wasi-sdk 25 clang and
+committed as `.wasm` binaries under `authored/`, not `real/`, because no
+obfuscator produced them. Each is pinned in `records.toml` with its command
+and rebuild digest. `tests/wasm_family_recovery.rs` reads the bytes through the
+records and grades the recovered module against the clean build under wasmtime.
+
+| pair | obfuscation in the wasm | how it got there | recovery |
+|------|-------------------------|------------------|----------|
+| `tigress_flatten` | three functions written in Tigress's flattened style: `while (1) switch (next)` with arbitrary case labels, one function whose labels start above zero, one that calls another, one with two `return` states. clang 19 at `-O0` keeps a memory-slot `br_table` dispatcher in each and routes every value through its own local | hand-flattened C written in Tigress's output shape, compiled by clang `-O0`; the clean pair is the same functions written plainly and built at `-O2`; the mutant changes one case body | forward the `-O0` temporaries, read the selector bias, keep the state stores of the stack-frame slot because the memory is shared, and reloop all three. No `br_table` remains and the result matches the clean build; the mutant must not |
+| `wobfuscator_hosttable` | seven `i32` operators called through opaque imports `k0` to `k6`, bound in `src/wobfuscator_hosttable.js` by arrow functions, a `function` with a `\| 0` coercion, `eval` and `new Function` text, `Math.imul`, and a call to the module's own `eval0` export; the script also binds `k7` to a double-precision `*` that the module does not import | C written in Wobfuscator's import shape, compiled by clang `-O1` with `--allow-undefined`; the clean pair uses the native operators | read the host object statically, re-inline the seven exact entries and refuse `k7`, whose `*` is not `i32.mul`. The recovered module is import-free and matches the clean build; a swapped table entry must not |
+
+Neither pair is output of Tigress or Wobfuscator: both are synthetic
+imitations of those tools' output shapes, because neither tool runs on the
+build host.

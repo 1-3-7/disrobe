@@ -12,6 +12,7 @@ mod cff;
 mod opaque;
 mod pure_eval;
 mod reloop;
+mod temps;
 
 pub use cff::CffRecovery;
 
@@ -26,10 +27,13 @@ pub struct RecoveryReport {
     pub flattened_dispatchers_walled: usize,
     pub wobfuscator_ops_reinlined: usize,
     pub wobfuscator_imports_dropped: usize,
+    pub wobfuscator_host_bindings_refused: Vec<RefusedHostBinding>,
     pub jscrambler_imports_stripped: usize,
     pub wasmixer_fragments_inlined: usize,
     pub wasmixer_functions_dropped: usize,
     pub wasmixer_elements_pruned: usize,
+    pub wasmixer_decrypted_literals: Vec<DecryptedLiteral>,
+    pub wasmixer_stubs_unresolved: Vec<UnresolvedDecryptStub>,
     pub intra_function_folding_skipped: bool,
     pub guard_folding_budget_exhausted: bool,
 }
@@ -44,7 +48,29 @@ impl RecoveryReport {
             || self.wobfuscator_ops_reinlined > 0
             || self.jscrambler_imports_stripped > 0
             || self.wasmixer_fragments_inlined > 0
+            || !self.wasmixer_decrypted_literals.is_empty()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecryptedLiteral {
+    pub stub_function: u32,
+    pub address: i64,
+    pub length: usize,
+    pub bytes_hex: String,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RefusedHostBinding {
+    pub import: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnresolvedDecryptStub {
+    pub stub_function: u32,
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,6 +90,7 @@ pub fn recover_module(wasm: &[u8]) -> Result<RecoveredModule> {
     crate::debug::dbg_section("recover");
     let mut report: RecoveryReport = RecoveryReport::default();
     let staged: Vec<u8> = recover_obfuscator_families(wasm, &mut report)?;
+    surface_decrypted_literals(wasm, &mut report)?;
 
     let mut module: Module = parse_module(&staged)?;
 
@@ -120,6 +147,21 @@ pub fn recover_module(wasm: &[u8]) -> Result<RecoveredModule> {
     Ok(RecoveredModule { bytes, report })
 }
 
+pub fn recover_module_with_host_script(wasm: &[u8], host_script: &str) -> Result<RecoveredModule> {
+    let table: crate::obfuscators::HostOpTable = crate::obfuscators::parse_host_table(host_script)?;
+    let staged: crate::obfuscators::HostTableReinline =
+        crate::obfuscators::reinline_host_table(wasm, &table)?;
+    let mut recovered: RecoveredModule = recover_module(&staged.bytes)?;
+    recovered.report.wobfuscator_ops_reinlined += staged.stats.ops_reinlined;
+    recovered.report.wobfuscator_imports_dropped += staged.stats.imports_dropped;
+    recovered.report.wobfuscator_host_bindings_refused = staged
+        .unresolved
+        .into_iter()
+        .map(|(import, reason): (String, String)| RefusedHostBinding { import, reason })
+        .collect();
+    Ok(recovered)
+}
+
 fn recover_obfuscator_families(wasm: &[u8], report: &mut RecoveryReport) -> Result<Vec<u8>> {
     let (after_wobf, wobf): (Vec<u8>, crate::obfuscators::ReinlineStats) =
         crate::obfuscators::reinline_imported_ops(wasm)?;
@@ -152,6 +194,81 @@ fn recover_obfuscator_families(wasm: &[u8], report: &mut RecoveryReport) -> Resu
     });
 
     Ok(after_mixer)
+}
+
+fn surface_decrypted_literals(wasm: &[u8], report: &mut RecoveryReport) -> Result<()> {
+    let stubs: Vec<crate::obfuscators::StubInfo> = crate::obfuscators::detect_decrypt_stubs(wasm)?;
+    if stubs.is_empty() {
+        return Ok(());
+    }
+    let unwrap: crate::obfuscators::UnwrapReport = run_decrypt_sandbox(wasm, &stubs)?;
+    for segment in unwrap.segments {
+        report.wasmixer_decrypted_literals.push(DecryptedLiteral {
+            stub_function: segment.fn_index,
+            address: i64::from(segment.address),
+            length: segment.decrypted.len(),
+            bytes_hex: lower_hex(&segment.decrypted),
+            text: String::from_utf8(segment.decrypted).ok(),
+        });
+    }
+    report
+        .wasmixer_stubs_unresolved
+        .extend(
+            unwrap
+                .unresolved
+                .into_iter()
+                .map(
+                    |stub: crate::obfuscators::UnresolvedStub| UnresolvedDecryptStub {
+                        stub_function: stub.fn_index,
+                        reason: stub.reason.label(),
+                    },
+                ),
+        );
+    crate::debug::dbg_kv("wasmixer-decrypt", || {
+        format!(
+            "literals={} unresolved={}",
+            report.wasmixer_decrypted_literals.len(),
+            report.wasmixer_stubs_unresolved.len()
+        )
+    });
+    Ok(())
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out: String = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+#[cfg(feature = "sandbox")]
+fn run_decrypt_sandbox(
+    wasm: &[u8],
+    stubs: &[crate::obfuscators::StubInfo],
+) -> Result<crate::obfuscators::UnwrapReport> {
+    crate::obfuscators::unwrap_decryption(wasm, stubs)
+}
+
+#[cfg(not(feature = "sandbox"))]
+fn run_decrypt_sandbox(
+    _wasm: &[u8],
+    stubs: &[crate::obfuscators::StubInfo],
+) -> Result<crate::obfuscators::UnwrapReport> {
+    Ok(crate::obfuscators::UnwrapReport {
+        segments: Vec::new(),
+        unresolved: stubs
+            .iter()
+            .map(
+                |stub: &crate::obfuscators::StubInfo| crate::obfuscators::UnresolvedStub {
+                    fn_index: stub.fn_index,
+                    reason: crate::obfuscators::UnresolvedReason::SandboxUnavailable,
+                },
+            )
+            .collect(),
+    })
 }
 
 pub(crate) fn parse_walrus_module(wasm: &[u8], config: &ModuleConfig) -> Result<Module> {

@@ -265,6 +265,34 @@ enum Restructure {
 }
 
 fn restructure_one(func: &mut LocalFunction, elidable: &ElidableCells) -> Restructure {
+    let first: Restructure = restructure_as_written(func, elidable);
+    if matches!(
+        first,
+        Restructure::Linearized | Restructure::Relooped { .. }
+    ) || !super::temps::has_looped_switch(func)
+    {
+        return first;
+    }
+    let Some(snapshot): Option<super::temps::Snapshot> = super::temps::Snapshot::take(func) else {
+        return first;
+    };
+    if !super::temps::forward_compiler_temporaries(func) {
+        return first;
+    }
+    match restructure_as_written(func, elidable) {
+        forwarded @ (Restructure::Linearized | Restructure::Relooped { .. }) => forwarded,
+        Restructure::WalledBranching => {
+            snapshot.restore(func);
+            Restructure::WalledBranching
+        }
+        Restructure::NotFlattened => {
+            snapshot.restore(func);
+            first
+        }
+    }
+}
+
+fn restructure_as_written(func: &mut LocalFunction, elidable: &ElidableCells) -> Restructure {
     let Some(plan): Option<Dispatcher> = detect_dispatcher(func) else {
         return match super::reloop::try_reloop(func, elidable) {
             super::reloop::ReloopOutcome::Restructured { count, walled } => {
@@ -328,7 +356,7 @@ fn detect_dispatcher(func: &LocalFunction) -> Option<Dispatcher> {
         LayerKind::Switch { targets, local } => (targets.clone(), *local),
         LayerKind::Tail(_) => return None,
     };
-    if switch_local != site.state_local {
+    if switch_local != site.state_local || targets.len() > super::reloop::MAX_SWITCH_TARGETS {
         return None;
     }
     let has_tail: bool = layers

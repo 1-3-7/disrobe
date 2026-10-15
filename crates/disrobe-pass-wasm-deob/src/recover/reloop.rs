@@ -9,18 +9,21 @@ use walrus::{GlobalId, LocalFunction, LocalId, MemoryId};
 use super::opaque::eval_i32_expression_suffix;
 
 type Body = Vec<(Instr, walrus::ir::InstrLocId)>;
+type EntryScan = Option<(Body, std::ops::Range<usize>)>;
 
 const NODE_LIMIT: usize = 512;
 const RENDER_GUARD: usize = 4096;
 const MULTI_EXIT_LIMIT: usize = 16;
 const TRANSITION_INSTRUCTION_LIMIT: usize = 512;
 const STATE_EXPRESSION_LIMIT: usize = 64;
+pub(super) const MAX_SWITCH_TARGETS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WallReason {
     ObservableStateCell,
     UnsupportedTransition,
     UnstructurableStateGraph,
+    TooManyCases,
 }
 
 impl WallReason {
@@ -29,6 +32,7 @@ impl WallReason {
             Self::ObservableStateCell => "state cell is observable outside the dispatcher",
             Self::UnsupportedTransition => "state transition is not a resolvable constant edge",
             Self::UnstructurableStateGraph => "state graph has no sound structured form",
+            Self::TooManyCases => "dispatcher switch has more targets than the case cap",
         }
     }
 }
@@ -91,13 +95,19 @@ fn try_reloop_root(
     elidable: &ElidableCells,
     root: RootCandidate,
 ) -> ReloopOutcome {
-    let Some(mut disp): Option<Dispatcher> = detect(func, root) else {
-        return ReloopOutcome::NotApplicable;
+    let mut disp: Dispatcher = match detect(func, root) {
+        None => return ReloopOutcome::NotApplicable,
+        Some(Err(reason)) => return wall(reason),
+        Some(Ok(disp)) => disp,
     };
-    if !cell_is_elidable(func, &disp, elidable) {
+    if !disp.entry_outside_root && cell_is_elidable(func, &disp, elidable) {
+        disp.remove_entry_write();
+        disp.remove_address_setup();
+    } else if state_writes_can_stay(func, &disp) {
+        disp.preserve_writes = true;
+    } else {
         return wall(WallReason::ObservableStateCell);
     }
-    disp.remove_address_setup();
     let Some(graph): Option<Graph> = build_graph(func, &disp) else {
         return wall(WallReason::UnsupportedTransition);
     };
@@ -303,23 +313,141 @@ struct Dispatcher {
     preamble: Body,
     suffix: Body,
     entry_state: i32,
+    entry_write: Option<std::ops::Range<usize>>,
+    entry_scan: EntryScan,
+    entry_outside_root: bool,
     cell: StateCell,
     address_setup: Option<std::ops::Range<usize>>,
     local_address_in_bounds: bool,
     transition_cell: StateCell,
     latch_work: Body,
     branch_transitions: BTreeMap<InstrSeqId, (i32, Body)>,
+    selector_bias: i32,
     case_count: u32,
     default_state: i32,
     state_to_body: BTreeMap<i32, Body>,
+    preserve_writes: bool,
 }
 
 impl Dispatcher {
+    fn remove_entry_write(&mut self) {
+        if self.transition_cell == self.cell
+            && let Some(range) = self.entry_write.take()
+        {
+            drop(self.preamble.drain(range));
+        }
+    }
+
     fn remove_address_setup(&mut self) {
         if let Some(range) = self.address_setup.take() {
             drop(self.preamble.drain(range));
         }
     }
+}
+
+fn state_writes_can_stay(func: &LocalFunction, disp: &Dispatcher) -> bool {
+    if disp.transition_cell != disp.cell {
+        return false;
+    }
+    let Some((context, entry)): Option<&(Body, std::ops::Range<usize>)> = disp.entry_scan.as_ref()
+    else {
+        return false;
+    };
+    let Some(after_entry): Option<&[(Instr, walrus::ir::InstrLocId)]> = context.get(entry.end..)
+    else {
+        return false;
+    };
+    let quiet: bool = after_entry.iter().all(|(instr, _location)| {
+        matches!(
+            instr,
+            Instr::Const(_)
+                | Instr::LocalGet(_)
+                | Instr::LocalSet(_)
+                | Instr::LocalTee(_)
+                | Instr::GlobalGet(_)
+                | Instr::Load(_)
+                | Instr::Unop(_)
+                | Instr::Binop(_)
+                | Instr::Select(_)
+                | Instr::Drop(_)
+        )
+    });
+    if !quiet {
+        return false;
+    }
+    let StateCell::MemorySlot {
+        address: MemoryAddress::Local(local),
+        offset,
+        ..
+    } = disp.cell
+    else {
+        return false;
+    };
+    !func.args.contains(&local)
+        && local_definitions(func).get(&local).copied() == Some(1)
+        && context
+            .get(..entry.start)
+            .is_some_and(|before: &[(Instr, walrus::ir::InstrLocId)]| {
+                allocates_frame_slot(before, local, offset)
+            })
+}
+
+fn allocates_frame_slot(
+    preamble: &[(Instr, walrus::ir::InstrLocId)],
+    local: LocalId,
+    offset: u32,
+) -> bool {
+    preamble
+        .windows(4)
+        .any(|window: &[(Instr, walrus::ir::InstrLocId)]| {
+            let [
+                (Instr::GlobalGet(_), _),
+                (
+                    Instr::Const(walrus::ir::Const {
+                        value: Value::I32(frame_size),
+                    }),
+                    _,
+                ),
+                (Instr::Binop(subtract), _),
+                (Instr::LocalSet(set), _),
+            ] = window
+            else {
+                return false;
+            };
+            set.local == local
+                && matches!(subtract.op, BinaryOp::I32Sub)
+                && u32::try_from(*frame_size)
+                    .ok()
+                    .zip(offset.checked_add(4))
+                    .is_some_and(|(size, end): (u32, u32)| end <= size)
+        })
+}
+
+fn local_definitions(func: &LocalFunction) -> BTreeMap<LocalId, usize> {
+    let mut out: BTreeMap<LocalId, usize> = BTreeMap::new();
+    let mut pending: Vec<InstrSeqId> = vec![func.entry_block()];
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    while let Some(sequence) = pending.pop() {
+        if !seen.insert(sequence) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT {
+            return BTreeMap::new();
+        }
+        for (instr, _location) in &func.block(sequence).instrs {
+            match instr {
+                Instr::LocalSet(walrus::ir::LocalSet { local })
+                | Instr::LocalTee(walrus::ir::LocalTee { local }) => {
+                    *out.entry(*local).or_default() += 1;
+                }
+                _ => {}
+            }
+            if !push_nested_sequences(instr, &mut pending, NODE_LIMIT) {
+                return BTreeMap::new();
+            }
+        }
+    }
+    out
 }
 
 fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &ElidableCells) -> bool {
@@ -1089,7 +1217,7 @@ fn push_nested_sequence(
     true
 }
 
-fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
+fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Result<Dispatcher, WallReason>> {
     let entry_instrs: &Body = &func.block(root.sequence).instrs;
     let loop_index: usize = entry_instrs
         .iter()
@@ -1111,7 +1239,10 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
     let parents: BTreeMap<InstrSeqId, (InstrSeqId, usize)> = build_parent_map(func, root.sequence);
     let (targets, default, selector): (Vec<InstrSeqId>, InstrSeqId, Selector) =
         find_switch(func, wrapper)?;
-    let cell: StateCell = resolve_state_cell(loop_body, selector)?;
+    if targets.len() > MAX_SWITCH_TARGETS {
+        return Some(Err(WallReason::TooManyCases));
+    }
+    let (cell, selector_bias): (StateCell, i32) = resolve_state_cell(loop_body, selector)?;
     let (transition_cell, latch_work): (StateCell, Body) =
         latch_transition_cell(loop_body, cell).unwrap_or((cell, Vec::new()));
     let branch_transitions: BTreeMap<InstrSeqId, (i32, Body)> = if transition_cell == cell {
@@ -1122,19 +1253,30 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
 
     let case_count: u32 = u32::try_from(targets.len()).ok()?;
     let mut state_to_body: BTreeMap<i32, Body> = BTreeMap::new();
-    for (state, target) in targets.iter().enumerate() {
-        let state_i32: i32 = i32::try_from(state).ok()?;
+    for (index, target) in targets.iter().enumerate() {
+        let state: i32 = i32::try_from(index).ok()?.wrapping_sub(selector_bias);
         let body: Body = case_body(func, *target, &parents)?;
-        state_to_body.insert(state_i32, body);
+        state_to_body.insert(state, body);
     }
-    let default_state: i32 = i32::try_from(case_count).ok()?;
+    let default_state: i32 = i32::try_from(case_count).ok()?.wrapping_sub(selector_bias);
     let default_body: Body = case_body(func, default, &parents)?;
     state_to_body.entry(default_state).or_insert(default_body);
 
-    let mut preamble: Body = entry_instrs[..loop_index].to_vec();
+    let preamble: Body = entry_instrs[..loop_index].to_vec();
     let suffix: Body = entry_instrs[loop_index + 1..].to_vec();
-    let (entry_state, entry_write): (i32, Option<std::ops::Range<usize>>) =
-        initial_state(func, &preamble, cell)?;
+    let (entry_state, entry_write, entry_scan): (i32, Option<std::ops::Range<usize>>, EntryScan) =
+        if let Some((state, write)) = initial_state(func, &preamble, cell) {
+            let scan: EntryScan = write
+                .clone()
+                .map(|range: std::ops::Range<usize>| (preamble.clone(), range));
+            (state, write, scan)
+        } else {
+            let context: Body = enclosing_entry_context(func, root, &preamble)?;
+            let (state, write): (i32, Option<std::ops::Range<usize>>) =
+                initial_state(func, &context, cell)?;
+            (state, None, Some((context, write?)))
+        };
+    let entry_outside_root: bool = entry_write.is_none() && entry_scan.is_some();
     let address_setup: Option<std::ops::Range<usize>> = match cell {
         StateCell::MemorySlot {
             address: MemoryAddress::LocalOffset { local, .. },
@@ -1173,28 +1315,47 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
         )
         | (StateCell::MemorySlot { .. }, None) => false,
     };
-    if transition_cell == cell
-        && let Some(span) = entry_write
-    {
-        drop(preamble.drain(span));
-    }
-
-    Some(Dispatcher {
+    Some(Ok(Dispatcher {
         root: root.sequence,
         root_branch_exits: root.branch_exits,
         preamble,
         suffix,
         entry_state,
+        entry_write,
+        entry_scan,
+        entry_outside_root,
         cell,
         address_setup,
         local_address_in_bounds,
         transition_cell,
         latch_work,
         branch_transitions,
+        selector_bias,
         case_count,
         default_state,
         state_to_body,
-    })
+        preserve_writes: false,
+    }))
+}
+
+fn enclosing_entry_context(
+    func: &LocalFunction,
+    root: RootCandidate,
+    preamble: &Body,
+) -> Option<Body> {
+    if !root.branch_exits {
+        return None;
+    }
+    let parents: BTreeMap<InstrSeqId, (InstrSeqId, usize)> =
+        build_parent_map(func, func.entry_block());
+    let (parent, index): (InstrSeqId, usize) = *parents.get(&root.sequence)?;
+    let parent_instrs: &Body = &func.block(parent).instrs;
+    if !matches!(&parent_instrs.get(index)?.0, Instr::Block(block) if block.seq == root.sequence) {
+        return None;
+    }
+    let mut context: Body = parent_instrs.get(..index)?.to_vec();
+    context.extend(preamble.iter().cloned());
+    Some(context)
 }
 
 fn collect_branch_transitions(
@@ -1263,14 +1424,14 @@ fn i32_offsets_are_disjoint(left: u32, right: u32) -> bool {
         || right.checked_add(4).is_some_and(|end: u32| end <= left)
 }
 
-fn resolve_state_cell(loop_body: &Body, selector: Selector) -> Option<StateCell> {
+fn resolve_state_cell(loop_body: &Body, selector: Selector) -> Option<(StateCell, i32)> {
     match selector {
-        Selector::Global(global) => Some(StateCell::Global(global)),
+        Selector::Global(global) => Some((StateCell::Global(global), 0)),
         Selector::Local(temp) => resolve_local_selector(loop_body, temp),
     }
 }
 
-fn resolve_local_selector(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
+fn resolve_local_selector(loop_body: &Body, temp: LocalId) -> Option<(StateCell, i32)> {
     let definitions: usize = loop_body
         .iter()
         .filter(|(instr, _)| {
@@ -1279,13 +1440,32 @@ fn resolve_local_selector(loop_body: &Body, temp: LocalId) -> Option<StateCell> 
         })
         .count();
     match definitions {
-        0 => Some(StateCell::Local(temp)),
+        0 => Some((StateCell::Local(temp), 0)),
         1 => copied_state_cell(loop_body, temp),
         _ => None,
     }
 }
 
-fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
+fn selector_bias(loop_body: &Body, operator_index: usize) -> Option<(i32, usize)> {
+    let Instr::Binop(binary) = &loop_body.get(operator_index)?.0 else {
+        return Some((0, operator_index));
+    };
+    let constant_index: usize = operator_index.checked_sub(1)?;
+    let Instr::Const(walrus::ir::Const {
+        value: Value::I32(constant),
+    }) = &loop_body.get(constant_index)?.0
+    else {
+        return None;
+    };
+    let bias: i32 = match binary.op {
+        BinaryOp::I32Add => *constant,
+        BinaryOp::I32Sub => constant.wrapping_neg(),
+        _ => return None,
+    };
+    Some((bias, constant_index.checked_sub(1)?))
+}
+
+fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<(StateCell, i32)> {
     let definition_index: usize = loop_body.iter().position(|(instr, _)| {
         matches!(instr, Instr::LocalSet(set) if set.local == temp)
             || matches!(instr, Instr::LocalTee(tee) if tee.local == temp)
@@ -1301,7 +1481,8 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
         }
         _ => return None,
     };
-    let source_index: usize = definition_index.checked_sub(1)?;
+    let (bias, source_index): (i32, usize) =
+        selector_bias(loop_body, definition_index.checked_sub(1)?)?;
     let memory_address: Option<(MemoryAddress, usize)> = match &loop_body.get(source_index)?.0 {
         Instr::Load(_) => Some(MemoryAddress::expression_suffix(loop_body, source_index)?),
         _ => None,
@@ -1321,22 +1502,23 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
     if !selector_noise_is_inert(loop_body.get(selector_end..wrapper_index)?) {
         return None;
     }
-    match &loop_body.get(source_index)?.0 {
-        Instr::LocalGet(get) => Some(StateCell::Local(get.local)),
-        Instr::GlobalGet(get) => Some(StateCell::Global(get.global)),
+    let cell: StateCell = match &loop_body.get(source_index)?.0 {
+        Instr::LocalGet(get) => StateCell::Local(get.local),
+        Instr::GlobalGet(get) => StateCell::Global(get.global),
         Instr::Load(load) => {
             if !matches!(load.kind, LoadKind::I32 { atomic: false }) {
                 return None;
             }
             let (address, _address_start): (MemoryAddress, usize) = memory_address?;
-            Some(StateCell::MemorySlot {
+            StateCell::MemorySlot {
                 address,
                 memory: load.memory,
                 offset: load.arg.offset,
-            })
+            }
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some((cell, bias))
 }
 
 fn selector_noise_is_inert(instrs: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
@@ -1586,7 +1768,7 @@ fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
 }
 
 const fn canonical_state(disp: &Dispatcher, state: i32) -> i32 {
-    let selector: u32 = u32::from_ne_bytes(state.to_ne_bytes());
+    let selector: u32 = u32::from_ne_bytes(state.wrapping_add(disp.selector_bias).to_ne_bytes());
     if selector < disp.case_count {
         state
     } else {
@@ -1642,7 +1824,7 @@ fn classify_case(
                 body,
                 disp,
                 transition_cell,
-                false,
+                disp.preserve_writes,
                 false,
                 &empty_latch,
             )?,
