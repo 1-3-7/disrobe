@@ -6,23 +6,22 @@ Analysis tools take a file path inside the server's workspace roots, an opened `
 
 ## Running it
 
-Two equivalent entry points:
-
 ```sh
-disrobe serve --mcp
-disrobe-mcp
+disrobe mcp [--root <dir>]...
 ```
+
+The standalone `disrobe-mcp` binary serves every tool except `list_commands` and `run_command`, which need the command catalog of the `disrobe` executable and report `DR-MCP-0800` there.
 
 ## Registering with an MCP client
 
-Most clients accept a JSON server entry. Point `command` at `disrobe` (or `disrobe-mcp`) and run over stdio:
+`disrobe agent setup` writes the entry into Claude Code, Claude Desktop, Codex, Cursor, Gemini CLI, VS Code, Windsurf, Devin Desktop, GitHub Copilot CLI, Qwen Code, OpenCode and Kimi Code after showing the diff, and installs an investigation skill; see [agent setup](./agents.md). By hand, most clients accept a JSON server entry that runs `disrobe mcp` over stdio:
 
 ```json
 {
   "mcpServers": {
     "disrobe": {
-      "command": "disrobe",
-      "args": ["serve", "--mcp"]
+      "command": "/absolute/path/to/disrobe",
+      "args": ["mcp"]
     }
   }
 }
@@ -53,6 +52,36 @@ Most clients accept a JSON server entry. Point `command` at `disrobe` (or `disro
 | `list_notes` | `target_id`, optional `kind` | The recorded notes and the open unknowns. |
 
 `function` accepts a name, a `0x`-prefixed address inside the function, or a `function_id`. Every analysis tool in the catalog below also accepts `path` or `target_id` in place of `bytes_b64`; pass exactly one of the three. The navigation tools accept a native image by path or `target_id` as well as a `.dr` envelope.
+
+## Running CLI subcommands
+
+Under `disrobe mcp`, two tools reach the read-only part of the command line, so an agent can unpack, deobfuscate, identify or decompile with any `disrobe` subcommand without a dedicated tool for each.
+
+| Tool | Input | Output |
+|---|---|---|
+| `list_commands` | optional `filter` (matched against the command words) | The accepted subcommands with their purpose and arguments: name, help, whether it takes a value, is required, repeatable or a path, whether it is an output redirected into the run directory, and its allowed values. Also the forced and refused flags, the output directory and the timeouts. |
+| `run_command` | `command` (the subcommand words, for example `["native", "symbols"]`), `args`, optional `timeout_secs` | Exit code, success, timeout flag, duration, the argument vector that ran, stdout parsed as JSON (or as text when it is not JSON), stderr, truncation flags, and every file the run wrote with its size and SHA-256. |
+
+`run_command` runs the same `disrobe` executable as a child process, bounded by a wall-clock timeout (300 seconds by default, at most 1,800) and 16 MiB of captured stdout and of stderr. Before anything starts it:
+
+- accepts only subcommands on the read-only allowlist `list_commands` shows. `install`, `install-deps`, `self-update`, `plugin`, `serve`, `mcp`, `agent`, `init`, `config init`, `rename`, `annot`, `native patch`, `prowl` and the other commands that install, update, run plugins, patch, or fetch from the network are refused with `DR-MCP-0804`;
+- parses `args` against that subcommand's arguments and refuses unknown options (`DR-MCP-0809`), `--allow-dynamic`, `--allow-bcc`, `--in-place`, `--neutralize apply` and options that name a program to launch (`DR-MCP-0807`);
+- resolves every input path, and every value that looks like a path, against the workspace roots: relative paths against the first root (the server's working directory), absolute paths and `..` segments canonicalized, and anything outside every root refused with `DR-MCP-0811`;
+- creates a fresh `.disrobe/mcp/<run>/` directory under the first root, runs the child there, and points every output option (`--out`, `-o` and the like) into it; an output directory option the caller left out is set to the run directory as well;
+- adds `--json`, and `--no-cache` so the run leaves nothing in the user cache directory.
+
+The files a run writes can be opened with `open_target` like any other file inside the roots, for example the image `native unpack` or `auto` recovered.
+
+## Prompts
+
+The server offers four prompts. Each takes the file's `path` and returns the steps as a user message, naming the tools to call:
+
+| Prompt | Arguments | Steps |
+|---|---|---|
+| `triage` | `path` | Identity and hashes, compiler and packer evidence, layout, referenced strings, behaviour, and a plan for the next step. |
+| `unpack_and_decompile` | `path` | Name the packer or protector, run the `auto` chain or `native unpack`, open the recovered images and decompile their entry points. |
+| `trace_feature` | `path`, `feature` | Find the string, import or byte pattern, follow its references and callers back to an entry point, decompile along the way, and record notes. |
+| `explain_function` | `path`, `function` | Disassemble and decompile one function, list its callers and callees, read the data it touches, and record a proposed name. |
 
 ## Tool catalog
 
@@ -105,4 +134,4 @@ A client calls `decompile` with the base64 of a `.pyc` and receives the recovere
 
 ## Security posture
 
-The server performs pure static analysis by default and never executes the supplied bytes. It rejects empty or malformed base64 with a typed error, and rejects unknown JSON fields on every tool. Paths are confined to the workspace roots: the directory the server starts in, each `--root` directory (`disrobe serve --mcp --root <dir>`) and each directory in `DISROBE_MCP_ROOTS`. A path is canonicalized before the check, so `..` segments and symbolic links that lead outside every root are refused with `DR-MCP-0703`. Files are read with a 512 MiB ceiling for `open_target` and 64 MiB for the other analysis tools, and are never executed. See the [forensics and malware-safety posture](../forensics-safety.md) and the [threat model](../threat-model.md).
+The server performs pure static analysis by default and never executes the supplied bytes. It rejects empty or malformed base64 with a typed error, and rejects unknown JSON fields on every tool. Paths are confined to the workspace roots: the directory the server starts in, each `--root` directory (`disrobe mcp --root <dir>`) and each directory in `DISROBE_MCP_ROOTS`. A path is canonicalized before the check, so `..` segments and symbolic links that lead outside every root are refused with `DR-MCP-0703`. Files are read with a 512 MiB ceiling for `open_target` and 64 MiB for the other analysis tools, and are never executed. `run_command` starts only the `disrobe` executable itself, with the limits listed under [running CLI subcommands](#running-cli-subcommands), and its child writes only inside `.disrobe/mcp/` under the first root. See the [forensics and malware-safety posture](../forensics-safety.md) and the [threat model](../threat-model.md).

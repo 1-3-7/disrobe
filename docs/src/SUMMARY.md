@@ -74,6 +74,7 @@
 - [GitHub Action](./integrations/github-action.md)
 - [pre-commit hook](./integrations/pre-commit.md)
 - [MCP server](./integrations/mcp.md)
+- [Agent setup](./integrations/agents.md)
 - [Editor plugins](./integrations/editor-plugins.md)
 
 # Project

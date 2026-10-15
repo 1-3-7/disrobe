@@ -212,7 +212,7 @@ Apart from `prowl`, which queries public web archives and threat-intel services,
 
 | Integration | How |
 |---|---|
-| MCP | An MCP server over stdio (`disrobe serve --mcp`) lets a coding agent investigate files in its workspace: open a binary, identify what built or packed it, list, disassemble and decompile its functions, follow calls, references and strings, read and search bytes, compare two builds, inspect SQLite databases, network captures and crash records, keep notes and open questions, and run the recovery tools ([guide](docs/src/integrations/mcp.md)) |
+| MCP | An MCP server over stdio (`disrobe mcp`, registered with Claude Code, Codex, Cursor, Gemini CLI, VS Code and other agents by `disrobe agent setup`) lets a coding agent investigate files in its workspace: open a binary, identify what built or packed it, list, disassemble and decompile its functions, follow calls, references and strings, read and search bytes, compare two builds, inspect SQLite databases, network captures and crash records, keep notes and open questions, and run any read-only disrobe command ([guide](docs/src/integrations/mcp.md)) |
 | Python | Typed bindings (`import disrobe`), built from source with maturin ([guide](bindings/python/README.md)) |
 | GitHub Actions | `uses: 1-3-7/disrobe@<tag>` downloads the release binary, runs a command on a path, and uploads SARIF ([guide](docs/src/integrations/github-action.md)) |
 | pre-commit | The `disrobe` hook fails a commit that stages a packed or obfuscated artifact ([guide](docs/src/integrations/pre-commit.md)) |
