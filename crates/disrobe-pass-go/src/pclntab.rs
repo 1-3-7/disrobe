@@ -97,6 +97,14 @@ pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
     }
     if let Some(index) = found
         .iter()
+        .position(|(va, located): &(u64, LocatedPclntab<'a>)| {
+            referenced_from_moduledata(image, *va, &located.header)
+        })
+    {
+        return Ok(found.swap_remove(index).1);
+    }
+    if let Some(index) = found
+        .iter()
         .position(|(va, _): &(u64, LocatedPclntab<'a>)| referenced_from_data(image, *va))
     {
         return Ok(found.swap_remove(index).1);
@@ -105,6 +113,81 @@ pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
         return Ok(located);
     }
     signature_scan_pclntab(image)
+}
+
+const MD_WORD_PCLNTABLE_PTR: u64 = 13;
+const MD_WORD_PCLNTABLE_LEN: u64 = 14;
+const MD_WORD_FTAB_PTR: u64 = 16;
+const MD_WORD_FTAB_LEN: u64 = 17;
+const MD_WORD_TEXT: u64 = 22;
+const MD_WORD_ETEXT: u64 = 23;
+const MAX_MODULEDATA_REFERENCES: usize = 4096;
+const MAX_MODULEDATA_SCAN_BYTES: u64 = 1 << 24;
+
+fn referenced_from_moduledata(
+    image: &GoImage<'_>,
+    pclntab_va: u64,
+    header: &PclntabHeader,
+) -> bool {
+    let ps: u64 = u64::from(image.ptr_size);
+    let Some(expected_ftab): Option<u64> = pclntab_va.checked_add(header.funcdata_off) else {
+        return false;
+    };
+    let Some(expected_ftab_len): Option<u64> = header.n_funcs.checked_add(1) else {
+        return false;
+    };
+    let mut references: usize = 0;
+    let mut scan_remaining: u64 = MAX_MODULEDATA_SCAN_BYTES;
+    for sec in &image.sections {
+        if !matches!(
+            sec.name.as_str(),
+            ".data" | ".noptrdata" | "__data" | "__noptrdata"
+        ) {
+            continue;
+        }
+        let Ok(data_len): core::result::Result<u64, _> = u64::try_from(sec.data.len()) else {
+            continue;
+        };
+        let scan_len: u64 = sec.mapped_len.min(data_len).min(scan_remaining);
+        scan_remaining = scan_remaining.saturating_sub(scan_len);
+        let mut offset: u64 = 0;
+        while offset
+            .checked_add(ps)
+            .is_some_and(|end: u64| end <= scan_len)
+        {
+            let Some(base): Option<u64> = sec.address.checked_add(offset) else {
+                break;
+            };
+            if image.read_ptr(base) == Some(pclntab_va) {
+                references = references.saturating_add(1);
+                if references > MAX_MODULEDATA_REFERENCES {
+                    return false;
+                }
+                let word_at = |word: u64| -> Option<u64> {
+                    word.checked_mul(ps)
+                        .and_then(|delta: u64| base.checked_add(delta))
+                        .and_then(|address: u64| image.read_ptr(address))
+                };
+                let pclntable_len: Option<u64> = word_at(MD_WORD_PCLNTABLE_LEN);
+                let ftab_ptr: Option<u64> = word_at(MD_WORD_FTAB_PTR);
+                let ftab_len: Option<u64> = word_at(MD_WORD_FTAB_LEN);
+                let text: Option<u64> = word_at(MD_WORD_TEXT);
+                let etext: Option<u64> = word_at(MD_WORD_ETEXT);
+                if word_at(MD_WORD_PCLNTABLE_PTR) == Some(pclntab_va)
+                    && pclntable_len.is_some_and(|len: u64| len >= header.funcdata_off)
+                    && ftab_ptr == Some(expected_ftab)
+                    && ftab_len == Some(expected_ftab_len)
+                    && text.is_some_and(|address: u64| image.data_at_va(address, 1).is_some())
+                    && etext
+                        .is_some_and(|address: u64| text.is_some_and(|start: u64| address > start))
+                {
+                    return true;
+                }
+            }
+            offset = offset.saturating_add(ps);
+        }
+    }
+    false
 }
 
 const MAX_PCLNTAB_CANDIDATES: usize = 16;
