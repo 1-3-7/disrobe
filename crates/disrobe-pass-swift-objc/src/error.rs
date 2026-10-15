@@ -84,6 +84,9 @@ pub enum Error {
 
     #[error("DR-IOS-0022: compiled NIB (NIBArchive) malformed: {0}")]
     NibArchive(String),
+
+    #[error("DR-IOS-0024: compiled asset catalog (Assets.car) malformed: {0}")]
+    AssetCatalog(String),
 }
 
 impl From<ByteReadError> for Error {

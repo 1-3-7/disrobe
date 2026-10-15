@@ -19,6 +19,8 @@ disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-nir = { workspace = true }
 blake3 = { workspace = true }
+flate2 = { workspace = true }
+lzfse_rust = "0.2.1"
 miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

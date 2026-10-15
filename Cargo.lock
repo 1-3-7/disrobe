@@ -2757,6 +2757,8 @@ dependencies = [
  "disrobe-nir",
  "disrobe-pass-native",
  "disrobe-testkit",
+ "flate2",
+ "lzfse_rust",
  "miette",
  "plist",
  "serde",

@@ -7,6 +7,7 @@ use disrobe_core::chain::{
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
+use crate::asset_catalog::{AssetCatalog, decode_asset_catalog, is_asset_catalog};
 use crate::keyed_archive::{KeyedArchive, decode_keyed_archive};
 use crate::nib_archive::{NibArchive, decode_nib_archive, is_nib_archive};
 
@@ -14,6 +15,7 @@ pub const PASS_ID: PassId = "swift-objc.archive";
 
 const TAG_NIB: &str = "apple-nib-archive";
 const TAG_KEYED_ARCHIVE: &str = "nskeyedarchiver";
+const TAG_ASSET_CATALOG: &str = "apple-asset-catalog";
 const TAG_REPORT: &str = "apple-archive-report";
 const KEYED_ARCHIVE_MARKER: &[u8] = b"NSKeyedArchiver";
 const MARKER_WINDOW: usize = 64 * 1024;
@@ -57,6 +59,20 @@ impl Detector for AppleArchiveDetector {
                     "compiled NIB: {} objects, {} connections",
                     archive.objects.len(),
                     archive.connections.len()
+                ),
+            ));
+        }
+        if is_asset_catalog(bytes) {
+            let catalog: AssetCatalog = decode_asset_catalog(bytes).ok()?;
+            return Some(verdict(
+                TAG_ASSET_CATALOG,
+                0.99,
+                45,
+                "BOMStore with a CARHEADER and consistent trees",
+                format!(
+                    "compiled asset catalog: {} renditions of {} assets",
+                    catalog.renditions.len(),
+                    catalog.facets.len()
                 ),
             ));
         }
@@ -127,6 +143,12 @@ impl Pass for AppleArchivePass {
                     CoreError::PassFailure(format!("DR-IOS-0023: swift-objc.archive: {error}"))
                 })?;
             serde_json::to_vec_pretty(&archive)
+        } else if is_asset_catalog(bytes) {
+            let catalog: AssetCatalog =
+                decode_asset_catalog(bytes).map_err(|error: crate::error::Error| {
+                    CoreError::PassFailure(format!("DR-IOS-0023: swift-objc.archive: {error}"))
+                })?;
+            serde_json::to_vec_pretty(&catalog)
         } else if is_keyed_archive_candidate(bytes) {
             let archive: KeyedArchive =
                 decode_keyed_archive(bytes).map_err(|error: crate::error::Error| {
@@ -135,7 +157,7 @@ impl Pass for AppleArchivePass {
             serde_json::to_vec_pretty(&archive)
         } else {
             return Err(CoreError::PassFailure(
-                "DR-IOS-0023: swift-objc.archive: input is neither a compiled NIB nor a keyed archive"
+                "DR-IOS-0023: swift-objc.archive: input is not a compiled NIB, asset catalog or keyed archive"
                     .to_owned(),
             ));
         };
