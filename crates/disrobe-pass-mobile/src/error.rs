@@ -295,6 +295,12 @@ pub enum Error {
         "DR-MOB-0062: Flutter engine symbol map address {address:#x} is outside every image segment"
     )]
     FlutterEngineSymbolMapAddressOutsideSegments { address: u64 },
+
+    #[error("DR-MOB-0065: input is not an APK, AAB, IPA, zip archive or Flutter library: {0}")]
+    FlutterIdentityInput(String),
+
+    #[error("DR-MOB-0066: archive holds {found} Flutter libraries, over the {limit} library cap")]
+    FlutterIdentityTooManyLibraries { found: usize, limit: usize },
 }
 
 impl From<zip::result::ZipError> for Error {

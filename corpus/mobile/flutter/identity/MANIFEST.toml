@@ -1,0 +1,95 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-mobile"
+generated = "2026-10-14"
+toolchain = "LLVM 19.1.7 clang and lld (-O0 -nostdlib, ELF --build-id=sha1, Mach-O -dynamiclib), llvm-lipo"
+note = "benign authored stand-ins for the libraries a Flutter build ships: snapshot headers and engine strings laid out as the Dart VM and the Flutter engine lay them out, with no Dart or engine code; nothing here is run"
+
+[provenance]
+generator = "build.sh with LLVM=<LLVM bin>/ and LIPO=<llvm-lipo>; it rebuilds every output and prints the llvm-readobj facts recorded in reference.json"
+steps = "src/app.c exports _kDartVmSnapshotData and _kDartIsolateSnapshotData holding a FullAOT snapshot header (magic f5f5dcdc, length, kind 3, the Dart 3.12.2 snapshot hash, a features string) plus the two instruction symbols; src/engine.c holds the Dart VM version string, the snapshot hash and two 40-digit revisions as separate NUL-terminated strings, as the stripped release engine of Flutter 3.44.6 carries them"
+
+[[fixture]]
+name = "app.c"
+path = "src/app.c"
+kind = "c-source"
+provenance = "self-authored"
+description = "exported Dart snapshot data symbols; FEATURES picks the per-ABI feature tail"
+
+[[fixture]]
+name = "engine.c"
+path = "src/engine.c"
+kind = "c-source"
+provenance = "self-authored"
+description = "engine identity strings; TARGET and SNAPSHOT_HASH pick the target name and the stamped hash"
+
+[[fixture]]
+name = "libflutter_arm64.so"
+path = "libflutter_arm64.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "src/engine.c"
+sha256 = "efaf59ac75b6f868ba0462d0bb1addfbb3249c7982a2091117b9381490b3f2a6"
+description = "aarch64-linux-android21 engine stand-in stamped with the Dart 3.12.2 snapshot hash"
+
+[[fixture]]
+name = "libflutter_other_arm64.so"
+path = "libflutter_other_arm64.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "src/engine.c"
+sha256 = "2e32035a16e5a5826a7303fd4f8501d59437c68a39b63ba492e0d6b0f31727bb"
+description = "aarch64 engine stand-in stamped with the Dart 3.5.4 snapshot hash, for the disagreement case"
+
+[[fixture]]
+name = "libapp_armv7.so"
+path = "libapp_armv7.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "src/app.c"
+sha256 = "efed1af91aa221356269f2074e803eb004cc5f32dd0ef08b70687889881cd556"
+description = "ELF32 armv7a-linux-androideabi21 app stand-in"
+
+[[fixture]]
+name = "libflutter_armv7.so"
+path = "libflutter_armv7.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "src/engine.c"
+sha256 = "a658eb6d3585270df000b0cbc0d9d3669f400a7de53feb36c561fd938a586a74"
+description = "ELF32 armv7 engine stand-in"
+
+[[fixture]]
+name = "libapp_x86_64.so"
+path = "libapp_x86_64.so"
+kind = "elf-shared-object"
+provenance = "real"
+source = "src/app.c"
+sha256 = "722d8bb097c1ec005a91f3dc11a5a6084d7545c9211455d3a4b4a0be966d6577"
+description = "x86_64-linux-android21 app stand-in shipped without an engine"
+
+[[fixture]]
+name = "App_ios_arm64"
+path = "App_ios_arm64"
+kind = "macho-dylib"
+provenance = "real"
+source = "src/app.c"
+sha256 = "2a5e4012a58a40222f56f6ae27bf9e65a59de40f511a4703a24f6152add797d5"
+description = "arm64-apple-ios12.0 App.framework stand-in; Mach-O prefixes the C symbol names with an underscore"
+
+[[fixture]]
+name = "Flutter_ios_arm64"
+path = "Flutter_ios_arm64"
+kind = "macho-dylib"
+provenance = "real"
+source = "src/engine.c"
+sha256 = "a957f7d065de9669c9e822c35fd6e3d8ed34dba82b7a83d818374a49c2ac872a"
+description = "arm64-apple-ios12.0 Flutter.framework stand-in"
+
+[[fixture]]
+name = "App_ios_universal"
+path = "App_ios_universal"
+kind = "macho-universal"
+provenance = "real"
+source = "src/app.c"
+sha256 = "aecdbf6139a5b090ac7c708a761dab55afc320eb4d91c73d1422bcaef75fbc2e"
+description = "llvm-lipo universal of the arm64 device and x86_64 simulator App stand-ins"

@@ -1,0 +1,30 @@
+{
+  "source": "llvm-readobj --notes --dyn-symbols (ELF) and llvm-objdump --macho --private-headers (Mach-O), LLVM 19.1.7",
+  "snapshot_hash": "ace654289f5abc240509fc941453ebc5",
+  "other_snapshot_hash": "80a49c7111088100a233b2ae788e1f48",
+  "engine_revision": "83675ed27633283e7fc296c8bca22e841224c096",
+  "libraries": {
+    "libflutter_arm64.so": { "build_id": "a28176b7afc36374ec72f8d11e5f27794dd7410c" },
+    "libflutter_other_arm64.so": { "build_id": "8d032f649e0e72f6a4228ee5f521010cbd71eab9" },
+    "libapp_armv7.so": {
+      "build_id": "8782ad9780309dbd6bc506f097a2a7de99b6a5d0",
+      "exported": ["_kDartVmSnapshotData", "_kDartIsolateSnapshotData"]
+    },
+    "libflutter_armv7.so": { "build_id": "4fbc8af83564bc84c3b7e56e14e944225038f961" },
+    "libapp_x86_64.so": {
+      "build_id": "10a497bb31d0dbadd933136ada8deba1d39911d7",
+      "exported": ["_kDartVmSnapshotData", "_kDartIsolateSnapshotData"]
+    },
+    "App_ios_arm64": {
+      "uuid": "4c4c44f555553144a141ca53c5ea0166",
+      "exported": ["__kDartVmSnapshotData", "__kDartIsolateSnapshotData"]
+    },
+    "Flutter_ios_arm64": { "uuid": "4c4c441755553144a105f5f1a8c78a68" },
+    "App_ios_universal": {
+      "slices": {
+        "arm64": "4c4c44f555553144a141ca53c5ea0166",
+        "x86_64": "4c4c448955553144a18b62cdf3bddef3"
+      }
+    }
+  }
+}

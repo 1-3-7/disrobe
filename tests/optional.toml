@@ -10,6 +10,8 @@
 "disrobe-pass-swift-objc::host-sourced" = "the host-sourced Mach-O binaries and IPAs under corpus/mobile and corpus/mac are third-party files the repository does not redistribute, so no CI job has them"
 "disrobe-taint::graded_corpus" = "the pinned NIST SARD Juliet v1.3 corpus (153 MB) is not committed and no CI job downloads it"
 "disrobe-pass-mobile::discord-hermes-bundle" = "the production Discord Hermes bundle is proprietary third-party bytecode the repository has no right to redistribute, so CI never has it"
+"disrobe-pass-swift-objc::local-app-nibs" = "the OnionBrowser and Feather app NIBs come from IPAs whose licences do not allow redistributing their binaries, so CI never has them; the committed SDCAlertView NIBs stay required"
+"disrobe-pass-mobile::flutter-engine-3.44.6" = "the official Flutter 3.44.6 android-arm64 release engine jar (41 MB) is not committed and no CI job downloads it"
 "disrobe-pass-mobile::rustdesk-flutter-apk" = "the pinned RustDesk 1.4.9 release APK (27 MB) is not committed and no CI job downloads it"
 "disrobe-pass-native::local-packer-samples" = "the untracked packer samples are third-party binaries packed locally that the repository does not redistribute, so CI never has them; every tracked packer fixture stays required"
 "disrobe-pass-native::local::corpus/mobile/flutter/rustdesk/libflutter.so" = "the RustDesk libflutter.so is an untracked third-party library no CI job downloads"

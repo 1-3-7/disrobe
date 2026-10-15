@@ -24,6 +24,7 @@ pub mod disasm;
 #[cfg(feature = "native-image")]
 pub mod engine_cache;
 pub mod engine_symbols;
+pub mod identity;
 pub mod kernel;
 pub mod libapp_parser;
 pub mod object_pool;
@@ -90,6 +91,12 @@ pub use engine_symbols::{
 pub use engine_symbols::{
     flutter_engine_identity_for_elf, validate_cached_flutter_engine_symbols_for_elf,
     validate_flutter_engine_symbol_map_for_elf,
+};
+pub use identity::{
+    DartSdkRelease, DartVersionString, FlutterContainer, FlutterIdentityReport, FlutterLibrary,
+    FlutterLibraryRole, FlutterRelease, FlutterSnapshotStamp, SnapshotStampSource,
+    dart_sdk_releases, dart_sdk_releases_in, flutter_identity, flutter_releases,
+    parse_dart_version_string,
 };
 pub use kernel::{
     DART_KERNEL_MAGIC, DartKernel, KernelClass, KernelLibrary, KernelProcedure,

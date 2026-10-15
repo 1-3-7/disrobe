@@ -374,9 +374,22 @@ fn recover_pinned_data_blobs(
         isolate_instructions: isolate_instructions_len,
     };
     if !has_pinned_dart_graph_layout(&isolate_header.snapshot_compatibility_hash) {
+        let releases: Vec<String> =
+            super::dart_sdk_releases(&isolate_header.snapshot_compatibility_hash)
+                .into_iter()
+                .map(|release: super::DartSdkRelease| release.dart_version)
+                .collect();
+        let reason: String = if releases.is_empty() {
+            "no pinned dart graph layout matches this snapshot compatibility hash, which is not the hash of a stable Dart SDK release in the bundled table".to_owned()
+        } else {
+            format!(
+                "no pinned dart graph layout matches this snapshot compatibility hash (Dart {})",
+                releases.join(", ")
+            )
+        };
         return Ok(unsupported_report(
             DartGraphRecoveryStatus::UnsupportedVersion,
-            "no pinned dart graph layout matches this snapshot compatibility hash",
+            &reason,
             &isolate_header,
             blob_sizes,
         ));
