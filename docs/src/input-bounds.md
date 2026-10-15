@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2412 bounds (count 230, other 1136, output 72, recursion 240, size 545, work 189).
+2427 bounds (count 233, other 1144, output 72, recursion 241, size 548, work 189).
 
-Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassified 17, allocation 33, unused 8.
+Exceeded: error 996, recorded 207, panic 0, delegated 51, silent 1115, unclassified 17, allocation 33, unused 8.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -280,6 +280,7 @@ Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassif
 | `disrobe-cli` | `MAX_IN_HOUSE_DEX_CLASSES` | other | recorded: flag `omitted` | `usize` | `65_536` | `crates/disrobe-cli/src/cli/jvm.rs` |
 | `disrobe-cli` | `MAX_IN_HOUSE_DEX_INPUT_BYTES` | size | error: untyped `miette!` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-cli/src/cli/jvm.rs` |
 | `disrobe-cli` | `MAX_IN_HOUSE_DEX_OUTPUT_BYTES` | output | error: untyped `miette!` | `usize` | `128 * 1024 * 1024` | `crates/disrobe-cli/src/cli/jvm.rs` |
+| `disrobe-cli` | `MAX_CAR_BYTES` | size | error: untyped `miette!` | `u64` | `1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/macho.rs` |
 | `disrobe-cli` | `MAX_KEYED_ARCHIVE_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/macho.rs` |
 | `disrobe-cli` | `MAX_NIB_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/macho.rs` |
 | `disrobe-cli` | `DELPHI_LIST_LIMIT` | other | silent: `.take()` in `render_delphi_classes`; `.take()` in `render_delphi_forms`; `.take()` in `render_delphi_types`; 3 more | `usize` | `20` | `crates/disrobe-cli/src/cli/native.rs` |
@@ -390,6 +391,10 @@ Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassif
 | `disrobe-dataforensics` | `MAX_IPV6_EXTENSIONS` | other | silent: `for` range in `ipv6` | `usize` | `8` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
 | `disrobe-dataforensics` | `MAX_VLAN_TAGS` | other | silent: `while` condition in `decode` | `usize` | `4` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
 | `disrobe-dataforensics` | `MAX_AUX_STRING` | other | silent: `.min()` clamp in `read_up_to`; `?` on a checked operation in `c_string` | `usize` | `4096` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_DYNAMIC_ENTRIES` | count | silent: `for` range in `loaded_objects` | `u64` | `4096` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_LINK_MAP_ENTRIES` | count | silent: `while` condition in `loaded_objects` | `usize` | `4096` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_LINK_NAME` | other | silent: `.min()` clamp in `read_up_to`; `?` on a checked operation in `c_string` | `usize` | `4096` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_PROGRAM_HEADERS` | other | silent: `.min()` clamp in `dynamic_section` | `u64` | `512` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
 | `disrobe-dataforensics` | `MAX_COMMAND_LINE` | other | silent: slice in `command_line` | `usize` | `64 * 1024` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
 | `disrobe-dataforensics` | `MAX_STRING_BYTES` | size | silent: `return` in `utf16_string` | `usize` | `64 * 1024` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
 | `disrobe-dataforensics` | `MAX_PAGE_SIZE` | size | error: `SqliteError::BadHeader`; `SqliteError::PageOutOfRange`; `SqliteError::Wal`; 2 more | `u32` | `65_536` | `crates/disrobe-dataforensics/src/sqlite/format.rs` |
@@ -2109,6 +2114,16 @@ Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassif
 | `disrobe-pass-sourcedefender` | `MAX_MARSHAL_PAYLOAD_BYTES` | size | error: `Error::InputLimit` (DR-SDEF-0011) | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-sourcedefender/src/source_recover.rs` |
 | `disrobe-pass-sourcedefender` | `MAX_MARSHAL_TRAVERSAL_OBJECTS` | other | error: `Error::InputLimit` (DR-SDEF-0011) | `usize` | `131_072` | `crates/disrobe-pass-sourcedefender/src/source_recover.rs` |
 | `disrobe-pass-sourcedefender` | `MAX_NESTED_CODE_DEPTH` | recursion | error: `Error::NestingLimit` (DR-SDEF-0012) | `usize` | `32` | `crates/disrobe-pass-sourcedefender/src/source_recover.rs` |
+| `disrobe-pass-swift-objc` | `MAX_BLOCKS` | other | error: untyped `format!` | `usize` | `1 << 20` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_CHUNKS` | other | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `1 << 16` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_COLOR_COMPONENTS` | other | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `16` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_KEY_TOKENS` | other | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `64` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_MULTISIZE_ENTRIES` | size | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `4096` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_PIXEL_BYTES` | size | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `256 << 20` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_TLVS` | other | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `256` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_TREE_DEPTH` | recursion | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `32` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_TREE_ENTRIES` | count | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `1 << 20` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
+| `disrobe-pass-swift-objc` | `MAX_VARIABLES` | other | error: `Error::AssetCatalog` (DR-IOS-0024); `Error::NibArchive` (DR-IOS-0022); untyped `format!` | `usize` | `1024` | `crates/disrobe-pass-swift-objc/src/asset_catalog.rs` |
 | `disrobe-pass-swift-objc` | `MAX_CHAIN_CHILDREN` | other | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `256` | `crates/disrobe-pass-swift-objc/src/chain_detector.rs` |
 | `disrobe-pass-swift-objc` | `CSSLOT_ALTERNATE_CODEDIRECTORY_LIMIT` | other | error: `Error::Demangle` (DR-IOS-0011) | `u32` | `0x1005` | `crates/disrobe-pass-swift-objc/src/code_signature.rs` |
 | `disrobe-pass-swift-objc` | `MAX_BLOB_LEN` | size | silent: `break` in `parse` | `u32` | `64 * 1024 * 1024` | `crates/disrobe-pass-swift-objc/src/code_signature.rs` |
@@ -2436,7 +2451,7 @@ Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassif
 
 ## Silent stops
 
-1111 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1115 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2566,6 +2581,10 @@ Exceeded: error 985, recorded 207, panic 0, delegated 51, silent 1111, unclassif
 | `disrobe-dataforensics` | `MAX_IPV6_EXTENSIONS` | `for` range in `ipv6` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
 | `disrobe-dataforensics` | `MAX_VLAN_TAGS` | `while` condition in `decode` | `crates/disrobe-dataforensics/src/capture/packet.rs` |
 | `disrobe-dataforensics` | `MAX_AUX_STRING` | `.min()` clamp in `read_up_to`; `?` on a checked operation in `c_string` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_DYNAMIC_ENTRIES` | `for` range in `loaded_objects` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_LINK_MAP_ENTRIES` | `while` condition in `loaded_objects` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_LINK_NAME` | `.min()` clamp in `read_up_to`; `?` on a checked operation in `c_string` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
+| `disrobe-dataforensics` | `MAX_PROGRAM_HEADERS` | `.min()` clamp in `dynamic_section` | `crates/disrobe-dataforensics/src/crash/elf_core.rs` |
 | `disrobe-dataforensics` | `MAX_COMMAND_LINE` | slice in `command_line` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
 | `disrobe-dataforensics` | `MAX_STRING_BYTES` | `return` in `utf16_string` | `crates/disrobe-dataforensics/src/crash/minidump.rs` |
 | `disrobe-dataforensics` | `MAX_COLUMNS` | `return` in `parse_header` | `crates/disrobe-dataforensics/src/sqlite/record.rs` |
