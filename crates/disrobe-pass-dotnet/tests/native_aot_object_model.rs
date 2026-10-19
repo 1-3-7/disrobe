@@ -5,10 +5,10 @@ use std::io::Read as _;
 use std::sync::OnceLock;
 
 use disrobe_pass_dotnet::aot::{
-    AotFieldLayout, AotMetadataStatus, AotObjectHelperEvidence, AotObjectHelperKind,
-    AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus,
-    AotObjectStoreWidth, AotReport, AotRuntimeFieldLayout, AotTypeSignature, AotTypeSignatureKind,
-    detect, recover_object_model,
+    AotFieldLayout, AotMetadataStatus, AotObjectConstant, AotObjectHelperEvidence,
+    AotObjectHelperKind, AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal,
+    AotObjectModelStatus, AotObjectStoreWidth, AotReport, AotRuntimeFieldLayout, AotTypeSignature,
+    AotTypeSignatureKind, detect, recover_object_model,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -304,6 +304,72 @@ fn native_aot_runtime_field_layout_names_the_exact_store() {
             reason: AotObjectModelRefusal::RuntimeFieldLayoutAmbiguous,
         }
     );
+}
+
+#[test]
+fn native_aot_constructor_recovers_direct_constant_initializer() {
+    let report: &AotReport = report();
+    let mut evidence: AotObjectMethodEvidence = station_swap_evidence(report, STATION_SWAP_SYMBOL);
+    evidence.end_rva = evidence.start_rva + 7;
+    let field_type = AotTypeSignature {
+        kind: AotTypeSignatureKind::Definition,
+        record_offset: evidence.type_record_offset,
+    };
+    let field_record_offset: u32 = u32::MAX;
+    let mut attribution = report.metadata_attribution.clone();
+    attribution
+        .methods
+        .iter_mut()
+        .find(|method| method.record_offset == evidence.method_record_offset)
+        .unwrap_or_else(|| panic!("Station<T>.Swap method is recovered"))
+        .name = ".ctor".to_owned();
+    attribution
+        .runtime_field_layouts
+        .push(AotRuntimeFieldLayout {
+            type_record_offset: evidence.type_record_offset,
+            field_record_offset,
+            method_table_rva: None,
+            field_offset: 8,
+        });
+    let mut layouts = report.object_model.type_layouts.clone();
+    layouts
+        .iter_mut()
+        .find(|layout| layout.record_offset == evidence.type_record_offset)
+        .unwrap_or_else(|| panic!("Station<T> layout is recovered"))
+        .instance_fields
+        .push(AotFieldLayout {
+            record_offset: field_record_offset,
+            name: "_last".to_owned(),
+            field_type,
+        });
+    let mut patched: Vec<u8> = image().to_vec();
+    let pe = disrobe_pass_dotnet::pe::parse(patched.as_slice())
+        .unwrap_or_else(|error| panic!("fixture PE parses: {error}"));
+    let offset: usize = pe
+        .rva_to_offset(evidence.start_rva)
+        .unwrap_or_else(|| panic!("constructor probe RVA is file backed"));
+    patched[offset..offset + 7].copy_from_slice(&[0xc7, 0x41, 0x08, 42, 0, 0, 0]);
+    let recovered: AotObjectModel = recover_object_model(
+        patched.as_slice(),
+        &attribution,
+        layouts.clone(),
+        &[evidence],
+        &[],
+    );
+    assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
+    let initializer = recovered
+        .field_initializers
+        .first()
+        .unwrap_or_else(|| panic!("direct constructor initializer is recovered"));
+    assert_eq!(initializer.store_rva, evidence.start_rva);
+    assert_eq!(initializer.field_offset, 8);
+    assert_eq!(initializer.value, AotObjectConstant::Dword(42));
+    assert_eq!(initializer.field_name.as_deref(), Some("_last"));
+    assert_eq!(initializer.field_type, Some(field_type));
+    patched[offset] = 0x90;
+    let mutated: AotObjectModel =
+        recover_object_model(patched.as_slice(), &attribution, layouts, &[evidence], &[]);
+    assert!(mutated.field_initializers.is_empty());
 }
 
 #[test]

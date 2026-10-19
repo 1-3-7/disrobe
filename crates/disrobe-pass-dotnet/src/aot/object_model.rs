@@ -16,6 +16,7 @@ const MAX_HELPER_CALLS: usize = 16_384;
 const MAX_METHOD_TABLES: usize = 65_536;
 const MAX_TYPE_REFERENCES: usize = 16_384;
 const MAX_RUNTIME_FIELD_LAYOUTS: usize = 1_048_576;
+const MAX_FIELD_INITIALIZERS: usize = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +47,7 @@ pub enum AotObjectModelRefusal {
     RuntimeFieldLayoutLimitExceeded,
     RuntimeFieldLayoutAmbiguous,
     RuntimeFieldLayoutDoesNotMatchMetadata,
+    FieldInitializerLimitExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +61,8 @@ pub struct AotObjectModel {
     pub helper_calls: Vec<AotObjectHelperCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_references: Vec<AotObjectTypeReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_initializers: Vec<AotObjectFieldInitializer>,
 }
 impl Default for AotObjectModel {
     fn default() -> Self {
@@ -68,6 +72,7 @@ impl Default for AotObjectModel {
             field_stores: Vec::new(),
             helper_calls: Vec::new(),
             type_references: Vec::new(),
+            field_initializers: Vec::new(),
         }
     }
 }
@@ -123,6 +128,25 @@ pub struct AotObjectTypeReference {
     pub type_record_offset: u32,
     pub method_table_rva: u32,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AotObjectConstant {
+    Byte(u8),
+    Dword(u32),
+    Qword(u64),
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotObjectFieldInitializer {
+    pub type_record_offset: u32,
+    pub method_record_offset: u32,
+    pub store_rva: u32,
+    pub field_offset: u8,
+    pub value: AotObjectConstant,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_type: Option<AotTypeSignature>,
+}
 
 const fn refused(
     reason: AotObjectModelRefusal,
@@ -134,6 +158,7 @@ const fn refused(
         field_stores: Vec::new(),
         helper_calls: Vec::new(),
         type_references: Vec::new(),
+        field_initializers: Vec::new(),
     }
 }
 fn field_store(bytes: &[u8], at: usize) -> Option<(AotObjectStoreWidth, u8, u8)> {
@@ -172,6 +197,22 @@ fn method_table_target(rva: u32, bytes: &[u8]) -> Option<u32> {
     let target =
         i64::from(rva.checked_add(7)?).checked_add(i64::from(i32::from_le_bytes(displacement)))?;
     u32::try_from(target).ok()
+}
+fn field_initializer(bytes: &[u8]) -> Option<(u8, AotObjectConstant)> {
+    match bytes {
+        [0xc6, 0x41, offset, value, ..] if *offset != 0 => {
+            Some((*offset, AotObjectConstant::Byte(*value)))
+        }
+        [0xc7, 0x41, offset, a, b, c, d, ..] if *offset != 0 => Some((
+            *offset,
+            AotObjectConstant::Dword(u32::from_le_bytes([*a, *b, *c, *d])),
+        )),
+        [0x48, 0xc7, 0x41, offset, a, b, c, d, ..] if *offset != 0 => {
+            let value: i64 = i64::from(i32::from_le_bytes([*a, *b, *c, *d]));
+            Some((*offset, AotObjectConstant::Qword(value as u64)))
+        }
+        _ => None,
+    }
 }
 pub fn recover_object_model(
     image: &[u8],
@@ -252,6 +293,12 @@ pub fn recover_object_model(
                 .map(|method| (type_record.record_offset, *method))
         })
         .collect();
+    let constructors: BTreeSet<u32> = attribution
+        .methods
+        .iter()
+        .filter(|method| method.name == ".ctor")
+        .map(|method| method.record_offset)
+        .collect();
     let mut ranges: Vec<(u32, u32)> = Vec::with_capacity(method_evidence.len());
     for evidence in method_evidence {
         if evidence.start_rva >= evidence.end_rva
@@ -312,6 +359,7 @@ pub fn recover_object_model(
     let mut stores = Vec::new();
     let mut calls = Vec::new();
     let mut type_references = Vec::new();
+    let mut field_initializers = Vec::new();
     for evidence in method_evidence {
         let range = AotCodeRange {
             start_rva: evidence.start_rva,
@@ -384,6 +432,28 @@ pub fn recover_object_model(
                     method_table_rva: *method_table_rva,
                 });
             }
+            if constructors.contains(&evidence.method_record_offset)
+                && instruction.mnemonic == "mov"
+                && let Some((field_offset, value)) = field_initializer(&instruction.bytes)
+            {
+                if field_initializers.len() == MAX_FIELD_INITIALIZERS {
+                    return refused(
+                        AotObjectModelRefusal::FieldInitializerLimitExceeded,
+                        type_layouts,
+                    );
+                }
+                let field =
+                    fields_by_offset.get(&(evidence.type_record_offset, u32::from(field_offset)));
+                field_initializers.push(AotObjectFieldInitializer {
+                    type_record_offset: evidence.type_record_offset,
+                    method_record_offset: evidence.method_record_offset,
+                    store_rva: rva,
+                    field_offset,
+                    value,
+                    field_name: field.map(|(_record_offset, name, _field_type)| name.clone()),
+                    field_type: field.map(|(_record_offset, _name, field_type)| *field_type),
+                });
+            }
             let Some((width, source_register, field_offset)) = field_store(&instruction.bytes, 0)
             else {
                 continue;
@@ -411,5 +481,6 @@ pub fn recover_object_model(
         field_stores: stores,
         helper_calls: calls,
         type_references,
+        field_initializers,
     }
 }

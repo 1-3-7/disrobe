@@ -34,9 +34,10 @@ pub use metadata_records::{
     AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 pub use object_model::{
-    AotObjectFieldStore, AotObjectHelperCall, AotObjectHelperEvidence, AotObjectHelperKind,
-    AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus,
-    AotObjectStoreWidth, AotObjectTypeReference, recover_object_model,
+    AotObjectConstant, AotObjectFieldInitializer, AotObjectFieldStore, AotObjectHelperCall,
+    AotObjectHelperEvidence, AotObjectHelperKind, AotObjectMethodEvidence, AotObjectModel,
+    AotObjectModelRefusal, AotObjectModelStatus, AotObjectStoreWidth, AotObjectTypeReference,
+    recover_object_model,
 };
 pub use resources::{
     AotManifestResource, AotResourceIndex, AotResourceRefusal, AotResourceStatus,
