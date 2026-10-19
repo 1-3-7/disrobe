@@ -311,7 +311,7 @@ yaxpeax-arch = "0.3.2"
 yaxpeax-arch-avr = { package = "yaxpeax-arch", version = "0.2.8" }
 yaxpeax-arm = "0.3.1"
 yaxpeax-avr = "0.1.0"
-zip = { version = "2.4.2", default-features = false, features = ["aes-crypto", "zstd", "deflate64", "deflate", "deflate-zlib"] }
+zip = { version = "=2.4.2", default-features = false, features = ["aes-crypto", "zstd", "deflate64", "deflate", "deflate-zlib"] }
 zstd = "0.13.3"
 
 [profile.release]

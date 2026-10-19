@@ -1883,7 +1883,7 @@ pub fn scan_zip_bytes(
     let mut out: Vec<ReconFinding> = Vec::new();
     let mut total_read: u64 = 0;
     for index in 0..entry_count {
-        let Ok(entry): Result<zip::read::ZipFile<'_>, _> = archive.by_index(index) else {
+        let Ok(entry) = archive.by_index(index) else {
             continue;
         };
         if !entry.is_file() {
