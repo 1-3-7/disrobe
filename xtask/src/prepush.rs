@@ -113,6 +113,7 @@ pub(crate) fn setup_hooks(root: &Path) -> Result<()> {
 }
 
 fn gate<F: FnOnce() -> Result<GateOutcome>>(name: &str, run_gate: F) -> Result<Duration> {
+    println!("  [{name}] start");
     let start: Instant = Instant::now();
     let outcome: GateOutcome = run_gate().wrap_err_with(|| format!("prepush gate `{name}`"))?;
     let elapsed: Duration = start.elapsed();

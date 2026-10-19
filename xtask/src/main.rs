@@ -239,7 +239,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("xtask: {err:?}");
+            eprintln!("xtask: {err:#}");
             ExitCode::FAILURE
         }
     }

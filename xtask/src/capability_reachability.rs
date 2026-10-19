@@ -342,9 +342,16 @@ pub(crate) fn run(root: &Path) -> Result<()> {
     let mut orphan_counts_by_crate: BTreeMap<String, usize> = BTreeMap::new();
     let mut dedicated_only: Vec<String> = Vec::new();
     let mut non_default_feature: Vec<String> = Vec::new();
+    let mut evidence_by_crate: BTreeMap<String, CrateEvidence> = BTreeMap::new();
 
     for candidate in &candidates {
-        let Some(evidence) = grading_evidence(root, candidate)? else {
+        let index: &CrateEvidence = match evidence_by_crate.entry(candidate.crate_dir.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(index_crate_evidence(root, &candidate.crate_dir)?)
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+        };
+        let Some(evidence) = grading_evidence(index, candidate) else {
             ungraded_count += 1;
             continue;
         };
@@ -362,7 +369,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             })?;
 
         let mut surfaces: Surfaces = classify_surfaces(candidate, info, &consumer_index);
-        surfaces.internal = internal_caller_exists(root, candidate)?;
+        surfaces.internal = internal_caller_exists(index, candidate);
         let auto_reachable: bool = info.chain_status == ChainStatus::Default && surfaces.internal;
         let reachable: bool = surfaces.any_external() || auto_reachable;
 
@@ -897,54 +904,94 @@ impl GradingEvidence {
     }
 }
 
-fn grading_evidence(root: &Path, candidate: &Capability) -> Result<Option<GradingEvidence>> {
-    let tests_dir: PathBuf = root.join("crates").join(&candidate.crate_dir).join("tests");
+struct GradingTest {
+    location: String,
+    name: String,
+    body: String,
+}
+
+struct CrateEvidence {
+    tests: Vec<GradingTest>,
+    production: Vec<String>,
+}
+
+fn index_grading_tests(text: &str, location: &str, tests: &mut Vec<GradingTest>) {
+    tests.extend(
+        test_functions(text)
+            .into_iter()
+            .filter(|(_, body): &(String, &str)| body.contains("assert"))
+            .map(|(name, body): (String, &str)| GradingTest {
+                location: location.to_owned(),
+                name,
+                body: body.to_owned(),
+            }),
+    );
+}
+
+fn index_crate_evidence(root: &Path, crate_dir: &str) -> Result<CrateEvidence> {
+    let mut tests: Vec<GradingTest> = Vec::new();
+    let mut production: Vec<String> = Vec::new();
+    let tests_dir: PathBuf = root.join("crates").join(crate_dir).join("tests");
     if tests_dir.is_dir() {
         for path in list_rs_files(&tests_dir)? {
             let text: String = read_text_bounded(&path, MAX_SOURCE_BYTES)
                 .wrap_err_with(|| format!("reading {}", path.display()))?;
-            if let Some(test_name) = find_grading_test(&text, candidate) {
-                let relative: String = path.strip_prefix(root).map_or_else(
-                    |_| path.to_string_lossy().into_owned(),
-                    |rest: &Path| rest.to_string_lossy().replace('\\', "/"),
-                );
-                return Ok(Some(GradingEvidence {
-                    location: relative,
-                    test_name,
-                }));
-            }
+            let relative: String = path.strip_prefix(root).map_or_else(
+                |_| path.to_string_lossy().into_owned(),
+                |rest: &Path| rest.to_string_lossy().replace('\\', "/"),
+            );
+            index_grading_tests(&text, &relative, &mut tests);
         }
     }
 
-    let src_dir: PathBuf = root.join("crates").join(&candidate.crate_dir).join("src");
+    let src_dir: PathBuf = root.join("crates").join(crate_dir).join("src");
+    let production_paths: BTreeSet<PathBuf> = production_rs_files(&src_dir)?.into_iter().collect();
     for path in list_rs_files(&src_dir)? {
         let text: String = read_text_bounded(&path, MAX_SOURCE_BYTES)
             .wrap_err_with(|| format!("reading {}", path.display()))?;
         for block in cfg_test_blocks(&text)? {
-            if let Some(test_name) = find_grading_test(block, candidate) {
-                let relative: String = path.strip_prefix(root).map_or_else(
-                    |_| path.to_string_lossy().into_owned(),
-                    |rest: &Path| rest.to_string_lossy().replace('\\', "/"),
-                );
-                return Ok(Some(GradingEvidence {
-                    location: format!("{relative}#[cfg(test)]"),
-                    test_name,
-                }));
-            }
+            let relative: String = path.strip_prefix(root).map_or_else(
+                |_| path.to_string_lossy().into_owned(),
+                |rest: &Path| rest.to_string_lossy().replace('\\', "/"),
+            );
+            index_grading_tests(block, &format!("{relative}#[cfg(test)]"), &mut tests);
+        }
+        if production_paths.contains(&path) {
+            production.push(
+                strip_cfg_test(&text)
+                    .wrap_err_with(|| format!("stripping test regions from {}", path.display()))?,
+            );
         }
     }
-    Ok(None)
+    Ok(CrateEvidence { tests, production })
 }
 
+fn grading_evidence(index: &CrateEvidence, candidate: &Capability) -> Option<GradingEvidence> {
+    index
+        .tests
+        .iter()
+        .find(|test: &&GradingTest| {
+            contains_real_call(&test.body, &candidate.original_name)
+                || contains_real_call(&test.body, &candidate.public_name)
+        })
+        .map(|test: &GradingTest| GradingEvidence {
+            location: test.location.clone(),
+            test_name: test.name.clone(),
+        })
+}
+
+#[cfg(test)]
 fn find_grading_test(text: &str, candidate: &Capability) -> Option<String> {
-    for (name, body) in test_functions(text) {
-        let calls: bool = contains_real_call(body, &candidate.original_name)
-            || contains_real_call(body, &candidate.public_name);
-        if calls && body.contains("assert") {
-            return Some(name);
-        }
-    }
-    None
+    let mut tests: Vec<GradingTest> = Vec::new();
+    index_grading_tests(text, "fixture", &mut tests);
+    grading_evidence(
+        &CrateEvidence {
+            tests,
+            production: Vec::new(),
+        },
+        candidate,
+    )
+    .map(|evidence: GradingEvidence| evidence.test_name)
 }
 
 fn test_functions(text: &str) -> Vec<(String, &str)> {
@@ -1216,25 +1263,61 @@ fn classify_surfaces(candidate: &Capability, info: &CrateInfo, index: &ConsumerI
     surfaces
 }
 
-fn internal_caller_exists(root: &Path, candidate: &Capability) -> Result<bool> {
-    let src_dir: PathBuf = root.join("crates").join(&candidate.crate_dir).join("src");
-    for path in production_rs_files(&src_dir)? {
-        let text: String = read_text_bounded(&path, MAX_SOURCE_BYTES)
-            .wrap_err_with(|| format!("reading {}", path.display()))?;
-        let production_text: String = strip_cfg_test(&text)
-            .wrap_err_with(|| format!("stripping test regions from {}", path.display()))?;
-        if contains_real_call(&production_text, &candidate.original_name)
-            || contains_real_call(&production_text, &candidate.public_name)
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+fn internal_caller_exists(index: &CrateEvidence, candidate: &Capability) -> bool {
+    index.production.iter().any(|text: &String| {
+        contains_real_call(text, &candidate.original_name)
+            || contains_real_call(text, &candidate.public_name)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_evidence_preserves_order_aliases_and_test_boundaries() -> Result<()> {
+        let scratch: tempfile::TempDir = tempfile::tempdir()?;
+        let root: &Path = scratch.path();
+        let src: PathBuf = root.join("crates/disrobe-pass-example/src");
+        let tests: PathBuf = root.join("crates/disrobe-pass-example/tests");
+        std::fs::create_dir_all(&src)?;
+        std::fs::create_dir_all(&tests)?;
+        std::fs::write(
+            tests.join("a.rs"),
+            "#[test]\n#[ignore]\nfn ignored() { original(); assert!(true); }\n#[test]\nfn no_assertion() { original(); }\n#[test]\nfn first() { alias(); assert!(true); }",
+        )?;
+        std::fs::write(
+            tests.join("z.rs"),
+            "#[test]\nfn later() { original(); assert!(true); }",
+        )?;
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub fn original() {}\nfn caller() { original(); }\n#[cfg(test)]\nmod tests { #[test]\nfn inline() { only_test(); assert!(true); } }\n#[cfg(test)]\nmod external;",
+        )?;
+        std::fs::write(src.join("external.rs"), "fn helper() { external_only(); }")?;
+        let index: CrateEvidence = index_crate_evidence(root, "disrobe-pass-example")?;
+        let mut candidate: Capability = capability("alias");
+        candidate.original_name = "original".to_owned();
+        let evidence: GradingEvidence = grading_evidence(&index, &candidate)
+            .ok_or_else(|| eyre::eyre!("aliased capability lost its grading evidence"))?;
+        assert_eq!(evidence.test_name, "first");
+        assert_eq!(evidence.location, "crates/disrobe-pass-example/tests/a.rs");
+        assert!(internal_caller_exists(&index, &candidate));
+        let only_test: Capability = capability("only_test");
+        let inline: GradingEvidence = grading_evidence(&index, &only_test)
+            .ok_or_else(|| eyre::eyre!("inline test lost its grading evidence"))?;
+        assert_eq!(inline.test_name, "inline");
+        assert_eq!(
+            inline.location,
+            "crates/disrobe-pass-example/src/lib.rs#[cfg(test)]"
+        );
+        assert!(!internal_caller_exists(&index, &only_test));
+        assert!(!internal_caller_exists(
+            &index,
+            &capability("external_only")
+        ));
+        Ok(())
+    }
 
     fn capability(name: &str) -> Capability {
         Capability {
