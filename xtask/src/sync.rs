@@ -79,7 +79,7 @@ where
     match f() {
         Ok(()) => Ok(()),
         Err(error) if check => {
-            stale.push(format!("{name}: {error}"));
+            stale.push(format!("{name}: {error:#}"));
             Ok(())
         }
         Err(error) => Err(error).wrap_err_with(|| format!("generation step `{name}` failed")),
@@ -94,6 +94,24 @@ mod tests {
     fn metrics_mode_tracks_sync_mode() {
         assert!(matches!(metrics_mode(true), crate::metrics::Mode::Check));
         assert!(matches!(metrics_mode(false), crate::metrics::Mode::Write));
+    }
+
+    #[test]
+    fn check_mode_preserves_nested_failure_causes() -> Result<()> {
+        let mut failures: Vec<String> = Vec::new();
+        run_one(
+            "sync",
+            true,
+            || {
+                Err(eyre::eyre!("graph data hash is stale")
+                    .wrap_err("generation step graphs failed"))
+            },
+            &mut failures,
+        )?;
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("sync: generation step graphs failed"));
+        assert!(failures[0].contains("graph data hash is stale"));
+        Ok(())
     }
 
     #[test]
