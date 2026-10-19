@@ -105,7 +105,7 @@ Stacked eval-chain obfuscation (FOPO and the base64/gzinflate/rot13/XOR layer se
 
 | Ecosystem | Coverage |
 |---|---|
-| **Go** | garble report graded None / Detected / Partial / Full; `garble -literals` simple and full-key literals recovered through static blob pairing plus bounded x86-64 thunk/inline emulation. Type names resolved above an <!-- m:go_typename_pct -->85%<!-- /m --> floor on the committed go1.26.3 fixture. |
+| **Go** | garble report graded None / Detected / Partial / Full; `garble -literals` simple and full-key literals recovered through static blob pairing plus bounded x86-64 thunk/inline emulation. Type names and addresses match the independent nm reference for <!-- m:go_typename_pct -->100%<!-- /m --> of its named population on the committed go1.26.3 linux/amd64 fixture. |
 | **Ruby** | MRI/YARV 2.6-3.4 and mruby source recovery; the published MRI measure compares opcode-name multiset recall after recompilation. Ruby2Exe and Ocra freezers detected; JRuby and TruffleRuby AOT classified. |
 | **BEAM** | `.beam` and `.ez` chunk parse, Core Erlang lift, Elixir `Dbgi` quoted-AST recovery. |
 | **Swift / Obj-C** | Mach-O class-dump plus SwiftShield mapping parser and explicit-key single-byte XOR blob decoding; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |

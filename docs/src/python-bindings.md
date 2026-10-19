@@ -1407,7 +1407,7 @@ recovered_string_count: int = deob.recovered_string_count
 
 ## Go
 
-<!-- m:go_typename_pct -->85%<!-- /m -->+ type-name recovery on stripped go1.26 fixtures; <!-- m:go_typename_count -->838 of 838<!-- /m --> measured, pinned by the gate.
+<!-- m:go_typename_pct -->100%<!-- /m --> of the independently nm-addressed type-name population on the stripped go1.26.3 linux/amd64 fixture; <!-- m:go_typename_count -->115 of 115<!-- /m --> names and addresses match, pinned by the gate.
 
 ```python
 from __future__ import annotations
