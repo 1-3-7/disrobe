@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2543 bounds (count 241, other 1200, output 72, recursion 250, size 583, work 197).
+2549 bounds (count 241, other 1204, output 72, recursion 250, size 585, work 197).
 
-Exceeded: error 1056, recorded 218, panic 0, delegated 52, silent 1158, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1056, recorded 224, panic 0, delegated 52, silent 1158, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -700,6 +700,12 @@ Exceeded: error 1056, recorded 218, panic 0, delegated 52, silent 1158, unclassi
 | `disrobe-pass-dotnet` | `MAX_EXCEPTION_DIRECTORY_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_RUNTIME_FUNCTIONS` | other | error: `invalid()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_HASHTABLE_BUCKETS` | other | error: `invalid()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/native_hashtable.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_STORES` | other | recorded: `AotObjectModelRefusal::FieldStoreLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_HELPERS` | other | recorded: `AotObjectModelRefusal::HelperEvidenceAmbiguous`; `refused()` | `usize` | `4_096` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_HELPER_CALLS` | other | recorded: `AotObjectModelRefusal::HelperCallLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_METHOD_BYTES` | size | recorded: `AotObjectModelRefusal::MethodRangeExceeded`; `refused()` | `usize` | `256 * 1024` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_METHOD_EVIDENCE` | other | recorded: `AotObjectModelRefusal::MethodEvidenceCountExceeded`; `refused()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_TOTAL_METHOD_BYTES` | size | recorded: `AotObjectModelRefusal::AggregateMethodBytesExceeded`; `refused()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_RESOURCES` | other | delegated: `native_hashtable::entry_offsets()?` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
 | `disrobe-pass-dotnet` | `MAX_RESOURCE_DECODED_STRING_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
 | `disrobe-pass-dotnet` | `MAX_RESOURCE_INDEX_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
