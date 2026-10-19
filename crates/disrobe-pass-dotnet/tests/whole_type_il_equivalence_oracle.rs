@@ -1254,6 +1254,90 @@ fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, O
     (errors, produced)
 }
 
+fn compile_whole_types(
+    dir: &Path,
+    sources: &BTreeMap<&str, String>,
+) -> BTreeMap<String, (Vec<String>, Option<PathBuf>)> {
+    let mut projects: Vec<String> = Vec::with_capacity(sources.len());
+    for (type_name, source) in sources {
+        let type_dir: PathBuf = dir.join(type_name);
+        std::fs::create_dir(&type_dir).expect("create standalone type directory");
+        write_project(&type_dir, type_name);
+        std::fs::write(type_dir.join("host.cs"), source).expect("write standalone type source");
+        projects.push(format!(
+            "    <OracleProject Include=\"{type_name}/oracle.csproj\" />"
+        ));
+    }
+    let batch: String = format!(
+        "<Project>\n  <ItemGroup>\n{}\n  </ItemGroup>\n  <Target Name=\"BuildOracle\">\n    <MSBuild Projects=\"@(OracleProject)\" Targets=\"Restore;Build\" Properties=\"Configuration=Release;Platform=AnyCPU\" BuildInParallel=\"true\" ContinueOnError=\"ErrorAndContinue\" />\n  </Target>\n</Project>\n",
+        projects.join("\n")
+    );
+    std::fs::write(dir.join("oracle-batch.proj"), batch).expect("write standalone type batch");
+    let command: CommandSpec = tool_command("dotnet")
+        .args([
+            "msbuild",
+            "oracle-batch.proj",
+            "-t:BuildOracle",
+            "-nologo",
+            "-m:4",
+        ])
+        .current_dir(dir.to_path_buf());
+    let output: ToolOutput = bounded_capture(command, "dotnet msbuild whole-type batch")
+        .unwrap_or_else(|error: String| panic!("{error}"));
+    let diagnostics: Vec<String> = diagnostics_of(&output);
+    sources
+        .keys()
+        .map(|type_name: &&str| {
+            let source: PathBuf = dir.join(type_name).join("host.cs");
+            let source: String = source.to_string_lossy().replace('\\', "/");
+            let errors: Vec<String> = diagnostics
+                .iter()
+                .filter(|diagnostic: &&String| diagnostic.replace('\\', "/").contains(&source))
+                .cloned()
+                .collect();
+            let dll: PathBuf = dir
+                .join(type_name)
+                .join(format!("bin/Release/net9.0/{type_name}.dll"));
+            assert!(
+                dll.exists() || !errors.is_empty(),
+                "whole-type compiler batch produced neither an assembly nor a source diagnostic for {type_name}; exit {:?}\nstdout:\n{}\nstderr:\n{}",
+                output.exit_code,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            (
+                (*type_name).to_owned(),
+                (errors, dll.exists().then_some(dll)),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn whole_type_batch_keeps_a_failed_source_from_hiding_a_successful_peer() {
+    require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wt_batch_control").expect("mk tmp");
+    let sources: BTreeMap<&str, String> = BTreeMap::from([
+        (
+            "Clean",
+            "public static class Clean { public static int Value() => 1; }".to_owned(),
+        ),
+        (
+            "Broken",
+            "public static class Broken { public static int Value() => missing; }".to_owned(),
+        ),
+    ]);
+    let results: BTreeMap<String, (Vec<String>, Option<PathBuf>)> =
+        compile_whole_types(scratch.path(), &sources);
+    let (clean_errors, clean): &(Vec<String>, Option<PathBuf>) =
+        results.get("Clean").expect("clean batch result");
+    assert!(clean_errors.is_empty() && clean.is_some());
+    let (broken_errors, broken): &(Vec<String>, Option<PathBuf>) =
+        results.get("Broken").expect("broken batch result");
+    assert!(broken.is_none() && !broken_errors.is_empty());
+}
+
 fn ilspy_il(dll: &Path, namespace: &str, type_name: &str) -> String {
     let command: CommandSpec = ilspy_command()
         .args(["-il", "-t"])
@@ -2260,6 +2344,8 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     let mut constructor_refused: Vec<&str> = Vec::new();
     let mut residual: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     let mut roslyn_failures: Vec<(&str, String)> = Vec::new();
+    let mut sources: BTreeMap<&str, String> = BTreeMap::new();
+    let mut recovered_methods: BTreeMap<&str, Vec<UserMethod>> = BTreeMap::new();
     for (type_name, is_static) in EDGECASES_TYPES {
         let target: Target = Target {
             dll: EDGECASES_DLL,
@@ -2283,14 +2369,18 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
                 .push(type_name);
             continue;
         }
-        let scratch: disrobe_core::scratch::ScratchDir =
-            disrobe_core::scratch::ScratchDir::create(&format!("disrobe_wt_{type_name}"))
-                .expect("mk tmp");
-        let tmp: PathBuf = scratch.path().to_path_buf();
-        write_project(&tmp, type_name);
         let src: String = whole_type_source(&bytes, &members, &methods, target);
-        let (errors, produced): (Vec<String>, Option<PathBuf>) =
-            compile_whole_type(&tmp, &src, type_name);
+        sources.insert(type_name, src);
+        recovered_methods.insert(type_name, methods);
+    }
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wt_edgecases_batch").expect("mk tmp");
+    let results: BTreeMap<String, (Vec<String>, Option<PathBuf>)> =
+        compile_whole_types(scratch.path(), &sources);
+    for (type_name, methods) in recovered_methods {
+        let (errors, produced): &(Vec<String>, Option<PathBuf>) = results
+            .get(type_name)
+            .expect("whole-type batch result for every prepared source");
         if produced.is_some() {
             if states_refusal(&methods) {
                 refused.push(type_name);
