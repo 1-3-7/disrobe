@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2120 |
-| Emission sites | 2750 |
-| Sites carrying a message | 2650 |
-| Distinct emitted codes | 2011 |
+| Scanned source files | 2121 |
+| Emission sites | 2751 |
+| Sites carrying a message | 2651 |
+| Distinct emitted codes | 2012 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 312 |
-| Emitted codes missing from the registry | 1834 |
+| Emitted codes missing from the registry | 1835 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (312)
@@ -1825,7 +1825,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:173`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1834)
+## Emitted codes missing from the registry (1835)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -2596,6 +2596,7 @@
 - `DR-DOTNET-0040`: `crates/disrobe-pass-dotnet/src/error.rs:148`
 - `DR-DOTNET-0041`: `crates/disrobe-pass-dotnet/src/error.rs:151`
 - `DR-DOTNET-0042`: `crates/disrobe-pass-dotnet/src/error.rs:154`
+- `DR-DOTNET-0043`: `crates/disrobe-pass-dotnet/src/error.rs:158`
 - `DR-DOTNET-0902`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:114`
 - `DR-DOTNET-0903`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:122`
 - `DR-DOTNET-0905`: `crates/disrobe-pass-dotnet/src/chain_detector.rs:140`

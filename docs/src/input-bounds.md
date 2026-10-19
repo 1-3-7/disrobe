@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2549 bounds (count 241, other 1204, output 72, recursion 250, size 585, work 197).
+2556 bounds (count 242, other 1208, output 72, recursion 250, size 587, work 197).
 
-Exceeded: error 1056, recorded 224, panic 0, delegated 52, silent 1158, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1059, recorded 228, panic 0, delegated 53, silent 1157, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -677,9 +677,12 @@ Exceeded: error 1056, recorded 224, panic 0, delegated 52, silent 1158, unclassi
 | `disrobe-pass-dotnet` | `MAX_PROFILE_MAJOR` | other | silent: `continue` in `declared_profile` | `u16` | `64` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | other | silent: `return` in `read_ready_to_run_header` | `u16` | `1024` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | other | silent: `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `usize` | `65536` | `crates/disrobe-pass-dotnet/src/aot.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_MAP_BYTES` | size | error: `invalid()` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/field_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_MAP_ENTRIES` | count | delegated: `native_hashtable::entry_offsets()?` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/field_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_NAME_BYTES` | size | error: `invalid()` | `usize` | `4_096` | `crates/disrobe-pass-dotnet/src/aot/field_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_GENERIC_ARGUMENTS` | other | error: `invalid()` | `usize` | `1_024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
-| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_ENTRIES` | count | silent: `for` range in `attach_invoke_map_entrypoints`; `for` range in `recover` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_ENTRIES` | count | error: untyped error | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_REFUSAL_TEXT_BYTES` | size | error: untyped error | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_RETAINED_CONTEXT_WORDS` | other | error: untyped error | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_METADATA_COLLECTION` | other | error: `invalid_metadata()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/metadata_records.rs` |
@@ -700,12 +703,16 @@ Exceeded: error 1056, recorded 224, panic 0, delegated 52, silent 1158, unclassi
 | `disrobe-pass-dotnet` | `MAX_EXCEPTION_DIRECTORY_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_RUNTIME_FUNCTIONS` | other | error: `invalid()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_HASHTABLE_BUCKETS` | other | error: `invalid()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/native_hashtable.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_INITIALIZERS` | other | recorded: `AotObjectModelRefusal::FieldInitializerLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_FIELD_STORES` | other | recorded: `AotObjectModelRefusal::FieldStoreLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_HELPERS` | other | recorded: `AotObjectModelRefusal::HelperEvidenceAmbiguous`; `refused()` | `usize` | `4_096` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_HELPER_CALLS` | other | recorded: `AotObjectModelRefusal::HelperCallLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_METHOD_BYTES` | size | recorded: `AotObjectModelRefusal::MethodRangeExceeded`; `refused()` | `usize` | `256 * 1024` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_METHOD_EVIDENCE` | other | recorded: `AotObjectModelRefusal::MethodEvidenceCountExceeded`; `refused()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_METHOD_TABLES` | other | recorded: `AotObjectModelRefusal::MethodTableLimitExceeded`; `refused()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_RUNTIME_FIELD_LAYOUTS` | other | recorded: `AotObjectModelRefusal::RuntimeFieldLayoutLimitExceeded`; `refused()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_TOTAL_METHOD_BYTES` | size | recorded: `AotObjectModelRefusal::AggregateMethodBytesExceeded`; `refused()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_TYPE_REFERENCES` | other | recorded: `AotObjectModelRefusal::TypeReferenceLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_RESOURCES` | other | delegated: `native_hashtable::entry_offsets()?` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
 | `disrobe-pass-dotnet` | `MAX_RESOURCE_DECODED_STRING_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
 | `disrobe-pass-dotnet` | `MAX_RESOURCE_INDEX_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
@@ -2573,7 +2580,7 @@ Exceeded: error 1056, recorded 224, panic 0, delegated 52, silent 1158, unclassi
 
 ## Silent stops
 
-1158 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1157 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2815,7 +2822,6 @@ Exceeded: error 1056, recorded 224, panic 0, delegated 52, silent 1158, unclassi
 | `disrobe-pass-dotnet` | `MAX_PROFILE_MAJOR` | `continue` in `declared_profile` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | `return` in `read_ready_to_run_header` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `crates/disrobe-pass-dotnet/src/aot.rs` |
-| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_ENTRIES` | `for` range in `attach_invoke_map_entrypoints`; `for` range in `recover` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_FILE_STEM` | `.take()` in `file_name`; fallback value in `file_name` | `crates/disrobe-pass-dotnet/src/csharp_project.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_DEPTH` | `return` in `append_output_expression`; `return` in `binary`; `return` in `expression_contains_stack_input` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_NODES` | `return` in `binary` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
