@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <PublishAot>true</PublishAot>
+    <IlcGenerateMapFile>true</IlcGenerateMapFile>
+    <IlcGenerateStackTraceData>true</IlcGenerateStackTraceData>
+    <StripSymbols>false</StripSymbols>
+    <AssemblyName>aot_maps_net10_x86_64</AssemblyName>
+    <RootNamespace>Tidewater.Gauges</RootNamespace>
+    <PathMap>$(MSBuildProjectDirectory)=C:\src\aot_maps_net10_x86_64</PathMap>
+  </PropertyGroup>
+  <ItemGroup>
+    <LinkerArg Include="/MAP:$(NativeIntermediateOutputPath)aot_maps_net10_x86_64.link.map" />
+    <LinkerArg Include="/PDBALTPATH:%_PDB%" />
+    <EmbeddedResource Include="resources/tide_table.json" LogicalName="Tidewater.Gauges.tide_table.json" />
+    <EmbeddedResource Include="resources/gauge_curve.bin" LogicalName="Tidewater.Gauges.gauge_curve.bin" />
+  </ItemGroup>
+</Project>
