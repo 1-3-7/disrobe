@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2491 bounds (count 236, other 1182, output 70, recursion 246, size 564, work 193).
+2543 bounds (count 241, other 1200, output 72, recursion 250, size 583, work 197).
 
-Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1056, recorded 218, panic 0, delegated 52, silent 1158, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -265,6 +265,8 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-cli` | `MAX_CYCLONEDX_OUTPUT_BYTES` | output | error: `CycloneDxError::OutputTooLong`; `Error::other()` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
 | `disrobe-cli` | `MAX_CYCLONEDX_PACKAGES` | other | error: `CycloneDxError::TooManyComponents`; `CycloneDxError::TooManyPackages` | `usize` | `16_384` | `crates/disrobe-cli/src/cli/cyclonedx.rs` |
 | `disrobe-cli` | `MAX_BUNDLE_ASSEMBLIES` | other | error: untyped `miette!` | `usize` | `512` | `crates/disrobe-cli/src/cli/dotnet.rs` |
+| `disrobe-cli` | `MAX_NATIVE_AOT_RESOURCE_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/dotnet.rs` |
+| `disrobe-cli` | `MAX_NATIVE_AOT_RESOURCE_COUNT` | count | error: untyped `miette!` | `usize` | `65_536` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_PRINTED_RESIDUALS` | other | silent: `.take()` in `print_unprotect_report`; no action in `print_unprotect_report` | `usize` | `12` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_PROMPT_RETRIES` | other | silent: `return` in `read_answer` | `u32` | `3` | `crates/disrobe-cli/src/cli/dotnet.rs` |
 | `disrobe-cli` | `MAX_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `4 * 1024 * 1024 * 1024` | `crates/disrobe-cli/src/cli/electron.rs` |
@@ -290,8 +292,19 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-cli` | `MAX_CAPTURE_OUTPUT` | output | delegated: `subprocess::run_captured()?` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `MAX_DELAY_LOAD_IMPORTS` | other | silent: `return` in `pe_delay_load_imports` | `usize` | `1 << 16` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `MAX_NATIVE_SBOM_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/native.rs` |
+| `disrobe-cli` | `MAX_SCOPED_CALLEES` | other | silent: `break` in `decompile_scope` | `usize` | `256` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `SYMBOL_PREVIEW_LIMIT` | other | silent: `.min()` clamp in `render_cxx_class_rows`; `.min()` clamp in `render_import_rows`; `.min()` clamp in `render_symbol_rows` | `usize` | `40` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `LITERAL_PREVIEW_LIMIT` | work | silent: `.take()` in `preview`; `return` in `preview` | `usize` | `64` | `crates/disrobe-cli/src/cli/native_match.rs` |
+| `disrobe-cli` | `MAX_FIELD_DISPLACEMENTS` | other | error: untyped `miette!` | `usize` | `64` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_IMAGE_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `512 * 1024 * 1024` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_PDATA_ENTRIES` | count | silent: `.take()` in `runtime_functions` | `usize` | `1 << 22` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_QUERY_MATCHES` | other | recorded: flag `truncated` | `usize` | `10_000` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_QUERY_SCAN_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_SCOPE_BYTES` | size | error: untyped `miette!` | `u64` | `4 * 1024 * 1024` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_SELECTOR_BYTES` | size | error: untyped `miette!` | `usize` | `64` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_STRING_CHARS` | other | silent: `.take()` in `shortened` | `usize` | `200` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_STRING_SCAN_BYTES` | size | silent: slice in `bytes_from` | `usize` | `1024` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_UNWIND_CHAIN_DEPTH` | recursion | silent: `for` range in `unwind_owner` | `usize` | `32` | `crates/disrobe-cli/src/cli/native_scope.rs` |
 | `disrobe-cli` | `MAX_DEEP_ANALYZE_LIB_BYTES` | size | error: untyped `miette!` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-cli/src/cli/nuitka.rs` |
 | `disrobe-cli` | `MAX_TARGETS` | other | error: untyped `miette!` | `usize` | `65_536` | `crates/disrobe-cli/src/cli/prowl/harvest.rs` |
 | `disrobe-cli` | `MAX_TARGET_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `16 * 1024 * 1024` | `crates/disrobe-cli/src/cli/prowl/harvest.rs` |
@@ -312,12 +325,12 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-cli` | `MAX_DOCUMENT_OUTPUT_BYTES` | output | error: `Error::other()`; `StructuredDocumentError::OutputTooLong` | `usize` | `24 * 1024 * 1024` | `crates/disrobe-cli/src/cli/structured_document.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CALLS` | other | delegated: passed to `list` | `usize` | `32_768` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_CANDIDATE_RECORDS` | count | unclassified: stored in `candidate_records` with no read found | `usize` | `65_536` | `crates/disrobe-cli/src/cli/taint.rs` |
-| `disrobe-cli` | `MAX_NAVIGATION_FUNCTIONS` | other | error: `CycloneDxError::AllocationFailed`; `CycloneDxError::ArithmeticOverflow`; `OpenVexError::NoFindings`; 2 more | `usize` | `8_192` | `crates/disrobe-cli/src/cli/taint.rs` |
+| `disrobe-cli` | `MAX_NAVIGATION_FUNCTIONS` | other | error: `.error()`; `ConfigError::Container`; `ConfigError::Malformed`; 6 more | `usize` | `8_192` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_INSTRUCTIONS` | other | error: `OpenVexError::NoFindings`; untyped `miette!` | `usize` | `262_144` | `crates/disrobe-cli/src/cli/taint.rs` |
 | `disrobe-cli` | `MAX_NAVIGATION_RETAINED_BYTES` | size | unclassified: stored in `retained_bytes` with no read found | `usize` | `64 * 1024 * 1024` | `crates/disrobe-cli/src/cli/taint.rs` |
-| `disrobe-cli` | `MAX_ANALYSIS_DEPTH` | recursion | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `128` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
-| `disrobe-cli` | `MAX_ANALYSIS_NODES` | count | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `50_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
-| `disrobe-cli` | `MAX_ANALYSIS_STEPS` | work | error: `OpenVexError::NoFindings`; untyped `miette!`; untyped error | `usize` | `2_000_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
+| `disrobe-cli` | `MAX_ANALYSIS_DEPTH` | recursion | error: `.error()`; `ConfigError::Malformed`; `OpenVexError::NoFindings`; 2 more | `usize` | `128` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
+| `disrobe-cli` | `MAX_ANALYSIS_NODES` | count | error: `.error()`; `ConfigError::Malformed`; `OpenVexError::NoFindings`; 2 more | `usize` | `50_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
+| `disrobe-cli` | `MAX_ANALYSIS_STEPS` | work | error: `.error()`; `ConfigError::Malformed`; `OpenVexError::NoFindings`; 2 more | `usize` | `2_000_000` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
 | `disrobe-cli` | `MAX_VULNMATCH_INPUT_BYTES` | size | error: untyped `miette!` | `u64` | `256 * 1024 * 1024` | `crates/disrobe-cli/src/cli/vulnmatch.rs` |
 | `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | other | silent: slice in `string_scan_window` | `usize` | `96 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
 | `disrobe-core` | `CODE_SCAN_BUDGET` | work | recorded: flag `budget` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-core/src/anti_analysis.rs` |
@@ -664,9 +677,11 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-pass-dotnet` | `MAX_PROFILE_MAJOR` | other | silent: `continue` in `declared_profile` | `u16` | `64` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | other | silent: `return` in `read_ready_to_run_header` | `u16` | `1024` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | other | silent: `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `usize` | `65536` | `crates/disrobe-pass-dotnet/src/aot.rs` |
-| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_BUCKETS` | other | error: `invalid()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_GENERIC_ARGUMENTS` | other | error: `invalid()` | `usize` | `1_024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
-| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_ENTRIES` | count | error: `invalid()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_ENTRIES` | count | silent: `for` range in `attach_invoke_map_entrypoints`; `for` range in `recover` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_REFUSAL_TEXT_BYTES` | size | error: untyped error | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_RETAINED_CONTEXT_WORDS` | other | error: untyped error | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_METADATA_COLLECTION` | other | error: `invalid_metadata()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/metadata_records.rs` |
 | `disrobe-pass-dotnet` | `MAX_METADATA_OUTPUT_BYTES` | output | error: `invalid_metadata()` | `usize` | `16_777_216` | `crates/disrobe-pass-dotnet/src/aot/metadata_records.rs` |
 | `disrobe-pass-dotnet` | `MAX_METADATA_RECORDS` | count | error: `invalid_metadata()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/metadata_records.rs` |
@@ -684,9 +699,28 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-pass-dotnet` | `MAX_UNIQUE_METHOD_BODIES` | other | error: `refused()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/method_bodies.rs` |
 | `disrobe-pass-dotnet` | `MAX_EXCEPTION_DIRECTORY_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_RUNTIME_FUNCTIONS` | other | error: `invalid()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
+| `disrobe-pass-dotnet` | `MAX_HASHTABLE_BUCKETS` | other | error: `invalid()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/native_hashtable.rs` |
+| `disrobe-pass-dotnet` | `MAX_RESOURCES` | other | delegated: `native_hashtable::entry_offsets()?` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
+| `disrobe-pass-dotnet` | `MAX_RESOURCE_DECODED_STRING_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
+| `disrobe-pass-dotnet` | `MAX_RESOURCE_INDEX_BYTES` | size | error: `invalid()` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
+| `disrobe-pass-dotnet` | `MAX_RESOURCE_STRING_BYTES` | size | error: `invalid()` | `usize` | `4_096` | `crates/disrobe-pass-dotnet/src/aot/resources.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAME_BYTES` | size | error: `invalid_metadata()`; untyped error | `usize` | `4_096` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAME_DEPTH` | recursion | error: `invalid_metadata()` | `usize` | `64` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAME_RECORDS` | count | error: `invalid_metadata()` | `usize` | `4_194_304` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_OUTPUT_BYTES` | output | error: untyped error | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_STACK_TRACE_ENTRIES` | count | error: `invalid_map()` | `usize` | `4_194_304` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_STACK_TRACE_MAP_BYTES` | size | error: `invalid_map()` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_STRING_STORAGE_BYTES` | size | error: untyped error | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_BACKEND_CAPTURE` | other | delegated: `subprocess::run_captured()?` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/backends.rs` |
+| `disrobe-pass-dotnet` | `MAX_ARRAY_RANK` | other | error: `Error::other()`; `Fault::Bound` | `u32` | `64` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
+| `disrobe-pass-dotnet` | `MAX_DEBUG_ENTRIES` | count | error: `Error::other()`; `Fault::Bound` | `usize` | `1024` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
+| `disrobe-pass-dotnet` | `MAX_IL_BYTES` | size | error: `Error::other()`; `Fault::Bound` | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
+| `disrobe-pass-dotnet` | `MAX_NAME_BYTES` | size | error: `Error::other()`; `Fault::Bound` | `usize` | `16 * 1024` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
+| `disrobe-pass-dotnet` | `MAX_RENDERED_BYTES` | output | error: `Error::other()`; `Fault::Bound` | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
+| `disrobe-pass-dotnet` | `MAX_SIGNATURE_DEPTH` | recursion | error: `Error::other()`; `Fault::Bound` | `usize` | `32` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
+| `disrobe-pass-dotnet` | `MAX_TYPE_NESTING` | recursion | error: `Error::other()`; `Fault::Bound` | `usize` | `64` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
 | `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_QUALIFIED_NAME_BYTES` | size | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
-| `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES` | size | error: `.to_owned()`; `.to_string()`; `AotSignatureAbstention::ArgumentPositionsExceeded`; 43 more | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
+| `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES` | size | error: `.malformed()`; `.to_owned()`; `.to_string()`; 48 more | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
 | `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_SYMBOL_WORK_ITEMS` | work | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
 | `disrobe-pass-dotnet` | `MAX_NATIVE_AOT_TYPE_NESTING_DEPTH` | recursion | error: `CoreError::PassFailure` (DR-CORE-0003) | `usize` | `256` | `crates/disrobe-pass-dotnet/src/chain_detector.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_INSTRUCTIONS` | other | error: `Error::CilInstructionCountExceeded` (DR-DOTNET-0030) | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/cil.rs` |
@@ -1497,11 +1531,26 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-pass-native` | `MAX_GNU_PROPERTIES` | other | error: untyped `format!` | `usize` | `1024` | `crates/disrobe-pass-native/src/hardening.rs` |
 | `disrobe-pass-native` | `MAX_LOAD_COMMANDS` | other | error: `HardeningError::Malformed` (DR-NATIVE-0262); `ImageFormat::MachO` | `usize` | `65_536` | `crates/disrobe-pass-native/src/hardening.rs` |
 | `disrobe-pass-native` | `MAX_NOTES` | other | error: untyped `format!` | `usize` | `1024` | `crates/disrobe-pass-native/src/hardening.rs` |
+| `disrobe-pass-native` | `MAX_EXPORT_NAMES` | other | silent: `return` in `native_aot_header` | `usize` | `4096` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_EXPORT_NAME_BYTES` | size | silent: slice in `export_name_is` | `usize` | `128` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_ROOT_PROBES` | other | silent: `for` range in `dotnet_metadata_stream` | `usize` | `64` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_STREAMS` | other | silent: `return` in `metadata_root_stream` | `usize` | `16` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_STREAM_NAME` | other | silent: `.take()` in `metadata_root_stream` | `usize` | `32` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_VERSION_BYTES` | size | silent: `return` in `metadata_root_stream` | `usize` | `255` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_PE_SECTIONS` | other | silent: `return` in `native_aot_header` | `usize` | `256` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_PROBES` | other | silent: `?` on a checked operation in `ready_to_run_header_with_scan_limit` | `usize` | `256` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_SCAN_BYTES` | size | silent: `?` on a checked operation in `ready_to_run_header_with_scan_limit`; `return` in `ready_to_run_header_with_scan_limit` | `usize` | `512 * 1024 * 1024` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_SECTIONS` | other | silent: `return` in `validate_ready_to_run_header` | `usize` | `1024` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `SCAN_LIMIT` | other | silent: slice in `bytes_find`; slice in `dotnet_metadata_stream` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_CANDIDATES` | other | error: `Error::LlvmIr` (DR-NATIVE-0018) | `usize` | `16` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_COLLECTED_SITES` | other | error: `Error::ObjectParse` (DR-NATIVE-0004) | `usize` | `32_768` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_EMULATION_STEPS` | work | error: `Error::LlvmIr` (DR-NATIVE-0018) | `u64` | `100_000` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_EXECUTABLE_SCAN_BYTES` | size | error: `Error::ObjectParse` (DR-NATIVE-0004) | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_LITERAL_BYTES` | work | error: `Error::LlvmIr` (DR-NATIVE-0018) | `usize` | `4096` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_MAPPED_IMAGE_BYTES` | size | error: `Error::ObjectParse` (DR-NATIVE-0004) | `usize` | `512 * 1024 * 1024` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_RECOVERED_LITERAL_BYTES` | work | error: `Error::LlvmIr` (DR-NATIVE-0018) | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_SITES_PER_CANDIDATE` | other | error: `Error::LlvmIr` (DR-NATIVE-0018) | `usize` | `8192` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
+| `disrobe-pass-native` | `MAX_TOTAL_EMULATION_STEPS` | work | error: `Error::LlvmIr` (DR-NATIVE-0018) | `u64` | `32_000_000` | `crates/disrobe-pass-native/src/indexed_strings.rs` |
 | `disrobe-pass-native` | `NATIVE_MATCH_DEFAULT_LIMIT` | other | unused: no use in the crate | `usize` | `DEFAULT_LISTING_LIMIT` | `crates/disrobe-pass-native/src/native_match.rs` |
 | `disrobe-pass-native` | `EMU_LAZY_PAGE_BUDGET` | work | error: `Error::GoblinParse` (DR-NATIVE-0005) | `u32` | `16_384` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
 | `disrobe-pass-native` | `MAX_ASPACK_IMPORTS_PER_MODULE` | other | recorded: flag `overflowed` | `usize` | `256` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
@@ -1538,13 +1587,13 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-pass-native` | `EMULATED_IMAGE_EXPANSION_LIMIT` | other | recorded: flag `int3_gauntlet_cleared`; flag `left_image`; flag `returned` | `u64` | `4096` | `crates/disrobe-pass-native/src/packers/section_recovery.rs` |
 | `disrobe-pass-native` | `MAX_BLOCKS` | other | silent: `return` in `decode_elf_extents_with_budget`; `return` in `walk_block_chain` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_BRUTE_FORCE_OFFSETS` | other | silent: `.min()` clamp in `decode_image_with_budget`; `.min()` clamp in `decode_multiblock_with_budget`; `.min()` clamp in `locate_structural` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 91 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 91 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSED` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 98 more | `usize` | `256 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_DECOMPRESSION_ATTEMPTS` | other | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 98 more | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_L_INFO_SCAN` | other | silent: `.min()` clamp in `elf_first_block_offset` | `usize` | `64 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_RESYNC_OFFSETS` | other | silent: `while` condition in `decode_elf_extents_with_budget` | `usize` | `1 << 16` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_STRUCTURAL_CHECKSUM_BYTES` | size | silent: `return` in `reserve` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_TAIL_SCAN` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
-| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 91 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
+| `disrobe-pass-native` | `MAX_TOTAL_DECOMPRESSED_OUTPUT` | output | error: `.clone()`; `.to_owned()`; `AddressError::RvaNotMapped`; 98 more | `usize` | `MAX_DECOMPRESSED * 2` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_CANDIDATES` | other | silent: `break` in `locate_structural` | `usize` | `4096` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_VERIFY_EXPANSION` | other | error: `Error::UpxDecode` (DR-NATIVE-0022) | `u64` | `64` | `crates/disrobe-pass-native/src/packers/upx_decoder.rs` |
 | `disrobe-pass-native` | `MAX_CARVED_PROTECTED_BYTES` | size | recorded: flag `blob_truncated` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-native/src/packers/vmprotect_carve.rs` |
@@ -2413,6 +2462,9 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-taint` | `MAX_OUT_ARGUMENTS_PER_SOURCE` | other | silent: skipped in `insert_out_argument` | `usize` | `32` | `crates/disrobe-taint/src/config.rs` |
 | `disrobe-taint` | `MAX_PATH_STEPS` | work | silent: `.truncate()` in `append_step`; no action in `append_step` | `usize` | `128` | `crates/disrobe-taint/src/engine.rs` |
 | `disrobe-taint` | `MAX_RECORDED_UNRESOLVED_CALLS` | other | silent: skipped in `collect_unresolved_calls` | `usize` | `4096` | `crates/disrobe-taint/src/engine.rs` |
+| `disrobe-taint` | `MAX_CONSTANT_POINTER_SLOTS` | other | error: `PeFactsError::TooManyConstantPointers` | `usize` | `1 << 22` | `crates/disrobe-taint/src/pe_facts.rs` |
+| `disrobe-taint` | `MAX_PE_SECTIONS` | other | silent: `continue` in `constant_pointers_with_limits` | `usize` | `96` | `crates/disrobe-taint/src/pe_facts.rs` |
+| `disrobe-taint` | `MAX_RELOCATION_WORDS` | other | error: `PeFactsError::TooManyRelocationWords` | `usize` | `1 << 22` | `crates/disrobe-taint/src/pe_facts.rs` |
 | `disrobe-testkit` | `MAX_SOURCE_BYTES` | size | error: `AuthoredSourceError::TooLarge` | `u64` | `8 * 1024 * 1024` | `crates/disrobe-testkit/src/authored_source.rs` |
 | `disrobe-testkit` | `MAX_OPTIONAL_LIST_BYTES` | size | error: `PrerequisiteError::OptionalListTooLarge` | `u64` | `256 * 1024` | `crates/disrobe-testkit/src/prerequisite.rs` |
 | `disrobe-testkit` | `MAX_RECORD_NAME` | other | silent: `.take()` in `record_name` | `usize` | `160` | `crates/disrobe-testkit/src/prerequisite.rs` |
@@ -2515,7 +2567,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 
 ## Silent stops
 
-1145 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1158 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2595,8 +2647,13 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-cli` | `DELPHI_LIST_LIMIT` | `.take()` in `render_delphi_classes`; `.take()` in `render_delphi_forms`; `.take()` in `render_delphi_types`; 3 more | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `LOWEST_COVERED_CAP` | `.truncate()` in `lowest_covered` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `MAX_DELAY_LOAD_IMPORTS` | `return` in `pe_delay_load_imports` | `crates/disrobe-cli/src/cli/native.rs` |
+| `disrobe-cli` | `MAX_SCOPED_CALLEES` | `break` in `decompile_scope` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `SYMBOL_PREVIEW_LIMIT` | `.min()` clamp in `render_cxx_class_rows`; `.min()` clamp in `render_import_rows`; `.min()` clamp in `render_symbol_rows` | `crates/disrobe-cli/src/cli/native.rs` |
 | `disrobe-cli` | `LITERAL_PREVIEW_LIMIT` | `.take()` in `preview`; `return` in `preview` | `crates/disrobe-cli/src/cli/native_match.rs` |
+| `disrobe-cli` | `MAX_PDATA_ENTRIES` | `.take()` in `runtime_functions` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_STRING_CHARS` | `.take()` in `shortened` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_STRING_SCAN_BYTES` | slice in `bytes_from` | `crates/disrobe-cli/src/cli/native_scope.rs` |
+| `disrobe-cli` | `MAX_UNWIND_CHAIN_DEPTH` | `for` range in `unwind_owner` | `crates/disrobe-cli/src/cli/native_scope.rs` |
 | `disrobe-cli` | `MAX_BEHAVIOR_EVIDENCE` | `.take()` in `render_behavior_row`; no action in `render_behavior_row` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-cli` | `MAX_IOC_ROWS` | `.take()` in `render_indicators`; no action in `render_indicators` | `crates/disrobe-cli/src/cli/report_html.rs` |
 | `disrobe-core` | `ANTI_ANALYSIS_SCAN_CAP` | slice in `string_scan_window` | `crates/disrobe-core/src/anti_analysis.rs` |
@@ -2752,6 +2809,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-pass-dotnet` | `MAX_PROFILE_MAJOR` | `continue` in `declared_profile` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | `return` in `read_ready_to_run_header` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `crates/disrobe-pass-dotnet/src/aot.rs` |
+| `disrobe-pass-dotnet` | `MAX_INVOKE_MAP_ENTRIES` | `for` range in `attach_invoke_map_entrypoints`; `for` range in `recover` | `crates/disrobe-pass-dotnet/src/aot/invoke_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_FILE_STEM` | `.take()` in `file_name`; fallback value in `file_name` | `crates/disrobe-pass-dotnet/src/csharp_project.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_DEPTH` | `return` in `append_output_expression`; `return` in `binary`; `return` in `expression_contains_stack_input` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_NODES` | `return` in `binary` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
@@ -3174,10 +3232,16 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-pass-native` | `MAX_ENTROPY_BITS` | `.clamp()` clamp in `normalized_entropy` | `crates/disrobe-pass-native/src/entropy_viz.rs` |
 | `disrobe-pass-native` | `MAX_CITED_NAME_BYTES` | `.min()` clamp in `bounded_text` | `crates/disrobe-pass-native/src/hardening.rs` |
 | `disrobe-pass-native` | `MAX_DEBUG_DIRECTORIES` | `return` in `pe_extended_characteristics` | `crates/disrobe-pass-native/src/hardening.rs` |
+| `disrobe-pass-native` | `MAX_EXPORT_NAMES` | `return` in `native_aot_header` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_EXPORT_NAME_BYTES` | slice in `export_name_is` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_ROOT_PROBES` | `for` range in `dotnet_metadata_stream` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_STREAMS` | `return` in `metadata_root_stream` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_STREAM_NAME` | `.take()` in `metadata_root_stream` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_METADATA_VERSION_BYTES` | `return` in `metadata_root_stream` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_PE_SECTIONS` | `return` in `native_aot_header` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_PROBES` | `?` on a checked operation in `ready_to_run_header_with_scan_limit` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_SCAN_BYTES` | `?` on a checked operation in `ready_to_run_header_with_scan_limit`; `return` in `ready_to_run_header_with_scan_limit` | `crates/disrobe-pass-native/src/identify.rs` |
+| `disrobe-pass-native` | `MAX_READY_TO_RUN_SECTIONS` | `return` in `validate_ready_to_run_header` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `SCAN_LIMIT` | slice in `bytes_find`; slice in `dotnet_metadata_stream` | `crates/disrobe-pass-native/src/identify.rs` |
 | `disrobe-pass-native` | `MAX_ASPACK_IMPORT_DESCRIPTORS` | `break` in `find_aspack_runtime_import_directory`; `return` in `find_aspack_runtime_import_directory`; `return` in `reconstruct_aspack_import_descriptors` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
 | `disrobe-pass-native` | `MAX_ASPACK_MODULE_NAME_LEN` | `continue` in `collect_aspack_import_layouts`; `for` range in `read_guest_cstr`; `return` in `reconstruct_aspack_import_descriptors` | `crates/disrobe-pass-native/src/packers/aspack_phase2.rs` |
@@ -3632,6 +3696,7 @@ Exceeded: error 1019, recorded 217, panic 0, delegated 51, silent 1145, unclassi
 | `disrobe-taint` | `MAX_OUT_ARGUMENTS_PER_SOURCE` | skipped in `insert_out_argument` | `crates/disrobe-taint/src/config.rs` |
 | `disrobe-taint` | `MAX_PATH_STEPS` | `.truncate()` in `append_step`; no action in `append_step` | `crates/disrobe-taint/src/engine.rs` |
 | `disrobe-taint` | `MAX_RECORDED_UNRESOLVED_CALLS` | skipped in `collect_unresolved_calls` | `crates/disrobe-taint/src/engine.rs` |
+| `disrobe-taint` | `MAX_PE_SECTIONS` | `continue` in `constant_pointers_with_limits` | `crates/disrobe-taint/src/pe_facts.rs` |
 | `disrobe-testkit` | `MAX_RECORD_NAME` | `.take()` in `record_name` | `crates/disrobe-testkit/src/prerequisite.rs` |
 | `disrobe-tool-process` | `MAX_GROUP_MEMBERS` | `return` in `macos_group_contains_only_zombies` | `crates/disrobe-tool-process/src/unix.rs` |
 | `disrobe-tool-process` | `MAX_NORMAL_PROGRAM_PATH_UNITS` | `return` in `child_visible_path` | `crates/disrobe-tool-process/src/windows.rs` |

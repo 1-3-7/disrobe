@@ -15,9 +15,10 @@ Two adjacent surfaces have their own pages: [native decompile](./native-decompil
 | Function discovery | Call-target and prologue scanning on stripped input, basic-block partition, whole-program call graph |
 | Identification | Compilers, packers, protectors, installers, linkers, and code-signing, each finding routed to the pass that handles it |
 | Authenticode | Digest recomputation and PKCS#7 chain walk to a single verdict from nine outcomes |
-| Queryable IR | `functions`, `calls-to`, `xrefs-to`, `string-decoders`, `complexity-over`, `capability` |
+| Queryable IR | `functions`, `calls-to`, `xrefs-to`, `string-decoders`, `complexity-over`, `capability`, plus address- and value-keyed `xrefs-to 0x<rva>`, `const-users` and `field-users` on x86 and x86-64 images |
+| Function-scoped output | `native disasm` and `native decompile` for one function (`--function <rva>`) or one byte range (`--range <start>:<end>`), bounded by `.pdata` unwind ranges or function discovery, with RIP-relative constant loads annotated |
 | Capabilities | MITRE ATT&CK technique and MBC ID mapping, with matching instruction offsets as per-rule evidence |
-| String recovery | Static scan plus decoder execution through the in-house x86 emulator |
+| String recovery | Static scan plus decoder execution through the in-house x86 emulator; scoped x86-64 PE listings annotate immediate-index accessor calls with recovered literals |
 | Editing | Byte patch and nop-range at a virtual address, wildcarded signature generation, cross-build function diff |
 | Object models | Delphi and C++Builder classes with parents, published properties, fields, methods, dynamic method handlers and interfaces, enumeration members, string literals, DFM form resources, and compiler release identification |
 | Forensics | Entropy map (text / JSON / SVG), crypto and FLIRT signatures, import/export graph, CycloneDX SBOM |
@@ -31,6 +32,9 @@ disrobe native disasm app.exe --out app.asm                   # recovered per-fu
 disrobe native disasm app.exe --emit cfg-dot --out cfg.dot    # per-function basic-block CFG
 disrobe native disasm app.exe --emit json --out disasm.json   # structured instruction stream
 disrobe native disasm --raw shellcode.bin --base 0x1000 --bits 64 --syntax intel   # linear sweep
+disrobe native disasm app.exe --function 0x1040               # one function, constants annotated
+disrobe native disasm app.exe --range 0x1040:0x10a3 --json    # one byte range as a JSON document
+disrobe native decompile app.exe --function 0x1040            # one function to C on stdout
 disrobe native callgraph app.exe --out callgraph.dot          # whole-program call graph
 
 disrobe native patch app.exe --at 0x1400 --bytes 0x90,0x90 --out patched.exe   # rewrite + revalidate
@@ -48,6 +52,9 @@ disrobe query app.exe xrefs-to sekret                   # references to a symbol
 disrobe query app.exe string-decoders                   # decoder-shaped functions (loops + byte arith)
 disrobe query app.exe complexity-over 20                # functions over a cyclomatic threshold
 disrobe query app.exe capability network                # instructions tied to a capability
+disrobe query app.exe xrefs-to 0x3004                   # every instruction that references an RVA
+disrobe query app.exe const-users f32:0.4375            # functions that load or store a constant
+disrobe query app.exe field-users 0x10,0x1c             # functions that use every listed [reg+disp]
 disrobe capabilities app.exe                            # MITRE ATT&CK + MBC behavior report
 
 disrobe strings app.exe                                 # static strings + decoder-execution recovery
@@ -85,6 +92,26 @@ An in-tree iced-x86 disassembler discovers functions without symbols (call-targe
 ### Queryable IR and capabilities
 
 `disrobe query` runs a queryable-IR layer over the disassembled code (`functions`, `calls-to`, `xrefs-to`, `string-decoders`, `complexity-over`, `capability`), symbol-independent and driven by the same function discovery. `disrobe capabilities` runs a rule engine over that IR and reports matched behaviors mapped to MITRE ATT&CK techniques and Malware Behavior Catalog (MBC) IDs, with the matching instruction offsets as per-rule evidence. Both accept a stripped binary directly or a `.dr` envelope.
+
+### Function-scoped output and address queries
+
+`native disasm --function <rva>` prints one function of an x86 or x86-64 image to stdout, and `--range <start>:<end>` prints the instructions decoded from `start` up to the exclusive `end`. Every address is an RVA in hexadecimal (the `0x` prefix is optional), so listings, query results and selectors use one address space: the image base is printed once and instruction addresses and operands are relative to it. A function's extent comes from its `.pdata` unwind entry when the PE has one; an unwind entry chained to a parent function (`UNW_FLAG_CHAININFO`, or an indirect entry) is listed as part of that parent. Functions without unwind data, which includes every leaf function an MSVC build emits and every function of an ELF, Mach-O or 32-bit PE image, are bounded by function discovery. `--json` writes the `disrobe.native.scoped-disassembly/v1` document, whose `scope` names the function, its range and where the range came from, and whose instructions carry the same text as the listing.
+
+A RIP-relative operand (or an absolute operand in 32-bit code) that reads read-only data is annotated with the value it loads: `f32` and `f64` scalars, packed float lanes, and 32- and 64-bit integers. A `lea` of read-only data is annotated when the target is a string of at least two printable characters whose terminator lies within 1 KiB, either ASCII or UTF-8 (`ascii`, `utf8`) or UTF-16LE (`utf16`); strings longer than 200 characters are shortened and marked. Loads from writable data, branch-table and import-slot loads, and immediates are not annotated.
+
+`native decompile --function <rva>` and `--range <start>:<end>` decompile one function through the in-tree x86 or x86-64 backend and print C (or `--format rust`) to stdout, or the `disrobe.native.scoped-decompilation/v1` document with `--json`. The function's direct callees are decompiled with it so that call sites resolve as they do in a whole-image run; a function the whole-image run cannot recover is refused with the same reason (`DR-NATIVE-0309`).
+
+For a scoped x86-64 PE listing, `native disasm` also recognizes a constant `ecx`/`rcx` index followed by a direct call to an indexed-string accessor when the accessor has enough distinct call sites to establish the shape. The index can be loaded with an immediate `mov` or set to zero with a self-XOR. The in-process emulator recovers the returned literal under fixed fuel, mapped-image, write-log and aggregate-output bounds, including a shared 32-million-step limit across all candidates and call sites. Listings append a quoted, escaped `indexed-string index` annotation to the matching call instruction; JSON carries the same records in `instructions[].indexed_strings`. A bounded recovery that cannot trust an accessor result remains visible in `indexed_string_refusals` and the text listing with its named `DR-NATIVE-0802` through `DR-NATIVE-0816` refusal. The scoped command performs this recovery once per input and never runs the sample natively.
+
+Selections that do not name code are refused by name: an RVA that is not a function start, with the function it falls inside and how far into it (`DR-NATIVE-0303`); the start of a chained unwind range, with its parent (`DR-NATIVE-0307`); a range outside an executable section, past the end of one, or not backed by file bytes (`DR-NATIVE-0304`); an empty range (`DR-NATIVE-0305`); a scope over 4 MiB (`DR-NATIVE-0306`); and a malformed RVA (`DR-NATIVE-0302`).
+
+Three `disrobe query` forms read an x86 or x86-64 image directly (not a `.dr` envelope) and search every function found in `.pdata` or by discovery:
+
+- `xrefs-to 0x<rva>` lists every instruction that references the address: a direct call or jump to it, a RIP-relative or absolute operand that reads, writes or takes its address, or an immediate equal to its virtual address. Each site carries its kind and the function that holds it.
+- `const-users f32:<v>|f64:<v>|u32:<v>|u64:<v>` lists the functions that load the value from read-only data or use it as an immediate. Values match by bit pattern and width, so `f32:1` and `u32:0x3f800000` find the same sites; `f32` and `f64` also take `0x`-prefixed bits.
+- `field-users 0x<disp>[,0x<disp>...]` lists the functions that use every listed displacement in a `[reg+disp]` operand whose base is neither the stack pointer nor the instruction pointer, which finds the constructor and the readers of a record whose type is unknown. Up to 64 displacements; a negative one is written `-0x8`, after `--` when it comes first (`disrobe query app.exe -- field-users -0x8`).
+
+Each query stops after 10,000 sites and says so (`truncated`), and refuses an image whose functions span more than 256 MiB (`DR-NATIVE-0313`). Malformed values are refused with `DR-NATIVE-0311` and `DR-NATIVE-0312`.
 
 ### Emulation-driven string recovery
 
@@ -161,3 +188,4 @@ The reusable rendering logic lives in `disrobe_pass_native::entropy_viz` (`entro
 - Themida and VMProtect support covers detection and section carving. See [native unpacking](./native-unpack.md) for the available outputs and recovery limits.
 - Authenticode chain validation walks to an embedded bundle of nine trusted code-signing roots and covers RSA PKCS#1 v1.5 and ECDSA P-256/P-384. Anything outside that lands as `UnsupportedAlgorithm` or `UntrustedChain` rather than a pass.
 - The Delphi VMT walk accepts a class only when its VMT is self-consistent, so a partially-overwritten or hand-built table yields no class rather than a guessed one.
+- Function-scoped output and the address- and value-keyed queries decode x86 and x86-64 only. Unwind ranges are read from x64 PE `.pdata`; ELF `.eh_frame` ranges are not used, so ELF functions are bounded by discovery alone. `const-users` matches direct loads of a constant and immediates; a constant reached through a register holding a table's address is not attributed.

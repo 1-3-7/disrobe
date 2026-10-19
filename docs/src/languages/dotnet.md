@@ -93,6 +93,22 @@ recovery only; no ELF or Mach-O image built by the .NET toolchain is committed, 
 and body recovery on them is unmeasured. The parser reads layout metadata from the image; recovery
 on aarch64, arm, and x86 remains outside the measured population.
 
+Invoke-map attribution retains separate entrypoints for compiled generic instantiations of the
+same metadata method. Invalid or conflicting entries are reported individually, allowing other
+methods to retain their recovered mappings. The independent `stack_trace_map` supplies method
+addresses, names, generic arguments and hidden-frame flags for bodies represented in that map;
+its entries complement reflection attribution rather than replacing it. A recovered method can
+also carry a code range when the image supplies matching runtime function boundaries.
+
+`disrobe dotnet native-aot app.exe --resources recovered/` writes recovered manifest resources
+from the ReadyToRun index. The destination must be empty. Empty, absolute, and traversal resource
+names and duplicate output paths are refused before extraction. Paths must resolve under the
+selected destination, and files are created without replacement. File names preserve the full
+manifest name, such as `Tidewater.Gauges.tide_table.json`.
+An index with refused entries cannot be extracted; inspect its recovery report without `--resources`.
+Extraction is limited to 65,536 resources and 256 MiB total. With `--json`, JSON remains the only
+stdout output while resources are written.
+
 ### Obfuscator reversal
 
 `disrobe` registers detection rules for <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The per-family evidence below states what artifact is graded, what data is recovered, and where static recovery stops.

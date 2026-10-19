@@ -1,16 +1,17 @@
 id = "go-typemeta"
 ecosystem = "go"
-title = "Go type-name recovery on a stripped go1.26.3 binary"
-claim = "disrobe recovers Go type names from a -s -w stripped binary by walking typelinks and moduledata, verified against the real go1.26.3 toolchain's own type metadata."
+title = "Go type names on stripped go1.26.3 linux/amd64, graded against go tool nm"
+claim = "disrobe recovers the same names at the same addresses for all 115 type descriptors named by the independent nm oracle after the fixture's symbol table, string table and DWARF are removed."
 oracle_strength = "strong"
 ci = true
 
 [oracle]
 kind = "recovery-import"
-external = "real go1.26.3 toolchain output (recovered type names compared against the toolchain's own typelinks/moduledata)"
-reproduce = "cargo test -p disrobe-pass-go --test go_typemeta"
+external = "committed go tool nm output from the unstripped compiler build; equality-function symbols and go:itab descriptors define the reference population independently of the recovery walk"
+reproduce = "cargo test -p disrobe-pass-go --all-features --test go_matrix_reference -- --nocapture"
+note = "The published population is corpus/go/versions/go126_linux_amd64, built and referenced by the commands and hashes in corpus/go/MANIFEST.toml. The matrix also covers Go 1.17, 1.18 and 1.20, PIE and arm64. Name and address mutations must make the grade fail. This is the nm-addressed population, not every type in the program; the separate Windows DWARF oracle recovers 485 of 699 runtime types."
 
 [source]
-recovery_group = "Go type-name recovery (go1.26.3 fixture)"
+recovery_group = "Go type-name recovery (go1.26.3 linux/amd64, graded against go tool nm)"
 recovery_bar = "type names"
 floor = 100.0

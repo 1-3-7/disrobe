@@ -127,8 +127,8 @@ const DOCUMENT_FIGURE_BUDGET: [FigureBudget; 32] = [
     },
     FigureBudget {
         path: "docs/src/anti-analysis.md",
-        figures: 6,
-        digest: "28b6b8962ef83d04",
+        figures: 3,
+        digest: "2e2985aecdeb4199",
     },
     FigureBudget {
         path: "docs/src/catalog.md",
