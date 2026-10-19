@@ -27,9 +27,9 @@ mod stack_trace_map;
 pub use invoke_map::AotInvokeMapRefusal;
 pub use metadata_records::{
     AOT_SIGNATURE_ABSTENTIONS, AotCodeRange, AotFieldLayout, AotMetadataAttribution,
-    AotMetadataStatus, AotMethod, AotMethodBody, AotMethodSignature, AotSignatureAbstention,
-    AotSignatureProvenance, AotType, AotTypeLayout, AotTypeSignature, AotTypeSignatureKind,
-    recover_metadata_attribution,
+    AotMetadataStatus, AotMethod, AotMethodBody, AotMethodSignature, AotMethodTableReference,
+    AotSignatureAbstention, AotSignatureProvenance, AotType, AotTypeLayout, AotTypeSignature,
+    AotTypeSignatureKind, recover_metadata_attribution,
 };
 pub use object_model::{
     AotObjectFieldStore, AotObjectHelperCall, AotObjectHelperEvidence, AotObjectHelperKind,

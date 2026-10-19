@@ -120,6 +120,8 @@ pub struct AotMetadataAttribution {
     pub status: AotMetadataStatus,
     pub types: Vec<AotType>,
     pub methods: Vec<AotMethod>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub method_table_references: Vec<AotMethodTableReference>,
 }
 
 impl AotMetadataAttribution {
@@ -139,6 +141,7 @@ impl AotMetadataAttribution {
             },
             types: Vec::new(),
             methods: Vec::new(),
+            method_table_references: Vec::new(),
         }
     }
 }
@@ -149,6 +152,7 @@ impl Default for AotMetadataAttribution {
             status: AotMetadataStatus::NotPresent,
             types: Vec::new(),
             methods: Vec::new(),
+            method_table_references: Vec::new(),
         }
     }
 }
@@ -174,6 +178,12 @@ pub struct AotType {
     pub name: String,
     pub enclosing_type_record_offset: Option<u32>,
     pub method_record_offsets: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AotMethodTableReference {
+    pub type_record_offset: u32,
+    pub method_table_rva: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2540,6 +2550,7 @@ pub(super) fn recover_metadata_with_invoke_refusals(
                 },
                 types: Vec::new(),
                 methods: Vec::new(),
+                method_table_references: Vec::new(),
             },
             Vec::new(),
             Vec::new(),
@@ -2548,8 +2559,10 @@ pub(super) fn recover_metadata_with_invoke_refusals(
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
     let (types, mut methods, layouts): (Vec<AotType>, Vec<AotMethod>, Vec<AotTypeLayout>) =
         parse_metadata_records(bytes, profile)?;
-    let refusals: Vec<AotInvokeMapRefusal> =
-        attach_invoke_map_entrypoints(image, header, &mut methods)?;
+    let (refusals, method_table_references): (
+        Vec<AotInvokeMapRefusal>,
+        Vec<AotMethodTableReference>,
+    ) = attach_invoke_map_entrypoints(image, header, &types, &mut methods)?;
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
         attach_method_bodies(image, &pe, &types, &layouts, &mut methods)?;
     }
@@ -2558,6 +2571,7 @@ pub(super) fn recover_metadata_with_invoke_refusals(
             status: AotMetadataStatus::Recovered,
             types,
             methods,
+            method_table_references,
         },
         layouts,
         refusals,

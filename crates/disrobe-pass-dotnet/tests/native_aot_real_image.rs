@@ -377,7 +377,8 @@ fn metadata_attribution_refuses_an_unsupported_ready_to_run_version() {
             },
             types,
             methods,
-        }) if types.is_empty() && methods.is_empty()
+            method_table_references,
+        }) if types.is_empty() && methods.is_empty() && method_table_references.is_empty()
     ));
 }
 

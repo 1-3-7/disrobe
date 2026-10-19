@@ -1404,6 +1404,7 @@ mod tests {
             status: AotMetadataStatus::Recovered,
             types,
             methods: Vec::new(),
+            method_table_references: Vec::new(),
         };
         let error: CoreError = preflight_native_aot_symbols(&attribution)
             .expect_err("NativeAOT type qualification must have a fixed depth bound");
@@ -1432,6 +1433,7 @@ mod tests {
             status: AotMetadataStatus::Recovered,
             types,
             methods: Vec::new(),
+            method_table_references: Vec::new(),
         };
         let error: CoreError = preflight_native_aot_symbols(&attribution)
             .expect_err("NativeAOT type qualification must have a cumulative work bound");
@@ -1453,6 +1455,7 @@ mod tests {
             status: AotMetadataStatus::Recovered,
             types,
             methods: Vec::new(),
+            method_table_references: Vec::new(),
         };
         let error: CoreError = preflight_native_aot_symbols(&attribution)
             .expect_err("NativeAOT type qualification must have a cumulative byte bound");

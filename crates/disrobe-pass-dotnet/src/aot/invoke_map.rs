@@ -3,7 +3,7 @@ use object::read::File as ObjFile;
 use object::{Object as _, ObjectSection as _, SectionKind};
 use serde::{Deserialize, Serialize};
 
-use super::metadata_records::{AotMethod, AotMethodSignature};
+use super::metadata_records::{AotMethod, AotMethodSignature, AotMethodTableReference, AotType};
 use super::native_hashtable;
 use super::{
     AotContainer, AotSection, ReadyToRunHeader, address_range_is_inside, container_section_bytes,
@@ -123,6 +123,12 @@ struct CommonFixups<'a, 'b> {
     file: &'b ObjFile<'a, &'a [u8]>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FixupTargetRole {
+    Entrypoint,
+    RuntimeType,
+}
+
 fn invalid(at: usize, reason: &'static str) -> crate::error::Error {
     crate::error::Error::InvalidAotInvokeMap {
         offset: u32::try_from(at).map_or(u32::MAX, |value: u32| value),
@@ -148,6 +154,39 @@ fn resolve_fixup<'a>(
     file: &ObjFile<'a, &'a [u8]>,
     index: u32,
 ) -> crate::error::Result<u32> {
+    let (slot_delta, target): (usize, u64) = resolve_fixup_target(bytes, section_start, index)?;
+    let in_text: bool = file.sections().any(|section| {
+        if section.kind() != SectionKind::Text {
+            return false;
+        }
+        let Some((_file_offset, file_size)): Option<(u64, u64)> = section.file_range() else {
+            return false;
+        };
+        let start: u64 = section.address();
+        let Some(end): Option<u64> = start.checked_add(file_size) else {
+            return false;
+        };
+        address_range_is_inside(target, target, start, end)
+    });
+    if !in_text {
+        return Err(invalid(
+            slot_delta,
+            "common-fixup entrypoint does not resolve into executable code",
+        ));
+    }
+    fixup_target_rva(
+        target,
+        address_base,
+        slot_delta,
+        FixupTargetRole::Entrypoint,
+    )
+}
+
+fn resolve_fixup_target(
+    bytes: &[u8],
+    section_start: u64,
+    index: u32,
+) -> crate::error::Result<(usize, u64)> {
     let slot_delta: usize = usize::try_from(index)
         .map_err(|_: std::num::TryFromIntError| {
             invalid(0, "common-fixup index does not fit usize")
@@ -171,34 +210,74 @@ fn resolve_fixup<'a>(
         slot_address.checked_sub(u64::from(delta.unsigned_abs()))
     }
     .ok_or_else(|| invalid(slot_delta, "common-fixup target address overflowed"))?;
-    let in_text: bool = file.sections().any(|section| {
-        if section.kind() != SectionKind::Text {
+    Ok((slot_delta, target))
+}
+
+fn fixup_target_rva(
+    target: u64,
+    address_base: u64,
+    slot_delta: usize,
+    role: FixupTargetRole,
+) -> crate::error::Result<u32> {
+    let rva: u64 = target.checked_sub(address_base).ok_or_else(|| {
+        invalid(
+            slot_delta,
+            match role {
+                FixupTargetRole::Entrypoint => "common-fixup entrypoint precedes the image base",
+                FixupTargetRole::RuntimeType => "common-fixup runtime type precedes the image base",
+            },
+        )
+    })?;
+    u32::try_from(rva).map_err(|_: std::num::TryFromIntError| {
+        invalid(
+            slot_delta,
+            match role {
+                FixupTargetRole::Entrypoint => "entrypoint RVA does not fit u32",
+                FixupTargetRole::RuntimeType => "runtime type RVA does not fit u32",
+            },
+        )
+    })
+}
+
+fn resolve_runtime_type_fixup<'a>(
+    bytes: &[u8],
+    section_start: u64,
+    address_base: u64,
+    file: &ObjFile<'a, &'a [u8]>,
+    index: u32,
+) -> crate::error::Result<u32> {
+    let (slot_delta, target): (usize, u64) = resolve_fixup_target(bytes, section_start, index)?;
+    let in_data: bool = file.sections().any(|section| {
+        if !matches!(
+            section.kind(),
+            SectionKind::Data | SectionKind::ReadOnlyData
+        ) {
             return false;
         }
         let Some((_file_offset, file_size)): Option<(u64, u64)> = section.file_range() else {
             return false;
         };
+        if file_size == 0 {
+            return false;
+        }
         let start: u64 = section.address();
         let Some(end): Option<u64> = start.checked_add(file_size) else {
             return false;
         };
         address_range_is_inside(target, target, start, end)
     });
-    if !in_text {
+    if !in_data {
         return Err(invalid(
             slot_delta,
-            "common-fixup entrypoint does not resolve into executable code",
+            "common-fixup runtime type does not resolve into file-backed data",
         ));
     }
-    let rva: u64 = target.checked_sub(address_base).ok_or_else(|| {
-        invalid(
-            slot_delta,
-            "common-fixup entrypoint precedes the image base",
-        )
-    })?;
-    u32::try_from(rva).map_err(|_: std::num::TryFromIntError| {
-        invalid(slot_delta, "entrypoint RVA does not fit u32")
-    })
+    fixup_target_rva(
+        target,
+        address_base,
+        slot_delta,
+        FixupTargetRole::RuntimeType,
+    )
 }
 
 fn read_generic_tail(
@@ -405,13 +484,23 @@ fn refusal_record(
 pub(super) fn attach_invoke_map_entrypoints(
     image: &[u8],
     header: &ReadyToRunHeader,
+    types: &[AotType],
     methods: &mut [AotMethod],
-) -> crate::error::Result<Vec<AotInvokeMapRefusal>> {
+) -> crate::error::Result<(Vec<AotInvokeMapRefusal>, Vec<AotMethodTableReference>)> {
+    attach_invoke_map(image, header, Some(types), methods)
+}
+
+fn attach_invoke_map(
+    image: &[u8],
+    header: &ReadyToRunHeader,
+    types: Option<&[AotType]>,
+    methods: &mut [AotMethod],
+) -> crate::error::Result<(Vec<AotInvokeMapRefusal>, Vec<AotMethodTableReference>)> {
     let layout: InvokeMapLayout = InvokeMapLayout::for_header(header);
     let Some(invoke_section): Option<&AotSection> =
         unique_section(header, INVOKE_MAP_SECTION_ID, invalid)?
     else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let fixups_section: &AotSection = unique_section(header, COMMON_FIXUPS_SECTION_ID, invalid)?
         .ok_or_else(|| invalid(0, "invoke map has no common-fixups section"))?;
@@ -444,6 +533,28 @@ pub(super) fn attach_invoke_map_entrypoints(
         method_indices.push((method.record_offset, index));
     }
     method_indices.sort_unstable();
+    let mut method_owners: Vec<(u32, u32)> = Vec::new();
+    if let Some(types) = types {
+        let owner_count: usize = types.iter().try_fold(0usize, |count: usize, type_record| {
+            count
+                .checked_add(type_record.method_record_offsets.len())
+                .filter(|total: &usize| *total <= MAX_INVOKE_MAP_ENTRIES)
+                .ok_or_else(|| invalid(0, "metadata method ownership exceeds parser limit"))
+        })?;
+        method_owners
+            .try_reserve_exact(owner_count)
+            .map_err(|_| invalid(0, "metadata method ownership allocation failed"))?;
+        for type_record in types {
+            method_owners.extend(
+                type_record
+                    .method_record_offsets
+                    .iter()
+                    .map(|method_offset: &u32| (*method_offset, type_record.record_offset)),
+            );
+        }
+        method_owners.sort_unstable();
+        method_owners.dedup();
+    }
     let offsets: Vec<usize> = entry_offsets(invoke_bytes)?;
     let mut recovered: Vec<InvokeMapping> = Vec::new();
     recovered
@@ -477,6 +588,60 @@ pub(super) fn attach_invoke_map_entrypoints(
             .cmp(&right.identity)
             .then(left.entry_offset.cmp(&right.entry_offset))
     });
+    let mut method_table_references: Vec<AotMethodTableReference> = Vec::new();
+    method_table_references
+        .try_reserve_exact(recovered.len())
+        .map_err(|_| invalid(0, "runtime type reference allocation failed"))?;
+    if types.is_some() {
+        for mapping in &recovered {
+            let method: &AotMethod = methods.get(mapping.method_index).ok_or_else(|| {
+                invalid(0, "invoke-map method index is outside recovered methods")
+            })?;
+            let owner_start: usize =
+                method_owners.partition_point(|(method_offset, _type_offset): &(u32, u32)| {
+                    *method_offset < method.record_offset
+                });
+            let owner_end: usize =
+                method_owners.partition_point(|(method_offset, _type_offset): &(u32, u32)| {
+                    *method_offset <= method.record_offset
+                });
+            let owners: &[(u32, u32)] = method_owners
+                .get(owner_start..owner_end)
+                .ok_or_else(|| invalid(mapping.entry_offset, "metadata owner range is invalid"))?;
+            let [(_method_offset, type_record_offset)] = owners else {
+                refusals.push(EntryRefusal {
+                    entry_offset: mapping.entry_offset,
+                    method_index: Some(mapping.method_index),
+                    error: invalid(
+                        mapping.entry_offset,
+                        "invoke-map method does not have exactly one metadata owner",
+                    ),
+                });
+                continue;
+            };
+            match resolve_runtime_type_fixup(
+                fixups.bytes,
+                fixups.section_start,
+                fixups.address_base,
+                fixups.file,
+                mapping.identity.declaring_type_index,
+            ) {
+                Ok(method_table_rva) => {
+                    method_table_references.push(AotMethodTableReference {
+                        type_record_offset: *type_record_offset,
+                        method_table_rva,
+                    });
+                }
+                Err(error) => refusals.push(EntryRefusal {
+                    entry_offset: mapping.entry_offset,
+                    method_index: Some(mapping.method_index),
+                    error,
+                }),
+            }
+        }
+    }
+    method_table_references.sort_unstable();
+    method_table_references.dedup();
     let mut entrypoints: Vec<(usize, u32)> = Vec::new();
     entrypoints
         .try_reserve_exact(recovered.len())
@@ -537,7 +702,7 @@ pub(super) fn attach_invoke_map_entrypoints(
         instantiations.extend(group.iter().map(|(_index, rva): &(usize, u32)| *rva));
         method.instantiation_entrypoint_rvas = instantiations;
     }
-    Ok(records)
+    Ok((records, method_table_references))
 }
 
 #[cfg(test)]
@@ -680,7 +845,8 @@ mod tests {
         Err(invalid(0, "test section is not file backed"))
     }
 
-    fn fixture_state() -> crate::error::Result<(ReadyToRunHeader, Vec<AotMethod>)> {
+    fn fixture_attribution_state()
+    -> crate::error::Result<(ReadyToRunHeader, Vec<AotType>, Vec<AotMethod>)> {
         let report: super::super::AotReport = super::super::detect(IMAGE);
         let header: ReadyToRunHeader = report
             .ready_to_run
@@ -689,11 +855,18 @@ mod tests {
         metadata_header
             .sections
             .retain(|section: &AotSection| section.id != INVOKE_MAP_SECTION_ID);
-        let mut methods: Vec<AotMethod> =
-            super::super::recover_metadata_attribution(IMAGE, &metadata_header)?.methods;
+        let attribution: super::super::AotMetadataAttribution =
+            super::super::recover_metadata_attribution(IMAGE, &metadata_header)?;
+        let mut methods: Vec<AotMethod> = attribution.methods;
         for method in &mut methods {
             method.entrypoint_rva = None;
         }
+        Ok((header, attribution.types, methods))
+    }
+
+    fn fixture_state() -> crate::error::Result<(ReadyToRunHeader, Vec<AotMethod>)> {
+        let (header, _types, methods): (ReadyToRunHeader, Vec<AotType>, Vec<AotMethod>) =
+            fixture_attribution_state()?;
         Ok((header, methods))
     }
 
@@ -740,7 +913,8 @@ mod tests {
         section.end_rva = section.start_rva
             + u32::try_from(blob.len())
                 .map_err(|_: std::num::TryFromIntError| invalid(0, "test blob is too large"))?;
-        attach_invoke_map_entrypoints(&image, &test_header, methods)
+        attach_invoke_map(&image, &test_header, None, methods)
+            .map(|(refusals, _method_tables)| refusals)
     }
 
     fn assert_invoke_error<T: std::fmt::Debug>(result: crate::error::Result<T>, needle: &str) {
@@ -1074,11 +1248,12 @@ mod tests {
             report.metadata_attribution.status,
             super::super::AotMetadataStatus::Recovered
         );
-        assert!(
-            report.invoke_map_refusals.is_empty(),
-            "{:?}",
-            report.invoke_map_refusals
-        );
+        assert_eq!(report.invoke_map_refusals.len(), 19);
+        assert!(report.invoke_map_refusals.iter().all(|refusal| {
+            refusal
+                .reason
+                .contains("invoke-map method does not have exactly one metadata owner")
+        }));
         let readings: &super::super::AotType = report
             .metadata_attribution
             .types
@@ -1103,6 +1278,69 @@ mod tests {
         assert_eq!(method("Echo").instantiation_entrypoint_rvas.len(), 3);
         assert_eq!(method("Relabel").entrypoint_rva, None);
         assert_eq!(method("Relabel").instantiation_entrypoint_rvas.len(), 3);
+    }
+
+    #[test]
+    fn duplicate_metadata_owner_refuses_only_type_attribution() -> crate::error::Result<()> {
+        let (header, mut types, mut methods): (ReadyToRunHeader, Vec<AotType>, Vec<AotMethod>) =
+            fixture_attribution_state()?;
+        let mappings: Vec<(u32, u32)> = real_mappings(&header)?;
+        let method_offset: u32 = mappings
+            .iter()
+            .map(|(method_offset, _entrypoint_index): &(u32, u32)| *method_offset)
+            .find(|method_offset: &u32| {
+                types
+                    .iter()
+                    .filter(|candidate: &&AotType| {
+                        candidate.method_record_offsets.contains(method_offset)
+                    })
+                    .count()
+                    == 1
+            })
+            .ok_or_else(|| invalid(0, "test fixture has no uniquely owned mapped method"))?;
+        let mut duplicate: AotType = types
+            .iter()
+            .find(|candidate: &&AotType| candidate.method_record_offsets.contains(&method_offset))
+            .ok_or_else(|| invalid(0, "test method owner is missing"))?
+            .clone();
+        duplicate.record_offset = u32::MAX;
+        duplicate.method_record_offsets = vec![method_offset];
+        types.push(duplicate);
+        let (refusals, _method_tables): (Vec<AotInvokeMapRefusal>, Vec<AotMethodTableReference>) =
+            attach_invoke_map(IMAGE, &header, Some(&types), &mut methods)?;
+        assert!(refusals.iter().any(|refusal: &AotInvokeMapRefusal| {
+            refusal.method_record_offset == Some(method_offset)
+                && refusal
+                    .reason
+                    .contains("invoke-map method does not have exactly one metadata owner")
+        }));
+        assert!(method_at(&methods, method_offset).entrypoint_rva.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn executable_fixup_is_not_a_runtime_type() -> crate::error::Result<()> {
+        let (header, _methods): (ReadyToRunHeader, Vec<AotMethod>) = fixture_state()?;
+        let entrypoint_index: u32 = real_mappings(&header)?
+            .first()
+            .map(|(_method_offset, entrypoint_index): &(u32, u32)| *entrypoint_index)
+            .ok_or_else(|| invalid(0, "test fixture has no mapped entrypoints"))?;
+        let section: &AotSection = header
+            .section(COMMON_FIXUPS_SECTION_ID)
+            .ok_or_else(|| invalid(0, "test fixture has no common fixups"))?;
+        let container: AotContainer<'_> = open_container(IMAGE)?;
+        let bytes: &[u8] = container_section_bytes(IMAGE, &container, section, invalid)?;
+        assert_invoke_error(
+            resolve_runtime_type_fixup(
+                bytes,
+                container.address_base + u64::from(section.start_rva),
+                container.address_base,
+                &container.file,
+                entrypoint_index,
+            ),
+            "file-backed data",
+        );
+        Ok(())
     }
 
     #[test]

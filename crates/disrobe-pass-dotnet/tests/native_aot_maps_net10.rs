@@ -259,6 +259,27 @@ fn grade_invoke_entrypoints(report: &AotReport, map: &LinkMap) -> (usize, Vec<St
     (graded, failures)
 }
 
+fn assert_only_shared_method_owner_refusals(report: &AotReport) {
+    assert_eq!(report.invoke_map_refusals.len(), 19);
+    let ambiguous_methods: BTreeSet<u32> = report
+        .invoke_map_refusals
+        .iter()
+        .map(|refusal| {
+            assert!(
+                refusal
+                    .reason
+                    .contains("invoke-map method does not have exactly one metadata owner"),
+                "{}",
+                refusal.reason
+            );
+            refusal
+                .method_record_offset
+                .expect("ambiguous owner refusal names its method")
+        })
+        .collect();
+    assert_eq!(ambiguous_methods, BTreeSet::from([6250, 26417]));
+}
+
 #[test]
 fn generic_invoke_map_entrypoints_match_the_linker_map() {
     let report: &AotReport = report();
@@ -266,16 +287,68 @@ fn generic_invoke_map_entrypoints_match_the_linker_map() {
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered
     );
-    assert!(
-        report.invoke_map_refusals.is_empty(),
-        "{:?}",
-        report.invoke_map_refusals
-    );
+    assert_only_shared_method_owner_refusals(report);
     let (graded, failures): (usize, Vec<String>) = grade_invoke_entrypoints(report, link_map());
     assert!(failures.is_empty(), "{failures:#?}");
     assert!(
         graded >= 12,
         "only {graded} program entrypoints were graded"
+    );
+}
+
+#[test]
+fn invoke_map_declaring_types_resolve_to_file_backed_method_tables() {
+    use object::{Object as _, ObjectSection as _, SectionKind};
+
+    let report: &AotReport = report();
+    let attribution = &report.metadata_attribution;
+    assert_eq!(attribution.status, AotMetadataStatus::Recovered);
+    assert_only_shared_method_owner_refusals(report);
+    assert!(
+        attribution
+            .method_table_references
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    );
+    let file: object::File<'_, &[u8]> = object::File::parse(image()).expect("fixture parses");
+    let image_base: u64 = file.relative_address_base();
+    for reference in &attribution.method_table_references {
+        assert!(
+            attribution
+                .types
+                .iter()
+                .any(|candidate: &AotType| candidate.record_offset == reference.type_record_offset),
+            "type record 0x{:x} is attributed",
+            reference.type_record_offset
+        );
+        let address: u64 = image_base + u64::from(reference.method_table_rva);
+        assert!(
+            file.sections().any(|section| {
+                if !matches!(
+                    section.kind(),
+                    SectionKind::Data | SectionKind::ReadOnlyData
+                ) {
+                    return false;
+                }
+                let Some((_offset, size)): Option<(u64, u64)> = section.file_range() else {
+                    return false;
+                };
+                size > 0 && address >= section.address() && address < section.address() + size
+            }),
+            "MethodTable RVA 0x{:x} is file-backed data",
+            reference.method_table_rva
+        );
+    }
+    let station: &AotType = program_type(&attribution.types, "Station`1");
+    let station_tables: BTreeSet<u32> = attribution
+        .method_table_references
+        .iter()
+        .filter(|reference| reference.type_record_offset == station.record_offset)
+        .map(|reference| reference.method_table_rva)
+        .collect();
+    assert!(
+        station_tables.len() >= 2,
+        "generic Station<T> resolved only {station_tables:?}"
     );
 }
 
