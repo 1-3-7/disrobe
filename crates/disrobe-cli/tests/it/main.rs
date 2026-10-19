@@ -394,6 +394,11 @@ mod native_diff_e2e;
 #[path = "../native_export_ghidra.rs"]
 mod native_export_ghidra;
 
+#[path = "../native_function_scope.rs"]
+mod native_function_scope;
+#[path = "../native_indexed_strings.rs"]
+mod native_indexed_strings;
+
 #[path = "../native_match_e2e.rs"]
 mod native_match_e2e;
 

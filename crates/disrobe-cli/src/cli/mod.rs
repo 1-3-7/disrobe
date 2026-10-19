@@ -115,6 +115,8 @@ pub(crate) mod mobile;
 pub(crate) mod native;
 #[cfg(feature = "native")]
 pub(crate) mod native_match;
+#[cfg(feature = "native")]
+pub(crate) mod native_scope;
 pub(crate) mod nir_source;
 #[cfg(feature = "py")]
 pub(crate) mod nuitka;

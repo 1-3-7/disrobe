@@ -1,0 +1,86 @@
+ scope
+
+ Timestamp is 9e753174 (reproducible build file hash)
+
+ Preferred load address is 0000000180000000
+
+ Start         Length     Name                   Class
+ 0001:00000000 000001d3H .text$mn                CODE
+ 0002:00000000 000000b0H .rdata                  DATA
+ 0002:000000b0 00000020H .rdata$voltmd           DATA
+ 0002:000000d0 000000bcH .rdata$zzzdbg           DATA
+ 0002:0000018c 00000024H .xdata                  DATA
+ 0002:000001b0 000000e6H .edata                  DATA
+ 0003:00000000 00000008H .bss                    DATA
+ 0004:00000000 00000018H .pdata                  DATA
+
+  Address         Publics by Value              Rva+Base               Lib:Object
+
+ 0000:00000000       __AbsoluteZero             0000000000000000     <absolute>
+ 0000:00000000       ___safe_se_handler_count   0000000000000000     <absolute>
+ 0000:00000000       ___safe_se_handler_table   0000000000000000     <absolute>
+ 0000:00000000       __arm64x_extra_rfe_table   0000000000000000     <absolute>
+ 0000:00000000       __arm64x_extra_rfe_table_size 0000000000000000     <absolute>
+ 0000:00000000       __arm64x_native_entrypoint 0000000000000000     <absolute>
+ 0000:00000000       __arm64x_redirection_metadata 0000000000000000     <absolute>
+ 0000:00000000       __arm64x_redirection_metadata_count 0000000000000000     <absolute>
+ 0000:00000000       __dynamic_value_reloc_table 0000000000000000     <absolute>
+ 0000:00000000       __enclave_config           0000000000000000     <absolute>
+ 0000:00000000       __guard_check_icall_a64n_fptr 0000000000000000     <absolute>
+ 0000:00000000       __guard_eh_cont_count      0000000000000000     <absolute>
+ 0000:00000000       __guard_eh_cont_table      0000000000000000     <absolute>
+ 0000:00000000       __guard_fids_count         0000000000000000     <absolute>
+ 0000:00000000       __guard_fids_table         0000000000000000     <absolute>
+ 0000:00000000       __guard_iat_count          0000000000000000     <absolute>
+ 0000:00000000       __guard_iat_table          0000000000000000     <absolute>
+ 0000:00000000       __guard_longjmp_count      0000000000000000     <absolute>
+ 0000:00000000       __guard_longjmp_table      0000000000000000     <absolute>
+ 0000:00000000       __hybrid_auxiliary_delayload_iat 0000000000000000     <absolute>
+ 0000:00000000       __hybrid_auxiliary_delayload_iat_copy 0000000000000000     <absolute>
+ 0000:00000000       __hybrid_auxiliary_iat     0000000000000000     <absolute>
+ 0000:00000000       __hybrid_auxiliary_iat_copy 0000000000000000     <absolute>
+ 0000:00000000       __hybrid_code_map          0000000000000000     <absolute>
+ 0000:00000000       __hybrid_code_map_count    0000000000000000     <absolute>
+ 0000:00000000       __hybrid_image_info_bitfield 0000000000000000     <absolute>
+ 0000:00000000       __x64_code_ranges_to_entry_points 0000000000000000     <absolute>
+ 0000:00000000       __x64_code_ranges_to_entry_points_count 0000000000000000     <absolute>
+ 0000:00000100       __guard_flags              0000000000000100     <absolute>
+ 0001:00000000       counter_add                0000000180001000 f   scope.obj
+ 0001:00000010       counter_reset              0000000180001010 f   scope.obj
+ 0001:00000030       curve_at                   0000000180001030 f   scope.obj
+ 0001:00000040       settings_apply             0000000180001040 f   scope.obj
+ 0001:000000b0       settings_blend             00000001800010b0 f   scope.obj
+ 0001:00000120       settings_horizon_scale     0000000180001120 f   scope.obj
+ 0001:00000140       settings_init              0000000180001140 f   scope.obj
+ 0001:000001a0       settings_luma              00000001800011a0 f   scope.obj
+ 0001:000001c0       settings_title             00000001800011c0 f   scope.obj
+ 0002:00000000       k_curve                    0000000180002000     scope.obj
+ 0002:00000010       ??_C@_0BC@BAMMDAJP@scope?9ascii?9title@ 0000000180002010     scope.obj
+ 0002:00000028       ??_C@_1CC@GKGMNOP@?$AAs?$AAc?$AAo?$AAp?$AAe?$AA?9?$AAw?$AAi?$AAd?$AAe?$AA?9?$AAt?$AAi?$AAt?$AAl@ 0000000180002028     scope.obj
+ 0002:00000050       ??_C@_0BE@FPBMACOO@scope?9default?9title@ 0000000180002050     scope.obj
+ 0002:00000064       __real@3ee00000            0000000180002064     scope.obj
+ 0002:00000068       __real@3f000000            0000000180002068     scope.obj
+ 0002:0000006c       __real@3f800000            000000018000206c     scope.obj
+ 0002:00000070       __real@4005c00000000000    0000000180002070     scope.obj
+ 0002:000000b0       __volatile_metadata        00000001800020b0     <linker-defined>
+ 0003:00000000       _fltused                   0000000180003000     scope.obj
+ 0003:00000004       g_counter                  0000000180003004     <common>
+
+ entry point at        0000:00000000
+
+ Static symbols
+
+ 0002:0000018c       $unwind$settings_apply     000000018000218c     scope.obj
+ 0002:000001a0       $unwind$settings_blend     00000001800021a0     scope.obj
+ 0002:000001b0       .edata                     00000001800021b0     scope.exp
+ 0002:000001d8       rgpv                       00000001800021d8     scope.exp
+ 0002:000001f4       rgszName                   00000001800021f4     scope.exp
+ 0002:00000210       rgwOrd                     0000000180002210     scope.exp
+ 0002:0000021e       szName                     000000018000221e     scope.exp
+ 0002:00000228       $N00001                    0000000180002228     scope.exp
+ 0002:00000236       $N00002                    0000000180002236     scope.exp
+ 0002:00000245       $N00003                    0000000180002245     scope.exp
+ 0002:00000254       $N00004                    0000000180002254     scope.exp
+ 0002:0000026b       $N00005                    000000018000226b     scope.exp
+ 0002:00000279       $N00006                    0000000180002279     scope.exp
+ 0002:00000287       $N00007                    0000000180002287     scope.exp

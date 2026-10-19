@@ -1,0 +1,46 @@
+
+File: scope.dll
+Format: COFF-x86-64
+Arch: x86_64
+AddressSize: 64bit
+UnwindInformation [
+  RuntimeFunction {
+    StartAddress: (0x180001040)
+    EndAddress: (0x1800010A3)
+    UnwindInfoAddress: (0x18000218C)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 22
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 8
+      UnwindCodes [
+        0x16: SAVE_XMM128 reg=XMM6, offset=0x20
+        0x0F: SAVE_NONVOL reg=RSI, offset=0x48
+        0x0F: SAVE_NONVOL reg=RBX, offset=0x40
+        0x0F: ALLOC_SMALL size=48
+        0x0B: PUSH_NONVOL reg=RDI
+      ]
+    }
+  }
+  RuntimeFunction {
+    StartAddress: (0x1800010B0)
+    EndAddress: (0x180001117)
+    UnwindInfoAddress: (0x1800021A0)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 6
+      FrameRegister: -
+      FrameOffset: -
+      UnwindCodeCount: 2
+      UnwindCodes [
+        0x06: ALLOC_SMALL size=32
+        0x02: PUSH_NONVOL reg=RBX
+      ]
+    }
+  }
+]

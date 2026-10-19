@@ -21,6 +21,8 @@ use disrobe_query::{
     JvmHierarchyNode, JvmTypeKind, MAX_JVM_HIERARCHY_EDGES, MAX_JVM_HIERARCHY_NODES,
 };
 
+#[cfg(feature = "native")]
+use crate::cli::native_scope;
 use crate::cli::output::{self, OutputFormat};
 
 #[cfg(feature = "jvm")]
@@ -38,6 +40,10 @@ struct DirectoryHierarchy {
 }
 
 pub(crate) fn run(input: PathBuf, expr: String, fmt: OutputFormat) -> miette::Result<()> {
+    #[cfg(feature = "native")]
+    if let Some(query) = native_scope::AddressQuery::parse(&expr)? {
+        return run_address_query(&input, &query, fmt);
+    }
     let query: Query = disrobe_query::parse_query(&expr)
         .map_err(|e| miette::miette!("DR-CLI-0832: invalid query `{expr}`: {e}"))?;
     let result: QueryResult = if let Query::ConcreteImplementors { target } = &query {
@@ -286,6 +292,129 @@ fn load_module(input: &Path) -> miette::Result<Module> {
     #[cfg(not(feature = "native"))]
     {
         Err(crate::cli::pass_registry::not_compiled("native", "native"))
+    }
+}
+
+#[cfg(feature = "native")]
+fn run_address_query(
+    input: &Path,
+    query: &native_scope::AddressQuery,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    let bytes: Vec<u8> = native_scope::read_image(input)?;
+    if Envelope::decode(&bytes).is_ok() {
+        return Err(miette::miette!(
+            "DR-NATIVE-0301: {} is a .dr envelope; address- and value-keyed queries read the native image itself",
+            input.display()
+        ));
+    }
+    let image: native_scope::Image<'_> = native_scope::Image::parse(&bytes)?;
+    let mut index: native_scope::FunctionIndex = native_scope::FunctionIndex::from_unwind(&image);
+    let result: native_scope::AddressQueryResult =
+        native_scope::run_query(&image, &mut index, query)?;
+    output::emit(fmt, &result, || render_address_query(&result))
+}
+
+#[cfg(feature = "native")]
+fn render_address_query(result: &native_scope::AddressQueryResult) {
+    match result {
+        native_scope::AddressQueryResult::XrefsTo {
+            rva,
+            va,
+            matches,
+            truncated,
+            functions_scanned,
+        } => {
+            println!(
+                "references to rva {rva:#x} (va {va:#x}) ({} xref(s), {functions_scanned} function(s) scanned):",
+                matches.len()
+            );
+            if matches.is_empty() {
+                println!("  (none)");
+            }
+            for site in matches {
+                println!(
+                    "  {:#x}  {:<10} in {} ({:#x}): {}",
+                    site.rva,
+                    site.kind.label(),
+                    terminal_safe_text(&site.function),
+                    site.function_rva,
+                    site.instruction
+                );
+            }
+            render_truncation(*truncated);
+        }
+        native_scope::AddressQueryResult::ConstUsers {
+            value,
+            matches,
+            truncated,
+            functions_scanned,
+            ..
+        } => {
+            println!(
+                "functions using {value} ({} match(es), {functions_scanned} function(s) scanned):",
+                matches.len()
+            );
+            render_function_sites(matches);
+            render_truncation(*truncated);
+        }
+        native_scope::AddressQueryResult::FieldUsers {
+            displacements,
+            matches,
+            truncated,
+            functions_scanned,
+        } => {
+            let listed: Vec<String> = displacements
+                .iter()
+                .map(|displacement: &i64| {
+                    if *displacement < 0 {
+                        format!("-{:#x}", displacement.unsigned_abs())
+                    } else {
+                        format!("{displacement:#x}")
+                    }
+                })
+                .collect();
+            println!(
+                "functions using every displacement {} ({} match(es), {functions_scanned} function(s) scanned):",
+                listed.join(","),
+                matches.len()
+            );
+            render_function_sites(matches);
+            render_truncation(*truncated);
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+fn render_function_sites(matches: &[native_scope::FunctionSites]) {
+    if matches.is_empty() {
+        println!("  (none)");
+    }
+    for function in matches {
+        println!(
+            "  {:#x}  {} ({})",
+            function.function_rva,
+            terminal_safe_text(&function.function),
+            function.range_source.label()
+        );
+        for site in &function.sites {
+            println!(
+                "    {:#x}  {:<13} {}",
+                site.rva,
+                site.kind.label(),
+                site.instruction
+            );
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+fn render_truncation(truncated: bool) {
+    if truncated {
+        println!(
+            "  output stopped at {} sites; narrow the query",
+            native_scope::MAX_QUERY_MATCHES
+        );
     }
 }
 

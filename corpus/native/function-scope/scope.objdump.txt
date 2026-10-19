@@ -1,0 +1,176 @@
+
+scope.dll:	file format coff-x86-64
+
+Disassembly of section .text:
+
+0000000180001000 <.text>:
+180001000:     	mov	eax, dword ptr [rip + 0x1ffe] # 0x180003004
+180001006:     	add	eax, ecx
+180001008:     	mov	dword ptr [rip + 0x1ff6], eax # 0x180003004
+18000100e:     	ret
+18000100f:     	int3
+
+0000000180001010 <counter_reset>:
+180001010:     	mov	eax, dword ptr [rip + 0x1fee] # 0x180003004
+180001016:     	mov	dword ptr [rip + 0x1fe4], 0x0 # 0x180003004
+180001020:     	ret
+180001021:     	int3
+180001022:     	int3
+180001023:     	int3
+180001024:     	int3
+180001025:     	int3
+180001026:     	int3
+180001027:     	int3
+180001028:     	int3
+180001029:     	int3
+18000102a:     	int3
+18000102b:     	int3
+18000102c:     	int3
+18000102d:     	int3
+18000102e:     	int3
+18000102f:     	int3
+180001030:     	and	ecx, 0x3
+180001033:     	lea	rax, [rip + 0xfc6]      # 0x180002000
+18000103a:     	movss	xmm0, dword ptr [rax + 4*rcx]
+18000103f:     	ret
+
+0000000180001040 <settings_apply>:
+180001040:     	mov	qword ptr [rsp + 0x8], rbx
+180001045:     	mov	qword ptr [rsp + 0x10], rsi
+18000104a:     	push	rdi
+18000104b:     	sub	rsp, 0x30
+18000104f:     	xor	ebx, ebx
+180001051:     	movaps	xmmword ptr [rsp + 0x20], xmm6
+180001056:     	mov	esi, edx
+180001058:     	mov	rdi, rcx
+18000105b:     	xorps	xmm6, xmm6
+18000105e:     	test	edx, edx
+180001060:     	jle	0x180001080 <settings_apply+0x40>
+180001062:     	mov	ecx, ebx
+180001064:     	call	0x180001030 <counter_reset+0x20>
+180001069:     	mulss	xmm0, dword ptr [rdi + 0x1c]
+18000106e:     	mov	ecx, dword ptr [rdi + 0x18]
+180001071:     	addss	xmm6, xmm0
+180001075:     	call	0x180001000 <.text>
+18000107a:     	inc	ebx
+18000107c:     	cmp	ebx, esi
+18000107e:     	jl	0x180001062 <settings_apply+0x22>
+180001080:     	mov	ecx, 0x1
+180001085:     	movss	dword ptr [rdi + 0xc], xmm6
+18000108a:     	mov	rbx, qword ptr [rsp + 0x40]
+18000108f:     	mov	rsi, qword ptr [rsp + 0x48]
+180001094:     	movaps	xmm6, xmmword ptr [rsp + 0x20]
+180001099:     	add	rsp, 0x30
+18000109d:     	pop	rdi
+18000109e:     	jmp	0x180001000 <.text>
+1800010a3:     	int3
+1800010a4:     	int3
+1800010a5:     	int3
+1800010a6:     	int3
+1800010a7:     	int3
+1800010a8:     	int3
+1800010a9:     	int3
+1800010aa:     	int3
+1800010ab:     	int3
+1800010ac:     	int3
+1800010ad:     	int3
+1800010ae:     	int3
+1800010af:     	int3
+
+00000001800010b0 <settings_blend>:
+1800010b0:     	push	rbx
+1800010b2:     	sub	rsp, 0x20
+1800010b6:     	movss	xmm3, dword ptr [rip + 0xfae] # 0x18000206c
+1800010be:     	mov	rbx, rcx
+1800010c1:     	subss	xmm3, xmm2
+1800010c5:     	mulss	xmm2, dword ptr [rcx + 0x4]
+1800010ca:     	mulss	xmm2, dword ptr [rip + 0xf92] # 0x180002064
+1800010d2:     	mulss	xmm3, dword ptr [rdx + 0x4]
+1800010d7:     	addss	xmm2, dword ptr [rcx + 0x8]
+1800010dc:     	mulss	xmm3, dword ptr [rip + 0xf80] # 0x180002064
+1800010e4:     	mulss	xmm2, dword ptr [rip + 0xf7c] # 0x180002068
+1800010ec:     	addss	xmm3, dword ptr [rdx + 0x8]
+1800010f1:     	mulss	xmm3, dword ptr [rip + 0xf6f] # 0x180002068
+1800010f9:     	addss	xmm3, xmm2
+1800010fd:     	movss	dword ptr [rcx + 0x1c], xmm3
+180001102:     	mov	ecx, 0x2
+180001107:     	call	0x180001000 <.text>
+18000110c:     	movss	xmm0, dword ptr [rbx + 0x1c]
+180001111:     	add	rsp, 0x20
+180001115:     	pop	rbx
+180001116:     	ret
+180001117:     	int3
+180001118:     	int3
+180001119:     	int3
+18000111a:     	int3
+18000111b:     	int3
+18000111c:     	int3
+18000111d:     	int3
+18000111e:     	int3
+18000111f:     	int3
+
+0000000180001120 <settings_horizon_scale>:
+180001120:     	mulsd	xmm1, qword ptr [rcx + 0x10]
+180001125:     	mulsd	xmm1, qword ptr [rip + 0xf43] # 0x180002070
+18000112d:     	movaps	xmm0, xmm1
+180001130:     	ret
+180001131:     	int3
+180001132:     	int3
+180001133:     	int3
+180001134:     	int3
+180001135:     	int3
+180001136:     	int3
+180001137:     	int3
+180001138:     	int3
+180001139:     	int3
+18000113a:     	int3
+18000113b:     	int3
+18000113c:     	int3
+18000113d:     	int3
+18000113e:     	int3
+18000113f:     	int3
+
+0000000180001140 <settings_init>:
+180001140:     	movabs	rax, 0x40934a4000000000
+18000114a:     	mov	dword ptr [rcx], 0x5c0fe00d
+180001150:     	mov	qword ptr [rcx + 0x10], rax
+180001154:     	lea	rax, [rip + 0xeb5]      # 0x180002010
+18000115b:     	mov	qword ptr [rcx + 0x20], rax
+18000115f:     	lea	rax, [rip + 0xec2]      # 0x180002028
+180001166:     	mov	qword ptr [rcx + 0x28], rax
+18000116a:     	movabs	rax, -0x61c8864680b583eb
+180001174:     	mov	qword ptr [rcx + 0x30], rax
+180001178:     	mov	dword ptr [rcx + 0x4], 0x3f880000
+18000117f:     	mov	dword ptr [rcx + 0x8], 0x401c0000
+180001186:     	mov	dword ptr [rcx + 0xc], 0x3d600000
+18000118d:     	mov	dword ptr [rcx + 0x18], 0xc
+180001194:     	mov	dword ptr [rcx + 0x1c], 0x3f500000
+18000119b:     	ret
+18000119c:     	int3
+18000119d:     	int3
+18000119e:     	int3
+18000119f:     	int3
+
+00000001800011a0 <settings_luma>:
+1800011a0:     	mulss	xmm1, dword ptr [rcx + 0x4]
+1800011a5:     	mulss	xmm1, dword ptr [rip + 0xeb7] # 0x180002064
+1800011ad:     	addss	xmm1, dword ptr [rcx + 0x8]
+1800011b2:     	movaps	xmm0, xmm1
+1800011b5:     	ret
+1800011b6:     	int3
+1800011b7:     	int3
+1800011b8:     	int3
+1800011b9:     	int3
+1800011ba:     	int3
+1800011bb:     	int3
+1800011bc:     	int3
+1800011bd:     	int3
+1800011be:     	int3
+1800011bf:     	int3
+
+00000001800011c0 <settings_title>:
+1800011c0:     	mov	rdx, qword ptr [rcx + 0x20]
+1800011c4:     	lea	rax, [rip + 0xe85]      # 0x180002050
+1800011cb:     	test	rdx, rdx
+1800011ce:     	cmovne	rax, rdx
+1800011d2:     	ret

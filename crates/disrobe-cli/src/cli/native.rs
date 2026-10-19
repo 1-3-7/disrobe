@@ -8,6 +8,7 @@ use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SectionFlags, S
 use serde::Serialize;
 
 use super::globals;
+use super::native_scope;
 use super::output::{self, OutputFormat};
 use super::progress_ui::StageSpinner;
 use disrobe_binfmt::{import_graph_dot, parse_native};
@@ -3512,6 +3513,265 @@ pub(crate) fn disasm(
         .map_err(|e| miette::miette!("DR-NATIVE-0145: cannot write disasm: {e}"))?;
     print_disasm_summary(&input, raw, emit, syntax, &out_path);
     Ok(())
+}
+
+const MAX_SCOPED_CALLEES: usize = 256;
+
+#[derive(Debug, Serialize)]
+struct ScopedDisassembly {
+    schema: &'static str,
+    input: String,
+    arch: &'static str,
+    image_base: u64,
+    scope: native_scope::Scope,
+    instructions: Vec<native_scope::ListedInstruction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    indexed_string_refusals: Vec<disrobe_pass_native::IndexedStringRefusal>,
+}
+
+#[derive(Debug, Serialize)]
+struct ScopedDecompilation {
+    schema: &'static str,
+    input: String,
+    arch: &'static str,
+    image_base: u64,
+    language: &'static str,
+    scope: native_scope::Scope,
+    name: String,
+    source: String,
+}
+
+fn read_scoped_input(input: &Path) -> miette::Result<Vec<u8>> {
+    let bytes: Vec<u8> = native_scope::read_image(input)?;
+    if let Some(runtime) = disrobe_pass_native::detect_runtime_decrypted(&bytes) {
+        return Err(miette::miette!("DR-NATIVE-0225: {}", runtime.refusal()));
+    }
+    Ok(bytes)
+}
+
+fn scope_line(scope: &native_scope::Scope) -> String {
+    match scope.kind {
+        native_scope::ScopeKind::Function => format!(
+            "function {}: rva {:#x}..{:#x} ({})",
+            scope.name.as_deref().unwrap_or("?"),
+            scope.start,
+            scope.end,
+            scope.source.label()
+        ),
+        native_scope::ScopeKind::Range => format!(
+            "range: rva {:#x}..{:#x}{}",
+            scope.start,
+            scope.end,
+            scope
+                .name
+                .as_deref()
+                .map_or_else(String::new, |name: &str| format!(
+                    " (starts function {name})"
+                ))
+        ),
+    }
+}
+
+fn annotate_indexed_strings(
+    bytes: &[u8],
+    image: &native_scope::Image<'_>,
+    instructions: &mut [native_scope::ListedInstruction],
+) -> miette::Result<Vec<disrobe_pass_native::IndexedStringRefusal>> {
+    let recovery: disrobe_pass_native::IndexedStringRecovery =
+        disrobe_pass_native::recover_indexed_strings(bytes).map_err(
+            |error: disrobe_pass_native::Error| {
+                miette::miette!("DR-NATIVE-0817: indexed-string recovery failed: {error}")
+            },
+        )?;
+    let mut annotations: std::collections::BTreeMap<
+        u64,
+        Vec<disrobe_pass_native::IndexedStringAnnotation>,
+    > = std::collections::BTreeMap::new();
+    for annotation in recovery.annotations {
+        annotations
+            .entry(annotation.site)
+            .or_default()
+            .push(annotation);
+    }
+    let mut scoped_sites: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    for instruction in instructions {
+        let site: u64 = image.va(instruction.rva);
+        scoped_sites.insert(site);
+        instruction.indexed_strings = annotations.remove(&site).unwrap_or_default();
+    }
+    Ok(recovery
+        .refusals
+        .into_iter()
+        .filter(|refusal: &disrobe_pass_native::IndexedStringRefusal| {
+            scoped_sites.contains(&refusal.site)
+        })
+        .collect())
+}
+
+pub(crate) fn disasm_scope(
+    input: PathBuf,
+    request: native_scope::ScopeRequest,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    let bytes: Vec<u8> = read_scoped_input(&input)?;
+    let image: native_scope::Image<'_> = native_scope::Image::parse(&bytes)?;
+    let mut index: native_scope::FunctionIndex = native_scope::FunctionIndex::from_unwind(&image);
+    let scope: native_scope::Scope = native_scope::resolve_scope(&image, &mut index, &request)?;
+    let mut instructions: Vec<native_scope::ListedInstruction> =
+        native_scope::list_scope(&image, &scope)?;
+    let indexed_string_refusals: Vec<disrobe_pass_native::IndexedStringRefusal> =
+        annotate_indexed_strings(&bytes, &image, &mut instructions)?;
+    let report: ScopedDisassembly = ScopedDisassembly {
+        schema: "disrobe.native.scoped-disassembly/v1",
+        input: input.display().to_string(),
+        arch: image.arch_label(),
+        image_base: image.base,
+        scope,
+        instructions,
+        indexed_string_refusals,
+    };
+    output::emit(fmt, &report, || {
+        println!("native disasm: {}", report.input);
+        println!(
+            "  arch: {}  image base: {:#x}",
+            report.arch, report.image_base
+        );
+        println!("  {}", scope_line(&report.scope));
+        for range in &report.scope.chained {
+            println!(
+                "  chained unwind range: rva {:#x}..{:#x}",
+                range.start, range.end
+            );
+        }
+        for instruction in &report.instructions {
+            println!("  {}", instruction.line());
+        }
+        for refusal in &report.indexed_string_refusals {
+            println!(
+                "  indexed-string refusal {} at rva {:#x}, accessor {:#x}, index {}: {}",
+                refusal.kind,
+                refusal.site.saturating_sub(report.image_base),
+                refusal.accessor,
+                refusal.index,
+                refusal.reason
+            );
+        }
+    })
+}
+
+pub(crate) fn decompile_scope(
+    input: PathBuf,
+    request: native_scope::ScopeRequest,
+    backend: DecompileBackend,
+    format: DecompileLang,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    use disrobe_pass_native::{ProgramFunction, PseudoAbi, RecoveredFunction, recover_program};
+
+    if backend == DecompileBackend::Ghidra {
+        return Err(miette::miette!(
+            "DR-NATIVE-0310: --function and --range decompile through the in-tree backend; --backend ghidra decompiles whole images only"
+        ));
+    }
+    let bytes: Vec<u8> = read_scoped_input(&input)?;
+    let image: native_scope::Image<'_> = native_scope::Image::parse(&bytes)?;
+    let mut index: native_scope::FunctionIndex = native_scope::FunctionIndex::from_unwind(&image);
+    let scope: native_scope::Scope = native_scope::resolve_scope(&image, &mut index, &request)?;
+    index.add_discovered(&image)?;
+    let abi: PseudoAbi = if image.bitness == 32 {
+        PseudoAbi::I386
+    } else if image.is_pe() {
+        PseudoAbi::MsX64
+    } else {
+        PseudoAbi::SysV
+    };
+    let selected: u64 = image.va(scope.start);
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut functions: Vec<ProgramFunction> = vec![ProgramFunction {
+        name: unique_c_name(scope.name.as_deref().unwrap_or(""), selected, &mut seen),
+        address: selected,
+        code: image.code_range(scope.start, scope.end)?.to_vec(),
+    }];
+    for target in native_scope::branch_targets(&image, &scope)? {
+        if functions.len() > MAX_SCOPED_CALLEES {
+            break;
+        }
+        let Some(callee): Option<&native_scope::FunctionEntry> = index.function_at(target) else {
+            continue;
+        };
+        let Ok(code): miette::Result<&[u8]> = image.code_range(callee.start, callee.end) else {
+            continue;
+        };
+        if callee.start == scope.start {
+            continue;
+        }
+        let address: u64 = image.va(callee.start);
+        functions.push(ProgramFunction {
+            name: unique_c_name(&callee.name, address, &mut seen),
+            address,
+            code: code.to_vec(),
+        });
+    }
+    let program: disrobe_pass_native::RecoveredProgram = recover_program(&bytes, &functions, abi);
+    if let Some(refused) = program
+        .unrecovered
+        .iter()
+        .find(|function: &&disrobe_pass_native::UnrecoveredFunction| function.address == selected)
+    {
+        return Err(miette::miette!(
+            "DR-NATIVE-0309: {} at rva {:#x} was not decompiled: {}",
+            refused.name,
+            scope.start,
+            refused.reason
+        ));
+    }
+    let Some(recovered): Option<&RecoveredFunction> = program
+        .recovered
+        .iter()
+        .find(|function: &&RecoveredFunction| function.address == selected)
+    else {
+        return Err(miette::miette!(
+            "DR-NATIVE-0309: the function at rva {:#x} produced no recovered source",
+            scope.start
+        ));
+    };
+    let source: String = match format {
+        DecompileLang::C => recovered.source.clone(),
+        DecompileLang::Rust => recovered.rust_source.clone().ok_or_else(|| {
+            miette::miette!(
+                "DR-NATIVE-0309: {} at rva {:#x} has no Rust form; `--format c` recovers it as C",
+                recovered.name,
+                scope.start
+            )
+        })?,
+    };
+    let report: ScopedDecompilation = ScopedDecompilation {
+        schema: "disrobe.native.scoped-decompilation/v1",
+        input: input.display().to_string(),
+        arch: image.arch_label(),
+        image_base: image.base,
+        language: format.label(),
+        scope,
+        name: recovered.name.clone(),
+        source,
+    };
+    output::emit(fmt, &report, || {
+        let (includes, body): (Vec<&str>, Vec<&str>) = report
+            .source
+            .lines()
+            .partition(|line: &&str| line.trim_start().starts_with("#include"));
+        for line in &includes {
+            println!("{line}");
+        }
+        if !includes.is_empty() {
+            println!();
+        }
+        println!(
+            "{}",
+            build_header_comment(format, &report.name, selected, None)
+        );
+        println!("{}", body.join("\n").trim());
+    })
 }
 
 fn disasm_out_path(out: Option<PathBuf>, stem: &str, emit: DisasmEmit) -> miette::Result<PathBuf> {

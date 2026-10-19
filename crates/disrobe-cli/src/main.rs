@@ -888,7 +888,7 @@ enum Cmd {
         action: EnvelopeCmd,
     },
     #[command(
-        about = "query a native binary or a Disasm- or Mir-rung .dr envelope's IR: functions, calls-to <sym>, xrefs-to <sym>, string-decoders, complexity-over <N>, capability <network|crypto|filesystem|process>"
+        about = "query a native binary or a Disasm- or Mir-rung .dr envelope's IR: functions, calls-to <sym>, xrefs-to <sym>, string-decoders, complexity-over <N>, capability <network|crypto|filesystem|process>; on an x86 or x86-64 image also xrefs-to 0x<rva>, const-users f32:<v>|f64:<v>|u32:<v>|u64:<v> and field-users 0x<disp>[,0x<disp>...]"
     )]
     Query {
         #[arg(
@@ -1438,6 +1438,20 @@ enum NativeCmd {
             help = "offer runtime anti-analysis neutralization patches (IsDebuggerPresent, PEB flags, NtQueryInformationProcess, timing deltas, int 2d traps, cpuid hypervisor bit): ask prompts per patch on a terminal (default there), apply takes them all, skip leaves the checks reported as detected (default without a terminal); the input is never modified, a patched copy and neutralization.json land beside the other outputs"
         )]
         neutralize: Option<native::NeutralizeMode>,
+        #[arg(
+            long,
+            value_name = "RVA",
+            conflicts_with_all = ["out", "emit", "neutralize", "range"],
+            help = "decompile one x86 or x86-64 function, selected by its start RVA (hex), to stdout; its extent comes from the .pdata unwind range when the image has one and from function discovery otherwise (--json for a structured document)"
+        )]
+        function: Option<String>,
+        #[arg(
+            long,
+            value_name = "START:END",
+            conflicts_with_all = ["out", "emit", "neutralize"],
+            help = "decompile the code from START up to END (hex RVAs, END exclusive) inside one executable section as one function, to stdout"
+        )]
+        range: Option<String>,
     },
     #[command(
         name = "verify-function",
@@ -1703,6 +1717,20 @@ enum NativeCmd {
             help = "x86 assembly dialect for --raw asm output: nasm, intel, att, or masm"
         )]
         syntax: native::DisasmSyntax,
+        #[arg(
+            long,
+            value_name = "RVA",
+            conflicts_with_all = ["raw", "out", "emit", "syntax", "range"],
+            help = "print one function, selected by its start RVA (hex), to stdout; its extent comes from the .pdata unwind range when the image has one and from function discovery otherwise, and RIP-relative loads from read-only data are annotated with the f32, f64, integer or string constant they load (--json for a structured document)"
+        )]
+        function: Option<String>,
+        #[arg(
+            long,
+            value_name = "START:END",
+            conflicts_with_all = ["raw", "out", "emit", "syntax"],
+            help = "print the instructions decoded from START up to END (hex RVAs, END exclusive) inside one executable section, annotated like --function"
+        )]
+        range: Option<String>,
     },
     #[command(
         about = "build the whole-program call graph (every edge backed by a real call instruction in the caller) and emit Graphviz DOT or JSON"
@@ -2119,7 +2147,14 @@ fn main() -> miette::Result<()> {
                 emit,
                 no_devirt,
                 neutralize,
-            } => native::decompile(input, out, emit, backend, format, !no_devirt, neutralize),
+                function,
+                range,
+            } => match cli::native_scope::ScopeRequest::from_args(function, range) {
+                Some(request) => native::decompile_scope(input, request, backend, format, fmt),
+                None => {
+                    native::decompile(input, out, emit, backend, format, !no_devirt, neutralize)
+                }
+            },
             NativeCmd::VerifyFunction {
                 input,
                 function,
@@ -2163,7 +2198,12 @@ fn main() -> miette::Result<()> {
                 bits,
                 emit,
                 syntax,
-            } => native::disasm(input, out, raw, base, bits, emit, syntax),
+                function,
+                range,
+            } => match cli::native_scope::ScopeRequest::from_args(function, range) {
+                Some(request) => native::disasm_scope(input, request, fmt),
+                None => native::disasm(input, out, raw, base, bits, emit, syntax),
+            },
             NativeCmd::Callgraph { input, out, emit } => native::callgraph(input, out, emit),
             NativeCmd::Patch {
                 input,

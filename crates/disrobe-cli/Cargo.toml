@@ -34,7 +34,7 @@ data = ["dep:disrobe-dataforensics"]
 evm = ["dep:disrobe-pass-evm"]
 
 py = ["dep:disrobe-pass-pyarmor", "dep:disrobe-pass-pyinstaller", "dep:disrobe-pass-pyfreeze", "dep:disrobe-pass-nuitka", "dep:disrobe-pass-sourcedefender", "dep:disrobe-pass-py-deob", "dep:disrobe-pass-py-disasm", "dep:disrobe-pass-py-decompile", "disrobe-nir-lift?/python"]
-native = ["dep:disrobe-capabilities", "dep:disrobe-pass-native"]
+native = ["dep:disrobe-capabilities", "dep:disrobe-pass-native", "dep:iced-x86"]
 webview = ["dep:disrobe-pass-webview"]
 binfmt = []
 plugin = ["dep:disrobe-plugin-host", "dep:wasmtime", "dep:thiserror"]
@@ -86,6 +86,7 @@ disrobe-binfmt = { workspace = true }
 disrobe-capabilities = { workspace = true, optional = true }
 disrobe-pass-pyarmor = { workspace = true, features = ["llm-metadata"], optional = true }
 disrobe-pass-native = { workspace = true, features = ["llm-metadata"], optional = true }
+iced-x86 = { workspace = true, optional = true }
 disrobe-pass-pyinstaller = { workspace = true, optional = true }
 disrobe-pass-pyfreeze = { workspace = true, optional = true }
 disrobe-pass-nuitka = { workspace = true, optional = true }
