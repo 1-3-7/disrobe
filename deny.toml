@@ -11,6 +11,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     { id = "RUSTSEC-2026-0186", reason = "memmap2 unsound unchecked pointer offset; disrobe memory-maps input files read-only for parsing and never exposes the unchecked-offset API to attacker-controlled arithmetic; no upstream fix released yet" },
     { id = "RUSTSEC-2023-0071", reason = "Marvin Attack timing sidechannel leaks a PRIVATE key during RSA decrypt/sign; no safe upgrade exists upstream (rsa maintainers confirm no patch yet). disrobe's Authenticode module only verifies a signer's PKCS#7 signature against their public key extracted from the certificate chain, it never holds or operates on a private key, so the leaked-secret threat model does not apply to this usage" },
+    { id = "RUSTSEC-2026-0367", reason = "zip 2.4.2 applies archive-controlled SUID, SGID, and sticky bits only in its extraction APIs; disrobe does not call those APIs, and clippy bans them" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 2.4.2 external-symlink targets are created only by ZipArchive extraction; disrobe does not call those APIs, and clippy bans them" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 2.4.2 applies Unix permissions through extraction symlinks only in ZipArchive and ZipStreamReader extraction; clippy bans both APIs and the stream-reader type" },
 ]
 unmaintained = "workspace"
 yanked = "deny"
