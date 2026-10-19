@@ -154,7 +154,8 @@ fn resolve_fixup<'a>(
     file: &ObjFile<'a, &'a [u8]>,
     index: u32,
 ) -> crate::error::Result<u32> {
-    let (slot_delta, target): (usize, u64) = resolve_fixup_target(bytes, section_start, index)?;
+    let (slot_delta, target): (usize, u64) =
+        resolve_fixup_target(bytes, section_start, index, invalid)?;
     let in_text: bool = file.sections().any(|section| {
         if section.kind() != SectionKind::Text {
             return false;
@@ -179,6 +180,7 @@ fn resolve_fixup<'a>(
         address_base,
         slot_delta,
         FixupTargetRole::Entrypoint,
+        invalid,
     )
 }
 
@@ -186,6 +188,7 @@ fn resolve_fixup_target(
     bytes: &[u8],
     section_start: u64,
     index: u32,
+    invalid: native_hashtable::Invalid,
 ) -> crate::error::Result<(usize, u64)> {
     let slot_delta: usize = usize::try_from(index)
         .map_err(|_: std::num::TryFromIntError| {
@@ -218,6 +221,7 @@ fn fixup_target_rva(
     address_base: u64,
     slot_delta: usize,
     role: FixupTargetRole,
+    invalid: native_hashtable::Invalid,
 ) -> crate::error::Result<u32> {
     let rva: u64 = target.checked_sub(address_base).ok_or_else(|| {
         invalid(
@@ -239,19 +243,18 @@ fn fixup_target_rva(
     })
 }
 
-fn resolve_runtime_type_fixup<'a>(
+pub(super) fn resolve_runtime_type_fixup<'a>(
     bytes: &[u8],
     section_start: u64,
     address_base: u64,
     file: &ObjFile<'a, &'a [u8]>,
     index: u32,
+    invalid: native_hashtable::Invalid,
 ) -> crate::error::Result<u32> {
-    let (slot_delta, target): (usize, u64) = resolve_fixup_target(bytes, section_start, index)?;
+    let (slot_delta, target): (usize, u64) =
+        resolve_fixup_target(bytes, section_start, index, invalid)?;
     let in_data: bool = file.sections().any(|section| {
-        if !matches!(
-            section.kind(),
-            SectionKind::Data | SectionKind::ReadOnlyData
-        ) {
+        if section.kind() == SectionKind::Text {
             return false;
         }
         let Some((_file_offset, file_size)): Option<(u64, u64)> = section.file_range() else {
@@ -269,7 +272,7 @@ fn resolve_runtime_type_fixup<'a>(
     if !in_data {
         return Err(invalid(
             slot_delta,
-            "common-fixup runtime type does not resolve into file-backed data",
+            "common-fixup runtime type does not resolve into file-backed non-executable storage",
         ));
     }
     fixup_target_rva(
@@ -277,6 +280,7 @@ fn resolve_runtime_type_fixup<'a>(
         address_base,
         slot_delta,
         FixupTargetRole::RuntimeType,
+        invalid,
     )
 }
 
@@ -625,6 +629,7 @@ fn attach_invoke_map(
                 fixups.address_base,
                 fixups.file,
                 mapping.identity.declaring_type_index,
+                invalid,
             ) {
                 Ok(method_table_rva) => {
                     method_table_references.push(AotMethodTableReference {
@@ -1337,8 +1342,9 @@ mod tests {
                 container.address_base,
                 &container.file,
                 entrypoint_index,
+                invalid,
             ),
-            "file-backed data",
+            "non-executable storage",
         );
         Ok(())
     }

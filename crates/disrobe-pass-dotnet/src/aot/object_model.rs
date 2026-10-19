@@ -15,6 +15,7 @@ const MAX_HELPERS: usize = 4_096;
 const MAX_HELPER_CALLS: usize = 16_384;
 const MAX_METHOD_TABLES: usize = 65_536;
 const MAX_TYPE_REFERENCES: usize = 16_384;
+const MAX_RUNTIME_FIELD_LAYOUTS: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +43,9 @@ pub enum AotObjectModelRefusal {
     MethodTableEvidenceAmbiguous,
     MethodTableLimitExceeded,
     TypeReferenceLimitExceeded,
+    RuntimeFieldLayoutLimitExceeded,
+    RuntimeFieldLayoutAmbiguous,
+    RuntimeFieldLayoutDoesNotMatchMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +198,50 @@ pub fn recover_object_model(
             return refused(AotObjectModelRefusal::DuplicateTypeLayout, type_layouts);
         }
     }
+    if attribution.runtime_field_layouts.len() > MAX_RUNTIME_FIELD_LAYOUTS {
+        return refused(
+            AotObjectModelRefusal::RuntimeFieldLayoutLimitExceeded,
+            type_layouts,
+        );
+    }
+    let metadata_fields: BTreeMap<(u32, u32), (String, AotTypeSignature)> = type_layouts
+        .iter()
+        .flat_map(|layout: &AotTypeLayout| {
+            layout.instance_fields.iter().map(|field| {
+                (
+                    (layout.record_offset, field.record_offset),
+                    (field.name.clone(), field.field_type),
+                )
+            })
+        })
+        .collect();
+    let mut fields_by_offset: BTreeMap<(u32, u32), (u32, String, AotTypeSignature)> =
+        BTreeMap::new();
+    for runtime in &attribution.runtime_field_layouts {
+        let Some((name, field_type)): Option<&(String, AotTypeSignature)> =
+            metadata_fields.get(&(runtime.type_record_offset, runtime.field_record_offset))
+        else {
+            return refused(
+                AotObjectModelRefusal::RuntimeFieldLayoutDoesNotMatchMetadata,
+                type_layouts,
+            );
+        };
+        let key: (u32, u32) = (runtime.type_record_offset, runtime.field_offset);
+        if fields_by_offset
+            .insert(
+                key,
+                (runtime.field_record_offset, name.clone(), *field_type),
+            )
+            .is_some_and(|(record_offset, _name, _field_type)| {
+                record_offset != runtime.field_record_offset
+            })
+        {
+            return refused(
+                AotObjectModelRefusal::RuntimeFieldLayoutAmbiguous,
+                type_layouts,
+            );
+        }
+    }
     let known: BTreeSet<(u32, u32)> = attribution
         .types
         .iter()
@@ -343,6 +391,8 @@ pub fn recover_object_model(
             if stores.len() == MAX_FIELD_STORES {
                 return refused(AotObjectModelRefusal::FieldStoreLimitExceeded, type_layouts);
             }
+            let field =
+                fields_by_offset.get(&(evidence.type_record_offset, u32::from(field_offset)));
             stores.push(AotObjectFieldStore {
                 type_record_offset: evidence.type_record_offset,
                 method_record_offset: evidence.method_record_offset,
@@ -350,8 +400,8 @@ pub fn recover_object_model(
                 field_offset,
                 width,
                 source_register,
-                field_name: None,
-                field_type: None,
+                field_name: field.map(|(_record_offset, name, _field_type)| name.clone()),
+                field_type: field.map(|(_record_offset, _name, field_type)| *field_type),
             });
         }
     }

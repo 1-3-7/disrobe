@@ -3,6 +3,7 @@
 
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
+use disrobe_pass_dotnet::aot::{AotReport, detect};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
 use std::sync::OnceLock;
@@ -76,6 +77,52 @@ const REFERENCE_TYPE_ABSTENTIONS: [(&str, &str, &str); 1] =
     [("Head", "ManagedSequentialClass", "First")];
 const REFERENCE_HEADER_BYTES: usize = 8;
 const IDENTICAL_EVIDENCE_PAIR: (&str, &str) = ("Head", "Tail");
+
+#[test]
+fn field_access_map_recovers_uniquely_named_field_offset() {
+    let report: AotReport = detect(image());
+    assert!(
+        report.field_map_refusals.iter().all(|refusal| {
+            refusal
+                .reason
+                .contains("field-map field does not have exactly one metadata owner")
+                || refusal
+                    .reason
+                    .contains("does not resolve into file-backed non-executable storage")
+        }),
+        "{:?}",
+        report.field_map_refusals
+    );
+    let type_record = report
+        .metadata_attribution
+        .types
+        .iter()
+        .find(|type_record| type_record.name == "ManagedSmall")
+        .expect("ManagedSmall metadata is recovered");
+    let layout = report
+        .object_model
+        .type_layouts
+        .iter()
+        .find(|layout| layout.record_offset == type_record.record_offset)
+        .expect("ManagedSmall layout is recovered");
+    let field = layout
+        .instance_fields
+        .iter()
+        .find(|field| field.name == "Only")
+        .expect("ManagedSmall.Only metadata is recovered");
+    assert!(
+        report
+            .metadata_attribution
+            .runtime_field_layouts
+            .iter()
+            .any(|runtime| {
+                runtime.type_record_offset == type_record.record_offset
+                    && runtime.field_record_offset == field.record_offset
+                    && runtime.field_offset == 0
+            }),
+        "ManagedSmall.Only offset 0 is recovered"
+    );
+}
 
 const MANAGED_SIGNATURE_METHODS: [&str; 8] = [
     "_ctor", "Sum", "Scale", "Wide", "Echo", "Blend", "Tail", "Weighted",

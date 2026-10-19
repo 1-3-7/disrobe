@@ -5,6 +5,7 @@ use disrobe_bytes::bounded_element_capacity;
 use object::read::File as ObjFile;
 use serde::{Deserialize, Serialize};
 
+use super::field_map::{AotFieldMapRefusal, recover_field_map};
 use super::invoke_map::{AotInvokeMapRefusal, attach_invoke_map_entrypoints};
 use super::method_bodies::attach_method_bodies;
 use super::method_boundaries::attach_method_boundaries;
@@ -122,6 +123,8 @@ pub struct AotMetadataAttribution {
     pub methods: Vec<AotMethod>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub method_table_references: Vec<AotMethodTableReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_field_layouts: Vec<AotRuntimeFieldLayout>,
 }
 
 impl AotMetadataAttribution {
@@ -129,6 +132,7 @@ impl AotMetadataAttribution {
         let section_offset: Option<u32> = match &error {
             crate::error::Error::InvalidAotMetadata { offset, .. }
             | crate::error::Error::InvalidAotInvokeMap { offset, .. }
+            | crate::error::Error::InvalidAotFieldMap { offset, .. }
             | crate::error::Error::InvalidAotMethodBoundary { offset, .. }
             | crate::error::Error::InvalidAotMethodBody { offset, .. } => Some(*offset),
             _ => None,
@@ -142,6 +146,7 @@ impl AotMetadataAttribution {
             types: Vec::new(),
             methods: Vec::new(),
             method_table_references: Vec::new(),
+            runtime_field_layouts: Vec::new(),
         }
     }
 }
@@ -153,6 +158,7 @@ impl Default for AotMetadataAttribution {
             types: Vec::new(),
             methods: Vec::new(),
             method_table_references: Vec::new(),
+            runtime_field_layouts: Vec::new(),
         }
     }
 }
@@ -188,8 +194,18 @@ pub struct AotMethodTableReference {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotFieldLayout {
+    pub record_offset: u32,
     pub name: String,
     pub field_type: AotTypeSignature,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AotRuntimeFieldLayout {
+    pub type_record_offset: u32,
+    pub field_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_table_rva: Option<u32>,
+    pub field_offset: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2192,6 +2208,7 @@ fn type_layouts(
                 .get(&field.signature_offset)
                 .ok_or_else(|| invalid_metadata(at, "validated field signature is absent"))?;
             instance_fields.push(AotFieldLayout {
+                record_offset: field.offset,
                 name: field.name.clone(),
                 field_type: type_signature(signature.field_type)?,
             });
@@ -2514,25 +2531,28 @@ pub fn recover_metadata_attribution(
     image: &[u8],
     header: &ReadyToRunHeader,
 ) -> crate::error::Result<AotMetadataAttribution> {
-    recover_metadata_with_invoke_refusals(image, header).map(
-        |(attribution, _layouts, _refusals): (
-            AotMetadataAttribution,
-            Vec<AotTypeLayout>,
-            Vec<AotInvokeMapRefusal>,
-        )| attribution,
-    )
+    recover_metadata_with_invoke_refusals(image, header)
+        .map(|recovery: MetadataRecovery| recovery.attribution)
+}
+
+pub(super) struct MetadataRecovery {
+    pub attribution: AotMetadataAttribution,
+    pub type_layouts: Vec<AotTypeLayout>,
+    pub invoke_refusals: Vec<AotInvokeMapRefusal>,
+    pub field_refusals: Vec<AotFieldMapRefusal>,
 }
 
 pub(super) fn recover_metadata_with_invoke_refusals(
     image: &[u8],
     header: &ReadyToRunHeader,
-) -> crate::error::Result<(
-    AotMetadataAttribution,
-    Vec<AotTypeLayout>,
-    Vec<AotInvokeMapRefusal>,
-)> {
+) -> crate::error::Result<MetadataRecovery> {
     let Some(section): Option<&AotSection> = metadata_section(header)? else {
-        return Ok((AotMetadataAttribution::default(), Vec::new(), Vec::new()));
+        return Ok(MetadataRecovery {
+            attribution: AotMetadataAttribution::default(),
+            type_layouts: Vec::new(),
+            invoke_refusals: Vec::new(),
+            field_refusals: Vec::new(),
+        });
     };
     let profile: Option<MetadataProfile> =
         METADATA_PROFILES
@@ -2542,8 +2562,8 @@ pub(super) fn recover_metadata_with_invoke_refusals(
                 profile.matches(header.major_version, header.minor_version)
             });
     let Some(profile): Option<MetadataProfile> = profile else {
-        return Ok((
-            AotMetadataAttribution {
+        return Ok(MetadataRecovery {
+            attribution: AotMetadataAttribution {
                 status: AotMetadataStatus::UnsupportedVersion {
                     major_version: header.major_version,
                     minor_version: header.minor_version,
@@ -2551,10 +2571,12 @@ pub(super) fn recover_metadata_with_invoke_refusals(
                 types: Vec::new(),
                 methods: Vec::new(),
                 method_table_references: Vec::new(),
+                runtime_field_layouts: Vec::new(),
             },
-            Vec::new(),
-            Vec::new(),
-        ));
+            type_layouts: Vec::new(),
+            invoke_refusals: Vec::new(),
+            field_refusals: Vec::new(),
+        });
     };
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
     let (types, mut methods, layouts): (Vec<AotType>, Vec<AotMethod>, Vec<AotTypeLayout>) =
@@ -2563,19 +2585,25 @@ pub(super) fn recover_metadata_with_invoke_refusals(
         Vec<AotInvokeMapRefusal>,
         Vec<AotMethodTableReference>,
     ) = attach_invoke_map_entrypoints(image, header, &types, &mut methods)?;
+    let (field_refusals, runtime_field_layouts): (
+        Vec<AotFieldMapRefusal>,
+        Vec<AotRuntimeFieldLayout>,
+    ) = recover_field_map(image, header, &layouts);
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
         attach_method_bodies(image, &pe, &types, &layouts, &mut methods)?;
     }
-    Ok((
-        AotMetadataAttribution {
+    Ok(MetadataRecovery {
+        attribution: AotMetadataAttribution {
             status: AotMetadataStatus::Recovered,
             types,
             methods,
             method_table_references,
+            runtime_field_layouts,
         },
-        layouts,
-        refusals,
-    ))
+        type_layouts: layouts,
+        invoke_refusals: refusals,
+        field_refusals,
+    })
 }
 
 #[cfg(test)]

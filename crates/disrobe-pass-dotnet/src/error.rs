@@ -153,6 +153,11 @@ pub enum Error {
 
     #[error("DR-DOTNET-0042: invalid ReadyToRun runtime-function entry {index}: {reason}")]
     InvalidR2rRuntimeFunctions { index: usize, reason: &'static str },
+
+    #[error(
+        "DR-DOTNET-0043: invalid ahead-of-time field map at section offset 0x{offset:X}: {reason}"
+    )]
+    InvalidAotFieldMap { offset: u32, reason: &'static str },
 }
 
 impl From<ByteReadError> for Error {

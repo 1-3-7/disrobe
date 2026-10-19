@@ -5,8 +5,9 @@ use std::io::Read as _;
 use std::sync::OnceLock;
 
 use disrobe_pass_dotnet::aot::{
-    AotMetadataStatus, AotObjectHelperEvidence, AotObjectHelperKind, AotObjectMethodEvidence,
-    AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus, AotObjectStoreWidth, AotReport,
+    AotFieldLayout, AotMetadataStatus, AotObjectHelperEvidence, AotObjectHelperKind,
+    AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus,
+    AotObjectStoreWidth, AotReport, AotRuntimeFieldLayout, AotTypeSignature, AotTypeSignatureKind,
     detect, recover_object_model,
 };
 use sha2::{Digest as _, Sha256};
@@ -235,6 +236,74 @@ fn native_aot_object_model_mutation_removes_the_map_owned_store() {
     );
     assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
     assert!(recovered.field_stores.is_empty());
+}
+
+#[test]
+fn native_aot_runtime_field_layout_names_the_exact_store() {
+    let report: &AotReport = report();
+    let evidence: AotObjectMethodEvidence = station_swap_evidence(report, STATION_SWAP_SYMBOL);
+    let field_type = AotTypeSignature {
+        kind: AotTypeSignatureKind::Definition,
+        record_offset: evidence.type_record_offset,
+    };
+    let field_record_offset: u32 = u32::MAX;
+    let mut attribution = report.metadata_attribution.clone();
+    attribution
+        .runtime_field_layouts
+        .push(AotRuntimeFieldLayout {
+            type_record_offset: evidence.type_record_offset,
+            field_record_offset,
+            method_table_rva: None,
+            field_offset: 8,
+        });
+    let mut layouts = report.object_model.type_layouts.clone();
+    layouts
+        .iter_mut()
+        .find(|layout| layout.record_offset == evidence.type_record_offset)
+        .unwrap_or_else(|| panic!("Station<T> layout is recovered"))
+        .instance_fields
+        .push(AotFieldLayout {
+            record_offset: field_record_offset,
+            name: "_last".to_owned(),
+            field_type,
+        });
+    let recovered: AotObjectModel =
+        recover_object_model(image(), &attribution, layouts.clone(), &[evidence], &[]);
+    assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
+    let store = recovered
+        .field_stores
+        .iter()
+        .find(|store| store.store_rva == 0x87DA3)
+        .unwrap_or_else(|| panic!("Station<int>.Swap store is recovered"));
+    assert_eq!(store.field_name.as_deref(), Some("_last"));
+    assert_eq!(store.field_type, Some(field_type));
+    let conflicting_record_offset: u32 = u32::MAX - 1;
+    layouts
+        .iter_mut()
+        .find(|layout| layout.record_offset == evidence.type_record_offset)
+        .unwrap_or_else(|| panic!("Station<T> layout remains recovered"))
+        .instance_fields
+        .push(AotFieldLayout {
+            record_offset: conflicting_record_offset,
+            name: "_other".to_owned(),
+            field_type,
+        });
+    attribution
+        .runtime_field_layouts
+        .push(AotRuntimeFieldLayout {
+            type_record_offset: evidence.type_record_offset,
+            field_record_offset: conflicting_record_offset,
+            method_table_rva: None,
+            field_offset: 8,
+        });
+    let refused: AotObjectModel =
+        recover_object_model(image(), &attribution, layouts, &[evidence], &[]);
+    assert_eq!(
+        refused.status,
+        AotObjectModelStatus::Refused {
+            reason: AotObjectModelRefusal::RuntimeFieldLayoutAmbiguous,
+        }
+    );
 }
 
 #[test]
