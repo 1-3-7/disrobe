@@ -5,6 +5,8 @@
 pub mod aot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod backends;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod build_compare;
 pub mod cfg;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chain_detector;

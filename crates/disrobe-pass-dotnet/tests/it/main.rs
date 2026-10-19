@@ -27,6 +27,8 @@ mod bitmono_gauntlet;
 mod bitmono_string_recovery;
 #[path = "../bool_return_rendering.rs"]
 mod bool_return_rendering;
+#[path = "../build_compare.rs"]
+mod build_compare;
 #[path = "../cast_width_sign_oracle.rs"]
 mod cast_width_sign_oracle;
 #[path = "../cff_deflatten.rs"]

@@ -1,0 +1,8 @@
+added resource Assets.Manual.txt [ManifestResource#4]
+added resource Assets.Terms.txt [ManifestResource#3]
+changed identity mvid: eefe356e-89f1-4c99-a65b-48efbb8064d7 -> dd982d8e-dd15-4aaa-b29b-ce135cdc755e [Module#1 -> Module#1]
+changed identity pe-timestamp: 0xE229A89D -> 0xD8F378A6 [coff-header -> coff-header]
+changed resource Assets.Greeting.txt sha256: 5b4015cb69e4f8cac6bc96c663f9317550ab6e6e3dc3533fdd69df9d5088e79f -> 44b6a56fceaebb613760d270f00d0047587700906269ed869465f02e6294078c [ManifestResource#1 -> ManifestResource#1]
+changed resource Assets.Greeting.txt size: 21 -> 26 [ManifestResource#1 -> ManifestResource#1]
+changed resource Assets.Logo.bin flags: 0x00000002 -> 0x00000001 [ManifestResource#2 -> ManifestResource#2]
+removed resource Assets.Legacy.txt [ManifestResource#3]

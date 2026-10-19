@@ -1,0 +1,6 @@
+changed identity mvid: 51cb72d7-4392-4013-b423-70c27f4c08b1 -> 53f3d606-8b46-4c42-b69a-544ea224a651 [Module#1 -> Module#1]
+changed identity pe-timestamp: 0xAE6F1149 -> 0xA8E38037 [coff-header -> coff-header]
+changed method int32 Scoring.Rules::Guarded(string) body il-changed: 16 bytes -> 16 bytes [MethodDef#4 -> MethodDef#4]
+changed method int32 Scoring.Rules::Score(int32, int32) body il-changed: 6 bytes -> 6 bytes [MethodDef#2 -> MethodDef#2]
+changed method int64 Scoring.Rules::Sum(int32[]) body il-changed: 30 bytes -> 26 bytes [MethodDef#5 -> MethodDef#5]
+changed method string Scoring.Rules::Greet(string) body il-changed: 12 bytes -> 12 bytes [MethodDef#1 -> MethodDef#1]
