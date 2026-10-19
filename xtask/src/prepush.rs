@@ -297,8 +297,14 @@ fn gate_test(root: &Path, scope: &Scope, crate_tests: bool) -> Result<GateOutcom
             ));
         }
     }
-    let caller_env: Vec<(&str, OsString)> = if plan.keys().any(|name: &String| name != SELF_CRATE) {
-        caller_binary_env(root)?
+    let caller_env: Vec<(&str, OsString)> = if needs_cli_caller(root, &members, &plan)? {
+        let integration: bool = plan
+            .get("disrobe-cli")
+            .is_some_and(|targets: &TestTargets| match targets {
+                TestTargets::Crate => true,
+                TestTargets::Binaries(binaries) => binaries.contains("it"),
+            });
+        caller_binary_env(root, integration)?
     } else {
         Vec::new()
     };
@@ -907,41 +913,93 @@ fn run_checked<F: FnOnce() -> String>(
 
 const CALLER_BINARY_VARIABLES: [&str; 2] = ["DISROBE_BIN", "DISROBE_MEASUREMENT_EXECUTABLE"];
 
-fn caller_binary_env(root: &Path) -> Result<Vec<(&'static str, OsString)>> {
+fn needs_cli_caller(
+    root: &Path,
+    members: &[CrateDir],
+    plan: &BTreeMap<String, TestTargets>,
+) -> Result<bool> {
+    for member in members {
+        if member.name == SELF_CRATE || !plan.contains_key(&member.name) {
+            continue;
+        }
+        for directory in ["src", "tests"] {
+            let directory: std::path::PathBuf = root.join(&member.dir).join(directory);
+            if !directory.is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(directory) {
+                let entry: walkdir::DirEntry = entry.wrap_err("reading caller test sources")?;
+                if !entry.file_type().is_file()
+                    || entry
+                        .path()
+                        .extension()
+                        .is_none_or(|extension| extension != "rs")
+                {
+                    continue;
+                }
+                let source: String = std::fs::read_to_string(entry.path())
+                    .wrap_err_with(|| format!("reading {}", entry.path().display()))?;
+                if CALLER_BINARY_VARIABLES
+                    .iter()
+                    .any(|name: &&str| source.contains(*name))
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn caller_binary_env(root: &Path, integration: bool) -> Result<Vec<(&'static str, OsString)>> {
     if CALLER_BINARY_VARIABLES
         .iter()
         .all(|name: &&str| std::env::var_os(name).is_some())
     {
         return Ok(Vec::new());
     }
-    println!("xtask prepush: building the disrobe CLI that caller tests run");
+    println!("xtask prepush: compiling the required disrobe caller targets");
+    let args: Vec<String> = cli_caller_build_command(integration);
     let output: std::process::Output = Command::new(cargo_bin().as_str())
-        .args([
-            "build",
-            "-p",
-            "disrobe-cli",
-            "--bin",
-            "disrobe",
-            "--message-format=json-render-diagnostics",
-        ])
+        .args(&args)
         .current_dir(root)
         .stderr(Stdio::inherit())
         .output()
-        .wrap_err("spawning cargo build for the disrobe CLI")?;
+        .wrap_err("spawning cargo for the disrobe CLI caller")?;
     if !output.status.success() {
         bail!(
-            "`cargo build -p disrobe-cli --bin disrobe` exited with {}\n  fix: resolve the build \
+            "`cargo {}` exited with {}\n  fix: resolve the build \
              errors above, then re-run the push",
+            args.join(" "),
             output.status
         );
     }
     let executable: OsString = cli_executable(&String::from_utf8_lossy(&output.stdout))
-        .ok_or_else(|| eyre::eyre!("cargo build reported no executable for the disrobe CLI"))?;
+        .ok_or_else(|| eyre::eyre!("cargo reported no binary executable for the disrobe CLI"))?;
     Ok(CALLER_BINARY_VARIABLES
         .iter()
         .filter(|name: &&&str| std::env::var_os(name).is_none())
         .map(|name: &&str| (*name, executable.clone()))
         .collect())
+}
+
+fn cli_caller_build_command(integration: bool) -> Vec<String> {
+    let mut args: Vec<String> = [
+        if integration { "test" } else { "build" },
+        "-p",
+        "disrobe-cli",
+        "--all-features",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let targets: &[&str] = if integration {
+        &["--test", "it", "--no-run"]
+    } else {
+        &["--profile", "test", "--bin", "disrobe"]
+    };
+    args.extend(targets.iter().map(|value: &&str| (*value).to_owned()));
+    args.push("--message-format=json-render-diagnostics".to_owned());
+    args
 }
 
 fn cli_executable(messages: &str) -> Option<OsString> {
@@ -950,10 +1008,13 @@ fn cli_executable(messages: &str) -> Option<OsString> {
         .filter_map(|line: &str| serde_json::from_str::<BuildMessage>(line).ok())
         .filter(|message: &BuildMessage| {
             message.reason == "compiler-artifact"
+                && message.target.as_ref().is_some_and(|target: &BuildTarget| {
+                    target.name == "disrobe" && target.kind.iter().any(|kind| kind == "bin")
+                })
                 && message
-                    .target
+                    .profile
                     .as_ref()
-                    .is_some_and(|target: &BuildTarget| target.name == "disrobe")
+                    .is_some_and(|profile: &BuildProfile| !profile.test)
         })
         .find_map(|message: BuildMessage| message.executable)
         .map(OsString::from)
@@ -966,11 +1027,20 @@ struct BuildMessage {
     target: Option<BuildTarget>,
     #[serde(default)]
     executable: Option<String>,
+    #[serde(default)]
+    profile: Option<BuildProfile>,
+}
+
+#[derive(Deserialize)]
+struct BuildProfile {
+    test: bool,
 }
 
 #[derive(Deserialize)]
 struct BuildTarget {
     name: String,
+    #[serde(default)]
+    kind: Vec<String>,
 }
 
 fn run_checked_env<F: FnOnce() -> String>(
@@ -1031,9 +1101,9 @@ mod tests {
 
     use super::{
         CrateDir, NextestListing, SELF_CRATE, Scope, ScopedTestCommands, TestTargets,
-        binary_test_command, cli_executable, empty_suites, is_shared_build_input, list_command,
-        parse_workflow, platform_gated, scoped_test_commands, should_validate_nextest_config,
-        test_targets,
+        binary_test_command, cli_caller_build_command, cli_executable, empty_suites,
+        is_shared_build_input, list_command, needs_cli_caller, parse_workflow, platform_gated,
+        scoped_test_commands, should_validate_nextest_config, test_targets,
     };
     use camino::Utf8PathBuf;
 
@@ -1230,11 +1300,13 @@ mod tests {
     }
 
     #[test]
-    fn the_cli_executable_comes_from_its_compiler_artifact_message() {
+    fn the_cli_executable_comes_from_its_binary_compiler_artifact_message() {
         let messages: &str = concat!(
             "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe_core\"},\"executable\":null}\n",
             "not json\n",
-            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe\"},\"executable\":\"/t/debug/disrobe\"}\n",
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe\",\"kind\":[\"test\"]},\"executable\":\"/t/debug/deps/disrobe-test\"}\n",
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe\",\"kind\":[\"bin\"]},\"profile\":{\"test\":true},\"executable\":\"/t/debug/deps/disrobe-unit\"}\n",
+            "{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"disrobe\",\"kind\":[\"bin\"]},\"profile\":{\"test\":false},\"executable\":\"/t/debug/disrobe\"}\n",
             "{\"reason\":\"build-finished\",\"success\":true}\n",
         );
         assert_eq!(
@@ -1242,6 +1314,68 @@ mod tests {
             Some(OsString::from("/t/debug/disrobe"))
         );
         assert_eq!(cli_executable("{\"reason\":\"build-finished\"}"), None);
+    }
+
+    #[test]
+    fn cli_caller_build_compiles_the_matching_all_feature_integration_graph() {
+        assert_eq!(
+            cli_caller_build_command(true),
+            [
+                "test",
+                "-p",
+                "disrobe-cli",
+                "--all-features",
+                "--test",
+                "it",
+                "--no-run",
+                "--message-format=json-render-diagnostics",
+            ]
+            .map(str::to_owned)
+            .to_vec()
+        );
+        let external: Vec<String> = cli_caller_build_command(false);
+        assert_eq!(
+            &external[..4],
+            ["build", "-p", "disrobe-cli", "--all-features"]
+        );
+        assert!(
+            external
+                .windows(2)
+                .any(|args: &[String]| args == ["--profile", "test"])
+        );
+        assert!(
+            external
+                .windows(2)
+                .any(|args: &[String]| args == ["--bin", "disrobe"])
+        );
+        assert!(!external.iter().any(|arg: &String| arg == "--test"));
+    }
+
+    #[test]
+    fn library_checks_build_a_cli_only_when_their_sources_request_it() -> eyre::Result<()> {
+        let scratch: tempfile::TempDir = tempfile::tempdir()?;
+        let source_dir: std::path::PathBuf = scratch.path().join("crates/sample/tests");
+        std::fs::create_dir_all(&source_dir)?;
+        let source: std::path::PathBuf = source_dir.join("caller.rs");
+        let members: Vec<CrateDir> = vec![CrateDir {
+            name: "sample".to_owned(),
+            dir: "crates/sample".to_owned(),
+            test_targets: Vec::new(),
+        }];
+        let mut plan: BTreeMap<String, TestTargets> =
+            BTreeMap::from([("sample".to_owned(), TestTargets::Crate)]);
+        std::fs::write(&source, "fn ordinary_library_test() {}")?;
+        assert!(!needs_cli_caller(scratch.path(), &members, &plan)?);
+        std::fs::write(&source, "std::env::var_os(\"DISROBE_BIN\")")?;
+        assert!(needs_cli_caller(scratch.path(), &members, &plan)?);
+        std::fs::write(
+            &source,
+            "std::env::var_os(\"DISROBE_MEASUREMENT_EXECUTABLE\")",
+        )?;
+        assert!(needs_cli_caller(scratch.path(), &members, &plan)?);
+        plan.clear();
+        assert!(!needs_cli_caller(scratch.path(), &members, &plan)?);
+        Ok(())
     }
 
     #[test]
