@@ -97,8 +97,8 @@ pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
 unwrap_used = "deny"
-expect_used = "warn"
-panic = "warn"
+expect_used = "deny"
+panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
