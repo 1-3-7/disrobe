@@ -2935,6 +2935,121 @@ fn main_class_method_ranges(src: &str) -> Vec<(usize, usize)> {
     method_ranges_at_depth(src, Some(1))
 }
 
+fn main_method_identities(src: &str) -> BTreeMap<String, usize> {
+    let mut identities: BTreeMap<String, usize> = BTreeMap::new();
+    for region in java_regions(src).into_iter().filter(|region: &JavaRegion| {
+        region.kind == JavaBraceKind::Method && region.type_depth == 1
+    }) {
+        let Some(header): Option<&str> = src.get(region.header_start..region.header_end) else {
+            continue;
+        };
+        if let Some(identity) = java_method_identity(header) {
+            *identities.entry(identity).or_default() += 1;
+        }
+    }
+    identities
+}
+
+fn java_method_identity(header: &str) -> Option<String> {
+    let declaration: String = java_declaration_without_annotations(header);
+    let open: usize = declaration.find('(')?;
+    let before: &str = declaration[..open].trim_end();
+    let name_start: usize = before
+        .char_indices()
+        .rev()
+        .find(|(_index, character): &(usize, char)| {
+            !character.is_ascii_alphanumeric() && *character != '_' && *character != '$'
+        })
+        .map_or(0, |(index, character): (usize, char)| {
+            index + character.len_utf8()
+        });
+    let name: &str = before.get(name_start..)?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut depth: usize = 1;
+    let mut close: Option<usize> = None;
+    for (relative, character) in declaration[open + 1..].char_indices() {
+        match character {
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close = Some(open + 1 + relative);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let parameters: &str = declaration.get(open + 1..close?)?.trim();
+    let arity: usize = java_parameter_arity(parameters);
+    Some(format!("{name}/{arity}"))
+}
+
+fn java_parameter_arity(parameters: &str) -> usize {
+    if parameters.is_empty() {
+        return 0;
+    }
+    let mut angle_depth: usize = 0;
+    let mut bracket_depth: usize = 0;
+    let mut parenthesis_depth: usize = 0;
+    let mut commas: usize = 0;
+    for character in parameters.chars() {
+        match character {
+            '<' => angle_depth = angle_depth.saturating_add(1),
+            '>' => angle_depth = angle_depth.saturating_sub(1),
+            '[' => bracket_depth = bracket_depth.saturating_add(1),
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '(' => parenthesis_depth = parenthesis_depth.saturating_add(1),
+            ')' => parenthesis_depth = parenthesis_depth.saturating_sub(1),
+            ',' if angle_depth == 0 && bracket_depth == 0 && parenthesis_depth == 0 => {
+                commas = commas.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    commas.saturating_add(1)
+}
+
+fn fixed_method_coverage(original: &str, recovered: &str) -> Value {
+    let reference: BTreeMap<String, usize> = main_method_identities(original);
+    let candidate: BTreeMap<String, usize> = main_method_identities(recovered);
+    let original_methods: usize = reference.values().sum();
+    let recovered_methods: usize = candidate.values().sum();
+    let matched: usize = reference
+        .iter()
+        .map(|(identity, count): (&String, &usize)| {
+            (*count).min(candidate.get(identity).copied().unwrap_or(0))
+        })
+        .sum();
+    json!({
+        "status": "measured",
+        "metric": "original main-class method coverage by source name and arity",
+        "matched": matched,
+        "original": original_methods,
+        "recovered_main_methods": recovered_methods,
+        "value": 100.0 * matched as f64 / original_methods.max(1) as f64,
+        "display": format!("{matched} matched / {original_methods} original ({:.1}%)", 100.0 * matched as f64 / original_methods.max(1) as f64),
+    })
+}
+
+fn fixed_method_coverage_from_artifact(original: &str, artifact: &Path) -> Value {
+    let source_root: PathBuf = artifact.join("sources");
+    match collect_edgecases_java(&source_root).and_then(|sources: BTreeMap<String, String>| {
+        main_class_file(&sources)
+            .cloned()
+            .ok_or_else(|| "retained output has no EdgeCases source".to_owned())
+    }) {
+        Ok(recovered) => fixed_method_coverage(original, &recovered),
+        Err(detail) => json!({
+            "status": "unavailable",
+            "metric": "original main-class method coverage by source name and arity",
+            "detail": detail,
+        }),
+    }
+}
+
 fn class_method_ranges(src: &str) -> Vec<(usize, usize)> {
     method_ranges_at_depth(src, None)
 }
@@ -3002,6 +3117,8 @@ fn java_regions(src: &str) -> Vec<JavaRegion> {
                 }
                 stack.push(JavaBrace {
                     kind,
+                    header_start,
+                    header_end: offset,
                     start_line,
                     start_column,
                     body_start: offset.saturating_add(1),
@@ -3024,6 +3141,8 @@ fn java_regions(src: &str) -> Vec<JavaRegion> {
                     .saturating_add(2);
                 out.push(JavaRegion {
                     kind: brace.kind,
+                    header_start: brace.header_start,
+                    header_end: brace.header_end,
                     start_line: brace.start_line,
                     end_line: close_line + 1,
                     start_column: brace.start_column,
@@ -3062,6 +3181,8 @@ fn java_regions(src: &str) -> Vec<JavaRegion> {
                     let type_depth: usize = type_names.len();
                     out.push(JavaRegion {
                         kind: JavaBraceKind::Method,
+                        header_start,
+                        header_end: offset,
                         start_line,
                         end_line,
                         start_column,
@@ -3088,6 +3209,8 @@ fn java_regions(src: &str) -> Vec<JavaRegion> {
             .filter(|brace: &JavaBrace| brace.kind == JavaBraceKind::Method)
             .map(|brace: JavaBrace| JavaRegion {
                 kind: JavaBraceKind::Method,
+                header_start: brace.header_start,
+                header_end: brace.header_end,
                 start_line: brace.start_line,
                 end_line,
                 start_column: brace.start_column,
@@ -3205,6 +3328,8 @@ enum JavaBraceKind {
 #[derive(Debug, Clone)]
 struct JavaBrace {
     kind: JavaBraceKind,
+    header_start: usize,
+    header_end: usize,
     start_line: usize,
     start_column: usize,
     body_start: usize,
@@ -3214,6 +3339,8 @@ struct JavaBrace {
 #[derive(Debug, Clone, Copy)]
 struct JavaRegion {
     kind: JavaBraceKind,
+    header_start: usize,
+    header_end: usize,
     start_line: usize,
     end_line: usize,
     start_column: usize,
@@ -4511,6 +4638,12 @@ pub fn measure_garlic_bytecode_viewer(root: &Path, run_dir: &Path) -> Result<(St
     )
     .wrap_err("reading EdgeCases source")?;
     let denominator: usize = main_class_method_ranges(&original).len().max(1);
+    let identity_denominator: usize = main_method_identities(&original).values().sum();
+    if identity_denominator != denominator {
+        return Err(eyre::eyre!(
+            "original method identity population {identity_denominator} differs from the structural population {denominator}"
+        ));
+    }
     let run: PathBuf = run_dir.join(&id);
     std::fs::create_dir(&run).wrap_err("creating external comparator artifact directory")?;
     retain_comparator_jdk_provenance(&run, &java, &javac, &jar_bytes).map_err(eyre::Report::msg)?;
@@ -4585,23 +4718,31 @@ pub fn measure_garlic_bytecode_viewer(root: &Path, run_dir: &Path) -> Result<(St
     let mut disrobe_row: Value =
         disrobe_score.to_json("disrobe (in-house JVM, JAR input)", IN_PROCESS_VERSION);
     disrobe_row["execution_probe"] = disrobe_probe;
+    disrobe_row["original_method_coverage"] =
+        fixed_method_coverage_from_artifact(&original, &disrobe_artifact);
     let mut garlic_row: Value = garlic_score.to_json("garlic (JAR input)", GARLIC_SOURCE_COMMIT);
     garlic_row["execution_probe"] = garlic_probe;
+    garlic_row["original_method_coverage"] =
+        fixed_method_coverage_from_artifact(&original, &run.join("garlic"));
     let mut bcv_row: Value =
         bcv_score.to_json("bytecode viewer (JAR input)", BYTECODE_VIEWER_SOURCE_COMMIT);
     bcv_row["execution_probe"] = bcv_probe;
+    bcv_row["original_method_coverage"] =
+        fixed_method_coverage_from_artifact(&original, &run.join("bytecode-viewer"));
     let mut bcv_api_row: Value = bcv_api_score.to_json(
         "bytecode viewer (CFR API, empty explicit options, JAR input)",
         BYTECODE_VIEWER_SOURCE_COMMIT,
     );
     bcv_api_row["execution_probe"] = bcv_api_probe;
+    bcv_api_row["original_method_coverage"] =
+        fixed_method_coverage_from_artifact(&original, &run.join("bytecode-viewer-cfr-api"));
     Ok((
         id,
         json!({
             "id": "jvm-garlic-bytecode-viewer",
             "status": if disrobe_score.is_certified() && garlic_score.is_certified() && bcv_score.is_certified() && bcv_api_score.is_certified() { "ok" } else { "uncertified" },
             "dataset": format!("{} (SHA-256 {})", jar_path.display(), sha256_hex(&jar_bytes)),
-            "oracle": "javac compile yield and bounded EdgeProbe observation agreement are separate quality fields. EdgeProbe compares one committed behavior suite with the original JAR; it does not establish unrestricted semantic equivalence.",
+            "oracle": "Every tool also receives a fixed-population coverage score against the original main class's source method names and arities. javac compile yield and bounded EdgeProbe observation agreement remain separate quality fields. EdgeProbe compares one committed behavior suite with the original JAR; it does not establish unrestricted semantic equivalence.",
             "tools": [
                 disrobe_row,
                 garlic_row,
@@ -5475,6 +5616,17 @@ EdgeCases.java\0public void run() {@2402:9";
             "only EdgeCases.a and EdgeCases.b are depth-1 members; Inner.hidden sits one level \
              deeper and is not a main-class method"
         );
+    }
+
+    #[test]
+    fn fixed_method_coverage_uses_the_original_name_arity_population() {
+        let original: &str = "final class EdgeCases {\nvoid same(int value) {}\nvoid same(String value) {}\nvoid kept() {}\nclass Inner { void hidden() {} }\n}\n";
+        let recovered: &str = "final class EdgeCases {\nvoid same(long value) {}\nvoid kept() {}\nvoid extra() {}\nclass Inner { void hidden() {} }\n}\n";
+        let coverage: Value = fixed_method_coverage(original, recovered);
+        assert_eq!(coverage["matched"], json!(2));
+        assert_eq!(coverage["original"], json!(3));
+        assert_eq!(coverage["recovered_main_methods"], json!(3));
+        assert_eq!(coverage["value"], json!(200.0 / 3.0));
     }
 
     #[test]
