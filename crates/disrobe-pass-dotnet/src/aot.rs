@@ -20,16 +20,22 @@ mod metadata_records;
 mod method_bodies;
 mod method_boundaries;
 mod native_hashtable;
+mod object_model;
 mod resources;
 mod stack_trace_map;
 
 pub use invoke_map::AotInvokeMapRefusal;
 pub use metadata_records::{
-    AOT_SIGNATURE_ABSTENTIONS, AotCodeRange, AotMetadataAttribution, AotMetadataStatus, AotMethod,
-    AotMethodBody, AotMethodSignature, AotSignatureAbstention, AotSignatureProvenance, AotType,
-    AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
+    AOT_SIGNATURE_ABSTENTIONS, AotCodeRange, AotFieldLayout, AotMetadataAttribution,
+    AotMetadataStatus, AotMethod, AotMethodBody, AotMethodSignature, AotSignatureAbstention,
+    AotSignatureProvenance, AotType, AotTypeLayout, AotTypeSignature, AotTypeSignatureKind,
+    recover_metadata_attribution,
 };
-use metadata_records::{AotFieldLayout, AotTypeLayout};
+pub use object_model::{
+    AotObjectFieldStore, AotObjectHelperCall, AotObjectHelperEvidence, AotObjectHelperKind,
+    AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus,
+    AotObjectStoreWidth, recover_object_model,
+};
 pub use resources::{
     AotManifestResource, AotResourceIndex, AotResourceRefusal, AotResourceStatus,
     manifest_resource_data, recover_manifest_resources,
@@ -50,6 +56,8 @@ pub struct AotReport {
     pub recovered_names: Vec<String>,
     #[serde(default)]
     pub metadata_attribution: AotMetadataAttribution,
+    #[serde(default)]
+    pub object_model: AotObjectModel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invoke_map_refusals: Vec<AotInvokeMapRefusal>,
     #[serde(default)]
@@ -1208,14 +1216,21 @@ pub fn detect(image: &[u8]) -> AotReport {
         .map_or_else(Vec::new, |header: &ReadyToRunHeader| {
             recover_metadata_names(image, header)
         });
-    let (metadata_attribution, invoke_map_refusals): (
+    let (metadata_attribution, object_type_layouts, invoke_map_refusals): (
         AotMetadataAttribution,
+        Vec<AotTypeLayout>,
         Vec<AotInvokeMapRefusal>,
     ) = ready_to_run.as_ref().map_or_else(
-        || (AotMetadataAttribution::default(), Vec::new()),
+        || (AotMetadataAttribution::default(), Vec::new(), Vec::new()),
         |header: &ReadyToRunHeader| {
             metadata_records::recover_metadata_with_invoke_refusals(image, header).unwrap_or_else(
-                |error: crate::error::Error| (AotMetadataAttribution::rejected(error), Vec::new()),
+                |error: crate::error::Error| {
+                    (
+                        AotMetadataAttribution::rejected(error),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                },
             )
         },
     );
@@ -1229,6 +1244,8 @@ pub fn detect(image: &[u8]) -> AotReport {
         .map_or_else(AotResourceIndex::default, |header: &ReadyToRunHeader| {
             recover_manifest_resources(image, header)
         });
+    let object_model: AotObjectModel =
+        recover_object_model(image, &metadata_attribution, object_type_layouts, &[], &[]);
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")
@@ -1244,6 +1261,7 @@ pub fn detect(image: &[u8]) -> AotReport {
         ready_to_run,
         recovered_names,
         metadata_attribution,
+        object_model,
         invoke_map_refusals,
         stack_trace_map,
         manifest_resources,

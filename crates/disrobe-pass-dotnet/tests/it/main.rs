@@ -155,6 +155,8 @@ mod native_aot_names_coverage;
 mod native_aot_net10;
 #[path = "../native_aot_net7.rs"]
 mod native_aot_net7;
+#[path = "../native_aot_object_model.rs"]
+mod native_aot_object_model;
 #[path = "../native_aot_param.rs"]
 mod native_aot_param;
 #[path = "../native_aot_real_image.rs"]

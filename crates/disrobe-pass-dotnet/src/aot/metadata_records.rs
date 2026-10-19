@@ -176,20 +176,20 @@ pub struct AotType {
     pub method_record_offsets: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AotFieldLayout {
-    pub(super) name: String,
-    pub(super) field_type: AotTypeSignature,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotFieldLayout {
+    pub name: String,
+    pub field_type: AotTypeSignature,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct AotTypeLayout {
-    pub(super) record_offset: u32,
-    pub(super) sequential: bool,
-    pub(super) value_type: bool,
-    pub(super) declared_size: u32,
-    pub(super) packing_size: u32,
-    pub(super) instance_fields: Vec<AotFieldLayout>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotTypeLayout {
+    pub record_offset: u32,
+    pub sequential: bool,
+    pub value_type: bool,
+    pub declared_size: u32,
+    pub packing_size: u32,
+    pub instance_fields: Vec<AotFieldLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2505,16 +2505,24 @@ pub fn recover_metadata_attribution(
     header: &ReadyToRunHeader,
 ) -> crate::error::Result<AotMetadataAttribution> {
     recover_metadata_with_invoke_refusals(image, header).map(
-        |(attribution, _refusals): (AotMetadataAttribution, Vec<AotInvokeMapRefusal>)| attribution,
+        |(attribution, _layouts, _refusals): (
+            AotMetadataAttribution,
+            Vec<AotTypeLayout>,
+            Vec<AotInvokeMapRefusal>,
+        )| attribution,
     )
 }
 
 pub(super) fn recover_metadata_with_invoke_refusals(
     image: &[u8],
     header: &ReadyToRunHeader,
-) -> crate::error::Result<(AotMetadataAttribution, Vec<AotInvokeMapRefusal>)> {
+) -> crate::error::Result<(
+    AotMetadataAttribution,
+    Vec<AotTypeLayout>,
+    Vec<AotInvokeMapRefusal>,
+)> {
     let Some(section): Option<&AotSection> = metadata_section(header)? else {
-        return Ok((AotMetadataAttribution::default(), Vec::new()));
+        return Ok((AotMetadataAttribution::default(), Vec::new(), Vec::new()));
     };
     let profile: Option<MetadataProfile> =
         METADATA_PROFILES
@@ -2534,6 +2542,7 @@ pub(super) fn recover_metadata_with_invoke_refusals(
                 methods: Vec::new(),
             },
             Vec::new(),
+            Vec::new(),
         ));
     };
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
@@ -2550,6 +2559,7 @@ pub(super) fn recover_metadata_with_invoke_refusals(
             types,
             methods,
         },
+        layouts,
         refusals,
     ))
 }
