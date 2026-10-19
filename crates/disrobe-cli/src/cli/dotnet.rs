@@ -1,12 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
-use std::io::{BufRead as _, IsTerminal as _};
+use std::io::Write as _;
+use std::io::{BufRead as _, IsTerminal as _, Read as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
 
-use disrobe_pass_dotnet::aot::{AotMethod, AotMethodBody, AotReport, detect as detect_native_aot};
+use disrobe_pass_dotnet::aot::{
+    AotMethod, AotMethodBody, AotReport, detect as detect_native_aot, manifest_resource_data,
+};
 use disrobe_pass_dotnet::decompile::{Decompiled, decompile_assembly_detailed};
 use disrobe_pass_dotnet::interop::{InteropReport, interop_report};
 use disrobe_pass_dotnet::unprotect::neutralize::{
@@ -30,6 +33,8 @@ use super::globals;
 
 const MAX_BUNDLE_ASSEMBLIES: usize = 512;
 const NATIVE_AOT_INPUT_MAX_BYTES: u64 = 1 << 29;
+const MAX_NATIVE_AOT_RESOURCE_COUNT: usize = 65_536;
+const MAX_NATIVE_AOT_RESOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PRINTED_RESIDUALS: usize = 12;
 const MAX_PROMPT_RETRIES: u32 = 3;
 const PATCH_BYTES_SHOWN: usize = 16;
@@ -538,6 +543,11 @@ pub(crate) enum DotnetCmd {
         out: Option<PathBuf>,
         #[arg(
             long,
+            help = "extract recovered manifest resources into this empty directory"
+        )]
+        resources: Option<PathBuf>,
+        #[arg(
+            long,
             help = "emit the recovery JSON to stdout as machine-clean output (no summary, no file written)"
         )]
         json: bool,
@@ -630,7 +640,12 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
         DotnetCmd::Analyze { input, out } => analyze(input, out),
         DotnetCmd::Interop { input, json } => interop(&input, json),
         DotnetCmd::Compare { old, new, json } => super::dotnet_compare::run(&old, &new, json),
-        DotnetCmd::NativeAot { input, out, json } => native_aot(input, out, json),
+        DotnetCmd::NativeAot {
+            input,
+            out,
+            resources,
+            json,
+        } => native_aot(input, out, resources, json),
         DotnetCmd::Backends => backends(),
     }
 }
@@ -1491,8 +1506,16 @@ fn interop(input: &Path, json: bool) -> miette::Result<()> {
     Ok(())
 }
 
-fn native_aot(input: PathBuf, out: Option<PathBuf>, json: bool) -> miette::Result<()> {
-    let meta: std::fs::Metadata = std::fs::metadata(&input)
+fn native_aot(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    resources: Option<PathBuf>,
+    json: bool,
+) -> miette::Result<()> {
+    let file: std::fs::File = std::fs::File::open(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0484: cannot open input: {e}"))?;
+    let meta: std::fs::Metadata = file
+        .metadata()
         .map_err(|e| miette::miette!("DR-CLI-0484: cannot stat input: {e}"))?;
     if meta.len() > NATIVE_AOT_INPUT_MAX_BYTES {
         return Err(miette::miette!(
@@ -1500,9 +1523,20 @@ fn native_aot(input: PathBuf, out: Option<PathBuf>, json: bool) -> miette::Resul
             meta.len()
         ));
     }
-    let bytes: Vec<u8> = std::fs::read(&input)
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut limited: std::io::Take<std::fs::File> = file.take(NATIVE_AOT_INPUT_MAX_BYTES + 1);
+    let size: usize = limited
+        .read_to_end(&mut bytes)
         .map_err(|e| miette::miette!("DR-CLI-0484: cannot read input: {e}"))?;
+    if u64::try_from(size).map_or(true, |size: u64| size > NATIVE_AOT_INPUT_MAX_BYTES) {
+        return Err(miette::miette!(
+            "DR-CLI-0484: input exceeds the {NATIVE_AOT_INPUT_MAX_BYTES} byte cap for a NativeAOT image"
+        ));
+    }
     let report: AotReport = detect_native_aot(&bytes);
+    if let Some(directory) = resources.as_deref() {
+        extract_native_aot_resources(&bytes, &report, directory)?;
+    }
     if json {
         let rendered: String = serde_json::to_string_pretty(&report)
             .map_err(|e| miette::miette!("DR-CLI-0486: serialize: {e}"))?;
@@ -1563,6 +1597,102 @@ fn native_aot(input: PathBuf, out: Option<PathBuf>, json: bool) -> miette::Resul
         split.managed, split.registers, split.refused
     );
     println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn extract_native_aot_resources(
+    bytes: &[u8],
+    report: &AotReport,
+    root: &Path,
+) -> miette::Result<()> {
+    let header: &disrobe_pass_dotnet::aot::ReadyToRunHeader =
+        report.ready_to_run.as_ref().ok_or_else(|| {
+            miette::miette!(
+                "DR-CLI-0488: NativeAOT resource extraction requires a ReadyToRun header"
+            )
+        })?;
+    let resources: &[disrobe_pass_dotnet::aot::AotManifestResource] =
+        &report.manifest_resources.resources;
+    if let disrobe_pass_dotnet::aot::AotResourceStatus::Rejected { reason, .. } =
+        &report.manifest_resources.status
+    {
+        return Err(miette::miette!(
+            "DR-CLI-0488: resource index was rejected: {reason}"
+        ));
+    }
+    if let Some(refusal) = report.manifest_resources.refusals.first() {
+        return Err(miette::miette!(
+            "DR-CLI-0488: resource index has {} refused entries: {}; inspect the report without --resources",
+            report.manifest_resources.refusals.len(),
+            refusal.reason
+        ));
+    }
+    if resources.len() > MAX_NATIVE_AOT_RESOURCE_COUNT {
+        return Err(miette::miette!(
+            "DR-CLI-0488: resource count exceeds {MAX_NATIVE_AOT_RESOURCE_COUNT}"
+        ));
+    }
+    if root.exists()
+        && std::fs::read_dir(root)
+            .map_err(|e| miette::miette!("DR-CLI-0488: cannot inspect resource directory: {e}"))?
+            .next()
+            .is_some()
+    {
+        return Err(miette::miette!(
+            "DR-CLI-0488: resource directory must be empty"
+        ));
+    }
+    let mut total: u64 = 0;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut entries: Vec<(String, &[u8])> = Vec::with_capacity(resources.len());
+    for resource in resources {
+        total = total
+            .checked_add(u64::from(resource.length))
+            .ok_or_else(|| miette::miette!("DR-CLI-0488: resource byte total overflow"))?;
+        if total > MAX_NATIVE_AOT_RESOURCE_BYTES {
+            return Err(miette::miette!(
+                "DR-CLI-0488: resources exceed {MAX_NATIVE_AOT_RESOURCE_BYTES} bytes"
+            ));
+        }
+        let name: String = disrobe_binfmt::sanitize_entry_path(&resource.name).map_err(|e| {
+            miette::miette!("DR-CLI-0488: unsafe resource name {}: {e}", resource.name)
+        })?;
+        if !names.insert(name.to_ascii_lowercase()) {
+            return Err(miette::miette!(
+                "DR-CLI-0488: duplicate resource output path: {name}"
+            ));
+        }
+        let data: &[u8] = manifest_resource_data(bytes, header, resource).map_err(|e| {
+            miette::miette!("DR-CLI-0488: cannot read resource {}: {e}", resource.name)
+        })?;
+        entries.push((name, data));
+    }
+    for name in &names {
+        let mut ancestor: &str = name;
+        while let Some((prefix, _)) = ancestor.rsplit_once('/') {
+            if names.contains(prefix) {
+                return Err(miette::miette!(
+                    "DR-CLI-0488: resource output has a file ancestor: {name}"
+                ));
+            }
+            ancestor = prefix;
+        }
+    }
+    std::fs::create_dir_all(root)
+        .map_err(|e| miette::miette!("DR-CLI-0488: cannot create resource directory: {e}"))?;
+    for (name, data) in entries {
+        let destination: PathBuf =
+            disrobe_binfmt::prepare_entry_path(root, &name).map_err(|e| {
+                miette::miette!("DR-CLI-0488: cannot prepare resource output {name}: {e}")
+            })?;
+        let mut file: std::fs::File = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .map_err(|e| miette::miette!("DR-CLI-0488: cannot create resource output: {e}"))?;
+        file.write_all(data)
+            .map_err(|e| miette::miette!("DR-CLI-0488: cannot write resource output: {e}"))?;
+    }
     Ok(())
 }
 

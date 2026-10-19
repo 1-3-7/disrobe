@@ -267,6 +267,8 @@ mod dotnet_interop_cli;
 
 #[path = "../dotnet_native_aot_cli.rs"]
 mod dotnet_native_aot_cli;
+#[path = "../native_aot_resources.rs"]
+mod native_aot_resources;
 
 #[path = "../dotnet_single_file.rs"]
 mod dotnet_single_file;
