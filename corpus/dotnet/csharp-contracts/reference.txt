@@ -1,0 +1,23 @@
+def 06000001 ContractFixture.Callers::FakeSystemTryParse sig=0001080E
+il 160A021200280300000626062A
+def 06000002 ContractFixture.Callers::get_IntSpan sig=000015113D0108
+il D001000004280100002B2A
+def 06000003 System.Fake.Contracts::TryParse sig=0002020E1008
+il 03026F0F00000A54172A
+ref 0A000001 System.Runtime.CompilerServices.CompilationRelaxationsAttribute::.ctor sig=20010108
+ref 0A000002 System.Runtime.CompilerServices.RuntimeCompatibilityAttribute::.ctor sig=200001
+ref 0A000003 System.Diagnostics.DebuggableAttribute::.ctor sig=2001011111
+ref 0A000004 System.Runtime.Versioning.TargetFrameworkAttribute::.ctor sig=2001010E
+ref 0A000005 System.Reflection.AssemblyCompanyAttribute::.ctor sig=2001010E
+ref 0A000006 System.Reflection.AssemblyConfigurationAttribute::.ctor sig=2001010E
+ref 0A000007 System.Reflection.AssemblyFileVersionAttribute::.ctor sig=2001010E
+ref 0A000008 System.Reflection.AssemblyInformationalVersionAttribute::.ctor sig=2001010E
+ref 0A000009 System.Reflection.AssemblyProductAttribute::.ctor sig=2001010E
+ref 0A00000A System.Reflection.AssemblyTitleAttribute::.ctor sig=2001010E
+ref 0A00000B System.Runtime.CompilerServices.RefSafetyRulesAttribute::.ctor sig=20010108
+ref 0A00000C System.Runtime.CompilerServices.NullableContextAttribute::.ctor sig=20010105
+ref 0A00000D System.Runtime.CompilerServices.CompilerGeneratedAttribute::.ctor sig=200001
+ref 0A00000E System.Runtime.CompilerServices.RuntimeHelpers::CreateSpan sig=10010115113D011E00114D
+ref 0A00000F System.String::get_Length sig=200008
+spec 2B000001 method=0A00000E args=0A0108
+field 04000001 97B9883915D85CFDD180EF552B68A583A706E6DEAF49DC56353DD058E2A8B2EF4 rva=00002878

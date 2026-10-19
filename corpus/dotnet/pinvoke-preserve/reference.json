@@ -1,0 +1,16 @@
+{
+  "pinvokes": [
+    {
+      "method": "PreserveSigFixture.NativeMethods::DefaultPreserveSig",
+      "module": "kernel32.dll",
+      "entry_point": "GetCurrentProcessId",
+      "preserve_sig": true
+    },
+    {
+      "method": "PreserveSigFixture.NativeMethods::ExplicitNoPreserveSig",
+      "module": "kernel32.dll",
+      "entry_point": "GetCurrentProcessId",
+      "preserve_sig": false
+    }
+  ]
+}

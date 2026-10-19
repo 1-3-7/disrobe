@@ -1,0 +1,36 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-10-19"
+toolchain = ".NET SDK 9.0.318, target net8.0"
+note = "benign self-authored P/Invoke declarations used only as managed metadata; no native import is invoked"
+
+[provenance]
+compiler = "dotnet build -c Release -p:RestoreIgnoreFailedSources=true src/PreserveSigFixture.csproj"
+stage = "Copy-Item src/bin/Release/net8.0/PreserveSigFixture.dll PreserveSigFixture.dll"
+reference = "dotnet reference/bin/Release/net8.0/PreserveSigMetadata.dll PreserveSigFixture.dll > reference.json"
+reference_format = "JSON output normalized to UTF-8 with LF and one trailing newline"
+
+[[fixture]]
+name = "PreserveSigFixture.cs"
+path = "src/PreserveSigFixture.cs"
+kind = "csharp-source"
+provenance = "self-authored"
+description = "one default and one explicit false DllImport PreserveSig declaration"
+
+[[fixture]]
+name = "PreserveSigFixture.dll"
+path = "PreserveSigFixture.dll"
+kind = "managed-pe-dll"
+provenance = "real"
+source = "src/PreserveSigFixture.cs"
+sha256 = "C972A368193C3E64BD3402BA4D3249F92BC750824A59D65B663B3CCAA5295F13"
+description = "deterministic C# compiler output containing only metadata declarations"
+
+[[fixture]]
+name = "reference.json"
+path = "reference.json"
+kind = "reference-output"
+provenance = "real"
+source = "reference/Program.cs"
+sha256 = "BF425C313F7CED420C1D4FD188520A8AF264DD619439A6AC3ECA2E2B0750F42E"
+description = "System.Reflection.Metadata reading of MethodDefinition ImplAttributes and MethodImport rows"
