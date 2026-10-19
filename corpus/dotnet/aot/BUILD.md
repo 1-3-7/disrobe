@@ -17,6 +17,7 @@ These points come from the dotnet/runtime sources at tag `v10.0.0` (MIT licence)
 - The stack-trace map (`StackTraceMethodMappingNode.cs`, read by `StackTraceMetadata.cs`) is a 32-bit entry count followed by command-coded entries: a command byte (`0x01` owning type, `0x02` name, `0x04` signature, `0x08` signature plus method instantiation, `0x10` hidden), the updated fields, and a 32-bit relative pointer to the method body. Owning types are full metadata tokens; names, signatures and instantiations are offsets into the embedded metadata blob.
 - `MetadataManager.cs` leaves a method out of the stack-trace map when it is in the invoke map, or when its body is folded into another; the runtime names those through reflection metadata instead. For methods on generic types the owning type is the generic definition instantiated over its formal parameters, and a generic method's instantiation is recorded as its formal parameter names.
 - The resource index (`ResourceIndexNode.cs`) is a native hash table of (assembly name, resource name, offset, length) tuples into the resource data blob.
+- The AMD64 `RhpAssignRef` helper (`runtime/amd64/WriteBarriers.asm`) stores the reference from `rdx` through the destination in `rcx`, then updates the write-watch and generational card tables. The fixture's 97-byte helper body at RVA `0xb04e0` has SHA-256 `31e6a1f513121c857e2a2fd214e9aec33c1194d16d4978b389b8fb1804116e85`; the managed linker map independently bounds `Station<string>.Swap`, whose call at RVA `0x94519` targets that body.
 
 | Runtime source (`src/coreclr/...` at `v10.0.0`) | sha256 |
 | --- | --- |
@@ -29,6 +30,7 @@ These points come from the dotnet/runtime sources at tag `v10.0.0` (MIT licence)
 | `tools/aot/ILCompiler.Compiler/Compiler/MetadataManager.cs` | `590b70031122bc6d84f813bff623f6a1ab508462904de5f9f6f1fc3af47afcf5` |
 | `tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/ResourceIndexNode.cs` | `316a3cece22aab485b731285bfb8513d8f3afffbd3661abc046cb3dc42ca3aab` |
 | `tools/Common/Internal/Runtime/MetadataBlob.cs` | `684172213616a8e0581277e131b7b8076e6a184dd6f41b86655b35934dd1be08` |
+| `runtime/amd64/WriteBarriers.asm` | `4452bd7f582853996230e568e7beba39d990154181bf94134ac110e4d4c1c4` |
 
 ## Toolchain
 

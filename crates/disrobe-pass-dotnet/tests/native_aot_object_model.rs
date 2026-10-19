@@ -5,13 +5,18 @@ use std::io::Read as _;
 use std::sync::OnceLock;
 
 use disrobe_pass_dotnet::aot::{
-    AotMetadataStatus, AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal,
-    AotObjectModelStatus, AotObjectStoreWidth, AotReport, detect, recover_object_model,
+    AotMetadataStatus, AotObjectHelperEvidence, AotObjectHelperKind, AotObjectMethodEvidence,
+    AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus, AotObjectStoreWidth, AotReport,
+    detect, recover_object_model,
 };
+use sha2::{Digest as _, Sha256};
 
 const FIXTURE: &str = "corpus/dotnet/aot/aot_maps_net10_x86_64";
 const STATION_TYPE: &str = "Station`1";
 const STATION_SWAP_SYMBOL: &str = "aot_maps_net10_x86_64_Tidewater_Gauges_Station_1<Int32>__Swap";
+const STATION_REF_SWAP_SYMBOL: &str =
+    "aot_maps_net10_x86_64_Tidewater_Gauges_Station_1<System___Canon>__Swap";
+const ASSIGN_REF_RVA: u32 = 0xB04E0;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path: String = format!("{FIXTURE}/{name}");
@@ -29,7 +34,7 @@ fn report() -> &'static AotReport {
     REPORT.get_or_init(|| detect(image()))
 }
 
-fn station_swap_evidence(report: &AotReport) -> AotObjectMethodEvidence {
+fn station_swap_evidence(report: &AotReport, symbol: &str) -> AotObjectMethodEvidence {
     let compressed: Vec<u8> = fixture("aot_maps_net10_x86_64.link-map-managed.txt.gz");
     let mut text: String = String::new();
     flate2::read::GzDecoder::new(compressed.as_slice())
@@ -60,8 +65,8 @@ fn station_swap_evidence(report: &AotReport) -> AotObjectMethodEvidence {
         .collect();
     let index: usize = symbols
         .iter()
-        .position(|(symbol, _)| symbol == STATION_SWAP_SYMBOL)
-        .unwrap_or_else(|| panic!("link map names {STATION_SWAP_SYMBOL}"));
+        .position(|(candidate, _)| candidate == symbol)
+        .unwrap_or_else(|| panic!("link map names {symbol}"));
     let (_, start_rva): &(String, u32) = symbols
         .get(index)
         .unwrap_or_else(|| panic!("station swap symbol remains indexed"));
@@ -102,8 +107,31 @@ fn recover_station(report: &AotReport, image: &[u8]) -> AotObjectModel {
         image,
         &report.metadata_attribution,
         report.object_model.type_layouts.clone(),
-        &[station_swap_evidence(report)],
+        &[station_swap_evidence(report, STATION_SWAP_SYMBOL)],
         &[],
+    )
+}
+
+fn recover_station_reference_write(report: &AotReport, image: &[u8]) -> AotObjectModel {
+    let pe = disrobe_pass_dotnet::pe::parse(image)
+        .unwrap_or_else(|error| panic!("fixture PE parses: {error}"));
+    let helper_bytes: &[u8] = pe
+        .slice_exact_file_backed_rva(image, ASSIGN_REF_RVA, 0x61)
+        .unwrap_or_else(|| panic!("RhpAssignRef reference body is file backed"));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(helper_bytes)),
+        "31e6a1f513121c857e2a2fd214e9aec33c1194d16d4978b389b8fb1804116e85"
+    );
+    recover_object_model(
+        image,
+        &report.metadata_attribution,
+        report.object_model.type_layouts.clone(),
+        &[station_swap_evidence(report, STATION_REF_SWAP_SYMBOL)],
+        &[AotObjectHelperEvidence {
+            rva: ASSIGN_REF_RVA,
+            name: "RhpAssignRef".to_owned(),
+            kind: AotObjectHelperKind::WriteBarrier,
+        }],
     )
 }
 
@@ -135,7 +163,7 @@ fn native_aot_station_field_layout_requires_linker_map_ownership_evidence() {
 #[test]
 fn native_aot_object_model_mutation_removes_the_map_owned_store() {
     let report: &AotReport = report();
-    let evidence: AotObjectMethodEvidence = station_swap_evidence(report);
+    let evidence: AotObjectMethodEvidence = station_swap_evidence(report, STATION_SWAP_SYMBOL);
     let baseline: AotObjectModel = recover_station(report, image());
     let mut mutated: Vec<u8> = image().to_vec();
     let pe = disrobe_pass_dotnet::pe::parse(mutated.as_slice())
@@ -168,7 +196,7 @@ fn native_aot_object_model_mutation_removes_the_map_owned_store() {
 #[test]
 fn native_aot_object_model_refuses_overlapping_method_evidence() {
     let report: &AotReport = report();
-    let evidence: AotObjectMethodEvidence = station_swap_evidence(report);
+    let evidence: AotObjectMethodEvidence = station_swap_evidence(report, STATION_SWAP_SYMBOL);
     let overlapping: AotObjectMethodEvidence = AotObjectMethodEvidence {
         start_rva: evidence.start_rva.saturating_add(1),
         ..evidence
@@ -186,4 +214,36 @@ fn native_aot_object_model_refuses_overlapping_method_evidence() {
             reason: AotObjectModelRefusal::MethodEvidenceAmbiguous,
         }
     );
+}
+
+#[test]
+fn native_aot_station_reference_swap_recovers_write_barrier_call() {
+    let report: &AotReport = report();
+    let recovered: AotObjectModel = recover_station_reference_write(report, image());
+    assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
+    let call = recovered
+        .helper_calls
+        .iter()
+        .find(|call| call.call_rva == 0x94519)
+        .unwrap_or_else(|| panic!("Station<string>.Swap write barrier call is recovered"));
+    assert_eq!(call.helper.rva, ASSIGN_REF_RVA);
+    assert_eq!(call.helper.name, "RhpAssignRef");
+    assert_eq!(call.helper.kind, AotObjectHelperKind::WriteBarrier);
+}
+
+#[test]
+fn native_aot_station_reference_swap_mutation_removes_write_barrier_call() {
+    let report: &AotReport = report();
+    let mut mutated: Vec<u8> = image().to_vec();
+    let pe = disrobe_pass_dotnet::pe::parse(mutated.as_slice())
+        .unwrap_or_else(|error| panic!("fixture PE parses: {error}"));
+    let offset: usize = pe
+        .rva_to_offset(0x94519)
+        .unwrap_or_else(|| panic!("write barrier call RVA is file backed"));
+    *mutated
+        .get_mut(offset)
+        .unwrap_or_else(|| panic!("write barrier call file offset exists")) = 0x90;
+    let recovered: AotObjectModel = recover_station_reference_write(report, mutated.as_slice());
+    assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
+    assert!(recovered.helper_calls.is_empty());
 }
