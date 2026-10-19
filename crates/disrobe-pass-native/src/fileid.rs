@@ -1014,6 +1014,11 @@ fn merge_byte_identity(bytes: &[u8], now_secs: u64, builder: &mut Builder) {
         }
         let family: &'static str = canonical_family(&hit.name);
         let display: &'static str = canonical_display(family);
+        let (evidence_kind, locus): (EvidenceKind, String) = if family == "nativeaot" {
+            (EvidenceKind::DataDirectory, "PE export table".to_owned())
+        } else {
+            (EvidenceKind::ByteSignature, "byte scan".to_owned())
+        };
         builder.record(
             hit.kind,
             family,
@@ -1022,8 +1027,8 @@ fn merge_byte_identity(bytes: &[u8], now_secs: u64, builder: &mut Builder) {
             hit.confidence,
             hit.support,
             Evidence {
-                kind: EvidenceKind::ByteSignature,
-                locus: "byte scan".to_owned(),
+                kind: evidence_kind,
+                locus,
                 detail: hit.detail,
             },
         );
@@ -1058,6 +1063,7 @@ fn canonical_family(name: &str) -> &'static str {
         "Nim" => "nim",
         "Free Pascal" => "freepascal",
         ".NET" => "dotnet",
+        "NativeAOT" => "nativeaot",
         "Nuitka" => "nuitka",
         "py2exe" => "py2exe",
         "PyInstaller" => "pyinstaller",
@@ -1114,6 +1120,7 @@ fn canonical_display(family: &'static str) -> &'static str {
         "nim" => "Nim",
         "freepascal" => "Free Pascal",
         "dotnet" => ".NET / CLR",
+        "nativeaot" => "NativeAOT",
         "nuitka" => "Nuitka",
         "py2exe" => "py2exe",
         "pyinstaller" => "PyInstaller",

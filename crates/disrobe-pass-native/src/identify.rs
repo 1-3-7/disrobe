@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use disrobe_bytes::read_u32_le_at;
+use disrobe_bytes::{read_u16_le_at, read_u32_le_at, read_u64_le_at};
 
 use crate::authenticode::{AuthenticodeReport, AuthenticodeVerdict};
 use crate::packers::anchor::AnchorRegions;
@@ -20,6 +20,21 @@ const MAX_METADATA_VERSION_BYTES: usize = 255;
 const MAX_METADATA_STREAMS: usize = 16;
 const MAX_METADATA_STREAM_NAME: usize = 32;
 const RICH_LINKER_1400_PRODUCT: u16 = 0x0102;
+const PE_EXPORT_DIRECTORY_INDEX: usize = 0;
+const PE_EXPORT_DIRECTORY_BYTES: usize = 40;
+const MAX_EXPORT_NAMES: usize = 4096;
+const MAX_EXPORT_NAME_BYTES: usize = 128;
+const DNDH_MAGIC: &[u8; 4] = b"DNDH";
+const DNDH_HEADER_BYTES: usize = 16;
+const READY_TO_RUN_MAGIC: &[u8; 4] = b"RTR\0";
+const MAX_READY_TO_RUN_PROBES: usize = 256;
+const MAX_READY_TO_RUN_SCAN_BYTES: usize = 512 * 1024 * 1024;
+const MAX_READY_TO_RUN_PE_SECTIONS: usize = 256;
+const READY_TO_RUN_HEADER_BYTES: usize = 16;
+const READY_TO_RUN_ENTRY_BYTES: usize = 24;
+const READY_TO_RUN_ENTRY_TYPE: u8 = 1;
+const MAX_READY_TO_RUN_SECTIONS: usize = 1024;
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -38,6 +53,7 @@ pub enum IdentityKind {
 #[serde(rename_all = "kebab-case")]
 pub enum SupportRoute {
     DotnetDecompile,
+    DotnetNativeAot,
     GoDecompile,
     RustRecover,
     NativeDecompile,
@@ -51,8 +67,9 @@ pub enum SupportRoute {
 }
 
 impl SupportRoute {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::DotnetDecompile,
+        Self::DotnetNativeAot,
         Self::GoDecompile,
         Self::RustRecover,
         Self::NativeDecompile,
@@ -69,6 +86,7 @@ impl SupportRoute {
     pub const fn invocations(self) -> &'static [&'static str] {
         match self {
             Self::DotnetDecompile => &["dotnet decompile"],
+            Self::DotnetNativeAot => &["dotnet native-aot"],
             Self::GoDecompile => &["go recover"],
             Self::RustRecover | Self::NativeDecompile | Self::NativeLangDemangle => {
                 &["native decompile"]
@@ -85,6 +103,7 @@ impl SupportRoute {
     pub const fn command(self) -> &'static str {
         match self {
             Self::DotnetDecompile => "disrobe dotnet decompile",
+            Self::DotnetNativeAot => "disrobe dotnet native-aot",
             Self::GoDecompile => "disrobe go recover",
             Self::RustRecover => "disrobe native decompile (Rust symbol + panic recovery)",
             Self::NativeDecompile => "disrobe native decompile",
@@ -423,15 +442,6 @@ const SIGNATURES: &[ByteSig] = &[
         pattern: b"Inno Setup Setup Data",
         detail: "Inno Setup data",
         confidence: 95,
-        support: SupportRoute::ContainerExtract,
-        anchor: SigAnchor::Anywhere,
-    },
-    ByteSig {
-        kind: IdentityKind::Installer,
-        name: "InstallShield",
-        pattern: b"InstallShield",
-        detail: "InstallShield marker",
-        confidence: 85,
         support: SupportRoute::ContainerExtract,
         anchor: SigAnchor::Anywhere,
     },
@@ -1197,6 +1207,243 @@ fn detect_format_structural(bytes: &[u8]) -> &'static str {
     }
 }
 
+struct NativeAotHeader {
+    dndh_rva: u32,
+    dndh_major: u16,
+    dndh_minor: u16,
+    ready_to_run_rva: u32,
+    ready_to_run_major: u16,
+    ready_to_run_minor: u16,
+    ready_to_run_sections: u16,
+}
+
+fn native_aot_header(bytes: &[u8], image: &PeImage) -> Option<NativeAotHeader> {
+    if image.sections.len() > MAX_READY_TO_RUN_PE_SECTIONS {
+        return None;
+    }
+    let export: crate::packers::pe_sections::DataDirectory =
+        *image.data_directories.get(PE_EXPORT_DIRECTORY_INDEX)?;
+    if export.virtual_address == 0 || export.size < PE_EXPORT_DIRECTORY_BYTES as u32 {
+        return None;
+    }
+    let export_offset: usize = image
+        .file_offset_for_rva(export.virtual_address, bytes.len())
+        .ok()?;
+    let export_end: usize = export_offset.checked_add(PE_EXPORT_DIRECTORY_BYTES)?;
+    bytes.get(export_offset..export_end)?;
+    let function_count: usize =
+        usize::try_from(read_u32_le_at(bytes, export_offset + 20).ok()?).ok()?;
+    let name_count: usize =
+        usize::try_from(read_u32_le_at(bytes, export_offset + 24).ok()?).ok()?;
+    if function_count == 0 || name_count == 0 || name_count > MAX_EXPORT_NAMES {
+        return None;
+    }
+    let functions_rva: u32 = read_u32_le_at(bytes, export_offset + 28).ok()?;
+    let names_rva: u32 = read_u32_le_at(bytes, export_offset + 32).ok()?;
+    let ordinals_rva: u32 = read_u32_le_at(bytes, export_offset + 36).ok()?;
+    let names_offset: usize = image.file_offset_for_rva(names_rva, bytes.len()).ok()?;
+    let ordinals_offset: usize = image.file_offset_for_rva(ordinals_rva, bytes.len()).ok()?;
+    for index in 0..name_count {
+        let name_entry: usize = names_offset.checked_add(index.checked_mul(4)?)?;
+        let ordinal_entry: usize = ordinals_offset.checked_add(index.checked_mul(2)?)?;
+        let name_rva: u32 = read_u32_le_at(bytes, name_entry).ok()?;
+        if !export_name_is(bytes, image, name_rva, b"DotNetRuntimeDebugHeader") {
+            continue;
+        }
+        let ordinal: usize = usize::from(u16::from_le_bytes(
+            bytes
+                .get(ordinal_entry..ordinal_entry.checked_add(2)?)?
+                .try_into()
+                .ok()?,
+        ));
+        if ordinal >= function_count {
+            return None;
+        }
+        let function_entry: usize = image
+            .file_offset_for_rva(functions_rva, bytes.len())
+            .ok()?
+            .checked_add(ordinal.checked_mul(4)?)?;
+        let target_rva: u32 = read_u32_le_at(bytes, function_entry).ok()?;
+        let target_offset: usize = image.file_offset_for_rva(target_rva, bytes.len()).ok()?;
+        let header: &[u8] =
+            bytes.get(target_offset..target_offset.checked_add(DNDH_HEADER_BYTES)?)?;
+        if !header.starts_with(DNDH_MAGIC) {
+            return None;
+        }
+        let dndh_major: u16 = read_u16_le_at(header, 4).ok()?;
+        let dndh_minor: u16 = read_u16_le_at(header, 6).ok()?;
+        if !(1..=5).contains(&dndh_major) {
+            return None;
+        }
+        let ready_to_run: ReadyToRunHeader = ready_to_run_header(bytes, image)?;
+        return Some(NativeAotHeader {
+            dndh_rva: target_rva,
+            dndh_major,
+            dndh_minor,
+            ready_to_run_rva: ready_to_run.rva,
+            ready_to_run_major: ready_to_run.major,
+            ready_to_run_minor: ready_to_run.minor,
+            ready_to_run_sections: ready_to_run.sections,
+        });
+    }
+    None
+}
+
+struct ReadyToRunHeader {
+    rva: u32,
+    major: u16,
+    minor: u16,
+    sections: u16,
+}
+
+fn ready_to_run_header(bytes: &[u8], image: &PeImage) -> Option<ReadyToRunHeader> {
+    ready_to_run_header_with_scan_limit(bytes, image, MAX_READY_TO_RUN_SCAN_BYTES)
+}
+
+fn ready_to_run_header_with_scan_limit(
+    bytes: &[u8],
+    image: &PeImage,
+    scan_byte_limit: usize,
+) -> Option<ReadyToRunHeader> {
+    let mut remaining_probes: usize = MAX_READY_TO_RUN_PROBES;
+    let mut remaining_scan_bytes: usize = scan_byte_limit;
+    for section in &image.sections {
+        if remaining_scan_bytes == 0 {
+            return None;
+        }
+        if section.characteristics & IMAGE_SCN_MEM_EXECUTE != 0 {
+            continue;
+        }
+        let (start, end): (usize, usize) = section.raw_range(bytes.len())?;
+        let section_len: usize = end.checked_sub(start)?;
+        let scan_end: usize = start.checked_add(section_len.min(remaining_scan_bytes))?;
+        let section_bytes: &[u8] = bytes.get(start..scan_end)?;
+        remaining_scan_bytes = remaining_scan_bytes.checked_sub(section_bytes.len())?;
+        let mut from: usize = 0;
+        while let Some(relative) = section_bytes[from..]
+            .windows(READY_TO_RUN_MAGIC.len())
+            .position(|window: &[u8]| window == READY_TO_RUN_MAGIC)
+        {
+            remaining_probes = remaining_probes.checked_sub(1)?;
+            let offset: usize = from.checked_add(relative)?;
+            if let Some(header) = validate_ready_to_run_header(bytes, image, section, offset) {
+                return Some(header);
+            }
+            from = offset.checked_add(1)?;
+        }
+    }
+    None
+}
+
+fn validate_ready_to_run_header(
+    bytes: &[u8],
+    image: &PeImage,
+    section: &crate::packers::pe_sections::PeSection,
+    section_offset: usize,
+) -> Option<ReadyToRunHeader> {
+    let header_offset: usize = usize::try_from(section.raw_pointer)
+        .ok()?
+        .checked_add(section_offset)?;
+    let header_end: usize = header_offset.checked_add(READY_TO_RUN_HEADER_BYTES)?;
+    let header: &[u8] = bytes.get(header_offset..header_end)?;
+    let major: u16 = read_u16_le_at(header, 4).ok()?;
+    let minor: u16 = read_u16_le_at(header, 6).ok()?;
+    let sections: u16 = read_u16_le_at(header, 12).ok()?;
+    if major == 0
+        || usize::from(sections) > MAX_READY_TO_RUN_SECTIONS
+        || sections == 0
+        || header.get(14).copied()? as usize != READY_TO_RUN_ENTRY_BYTES
+        || header.get(15).copied()? != READY_TO_RUN_ENTRY_TYPE
+    {
+        return None;
+    }
+    let table_bytes: usize = usize::from(sections).checked_mul(READY_TO_RUN_ENTRY_BYTES)?;
+    let table_start: usize = header_end;
+    let table_end: usize = table_start.checked_add(table_bytes)?;
+    let section_end: usize = usize::try_from(section.raw_pointer)
+        .ok()?
+        .checked_add(usize::try_from(section.raw_size).ok()?)?;
+    if table_end > section_end {
+        return None;
+    }
+    let mut previous_id: Option<i32> = None;
+    for row in bytes
+        .get(table_start..table_end)?
+        .chunks_exact(READY_TO_RUN_ENTRY_BYTES)
+    {
+        let id: i32 = i32::from_le_bytes(row.get(..4)?.try_into().ok()?);
+        let flags: u32 = read_u32_le_at(row, 4).ok()?;
+        if flags & !1 != 0 {
+            return None;
+        }
+        let start: u64 = read_u64_le_at(row, 8).ok()?;
+        let end: u64 = if flags & 1 != 0 {
+            read_u64_le_at(row, 16).ok()?
+        } else {
+            start
+        };
+        if previous_id.is_some_and(|previous: i32| id <= previous)
+            || !ready_to_run_extent_is_mapped(image, bytes.len(), start, end)
+        {
+            return None;
+        }
+        previous_id = Some(id);
+    }
+    let rva: u32 = section
+        .virtual_address
+        .checked_add(u32::try_from(section_offset).ok()?)?;
+    Some(ReadyToRunHeader {
+        rva,
+        major,
+        minor,
+        sections,
+    })
+}
+
+fn ready_to_run_extent_is_mapped(image: &PeImage, image_len: usize, start: u64, end: u64) -> bool {
+    let Some(start_rva): Option<u32> = start
+        .checked_sub(image.image_base)
+        .and_then(|rva: u64| u32::try_from(rva).ok())
+    else {
+        return false;
+    };
+    let Some(end_rva): Option<u32> = end
+        .checked_sub(image.image_base)
+        .and_then(|rva: u64| u32::try_from(rva).ok())
+    else {
+        return false;
+    };
+    if start > end || end_rva > image.size_of_image {
+        return false;
+    }
+    image.section_containing_rva(start_rva).map_or_else(
+        || {
+            let header_end: usize = image.header_bytes_present(image_len);
+            usize::try_from(start_rva).is_ok_and(|start: usize| start < header_end)
+                && usize::try_from(end_rva).is_ok_and(|end: usize| end <= header_end)
+        },
+        |section| {
+            let section_end: u64 = u64::from(section.virtual_address)
+                + u64::from(section.virtual_size.max(section.raw_size));
+            u64::from(end_rva) <= section_end
+        },
+    )
+}
+
+fn export_name_is(bytes: &[u8], image: &PeImage, rva: u32, expected: &[u8]) -> bool {
+    let Ok(offset) = image.file_offset_for_rva(rva, bytes.len()) else {
+        return false;
+    };
+    let Some(tail) = bytes.get(offset..) else {
+        return false;
+    };
+    let name: &[u8] = &tail[..tail.len().min(MAX_EXPORT_NAME_BYTES)];
+    let Some(nul): Option<usize> = name.iter().position(|byte: &u8| *byte == 0) else {
+        return false;
+    };
+    name.get(..nul) == Some(expected)
+}
+
 fn bytes_find(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
@@ -1260,6 +1507,27 @@ pub fn detect(bytes: &[u8], now_secs: u64) -> IdentityReport {
             detail: format!(".NET metadata root (BSJB) declaring a {stream} table stream"),
             confidence: 70,
             support: SupportRoute::DotnetDecompile,
+        });
+    }
+    if let Some(native_aot) = pe
+        .as_ref()
+        .and_then(|image: &PeImage| native_aot_header(bytes, image))
+    {
+        hits.push(IdentityHit {
+            kind: IdentityKind::Compiler,
+            name: "NativeAOT".to_owned(),
+            detail: format!(
+                "PE export DotNetRuntimeDebugHeader targets DNDH v{}.{} at rva 0x{:X}; ReadyToRun v{}.{} has {} sections at rva 0x{:X}",
+                native_aot.dndh_major,
+                native_aot.dndh_minor,
+                native_aot.dndh_rva,
+                native_aot.ready_to_run_major,
+                native_aot.ready_to_run_minor,
+                native_aot.ready_to_run_sections,
+                native_aot.ready_to_run_rva,
+            ),
+            confidence: 95,
+            support: SupportRoute::DotnetNativeAot,
         });
     }
     if format == "pe"
@@ -1380,6 +1648,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::packers::pe_sections::PeSection;
 
     const NOW_SECS: u64 = 1_798_761_600;
 
@@ -1387,6 +1656,58 @@ mod tests {
 
     const CODE: u32 = 0x6000_0020;
     const DATA: u32 = 0x4000_0040;
+
+    fn rtr_scan_image(sections: Vec<PeSection>) -> PeImage {
+        PeImage {
+            pe_header_offset: 0,
+            machine: 0x8664,
+            size_of_optional_header: 0,
+            coff_characteristics: 0,
+            is_pe32_plus: true,
+            entry_point_rva: 0x1000,
+            image_base: 0x0001_8000_0000,
+            section_alignment: 0x1000,
+            file_alignment: 0x200,
+            size_of_image: 0x4000,
+            size_of_headers: 0,
+            data_directories: Vec::new(),
+            raw_data_directories: Vec::new(),
+            sections,
+        }
+    }
+
+    fn rtr_scan_fixture() -> (Vec<u8>, PeImage) {
+        let mut bytes: Vec<u8> = vec![0; 104];
+        bytes[64..68].copy_from_slice(READY_TO_RUN_MAGIC);
+        bytes[68..70].copy_from_slice(&10u16.to_le_bytes());
+        bytes[70..72].copy_from_slice(&1u16.to_le_bytes());
+        bytes[76..78].copy_from_slice(&1u16.to_le_bytes());
+        bytes[78] = 24;
+        bytes[79] = READY_TO_RUN_ENTRY_TYPE;
+        bytes[80..84].copy_from_slice(&1i32.to_le_bytes());
+        bytes[88..96].copy_from_slice(&0x0001_8000_2000u64.to_le_bytes());
+        let image: PeImage = rtr_scan_image(vec![
+            PeSection {
+                name: *b".view0\0\0",
+                virtual_size: 4,
+                virtual_address: 0x1000,
+                raw_size: 4,
+                raw_pointer: 0,
+                pointer_to_relocations: 0,
+                characteristics: 0,
+            },
+            PeSection {
+                name: *b".view1\0\0",
+                virtual_size: 104,
+                virtual_address: 0x2000,
+                raw_size: 104,
+                raw_pointer: 0,
+                pointer_to_relocations: 0,
+                characteristics: 0,
+            },
+        ]);
+        (bytes, image)
+    }
 
     fn hit_names(bytes: &[u8]) -> Vec<String> {
         detect(bytes, NOW_SECS)
@@ -1421,6 +1742,30 @@ mod tests {
             .expect("upx hit");
         assert_eq!(hit.kind, IdentityKind::Packer);
         assert_eq!(hit.support, SupportRoute::NativeUnpack);
+    }
+
+    #[test]
+    fn ready_to_run_scan_budget_is_shared_by_overlapping_section_views() {
+        let (bytes, image): (Vec<u8>, PeImage) = rtr_scan_fixture();
+        let header: ReadyToRunHeader = ready_to_run_header_with_scan_limit(&bytes, &image, 72)
+            .expect("four-byte first view plus 68-byte second view reaches RTR magic");
+        assert_eq!(header.rva, 0x2040);
+        assert!(ready_to_run_header_with_scan_limit(&bytes, &image, 71).is_none());
+    }
+
+    #[test]
+    fn export_name_at_the_available_file_tail_is_accepted() {
+        let bytes: &[u8] = b"tail-name\0";
+        let image: PeImage = rtr_scan_image(vec![PeSection {
+            name: *b".rdata\0\0",
+            virtual_size: bytes.len() as u32,
+            virtual_address: 0x2000,
+            raw_size: bytes.len() as u32,
+            raw_pointer: 0,
+            pointer_to_relocations: 0,
+            characteristics: 0,
+        }]);
+        assert!(export_name_is(bytes, &image, 0x2000, b"tail-name"));
     }
 
     #[test]

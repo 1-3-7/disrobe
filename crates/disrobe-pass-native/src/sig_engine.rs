@@ -1209,15 +1209,6 @@ const SIGNATURES: &[EngineSignature] = &[
         },
     },
     EngineSignature {
-        kind: SigKind::BytePattern,
-        target: Target::Installer(InstallerFamily::InstallShield),
-        pattern: b"InstallShield",
-        marker_label: "InstallShield marker",
-        confidence: Confidence::Medium,
-        specificity: 28,
-        version: VersionRule::None,
-    },
-    EngineSignature {
         kind: SigKind::SectionName,
         target: Target::Installer(InstallerFamily::WixBurn),
         pattern: b".wixburn",
@@ -2564,17 +2555,14 @@ fn installshield_finding(image: &PeImage, bytes: &[u8], out: &mut Vec<StructFind
     let cabinet_at_overlay: bool = bytes
         .get(overlay_start(image, bytes)..)
         .is_some_and(|tail: &[u8]| tail.starts_with(b"ISc("));
-    let present: bool = byte_find(bytes, b"InstallShield").is_some()
-        || byte_find(bytes, b"ISSetupStream").is_some()
-        || cabinet_at_overlay;
-    if present {
+    if cabinet_at_overlay {
         out.push(StructFinding {
             class: StructClass::Installer,
             family: StructFamily::InstallShield,
             version: None,
             confidence: Confidence::Medium,
-            locus: "byte scan".to_owned(),
-            detail: "InstallShield setup marker".to_owned(),
+            locus: "overlay".to_owned(),
+            detail: "InstallShield legacy cabinet magic at the PE overlay start".to_owned(),
             native_vm: false,
         });
     }

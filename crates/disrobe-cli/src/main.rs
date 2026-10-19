@@ -2681,13 +2681,14 @@ mod tests {
                 Route::DetectCarveOnly => 8,
                 Route::SignatureInspect => 9,
                 Route::RuntimeOnly => 10,
+                Route::DotnetNativeAot => 11,
             }
         };
         let seen: std::collections::BTreeSet<usize> = disrobe_pass_native::SupportRoute::ALL
             .into_iter()
             .map(index)
             .collect();
-        assert_eq!(seen, (0..11).collect::<std::collections::BTreeSet<usize>>());
+        assert_eq!(seen, (0..12).collect::<std::collections::BTreeSet<usize>>());
     }
 
     #[test]

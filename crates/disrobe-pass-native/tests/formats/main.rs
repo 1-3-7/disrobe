@@ -30,6 +30,7 @@ mod macho_parse;
 mod malware_string_sigs;
 mod mz_ne_le_lx;
 mod native_match_api;
+mod nativeaot_rtr;
 mod pdb_cxx_recovery;
 mod pdb_reader;
 mod pe_parse;
