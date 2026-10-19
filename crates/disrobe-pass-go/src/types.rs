@@ -192,7 +192,7 @@ fn extract_typemeta_versioned(
             if !seen.insert(type_va) {
                 continue;
             }
-            let recovered: GoTypeRef = recover_type_ref(image, md, type_va, layout, false);
+            let recovered: GoTypeRef = recover_type_ref(image, md, type_va, layout);
             if let Some(ref n_str) = recovered.name {
                 strings.insert(n_str.clone());
             }
@@ -215,7 +215,7 @@ fn extract_typemeta_versioned(
             if !type_in_module(md, elem_va) || !seen.insert(elem_va) {
                 continue;
             }
-            let recovered: GoTypeRef = recover_type_ref(image, md, elem_va, layout, true);
+            let recovered: GoTypeRef = recover_type_ref(image, md, elem_va, layout);
             if let Some(ref name) = recovered.name {
                 strings.insert(name.clone());
             }
@@ -248,12 +248,12 @@ fn extract_typemeta_versioned(
                 .and_then(|va: u64| image.read_ptr(va))
                 .unwrap_or(0);
             let inter_name: Option<String> = if inter_va != 0 {
-                read_type_name(image, md, inter_va, layout)
+                read_type_display_name(image, md, inter_va, layout)
             } else {
                 None
             };
             let concrete_name: Option<String> = if concrete_va != 0 {
-                read_type_name(image, md, concrete_va, layout)
+                read_type_display_name(image, md, concrete_va, layout)
             } else {
                 None
             };
@@ -344,13 +344,8 @@ fn recover_type_ref(
     md: &Moduledata,
     type_va: u64,
     layout: AbiTypeLayout,
-    normalize_extra_star: bool,
 ) -> GoTypeRef {
-    let name: Option<String> = if normalize_extra_star {
-        read_type_display_name(image, md, type_va, layout)
-    } else {
-        read_type_name(image, md, type_va, layout)
-    };
+    let name: Option<String> = read_type_display_name(image, md, type_va, layout);
     let kind: Option<u8> = read_type_kind(image, type_va, layout);
     let kind_label: Option<String> = kind.map(|value: u8| type_kind_label(value).to_owned());
     let methods: Vec<GoMethod> = kind.map_or_else(Vec::new, |value: u8| {
@@ -1984,7 +1979,6 @@ mod tests {
             &md,
             base,
             layout_for_version(PclntabVersion::Go120, true),
-            false,
         );
         assert!(recovered.imethods.is_empty());
         assert!(recovered.imethods_rejected);
@@ -2032,7 +2026,6 @@ mod tests {
             &md,
             base,
             layout_for_version(PclntabVersion::Go120, true),
-            false,
         );
         assert!(recovered.imethods.is_empty());
         assert!(!recovered.imethods_rejected);
@@ -2081,7 +2074,6 @@ mod tests {
             &md,
             base,
             layout_for_version(PclntabVersion::Go120, true),
-            false,
         );
         assert!(recovered.fields.is_empty());
         assert!(recovered.fields_rejected);

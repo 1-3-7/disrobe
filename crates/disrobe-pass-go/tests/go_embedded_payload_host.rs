@@ -256,7 +256,7 @@ fn patch_payload_reference(host: &mut [u8], payload_va: u64) -> bool {
 }
 
 #[test]
-fn a_go_host_embedding_another_go_binary_reports_its_own_pclntab() {
+fn a_stripped_go_host_embedding_another_go_binary_reports_its_own_pclntab() {
     assert!(
         common::go_on_path(),
         "missing prerequisite: the Go toolchain (go on PATH, go1.26.3 in CI) builds this regression"
@@ -269,9 +269,14 @@ fn a_go_host_embedding_another_go_binary_reports_its_own_pclntab() {
 
     let host_dir: common::GoBuildScratch = common::new_scratch("embedding_host");
     common::write_module(&host_dir, "example.com/host", HOST_MAIN);
-    let host: PathBuf =
-        common::go_build_cross_required(&host_dir, "host.exe", "windows", "amd64", &[])
-            .unwrap_or_else(|error: String| panic!("{error}"));
+    let host: PathBuf = common::go_build_cross_required(
+        &host_dir,
+        "host.exe",
+        "windows",
+        "amd64",
+        &["-ldflags=-s -w"],
+    )
+    .unwrap_or_else(|error: String| panic!("{error}"));
 
     let mut bytes: Vec<u8> = std::fs::read(&host).expect("read the host build");
     let payload_bytes: Vec<u8> = std::fs::read(&payload).expect("read the payload build");
@@ -286,6 +291,13 @@ fn a_go_host_embedding_another_go_binary_reports_its_own_pclntab() {
         "the PE host must carry the payload in a .rodata section"
     );
     let image: GoImage<'_> = GoImage::parse(&bytes).expect("the patched host remains a PE");
+    assert!(
+        !image
+            .symbol_addrs()
+            .iter()
+            .any(|(name, _, _): &(String, u64, u64)| name == "runtime.pclntab"),
+        "the host must carry no runtime.pclntab symbol, so only its moduledata can rank its pclntab"
+    );
     let payload_va: u64 = image
         .section_by_name(&[".rodata"])
         .and_then(|section: &disrobe_pass_go::Section<'_>| {

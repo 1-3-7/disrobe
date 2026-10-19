@@ -11,11 +11,9 @@ use disrobe_testkit::{CommandSpec, ToolError, ToolOutput, tool_output};
 const STRIPPED_GO126_TYPES: usize = 838;
 const STRIPPED_GO126_NAMED: usize = 838;
 const DWARF_GO126_TYPES: usize = 699;
-const DWARF_GO126_MATCHED: usize = 373;
+const DWARF_GO126_MATCHED: usize = 485;
 
-const PUBLISHED_HEADING: &str = "Go type-name recovery";
-const PUBLISHED_BAR: &str = "type names";
-const PUBLISHED_RATIO_GUARD: f64 = 0.85;
+const STRIPPED_RATIO_GUARD: f64 = 0.85;
 const DWARF_ORACLE_TIMEOUT: Duration = Duration::from_mins(2);
 const DWARF_ORACLE_CAPTURE_BYTES: usize = 1 << 20;
 
@@ -77,6 +75,27 @@ func main() {
 		panic(err)
 	}
 	defer f.Close()
+	header, ok := f.OptionalHeader.(*pe.OptionalHeader64)
+	if !ok {
+		panic("expected a PE32+ compiler fixture")
+	}
+	var typesBase uint64
+	for _, symbol := range f.Symbols {
+		if symbol.Name != "runtime.types" {
+			continue
+		}
+		if typesBase != 0 || symbol.SectionNumber <= 0 || int(symbol.SectionNumber) > len(f.Sections) {
+			panic("runtime.types has an ambiguous or invalid section")
+		}
+		rva := uint64(f.Sections[int(symbol.SectionNumber)-1].VirtualAddress) + uint64(symbol.Value)
+		if header.ImageBase > ^uint64(0)-rva {
+			panic("runtime.types address overflows")
+		}
+		typesBase = header.ImageBase + rva
+	}
+	if typesBase == 0 {
+		panic("the independent compiler symbol runtime.types is missing")
+	}
 	d, err := f.DWARF()
 	if err != nil {
 		panic(err)
@@ -98,7 +117,10 @@ func main() {
 		if !ok || name == "" {
 			continue
 		}
-		fmt.Printf("%x\t%s\n", addr, name)
+		if typesBase > ^uint64(0)-addr {
+			panic("DWARF runtime-type address overflows")
+		}
+		fmt.Printf("%x\t%s\n", typesBase+addr, name)
 	}
 }
 "#;
@@ -183,11 +205,11 @@ fn typemeta_type_names_match_go_dwarf_runtime_type_oracle() {
         "the Go toolchain is required for the independent DWARF type-name oracle"
     );
     let binary: PathBuf = common::fixture_path(common::HELLO_NORMAL);
-    let offsets: BTreeMap<u64, String> = dwarf_type_oracle(&binary);
+    let oracle: BTreeMap<u64, String> = dwarf_type_oracle(&binary);
     assert!(
-        offsets.len() > 600,
+        oracle.len() > 600,
         "Go DWARF runtime-type oracle is implausibly small: {} entries",
-        offsets.len()
+        oracle.len()
     );
     let bytes: Vec<u8> = std::fs::read(&binary).expect("read unstripped Go fixture");
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze unstripped Go fixture");
@@ -195,17 +217,6 @@ fn typemeta_type_names_match_go_dwarf_runtime_type_oracle() {
         analysis.moduledata.types_va, 0,
         "the recovered moduledata must name the runtime.types base"
     );
-    let oracle: BTreeMap<u64, String> = offsets
-        .into_iter()
-        .map(|(offset, name): (u64, String)| {
-            let address: u64 = analysis
-                .moduledata
-                .types_va
-                .checked_add(offset)
-                .unwrap_or_else(|| panic!("Go DWARF runtime-type offset {offset:#x} overflows"));
-            (address, name)
-        })
-        .collect();
     let hit: usize = matched_dwarf_types(&analysis, &oracle);
     let total: usize = oracle.len();
     let missing: Vec<(u64, String)> = oracle
@@ -388,44 +399,9 @@ fn typemeta_recovers_real_type_names_on_go126() {
          {STRIPPED_GO126_NAMED}/{STRIPPED_GO126_TYPES}; got {named}/{total} = {ratio:.4}"
     );
     assert!(
-        ratio >= PUBLISHED_RATIO_GUARD,
+        ratio >= STRIPPED_RATIO_GUARD,
         "expected >= 85% type-name recovery on the stripped go1.26.3 fixture \
          (got {named}/{total} = {ratio:.3})"
-    );
-
-    let bar: serde_json::Value = common::published_bar(PUBLISHED_HEADING, PUBLISHED_BAR);
-    let num: u64 = bar["num"]
-        .as_u64()
-        .expect("the type names bar must carry a numerator");
-    let den: u64 = bar["den"]
-        .as_u64()
-        .expect("the type names bar must carry a denominator");
-    let value: f64 = bar["value"]
-        .as_f64()
-        .expect("the type names bar must carry a numeric value");
-    assert_eq!(
-        u64::try_from(total).expect("type total fits u64"),
-        den,
-        "xtask/data/recovery.json publishes a denominator of {den} types on this fixture and every \
-         document renders that number, but the typelinks walk sees {total}"
-    );
-    assert!(
-        u64::try_from(named).expect("named fits u64") >= num,
-        "recovery.json publishes {num} of {den} named types; this run recovered {named}"
-    );
-    let derived: f64 = 100.0 * num as f64 / den as f64;
-    assert!(
-        (derived - value).abs() < 0.05,
-        "the published value {value} plots this measurement and must equal its own {num}/{den} = \
-         {derived:.4}; the floor this gate enforces is a separate number and lives in floor_pct"
-    );
-    let floor_pct: f64 = bar["floor_pct"]
-        .as_f64()
-        .expect("the type names bar must carry the floor its gate enforces as floor_pct");
-    assert!(
-        (floor_pct / 100.0 - PUBLISHED_RATIO_GUARD).abs() < f64::EPSILON,
-        "recovery.json publishes a floor of {floor_pct}% and four documents render that number, \
-         but this gate enforces {PUBLISHED_RATIO_GUARD}"
     );
 
     let names: Vec<&str> = analysis
@@ -502,7 +478,26 @@ fn typemeta_recovers_itab_concrete_names_on_go126() {
 
 #[test]
 fn typemeta_recovers_embed_types_on_embed_fixture() {
-    let bytes: Vec<u8> = common::fixture(common::HELLO_EMBED);
+    assert!(
+        common::require_go(),
+        "the Go toolchain is required for the independent embed itab oracle"
+    );
+    let source_path: PathBuf = common::fixture_path("embedsrc/main.go");
+    let source: String =
+        std::fs::read_to_string(&source_path).expect("read compiler-built embed fixture source");
+    assert!(
+        source.contains("var assetsFS embed.FS") && source.contains("fs.WalkDir(assetsFS"),
+        "the embed fixture source must pass an embed.FS value to fs.WalkDir"
+    );
+    let binary: PathBuf = common::fixture_path(common::HELLO_EMBED);
+    let truth: BTreeSet<(String, String)> = common::nm_itab_pairs(&binary)
+        .expect("go tool nm must yield the embed fixture itab oracle");
+    let expected: (String, String) = ("embed.FS".to_owned(), "fs.FS".to_owned());
+    assert!(
+        truth.contains(&expected),
+        "go tool nm must name the embed.FS,fs.FS itab; got {truth:?}"
+    );
+    let bytes: Vec<u8> = std::fs::read(&binary).expect("read compiler-built embed fixture");
     let analysis: GoAnalysis = analyze(&bytes).expect("analyze embed");
     let names: Vec<&str> = analysis
         .typemeta
@@ -514,17 +509,15 @@ fn typemeta_recovers_embed_types_on_embed_fixture() {
         names.iter().any(|n: &&str| n.contains("embed.")),
         "embed fixture must expose embed.* types"
     );
-    let pairs: Vec<(&str, &str)> = analysis
-        .typemeta
-        .itabs
-        .iter()
-        .filter_map(|i: &GoItab| Some((i.interface_name.as_deref()?, i.concrete_name.as_deref()?)))
-        .collect();
+    let pairs: BTreeSet<(String, String)> = recovered_itab_pairs(&analysis);
     assert!(
-        pairs
-            .iter()
-            .any(|(_, c): &(&str, &str)| c.contains("*embed.FS")),
-        "embed fixture must surface an *embed.FS itab; pairs: {pairs:?}"
+        pairs.contains(&expected),
+        "embed fixture must surface the compiler-named embed.FS,fs.FS itab; pairs: {pairs:?}"
+    );
+    let mutated: (String, String) = ("embed.FS.mutation".to_owned(), "fs.FS".to_owned());
+    assert!(
+        !pairs.contains(&mutated),
+        "a mutated compiler itab reference must turn the exact-pair check red"
     );
 }
 

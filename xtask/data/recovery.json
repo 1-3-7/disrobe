@@ -231,22 +231,22 @@
       ]
     },
     {
-      "heading": "Go type-name recovery (go1.26.3 fixture)",
-      "axis_label": "type names resolved on stripped fixture, %",
+      "heading": "Go type-name recovery (go1.26.3 linux/amd64, graded against go tool nm)",
+      "axis_label": "type descriptors named by go tool nm whose recovered name matches, %",
       "kind": "percent",
       "bars": [
         {
           "label": "type names",
           "value": 100.0,
-          "floor_pct": 85.0,
+          "floor_pct": 100.0,
           "verified_by": {
-            "path": "crates/disrobe-pass-go/tests/go_typemeta.rs",
-            "function": "typemeta_recovers_real_type_names_on_go126"
+            "path": "crates/disrobe-pass-go/tests/go_matrix_reference.rs",
+            "function": "published_go_type_name_bar_is_the_nm_graded_stripped_build"
           },
-          "detail": "CI floor >= 85% on the committed stripped fixture; 838 of 838 (100%) measured, with the type count and the recovered count both pinned in the gate so a change to either forces a re-measure (typelinks/moduledata survive -s -w stripping)",
-          "source": "crates/disrobe-pass-go/tests/go_typemeta.rs (typemeta_recovers_real_type_names_on_go126 asserts the type total equals 838 and the recovered count is at least 838 on common::HELLO_STRIPPED, with ratio >= 0.85 kept as a secondary guard); the stripped fixture is force-committed (git add -f, overriding the crates/disrobe-pass-go/tests/fixtures/*.exe gitignore) so the gate runs in CI; the garble/embed/generics/magic-stomp fixtures are force-committed the same way so those gates also run; 528/528 measured on go1.26.3 2026-06-12",
-          "num": 838,
-          "den": 838
+          "detail": "On the committed go1.26.3 linux/amd64 build with its symbol table, string table and DWARF removed, 115 of 115 type descriptors that go tool nm of the unstripped build names are recovered at the same address under the same name. The population comes from the reference, not from the recovery walk: every descriptor whose equality function nm names type:.eq.T, found by following each descriptor's equal field in the runtime.types to runtime.etypes range to that symbol's address, plus the interface and concrete descriptors of every go:itab symbol. The same grade runs on go1.17.13, go1.18.10, go1.20.14 and go1.26.3 builds of one committed program for linux/amd64, linux/amd64 PIE and linux/arm64, stripped and unstripped, alongside method names graded by address against nm, itab pairs, objdump function names and the program's field markers; every row must match exactly.",
+          "source": "crates/disrobe-pass-go/tests/go_matrix_reference.rs: published_go_type_name_bar_is_the_nm_graded_stripped_build re-derives num and den from corpus/go/versions/go126_linux_amd64 and its committed go tool nm output (build and reference commands with sha256 in corpus/go/MANIFEST.toml); the four *_matrix_matches_nm_and_objdump_references tests pin each row's population counts and require zero mismatches; matrix_grades_turn_red_on_mutated_references renames or shifts one reference entry per class and requires exactly one mismatch; a type-name walk that kept the extra '*' the compiler stores in front of non-pointer type strings measured 110 of 115 on this build and failed every itab pair",
+          "num": 115,
+          "den": 115
         }
       ]
     },

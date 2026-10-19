@@ -124,24 +124,57 @@ const MD_WORD_ETEXT: u64 = 23;
 const MAX_MODULEDATA_REFERENCES: usize = 4096;
 const MAX_MODULEDATA_SCAN_BYTES: u64 = 1 << 24;
 
+pub(crate) fn moduledata_describes(
+    image: &GoImage<'_>,
+    base: u64,
+    pcheader_va: u64,
+    header: &PclntabHeader,
+) -> bool {
+    if header.version == PclntabVersion::Go12 || header.ptr_size != image.ptr_size {
+        return false;
+    }
+    let ps: u64 = u64::from(image.ptr_size);
+    let Some(pclntable_va): Option<u64> = pcheader_va.checked_add(header.funcdata_off) else {
+        return false;
+    };
+    let Some(ftab_len): Option<u64> = header.n_funcs.checked_add(1) else {
+        return false;
+    };
+    let ftab_entry_size: u64 = match header.version {
+        PclntabVersion::Go116 => ps.saturating_mul(2),
+        PclntabVersion::Go118 | PclntabVersion::Go120 => 8,
+        PclntabVersion::Go12 => return false,
+    };
+    let Some(ftab_bytes): Option<u64> = ftab_len.checked_mul(ftab_entry_size) else {
+        return false;
+    };
+    let word_at = |word: u64| -> Option<u64> {
+        word.checked_mul(ps)
+            .and_then(|delta: u64| base.checked_add(delta))
+            .and_then(|address: u64| image.read_ptr(address))
+    };
+    let text: Option<u64> = word_at(MD_WORD_TEXT);
+    word_at(0) == Some(pcheader_va)
+        && word_at(MD_WORD_PCLNTABLE_PTR) == Some(pclntable_va)
+        && word_at(MD_WORD_PCLNTABLE_LEN).is_some_and(|len: u64| len >= ftab_bytes)
+        && word_at(MD_WORD_FTAB_PTR) == Some(pclntable_va)
+        && word_at(MD_WORD_FTAB_LEN) == Some(ftab_len)
+        && text.is_some_and(|address: u64| image.data_at_va(address, 1).is_some())
+        && word_at(MD_WORD_ETEXT).is_some_and(|end: u64| text.is_some_and(|start: u64| end > start))
+}
+
 fn referenced_from_moduledata(
     image: &GoImage<'_>,
     pclntab_va: u64,
     header: &PclntabHeader,
 ) -> bool {
     let ps: u64 = u64::from(image.ptr_size);
-    let Some(expected_ftab): Option<u64> = pclntab_va.checked_add(header.funcdata_off) else {
-        return false;
-    };
-    let Some(expected_ftab_len): Option<u64> = header.n_funcs.checked_add(1) else {
-        return false;
-    };
     let mut references: usize = 0;
     let mut scan_remaining: u64 = MAX_MODULEDATA_SCAN_BYTES;
     for sec in &image.sections {
         if !matches!(
             sec.name.as_str(),
-            ".data" | ".noptrdata" | "__data" | "__noptrdata"
+            ".data" | ".noptrdata" | ".go.module" | "__data" | "__noptrdata"
         ) {
             continue;
         }
@@ -163,24 +196,7 @@ fn referenced_from_moduledata(
                 if references > MAX_MODULEDATA_REFERENCES {
                     return false;
                 }
-                let word_at = |word: u64| -> Option<u64> {
-                    word.checked_mul(ps)
-                        .and_then(|delta: u64| base.checked_add(delta))
-                        .and_then(|address: u64| image.read_ptr(address))
-                };
-                let pclntable_len: Option<u64> = word_at(MD_WORD_PCLNTABLE_LEN);
-                let ftab_ptr: Option<u64> = word_at(MD_WORD_FTAB_PTR);
-                let ftab_len: Option<u64> = word_at(MD_WORD_FTAB_LEN);
-                let text: Option<u64> = word_at(MD_WORD_TEXT);
-                let etext: Option<u64> = word_at(MD_WORD_ETEXT);
-                if word_at(MD_WORD_PCLNTABLE_PTR) == Some(pclntab_va)
-                    && pclntable_len.is_some_and(|len: u64| len >= header.funcdata_off)
-                    && ftab_ptr == Some(expected_ftab)
-                    && ftab_len == Some(expected_ftab_len)
-                    && text.is_some_and(|address: u64| image.data_at_va(address, 1).is_some())
-                    && etext
-                        .is_some_and(|address: u64| text.is_some_and(|start: u64| address > start))
-                {
+                if moduledata_describes(image, base, pclntab_va, header) {
                     return true;
                 }
             }
@@ -749,6 +765,101 @@ mod tests {
         };
         assert!(referenced_from_data(&image, 0x0014_2040));
         assert!(!referenced_from_data(&image, 0x0014_2080));
+    }
+
+    #[test]
+    fn moduledata_coherence_distinguishes_pcheader_from_pclntable() {
+        let moduledata_va: u64 = 0x1000;
+        let pcheader_va: u64 = 0x3000;
+        let text_va: u64 = 0x2000;
+        let mut moduledata: Vec<u8> = vec![0u8; 24 * 8];
+        let write_word = |bytes: &mut [u8], word: u64, value: u64| {
+            let offset: usize = usize::try_from(word * 8).expect("test word fits usize");
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let header: PclntabHeader = PclntabHeader {
+            version: PclntabVersion::Go120,
+            quantum: 1,
+            ptr_size: 8,
+            endian: Endian::Little,
+            n_funcs: 41,
+            n_files: 1,
+            text_start: text_va,
+            funcname_off: 0x40,
+            cu_off: 0x80,
+            filetab_off: 0xc0,
+            pctab_off: 0x100,
+            funcdata_off: 0x280,
+            section_addr: pcheader_va,
+            section_len: 0x1000,
+        };
+        let pclntable_va: u64 = pcheader_va + header.funcdata_off;
+        write_word(&mut moduledata, 0, pcheader_va);
+        write_word(&mut moduledata, MD_WORD_PCLNTABLE_PTR, pclntable_va);
+        write_word(&mut moduledata, MD_WORD_PCLNTABLE_LEN, 0x1000);
+        write_word(&mut moduledata, MD_WORD_FTAB_PTR, pclntable_va);
+        write_word(&mut moduledata, MD_WORD_FTAB_LEN, header.n_funcs + 1);
+        write_word(&mut moduledata, MD_WORD_TEXT, text_va);
+        write_word(&mut moduledata, MD_WORD_ETEXT, text_va + 0x100);
+        let text: [u8; 0x100] = [0u8; 0x100];
+        let image: GoImage<'_> = GoImage {
+            kind: crate::binary::ImageKind::Pe,
+            endian: Endian::Little,
+            ptr_size: 8,
+            sections: vec![
+                Section {
+                    name: ".data".to_owned(),
+                    address: moduledata_va,
+                    data: &moduledata,
+                    mapped_len: u64::try_from(moduledata.len()).expect("test length fits u64"),
+                },
+                Section {
+                    name: ".text".to_owned(),
+                    address: text_va,
+                    data: &text,
+                    mapped_len: u64::try_from(text.len()).expect("test length fits u64"),
+                },
+            ],
+            raw: &moduledata,
+            symbol_addrs: Vec::new(),
+            flat: false,
+        };
+        assert!(moduledata_describes(
+            &image,
+            moduledata_va,
+            pcheader_va,
+            &header
+        ));
+
+        write_word(&mut moduledata, MD_WORD_FTAB_PTR, pclntable_va + 8);
+        let mutated: GoImage<'_> = GoImage {
+            raw: &moduledata,
+            sections: vec![
+                Section {
+                    name: ".data".to_owned(),
+                    address: moduledata_va,
+                    data: &moduledata,
+                    mapped_len: u64::try_from(moduledata.len()).expect("test length fits u64"),
+                },
+                Section {
+                    name: ".text".to_owned(),
+                    address: text_va,
+                    data: &text,
+                    mapped_len: u64::try_from(text.len()).expect("test length fits u64"),
+                },
+            ],
+            kind: crate::binary::ImageKind::Pe,
+            endian: Endian::Little,
+            ptr_size: 8,
+            symbol_addrs: Vec::new(),
+            flat: false,
+        };
+        assert!(!moduledata_describes(
+            &mutated,
+            moduledata_va,
+            pcheader_va,
+            &header
+        ));
     }
 
     #[test]

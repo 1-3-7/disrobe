@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::binary::{Endian, GoImage};
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
-use crate::pclntab::{LocatedPclntab, PclntabVersion};
+use crate::pclntab::{LocatedPclntab, PclntabVersion, moduledata_describes};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Moduledata {
@@ -132,6 +132,7 @@ fn via_pclntab_backsearch(
 ) -> Option<Moduledata> {
     let pclntab_va: u64 = located.header.section_addr;
     let ps: u8 = image.ptr_size;
+    let coherence_known: bool = located.header.version != PclntabVersion::Go12;
     let mut attempts: usize = 0;
     for sec in &image.sections {
         if sec.data.is_empty() {
@@ -165,6 +166,12 @@ fn via_pclntab_backsearch(
                     off += step;
                     continue;
                 };
+                if coherence_known
+                    && !moduledata_describes(image, candidate_va, pclntab_va, &located.header)
+                {
+                    off += step;
+                    continue;
+                }
                 if let Some(md) = walk_moduledata(
                     image,
                     candidate_va,
