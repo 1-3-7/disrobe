@@ -427,16 +427,16 @@
       "bars": [
         {
           "label": "whole-type recompile",
-          "value": 62.857142857142854,
-          "num": 22,
+          "value": 82.85714285714286,
+          "num": 29,
           "den": 35,
           "verified_by": {
             "path": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs",
             "function": "published_edgecases_whole_type_recompile_bar_matches_the_floor_this_gate_enforces",
             "measured_by": "edgecases_whole_type_recompile_fraction_is_published_as_measured"
           },
-          "detail": "For 22 of the 35 EdgeCases types, the recovered method bodies recompile with real csc inside type and field declarations the test harness derives from metadata, each type built as its own single-file compilation unit with no reference back to the origin assembly. This is recompile-only: it proves the recovered source is legal C#, not that it means what the original IL meant. A type that parses but states a refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct left unlowered, does not count as recovered even when the file compiles.",
-          "source": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs (EDGECASES_RECOMPILE_MEMBERS pins the 22 names against EDGECASES_TYPES's 35 members; edgecases_whole_type_recompile_fraction_is_published_as_measured fails if any named member stops recompiling without a stated refusal); measured locally with dotnet SDK 9.0.318 (Roslyn csc bundled with that SDK, MSBuild 17.14.51.32402) via `cargo test -p disrobe-pass-dotnet --test it whole_type_il_equivalence_oracle::edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture`; CI asserts only the named-member floor, not the percentage, so re-measure locally before quoting a moved figure"
+          "detail": "For 29 of the 35 EdgeCases types, the recovered method bodies recompile with real csc inside type and field declarations the test harness derives from metadata, each type built as its own single-file compilation unit with no reference back to the origin assembly. Where a target has a named same-assembly type dependency, the standalone host includes disrobe's metadata-derived recovered declaration for that dependency, never the original source; a mutation control proves a changed dependency reference remains red. The denominator remains all 35 EdgeCases types. This is recompile-only: it proves the recovered source is legal C#, not that it means what the original IL meant. A type that parses but states a refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct left unlowered, does not count as recovered even when the file compiles.",
+          "source": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs (EDGECASES_RECOMPILE_MEMBERS pins the 29 names against EDGECASES_TYPES's 35 members; edgecases_whole_type_recompile_fraction_is_published_as_measured fails if any named member stops recompiling without a stated refusal; standalone_dependency_host_uses_recovered_assembly_declarations requires the metadata-derived dependency host to compile and its changed-reference mutation to fail); measured locally with dotnet SDK 9.0.318 (Roslyn csc bundled with that SDK, MSBuild 17.14.51.32402) via `cargo test -p disrobe-pass-dotnet --test it whole_type_il_equivalence_oracle::edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture`; CI asserts only the named-member floor, not the percentage, so re-measure locally before quoting a moved figure"
         }
       ]
     },

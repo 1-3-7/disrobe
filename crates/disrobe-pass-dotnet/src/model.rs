@@ -108,6 +108,8 @@ pub(crate) enum CSharpOverrideKind {
 pub struct ParamModel {
     pub sequence: u16,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_byref_mode: Option<ManagedByRefArgumentMode>,
 }
 
 const METHOD_STATIC: u16 = 0x0010;
@@ -242,9 +244,31 @@ impl MethodModel {
         let names: Vec<String> = self.display_param_names(TargetLang::CSharp);
         let mut rendered: Vec<String> = Vec::with_capacity(self.signature.params.len());
         for (i, p) in self.signature.params.iter().enumerate() {
+            let rendered_type: String = p.render_in(TargetLang::CSharp);
+            let mode: Option<ManagedByRefArgumentMode> = self
+                .parameters
+                .iter()
+                .find(|parameter: &&ParamModel| {
+                    usize::from(parameter.sequence) == i.saturating_add(1)
+                })
+                .and_then(|parameter: &ParamModel| parameter.managed_byref_mode);
+            let rendered_type: String = match mode {
+                Some(mode) => {
+                    let inner: &str = rendered_type.strip_prefix("ref ").unwrap_or(&rendered_type);
+                    let keyword: &str = match mode {
+                        ManagedByRefArgumentMode::Ref | ManagedByRefArgumentMode::Unresolved => {
+                            "ref"
+                        }
+                        ManagedByRefArgumentMode::Out => "out",
+                        ManagedByRefArgumentMode::In => "in",
+                    };
+                    format!("{keyword} {inner}")
+                }
+                None => rendered_type,
+            };
             rendered.push(format!(
                 "{} {}",
-                p.render_in(TargetLang::CSharp),
+                rendered_type,
                 names
                     .get(i)
                     .map_or_else(|| crate::names::positional_parameter_name(i), String::clone)
@@ -2330,9 +2354,21 @@ impl Resolver {
                 .blob(row.signature)
                 .and_then(|b: &[u8]| parse_method_sig(b).ok())
                 .unwrap_or_default();
-            let parameters: Vec<ParamModel> = self.materialize_params(rid);
+            let mut parameters: Vec<ParamModel> = self.materialize_params(rid);
+            let token: u32 = (u32::from(TableId::MethodDef.index()) << 24) | rid;
+            if let Some(modes) = self.callee_managed_byref_argument_modes(token) {
+                for parameter in &mut parameters {
+                    if parameter.sequence == 0 {
+                        continue;
+                    }
+                    parameter.managed_byref_mode = modes
+                        .get(usize::from(parameter.sequence - 1))
+                        .copied()
+                        .flatten();
+                }
+            }
             out.push(MethodModel {
-                token: (u32::from(TableId::MethodDef.index()) << 24) | rid,
+                token,
                 name: self.member_name(
                     (u32::from(TableId::MethodDef.index()) << 24) | rid,
                     row.name,
@@ -2371,6 +2407,7 @@ impl Resolver {
             out.push(ParamModel {
                 sequence: p.sequence,
                 name: self.string(p.name),
+                managed_byref_mode: None,
             });
         }
         out
@@ -3271,6 +3308,72 @@ impl Resolver {
             "UInt64" => Some(FieldRvaPrimitive::U8),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn corelib_try_parse_member_ref(&self, token: u32) -> bool {
+        if token_table(token) != Some(TableId::MemberRef) {
+            return false;
+        }
+        let Some(index): Option<usize> = token_rid(token)
+            .and_then(|rid: u32| rid.checked_sub(1))
+            .and_then(|rid: u32| usize::try_from(rid).ok())
+        else {
+            return false;
+        };
+        let Some(member): Option<&MemberRefRow> = self.tables.member_refs.get(index) else {
+            return false;
+        };
+        if self.string(member.name) != "TryParse" {
+            return false;
+        }
+        let Some(owner): Option<RowRef> = member.parent else {
+            return false;
+        };
+        if owner.table != TableId::TypeRef || owner.row == 0 {
+            return false;
+        }
+        let Some(type_index): Option<usize> = owner
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(type_ref): Option<&TypeRefRow> = self.tables.type_refs.get(type_index) else {
+            return false;
+        };
+        if self.string(type_ref.namespace) != "System"
+            || !type_ref
+                .resolution_scope
+                .is_some_and(|scope: RowRef| self.is_corelib_assembly_ref(scope))
+        {
+            return false;
+        }
+        let expected_output: TypeSig = match self.string(type_ref.name).as_str() {
+            "Boolean" => TypeSig::Boolean,
+            "Byte" => TypeSig::U1,
+            "SByte" => TypeSig::I1,
+            "Int16" => TypeSig::I2,
+            "UInt16" => TypeSig::U2,
+            "Int32" => TypeSig::I4,
+            "UInt32" => TypeSig::U4,
+            "Int64" => TypeSig::I8,
+            "UInt64" => TypeSig::U8,
+            "Single" => TypeSig::R4,
+            "Double" => TypeSig::R8,
+            _ => return false,
+        };
+        let Some(signature): Option<MethodSig> = self.callee_signature(token) else {
+            return false;
+        };
+        signature.calling_convention == SIG_DEFAULT
+            && !signature.has_this
+            && !signature.explicit_this
+            && signature.generic_param_count == 0
+            && matches!(signature.return_type, TypeSigOrVoid::Type(TypeSig::Boolean))
+            && signature.params.len() >= 2
+            && matches!(signature.params.last(), Some(TypeSig::ByRef(output)) if output.as_ref() == &expected_output)
     }
 
     #[must_use]
@@ -4236,10 +4339,36 @@ mod tests {
             parameters: vec![ParamModel {
                 sequence: 1,
                 name: "object".to_owned(),
+                managed_byref_mode: None,
             }],
         };
         let sig: String = method.csharp_signature();
         assert!(sig.ends_with("M(int @object)"), "got: {sig}");
+    }
+
+    #[test]
+    fn csharp_signature_uses_the_recovered_byref_parameter_mode() {
+        let method: MethodModel = MethodModel {
+            token: 0x0600_0001,
+            name: "Sample.K::M".to_owned(),
+            flags: METHOD_PUBLIC | METHOD_STATIC,
+            impl_flags: 0,
+            rva: 0,
+            signature: MethodSig {
+                calling_convention: 0,
+                has_this: false,
+                explicit_this: false,
+                generic_param_count: 0,
+                return_type: crate::signature::TypeSigOrVoid::Void,
+                params: vec![TypeSig::ByRef(Box::new(TypeSig::I4))],
+            },
+            parameters: vec![ParamModel {
+                sequence: 1,
+                name: "value".to_owned(),
+                managed_byref_mode: Some(ManagedByRefArgumentMode::Out),
+            }],
+        };
+        assert!(method.csharp_signature().ends_with("M(out int value)"));
     }
 
     #[test]

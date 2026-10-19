@@ -3,13 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use disrobe_pass_dotnet::csharp_project::csharp_pinvoke_attribute;
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
+use disrobe_pass_dotnet::interop::{PInvoke, interop};
 use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::{
     AssemblyModel, FieldConstant, FieldModel, MethodModel, Resolver, TypeModel,
 };
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
+use disrobe_pass_dotnet::state_machine_reverse::lower_generic_placeholders;
 use disrobe_pass_dotnet::structurize::{
     StructuredMethod, csharp_escape_identifier, field_name,
     is_unresolved_managed_byref_argument_refusal,
@@ -748,7 +751,10 @@ const FIELD_INIT_ONLY: u16 = 0x0020;
 const FIELD_LITERAL: u16 = 0x0040;
 const METHOD_ABSTRACT: u16 = 0x0400;
 const METHOD_SPECIAL_NAME: u16 = 0x0800;
+const METHOD_PINVOKE: u16 = 0x2000;
 const TYPE_ABSTRACT: u32 = 0x0080;
+const TYPE_SEALED: u32 = 0x0100;
+const TYPE_INTERFACE: u32 = 0x0020;
 
 const ELEMENT_TYPE_BOOLEAN: u8 = 0x02;
 const ELEMENT_TYPE_CHAR: u8 = 0x03;
@@ -841,6 +847,24 @@ fn auto_property_declaration(
     format!("    public {modifiers}{property_type} {escaped} {{ {accessors} }}")
 }
 
+fn recovered_getter_property(method: &UserMethod) -> Option<AutoProperty> {
+    let name: &str = method.name.strip_prefix("get_")?;
+    let mut lines = method.source.lines();
+    let signature: &str = lines.next()?.trim();
+    let accessor: String = format!("get_{name}()");
+    let mut property_signature: String = signature.strip_suffix(&accessor)?.to_owned();
+    property_signature.push_str(&csharp_escape_identifier(name));
+    let body: String = lines
+        .map(|line: &str| format!("        {line}"))
+        .collect::<Vec<String>>()
+        .join("\n");
+    Some(AutoProperty {
+        name: name.to_owned(),
+        declaration: format!("    {property_signature}\n    {{\n        get\n{body}\n    }}"),
+        accessors: vec![method.name.clone()],
+    })
+}
+
 fn type_members(bytes: &[u8], target: Target, methods: &[UserMethod]) -> TypeMembers {
     let pe: PeImage = parse(bytes).expect("parse fixture PE");
     let clr: ClrHeader = parse_clr_header(bytes, &pe).expect("parse fixture CLR header");
@@ -853,23 +877,36 @@ fn type_members(bytes: &[u8], target: Target, methods: &[UserMethod]) -> TypeMem
         .iter()
         .find(|candidate: &&TypeModel| candidate.full_name == full_name)
         .expect("locate target type metadata");
+    type_members_for_type(&resolver, ty, methods)
+}
+
+fn type_members_for_type(
+    resolver: &Resolver,
+    ty: &TypeModel,
+    methods: &[UserMethod],
+) -> TypeMembers {
     let recovered: BTreeSet<&str> = methods
         .iter()
         .map(|method: &UserMethod| method.name.as_str())
         .collect();
     let mut members: TypeMembers = TypeMembers::default();
+    let pinvokes: BTreeMap<u32, PInvoke> = interop(resolver)
+        .pinvokes
+        .into_iter()
+        .map(|pinvoke: PInvoke| (pinvoke.token, pinvoke))
+        .collect();
     for field in &ty.fields {
         let Some(name): Option<&str> = auto_property_name(&field.name) else {
             members
                 .fields
-                .push(csharp_field_declaration(&resolver, field));
+                .push(csharp_field_declaration(resolver, field));
             continue;
         };
         let getter: String = format!("get_{name}");
         if !recovered.contains(getter.as_str()) {
             members
                 .fields
-                .push(csharp_field_declaration(&resolver, field));
+                .push(csharp_field_declaration(resolver, field));
             continue;
         }
         let setter: String = format!("set_{name}");
@@ -880,11 +917,40 @@ fn type_members(bytes: &[u8], target: Target, methods: &[UserMethod]) -> TypeMem
         }
         members.properties.push(AutoProperty {
             name: name.to_owned(),
-            declaration: auto_property_declaration(&resolver, field, name, has_setter),
+            declaration: auto_property_declaration(resolver, field, name, has_setter),
             accessors,
         });
     }
+    for method in methods {
+        let Some(property): Option<AutoProperty> = recovered_getter_property(method) else {
+            continue;
+        };
+        if !members
+            .properties
+            .iter()
+            .any(|existing: &AutoProperty| existing.name == property.name)
+        {
+            members.properties.push(property);
+        }
+    }
     for method in &ty.methods {
+        if method.flags & METHOD_PINVOKE != 0 {
+            let pinvoke: &PInvoke = pinvokes
+                .get(&method.token)
+                .unwrap_or_else(|| panic!("P/Invoke {} has no ImplMap metadata", method.name));
+            let signature: String = resolver.resolve_type_tokens(&method.csharp_signature());
+            let declaration: String = signature.replacen(" static ", " static extern ", 1);
+            assert_ne!(
+                declaration, signature,
+                "P/Invoke {} must carry the static MethodDef flag",
+                method.name
+            );
+            members.bodyless_methods.push(format!(
+                "    {}\n    {declaration};",
+                csharp_pinvoke_attribute(pinvoke)
+            ));
+            continue;
+        }
         if method.rva != 0
             || method.flags & METHOD_ABSTRACT == 0
             || method.flags & METHOD_SPECIAL_NAME != 0
@@ -892,7 +958,14 @@ fn type_members(bytes: &[u8], target: Target, methods: &[UserMethod]) -> TypeMem
         {
             continue;
         }
-        let signature: String = resolver.resolve_type_tokens(&method.csharp_signature());
+        let type_names: Vec<String> = resolver.type_generic_param_names(ty.token & 0x00FF_FFFF);
+        let method_names: Vec<String> =
+            resolver.method_generic_param_names(method.token & 0x00FF_FFFF);
+        let signature: String = lower_generic_placeholders(
+            &resolver.resolve_type_tokens(&method.csharp_signature()),
+            &type_names,
+            &method_names,
+        );
         let declaration: String = signature.split_once(' ').map_or_else(
             || format!("abstract {signature}"),
             |(visibility, tail)| format!("{visibility} abstract {tail}"),
@@ -1200,6 +1273,23 @@ fn whole_type_source(
     methods: &[UserMethod],
     target: Target,
 ) -> String {
+    let dependencies: String = recovered_dependency_source(bytes, target);
+    let declaration: String =
+        whole_type_declaration(bytes, members, methods, target, target.type_name, "");
+    format!(
+        "{PREAMBLE}namespace {}\n{{\n{dependencies}{declaration}}}\n",
+        target.origin_namespace
+    )
+}
+
+fn whole_type_declaration(
+    bytes: &[u8],
+    members: &TypeMembers,
+    methods: &[UserMethod],
+    target: Target,
+    type_name: &str,
+    type_parameters: &str,
+) -> String {
     let declarations: String = members.declarations();
     let accessors: BTreeSet<&str> = members.accessor_names();
     let bodies: String = methods
@@ -1219,11 +1309,233 @@ fn whole_type_source(
     };
     let (base_clause, base_stub): (String, String) =
         base_support(bytes, target, &bodies).unwrap_or_else(|| (String::new(), String::new()));
-    let type_name: &str = target.type_name;
-    let namespace: &str = target.origin_namespace;
     format!(
-        "{PREAMBLE}namespace {namespace}\n{{\n{base_stub}    {kind} {type_name}{base_clause}\n    {{\n{declarations}\n{bodies}\n    }}\n}}\n"
+        "{base_stub}    {kind} {type_name}{type_parameters}{base_clause}\n    {{\n{declarations}\n{bodies}\n    }}\n"
     )
+}
+
+const STANDALONE_DEPENDENCIES: &[(&str, &[&str])] = &[
+    ("AsyncPlayground", &[]),
+    ("EntryPoint", &["PinvokePlayground"]),
+    ("LinqPlayground", &["Severity", "User"]),
+    ("PatternKit", &["Coordinate"]),
+    ("PrimaryCtorService", &["IRepository", "Severity", "User"]),
+    (
+        "WithExpressionPlayground",
+        &["Coordinate", "Severity", "User"],
+    ),
+];
+
+fn standalone_dependency_names(type_name: &str) -> &'static [&'static str] {
+    STANDALONE_DEPENDENCIES
+        .iter()
+        .find_map(|(owner, dependencies): &(&str, &[&str])| {
+            (*owner == type_name).then_some(*dependencies)
+        })
+        .unwrap_or_default()
+}
+
+fn source_type_name(ty: &TypeModel) -> String {
+    ty.name
+        .split_once('`')
+        .map_or_else(|| ty.name.clone(), |(name, _)| name.to_owned())
+}
+
+fn type_parameters(resolver: &Resolver, ty: &TypeModel) -> String {
+    let rid: u32 = ty.token & 0x00FF_FFFF;
+    let names: Vec<String> = resolver.type_generic_param_names(rid);
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", names.join(", "))
+    }
+}
+
+fn enum_declaration(resolver: &Resolver, ty: &TypeModel, type_name: &str) -> Option<String> {
+    if ty.base_type.as_deref() != Some("System.Enum") {
+        return None;
+    }
+    let mut underlying: Option<String> = None;
+    let mut variants: Vec<String> = Vec::new();
+    for field in &ty.fields {
+        if field.name == "value__" {
+            underlying = Some(resolver.resolve_type_tokens(&field.field_type.render()));
+            continue;
+        }
+        let constant: &FieldConstant = field.constant.as_ref()?;
+        variants.push(format!(
+            "        {} = {},",
+            csharp_escape_identifier(&field_name(&field.name)),
+            csharp_constant(constant)
+        ));
+    }
+    let underlying: String = underlying?;
+    (!variants.is_empty()).then(|| {
+        format!(
+            "    public enum {type_name} : {underlying}\n    {{\n{}\n    }}\n",
+            variants.join("\n")
+        )
+    })
+}
+
+fn recovered_type_kind(ty: &TypeModel, is_static: bool) -> &'static str {
+    if is_static {
+        "public static class"
+    } else if ty.flags & TYPE_INTERFACE != 0 {
+        "public interface"
+    } else if ty
+        .methods
+        .iter()
+        .any(|method: &MethodModel| method.name == "<Clone>$")
+    {
+        "public record"
+    } else if is_value_type_model(ty)
+        && ty
+            .methods
+            .iter()
+            .any(|method: &MethodModel| method.name == "PrintMembers")
+    {
+        "public record struct"
+    } else if is_value_type_model(ty) {
+        "public struct"
+    } else if ty.flags & TYPE_ABSTRACT != 0 {
+        "public abstract class"
+    } else {
+        "public class"
+    }
+}
+
+fn recovered_type_declaration(
+    members: &TypeMembers,
+    methods: &[UserMethod],
+    kind: &str,
+    type_name: &str,
+    type_parameters: &str,
+) -> String {
+    let declarations: String = members.declarations();
+    let accessors: BTreeSet<&str> = members.accessor_names();
+    let bodies: String = methods
+        .iter()
+        .filter(|method: &&UserMethod| !accessors.contains(method.name.as_str()))
+        .map(|method: &UserMethod| method.source.clone())
+        .collect::<Vec<String>>()
+        .join("\n");
+    format!("    {kind} {type_name}{type_parameters}\n    {{\n{declarations}\n{bodies}\n    }}\n")
+}
+
+fn recovered_dependency_declaration(
+    bytes: &[u8],
+    owner: Target,
+    dependency_name: &str,
+) -> Option<String> {
+    let pe: PeImage = parse(bytes).ok()?;
+    let clr: ClrHeader = parse_clr_header(bytes, &pe).ok()?;
+    let root: MetadataRoot = parse_metadata_root(bytes, &pe, &clr).ok()?;
+    let resolver: Resolver = Resolver::build(bytes, &pe, &clr, &root).ok()?;
+    let model: AssemblyModel = resolver.model();
+    let ty: &TypeModel = model.types.iter().find(|candidate: &&TypeModel| {
+        let in_namespace: bool = candidate.namespace == owner.origin_namespace
+            || candidate
+                .full_name
+                .strip_prefix(owner.origin_namespace)
+                .is_some_and(|tail: &str| tail.starts_with(['.', '/']));
+        in_namespace && source_type_name(candidate) == dependency_name
+    })?;
+    let source_name: String = source_type_name(ty);
+    if let Some(declaration) = enum_declaration(&resolver, ty, &source_name) {
+        return Some(declaration);
+    }
+    let member_names: Vec<UserMethod> = ty
+        .methods
+        .iter()
+        .filter(|method: &&MethodModel| {
+            method.name.starts_with("get_") || method.name.starts_with("set_")
+        })
+        .map(|method: &MethodModel| UserMethod {
+            name: method.name.clone(),
+            source: String::new(),
+        })
+        .collect();
+    let members: TypeMembers = type_members_for_type(&resolver, ty, &member_names);
+    let is_static: bool = ty.flags & (TYPE_ABSTRACT | TYPE_SEALED) == (TYPE_ABSTRACT | TYPE_SEALED);
+    Some(recovered_type_declaration(
+        &members,
+        &[],
+        recovered_type_kind(ty, is_static),
+        &source_name,
+        &type_parameters(&resolver, ty),
+    ))
+}
+
+fn recovered_dependency_source(bytes: &[u8], target: Target) -> String {
+    standalone_dependency_names(target.type_name)
+        .iter()
+        .map(|dependency: &&str| {
+            recovered_dependency_declaration(bytes, target, dependency)
+                .unwrap_or_else(|| panic!("recover dependency declaration {dependency}"))
+        })
+        .collect()
+}
+
+#[test]
+fn standalone_dependency_host_uses_recovered_assembly_declarations() {
+    require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
+    let target: Target = Target {
+        dll: EDGECASES_DLL,
+        origin_namespace: "EdgeCases",
+        type_name: "EntryPoint",
+        is_static: true,
+    };
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let assembly: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile fixture");
+    let policy: ConstructorPolicy = constructor_policy_for(&bytes, target);
+    let methods: Vec<UserMethod> = user_methods_for(
+        &assembly.methods,
+        &target_full_name(target),
+        target.type_name,
+        policy,
+    );
+    let members: TypeMembers = type_members(&bytes, target, &methods);
+    let source: String = whole_type_source(&bytes, &members, &methods, target);
+    let support: String = recovered_dependency_source(&bytes, target);
+    assert!(
+        support.contains("public static class PinvokePlayground"),
+        "the standalone host must add the recovered declaration needed by EntryPoint:\n{support}"
+    );
+    assert!(
+        source.contains(&support),
+        "the standalone host must embed only the recovered dependency declaration"
+    );
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wt_dependency_control").expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    write_project(&tmp, target.type_name);
+    let (errors, produced): (Vec<String>, Option<PathBuf>) =
+        compile_whole_type(&tmp, &source, target.type_name);
+    assert!(
+        produced.is_some(),
+        "the recovered dependency host must compile before its mutation control is useful:\n{}",
+        errors.join("\n")
+    );
+    let mutated: String = source.replacen("PinvokePlayground.", "MissingPlayground.", 1);
+    assert_ne!(
+        mutated, source,
+        "the dependency mutation must change recovered source"
+    );
+    let mutation_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wt_dependency_mutation")
+            .expect("mk tmp");
+    let mutation_tmp: PathBuf = mutation_scratch.path().to_path_buf();
+    write_project(&mutation_tmp, target.type_name);
+    let (errors, produced): (Vec<String>, Option<PathBuf>) =
+        compile_whole_type(&mutation_tmp, &mutated, target.type_name);
+    assert!(
+        produced.is_none() && !errors.is_empty(),
+        "the mutation control must reject a changed recovered dependency reference"
+    );
 }
 
 fn write_project(dir: &Path, type_name: &str) {
@@ -2286,19 +2598,26 @@ const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "DeconstructPlayground",
     "DisposableScope",
     "Dog",
+    "EntryPoint",
     "EventSource",
     "ExceptionPlayground",
     "ExpressionPlayground",
     "FixedBufferHolder",
     "JsonLite",
+    "LinqPlayground",
     "Money",
     "PackedHeader",
     "Pipeline",
+    "PinvokePlayground",
+    "PrimaryCtorService",
+    "RefPlayground",
     "SpanPlayground",
     "StaticFinalizationKit",
+    "StringPlayground",
     "TargetTypedNewPlayground",
     "TraceableAttribute",
     "UnionLike",
+    "WithExpressionPlayground",
 ];
 
 fn states_refusal(methods: &[UserMethod]) -> bool {

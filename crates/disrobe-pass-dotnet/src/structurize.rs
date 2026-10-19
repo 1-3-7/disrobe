@@ -44,7 +44,7 @@ pub struct StructuredMethod {
     pub named_params: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManagedByRefArgumentMode {
     Ref,
     Out,
@@ -116,6 +116,10 @@ pub trait TokenNamer {
 
     fn call_info(&self, _token: u32) -> Option<CallInfo> {
         None
+    }
+
+    fn is_corelib_try_parse_member_ref(&self, _token: u32) -> bool {
+        false
     }
 
     fn csharp_anonymous_object_member_names(&self, _token: u32) -> Option<Vec<String>> {
@@ -222,6 +226,10 @@ impl TokenNamer for Resolver {
         })
     }
 
+    fn is_corelib_try_parse_member_ref(&self, token: u32) -> bool {
+        self.corelib_try_parse_member_ref(token)
+    }
+
     fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
         self.csharp_anonymous_object_member_names(token)
     }
@@ -322,6 +330,10 @@ impl TokenNamer for MethodNamer<'_> {
         self.resolver.call_info(token)
     }
 
+    fn is_corelib_try_parse_member_ref(&self, token: u32) -> bool {
+        self.resolver.corelib_try_parse_member_ref(token)
+    }
+
     fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
         self.resolver.csharp_anonymous_object_member_names(token)
     }
@@ -391,6 +403,7 @@ pub(crate) enum Expr {
     Local(u32),
     Arg(u32),
     Field {
+        token: Option<u32>,
         text: String,
         is_boolean: bool,
         ty: Option<String>,
@@ -2488,6 +2501,37 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         true
     }
 
+    fn field_rva_utf8_span_literal(&self, token: u32, raw: &str, args: &[Expr]) -> Option<Expr> {
+        if self.lang != TargetLang::CSharp {
+            return None;
+        }
+        let (field_token, length): (u32, Option<usize>) = match args {
+            [Expr::FieldHandle(field_token)]
+                if is_byte_span_literal_factory(self.namer, token, raw) =>
+            {
+                (*field_token, None)
+            }
+            [Expr::AddressOf(field), length] if raw == "System.ReadOnlySpan<byte>::.ctor" => {
+                let Expr::Field {
+                    token: Some(field_token),
+                    ..
+                } = field.as_ref()
+                else {
+                    return None;
+                };
+                (*field_token, Some(const_operand_value(length)?))
+            }
+            _ => return None,
+        };
+        let bytes: &[u8] = self.namer.field_rva_bytes(field_token)?;
+        let bytes: &[u8] = match length {
+            Some(length) => bytes.get(..length)?,
+            None => bytes,
+        };
+        let text: &str = std::str::from_utf8(bytes).ok()?;
+        Some(Expr::Raw(format!("{}u8", csharp_string_literal(text))))
+    }
+
     fn shift_left(&mut self) {
         let (b, b_depth): (Expr, usize) = self.pop_with_depth();
         let (a, a_depth, kind): (Expr, usize, StackKind) = self.pop_typed();
@@ -2762,7 +2806,12 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             OperandValue::Token(t) => t,
             _ => 0,
         };
-        let info: Option<CallInfo> = self.namer.call_info(token);
+        let mut info: Option<CallInfo> = self.namer.call_info(token);
+        if self.lang == TargetLang::CSharp
+            && let Some(info) = &mut info
+        {
+            recover_framework_out_argument_mode(self.namer, token, info);
+        }
         let arg_count: usize = info.as_ref().map_or(0, |c: &CallInfo| c.arg_count);
         let returns_value: bool = info
             .as_ref()
@@ -2864,6 +2913,18 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
             }
             return;
         }
+        if !has_this
+            && matches!(member, "op_Implicit" | "op_Explicit")
+            && args.len() == 1
+            && let Some(conversion_type) = return_type.as_ref()
+        {
+            let operand: Expr = args.pop().unwrap_or(Expr::Null);
+            self.push_typed(
+                Expr::Cast(conversion_type.clone(), Box::new(operand)),
+                result_kind,
+            );
+            return;
+        }
         if member == "GetTypeFromHandle" && args.len() == 1 {
             let handle: Expr = args.pop().unwrap_or(Expr::Null);
             let type_expression: Expr = match &handle {
@@ -2873,6 +2934,10 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 )),
             };
             self.push_typed(type_expression, StackKind::Reference);
+            return;
+        }
+        if returns_value && let Some(span) = self.field_rva_utf8_span_literal(token, &raw, &args) {
+            self.push_typed(span, result_kind);
             return;
         }
         if !has_this
@@ -2890,6 +2955,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let recv: Expr = args.pop().unwrap_or(Expr::Null);
                 self.push_typed(
                     Expr::Field {
+                        token: None,
                         text: format!("{}.{prop}", self.receiver_text(&recv, base_call)),
                         is_boolean: returns_boolean,
                         ty: return_type,
@@ -2900,9 +2966,16 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 return;
             }
             if !has_this && args.is_empty() {
+                let target: String = raw.rsplit_once("::").map_or_else(
+                    || prop.to_owned(),
+                    |(owner, _): (&str, &str)| {
+                        static_call_target(&format!("{owner}::{prop}"), self.lang)
+                    },
+                );
                 self.push_typed(
                     Expr::Field {
-                        text: prop.to_owned(),
+                        token: None,
+                        text: target,
                         is_boolean: returns_boolean,
                         ty: return_type,
                         kind: return_kind,
@@ -2921,6 +2994,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let subscript: String = self.render_subscript(indices);
                 self.push_typed(
                     Expr::Field {
+                        token: None,
                         text: format!("{}[{subscript}]", self.receiver_text(&recv, base_call)),
                         is_boolean: returns_boolean,
                         ty: return_type,
@@ -3308,7 +3382,9 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let args: Vec<Expr> = self.pop_n(argc);
                 let declared: String = raw.replace("::.ctor", "");
                 let ctor: String = short(&declared);
-                if let Some(group) = Self::as_method_group(&args) {
+                if let Some(span) = self.field_rva_utf8_span_literal(token, &raw, &args) {
+                    self.push(span);
+                } else if let Some(group) = Self::as_method_group(&args) {
                     self.push(group);
                 } else if is_value_tuple_ctor(&ctor) && (2..=8).contains(&args.len()) {
                     self.push(Expr::Tuple(args));
@@ -3466,6 +3542,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let stack_kind: StackKind = self.loaded_field_kind(ins);
                 self.push_typed(
                     Expr::Field {
+                        token: None,
                         text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                         is_boolean,
                         ty: field_type,
@@ -3481,6 +3558,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::AddressOf(Box::new(Expr::Field {
+                    token: None,
                     text: format!("{}.{}", paren(&obj, self.lang, self.names), fld),
                     is_boolean,
                     ty: field_type,
@@ -3488,13 +3566,17 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 })));
             }
             "ldsfld" => {
-                let fld: String = field_name(&self.token_name(ins));
+                let fld: String = static_field_target(&self.token_name(ins), self.lang);
                 let field_type: Option<String> = self.stored_field_type(ins);
                 let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 let stack_kind: StackKind = self.loaded_field_kind(ins);
                 self.push_typed(
                     Expr::Field {
+                        token: match ins.operand {
+                            OperandValue::Token(token) => Some(token),
+                            _ => None,
+                        },
                         text: fld,
                         is_boolean,
                         ty: field_type,
@@ -3504,11 +3586,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 );
             }
             "ldsflda" => {
-                let fld: String = field_name(&self.token_name(ins));
+                let fld: String = static_field_target(&self.token_name(ins), self.lang);
                 let field_type: Option<String> = self.stored_field_type(ins);
                 let is_boolean: bool = field_type.as_deref().is_some_and(is_bool_type_name);
                 let kind: ConditionKind = self.stored_field_kind(ins);
                 self.push(Expr::AddressOf(Box::new(Expr::Field {
+                    token: match ins.operand {
+                        OperandValue::Token(token) => Some(token),
+                        _ => None,
+                    },
                     text: fld,
                     is_boolean,
                     ty: field_type,
@@ -4607,6 +4693,38 @@ fn static_call_target(raw: &str, lang: TargetLang) -> String {
         return member;
     }
     format!("{owner}.{member}")
+}
+
+fn static_field_target(raw: &str, lang: TargetLang) -> String {
+    let field: String = field_name(raw);
+    let Some((owner, _)): Option<(&str, &str)> = raw.rsplit_once("::") else {
+        return field;
+    };
+    static_call_target(&format!("{owner}::{field}"), lang)
+}
+
+fn is_byte_span_literal_factory(namer: &impl TokenNamer, token: u32, raw: &str) -> bool {
+    raw.starts_with("System.Runtime.CompilerServices.RuntimeHelpers::CreateSpan<")
+        && namer
+            .call_return_type_name(token)
+            .is_some_and(|ty: String| ty == "System.ReadOnlySpan<byte>")
+}
+
+fn recover_framework_out_argument_mode(namer: &impl TokenNamer, token: u32, info: &mut CallInfo) {
+    if !namer.is_corelib_try_parse_member_ref(token) {
+        return;
+    }
+    let Some(mode): Option<&mut Option<ManagedByRefArgumentMode>> =
+        info.byref_argument_modes.last_mut()
+    else {
+        return;
+    };
+    if matches!(
+        *mode,
+        Some(ManagedByRefArgumentMode::Ref | ManagedByRefArgumentMode::Unresolved)
+    ) {
+        *mode = Some(ManagedByRefArgumentMode::Out);
+    }
 }
 
 pub(crate) fn qualified_type_name(raw: &str, lang: TargetLang) -> String {
@@ -5905,11 +6023,107 @@ mod tests {
     }
 
     #[test]
+    fn static_property_qualification_keeps_the_declaring_type() {
+        assert_eq!(
+            static_call_target("System.String::Empty", TargetLang::CSharp),
+            "System.String.Empty"
+        );
+    }
+
+    #[test]
+    fn static_field_qualification_keeps_the_declaring_type() {
+        assert_eq!(
+            static_field_target("System.String::Empty", TargetLang::CSharp),
+            "System.String.Empty"
+        );
+    }
+
+    #[test]
+    fn framework_try_parse_member_refs_recover_the_out_parameter() {
+        struct CorelibTryParseNamer;
+
+        impl TokenNamer for CorelibTryParseNamer {
+            fn name(&self, _token: u32) -> String {
+                "System.Int32::TryParse".to_owned()
+            }
+
+            fn is_corelib_try_parse_member_ref(&self, _token: u32) -> bool {
+                true
+            }
+        }
+
+        let mut info: CallInfo = CallInfo {
+            arg_count: 2,
+            returns_value: true,
+            has_this: false,
+            explicit_this: false,
+            byref_argument_modes: vec![None, Some(ManagedByRefArgumentMode::Ref)],
+        };
+        recover_framework_out_argument_mode(&CorelibTryParseNamer, 0x0A00_0001, &mut info);
+        assert_eq!(
+            info.byref_argument_modes,
+            vec![None, Some(ManagedByRefArgumentMode::Out)]
+        );
+    }
+
+    #[test]
+    fn fake_system_namespace_member_ref_try_parse_keeps_ref_mode() {
+        struct FakeSystemTryParseNamer;
+
+        impl TokenNamer for FakeSystemTryParseNamer {
+            fn name(&self, _token: u32) -> String {
+                "System.Fake::TryParse".to_owned()
+            }
+        }
+
+        let mut info: CallInfo = CallInfo {
+            arg_count: 2,
+            returns_value: true,
+            has_this: false,
+            explicit_this: false,
+            byref_argument_modes: vec![None, Some(ManagedByRefArgumentMode::Ref)],
+        };
+        recover_framework_out_argument_mode(&FakeSystemTryParseNamer, 0x0A00_0001, &mut info);
+        assert_eq!(
+            info.byref_argument_modes,
+            vec![None, Some(ManagedByRefArgumentMode::Ref)]
+        );
+    }
+
+    #[test]
+    fn byte_span_literal_factory_rejects_non_byte_span_returns() {
+        struct SpanNamer(&'static str);
+
+        impl TokenNamer for SpanNamer {
+            fn name(&self, _token: u32) -> String {
+                "System.Runtime.CompilerServices.RuntimeHelpers::CreateSpan<T>".to_owned()
+            }
+
+            fn call_return_type_name(&self, _token: u32) -> Option<String> {
+                Some(self.0.to_owned())
+            }
+        }
+
+        let raw: &str = "System.Runtime.CompilerServices.RuntimeHelpers::CreateSpan<T>";
+        assert!(is_byte_span_literal_factory(
+            &SpanNamer("System.ReadOnlySpan<byte>"),
+            0x2B00_0001,
+            raw
+        ));
+        assert!(!is_byte_span_literal_factory(
+            &SpanNamer("System.ReadOnlySpan<int>"),
+            0x2B00_0001,
+            raw
+        ));
+    }
+
+    #[test]
     fn call_receiver_drops_address_of() {
         let names: NameTable = NameTable::default();
         let recv: Expr = Expr::AddressOf(Box::new(Expr::Local(2)));
         assert_eq!(call_receiver(&recv, TargetLang::CSharp, &names), "local2");
         let field_recv: Expr = Expr::AddressOf(Box::new(Expr::Field {
+            token: None,
             text: "this.x".to_owned(),
             is_boolean: false,
             ty: Some("int".to_owned()),
@@ -5975,6 +6189,7 @@ mod tests {
             "span.get_Item(0)"
         );
         let indexer: Expr = Expr::Field {
+            token: None,
             text: "span[0]".to_owned(),
             is_boolean: false,
             ty: Some("ref int".to_owned()),
@@ -5987,6 +6202,7 @@ mod tests {
         assert_eq!(
             managed_byref_target(
                 &Expr::Field {
+                    token: None,
                     text: "span[0]".to_owned(),
                     is_boolean: false,
                     ty: Some("ref int".to_owned()),

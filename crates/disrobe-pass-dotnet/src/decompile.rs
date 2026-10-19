@@ -66,6 +66,10 @@ impl TokenNamer for AssemblyNamer<'_> {
         self.method.call_info(token)
     }
 
+    fn is_corelib_try_parse_member_ref(&self, token: u32) -> bool {
+        self.method.is_corelib_try_parse_member_ref(token)
+    }
+
     fn csharp_anonymous_object_member_names(&self, token: u32) -> Option<Vec<String>> {
         self.method.csharp_anonymous_object_member_names(token)
     }
@@ -828,10 +832,7 @@ fn hoisted_field_types(
             std::collections::BTreeMap::new();
         for f in &ty.fields {
             if let Some(name) = crate::state_machine::hoisted_field_source_name(&f.name) {
-                fields.insert(
-                    name,
-                    resolver.resolve_type_tokens(&f.field_type.render_in(lang)),
-                );
+                fields.insert(name, resolver.render_type(&f.field_type, lang));
             }
         }
         if !fields.is_empty() {

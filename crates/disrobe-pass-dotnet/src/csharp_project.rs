@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::decompile::{Decompiled, decompile_assembly_detailed};
 use crate::error::Result;
+use crate::interop::{CallingConvention, CharSet, PInvoke, interop};
 use crate::metadata::{MetadataRoot, parse_metadata_root};
 use crate::model::{AssemblyModel, FieldConstant, FieldModel, MethodModel, Resolver, TypeModel};
 use crate::pe::{ClrHeader, PeImage, parse, parse_clr_header};
@@ -93,6 +94,11 @@ pub fn emit_csharp_project(original: &[u8]) -> Result<CSharpProject> {
             .unwrap_or_default(),
     );
     let model: AssemblyModel = resolver.model();
+    let pinvokes: BTreeMap<u32, PInvoke> = interop(&resolver)
+        .pinvokes
+        .into_iter()
+        .map(|pinvoke: PInvoke| (pinvoke.token, pinvoke))
+        .collect();
     let bodies: BTreeMap<u32, &StructuredMethod> = detailed
         .assembly
         .methods
@@ -131,6 +137,7 @@ pub fn emit_csharp_project(original: &[u8]) -> Result<CSharpProject> {
         model: &model,
         bodies: &bodies,
         nested_of: &nested_of,
+        pinvokes: &pinvokes,
         entry_token,
         refusals: Vec::new(),
         entry_point: None,
@@ -221,6 +228,7 @@ struct Context<'a> {
     model: &'a AssemblyModel,
     bodies: &'a BTreeMap<u32, &'a StructuredMethod>,
     nested_of: &'a BTreeMap<u32, Vec<u32>>,
+    pinvokes: &'a BTreeMap<u32, PInvoke>,
     entry_token: Option<u32>,
     refusals: Vec<Refusal>,
     entry_point: Option<String>,
@@ -764,10 +772,26 @@ impl Context<'_> {
             _ => {
                 if m.flags & METHOD_ABSTRACT != 0 || kind == Kind::Interface {
                     let _ = writeln!(out, "{pad}{header};");
+                } else if m.flags & METHOD_PINVOKE != 0 {
+                    let Some(pinvoke): Option<&PInvoke> = self.pinvokes.get(&m.token) else {
+                        self.refusals.push(Refusal {
+                            type_name: ty.full_name.clone(),
+                            member: m.name.clone(),
+                            reason: "platform-invoke method has no ImplMap metadata".to_owned(),
+                        });
+                        return;
+                    };
+                    let attribute: String = csharp_pinvoke_attribute(pinvoke);
+                    let modifiers: String = Self::method_modifiers(kind, m);
+                    let space: &str = if modifiers.is_empty() { "" } else { " " };
+                    let extern_header: String = format!(
+                        "{modifiers}{space}extern {ret} {}{generic}({params})",
+                        member_identifier(&m.name)
+                    );
+                    let _ = writeln!(out, "{pad}{attribute}");
+                    let _ = writeln!(out, "{pad}{extern_header};");
                 } else {
-                    let reason: &str = if m.flags & METHOD_PINVOKE != 0 {
-                        "platform-invoke methods have no managed body to recover"
-                    } else if m.rva == 0 {
+                    let reason: &str = if m.rva == 0 {
                         "the method has no CIL body"
                     } else {
                         "the decompiler produced no body for this method"
@@ -918,6 +942,74 @@ impl Context<'_> {
         };
         format!("{} {field_type} {name}{initializer};", modifiers.join(" "))
     }
+}
+
+#[must_use]
+pub fn csharp_pinvoke_attribute(pinvoke: &PInvoke) -> String {
+    let mut arguments: Vec<String> =
+        vec![crate::structurize::csharp_string_literal(&pinvoke.module)];
+    if !pinvoke.entry_point.is_empty() {
+        arguments.push(format!(
+            "EntryPoint = {}",
+            crate::structurize::csharp_string_literal(&pinvoke.entry_point)
+        ));
+    }
+    let char_set: Option<&str> = match pinvoke.char_set {
+        CharSet::NotSpecified => None,
+        CharSet::Ansi => Some("Ansi"),
+        CharSet::Unicode => Some("Unicode"),
+        CharSet::Auto => Some("Auto"),
+    };
+    if let Some(char_set) = char_set {
+        arguments.push(format!(
+            "CharSet = System.Runtime.InteropServices.CharSet.{char_set}"
+        ));
+    }
+    if pinvoke.set_last_error {
+        arguments.push("SetLastError = true".to_owned());
+    }
+    if !pinvoke.preserve_sig {
+        arguments.push("PreserveSig = false".to_owned());
+    }
+    let calling_convention: Option<String> = match pinvoke.calling_convention {
+        CallingConvention::NotSpecified => None,
+        CallingConvention::Winapi => {
+            Some("System.Runtime.InteropServices.CallingConvention.Winapi".to_owned())
+        }
+        CallingConvention::Cdecl => {
+            Some("System.Runtime.InteropServices.CallingConvention.Cdecl".to_owned())
+        }
+        CallingConvention::Stdcall => {
+            Some("System.Runtime.InteropServices.CallingConvention.StdCall".to_owned())
+        }
+        CallingConvention::Thiscall => {
+            Some("System.Runtime.InteropServices.CallingConvention.ThisCall".to_owned())
+        }
+        CallingConvention::Fastcall => {
+            Some("System.Runtime.InteropServices.CallingConvention.FastCall".to_owned())
+        }
+        CallingConvention::Other(value) => Some(format!(
+            "(System.Runtime.InteropServices.CallingConvention){value}"
+        )),
+    };
+    if let Some(calling_convention) = calling_convention {
+        arguments.push(format!("CallingConvention = {calling_convention}"));
+    }
+    if pinvoke.exact_spelling {
+        arguments.push("ExactSpelling = true".to_owned());
+    }
+    if let Some(best_fit_mapping) = pinvoke.best_fit_mapping {
+        arguments.push(format!("BestFitMapping = {best_fit_mapping}"));
+    }
+    if let Some(throw_on_unmappable_char) = pinvoke.throw_on_unmappable_char {
+        arguments.push(format!(
+            "ThrowOnUnmappableChar = {throw_on_unmappable_char}"
+        ));
+    }
+    format!(
+        "[System.Runtime.InteropServices.DllImport({})]",
+        arguments.join(", ")
+    )
 }
 
 fn backing_property_name(field_name: &str) -> Option<&str> {

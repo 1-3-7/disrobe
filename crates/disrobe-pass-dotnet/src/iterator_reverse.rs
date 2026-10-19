@@ -316,6 +316,7 @@ fn rebuild_async_stub(
     let collapsed: String =
         clean_async_result_tail(&recovered).unwrap_or_else(|| recovered.clone());
     let cleaned: String = qualify_task_statics(&collapsed);
+    let cleaned: String = rewrite_awaiter_result_declarations(&cleaned);
     let pruned: String = drop_unused_local_decls(&format!("{decls}{cleaned}"));
     let async_sig: String = add_async_modifier(signature)?;
     let async_body: String = add_async_modifier(body)?;
@@ -338,6 +339,41 @@ fn drop_unused_local_decls(body: &str) -> String {
         kept.push((*line).to_owned());
     }
     kept.join("\n")
+}
+
+fn rewrite_awaiter_result_declarations(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line): (usize, &&str)| {
+            let Some(name): Option<String> = local_decl_name(line) else {
+                return (*line).to_owned();
+            };
+            let assignment: String = format!("{name} = await ");
+            if !lines[index.saturating_add(1)..]
+                .iter()
+                .any(|later: &&str| later.trim().starts_with(&assignment))
+            {
+                return (*line).to_owned();
+            }
+            let trimmed: &str = line.trim();
+            let Some(inner): Option<&str> = trimmed.strip_suffix(';') else {
+                return (*line).to_owned();
+            };
+            let Some((ty, _)): Option<(&str, &str)> = inner.rsplit_once([' ', '\t']) else {
+                return (*line).to_owned();
+            };
+            let Some(result_type): Option<String> = awaiter_result_type(ty) else {
+                return (*line).to_owned();
+            };
+            let indent: &str = line
+                .get(..line.len().saturating_sub(line.trim_start().len()))
+                .unwrap_or_default();
+            format!("{indent}{result_type} {name};")
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 const STATEMENT_LEADERS: [&str; 8] = [
@@ -680,10 +716,36 @@ fn local_declarations(
             continue;
         }
         if assigns_local(inner, name) {
-            push_format(&mut decls, format_args!("    {ty} {name};\n"));
+            let awaited_type: Option<String> = awaiter_result_type(ty);
+            let declared_type: &str = awaited_type.as_deref().unwrap_or(ty);
+            push_format(&mut decls, format_args!("    {declared_type} {name};\n"));
         }
     }
     decls
+}
+
+fn awaiter_result_type(ty: &str) -> Option<String> {
+    let marker_start: usize = ["Awaitable<", "Awaiter<"]
+        .iter()
+        .filter_map(|marker: &&str| ty.find(marker).map(|index: usize| index + marker.len()))
+        .min()?;
+    let tail: &str = ty.get(marker_start..)?;
+    let mut depth: usize = 1;
+    for (offset, character) in tail.char_indices() {
+        match character {
+            '<' => depth = depth.checked_add(1)?,
+            '>' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let result: &str = tail.get(..offset)?;
+                    return (!result.is_empty()).then(|| result.to_owned());
+                }
+            }
+            ',' if depth == 1 => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn assigns_local(inner: &str, name: &str) -> bool {
@@ -730,6 +792,41 @@ mod tests {
             "    local2 = await local3;"
         );
         assert_eq!(drop_unused_local_decls(body), body);
+    }
+
+    #[test]
+    fn awaited_boolean_uses_the_condition_type_in_reconstructed_locals() {
+        let fields: BTreeMap<String, String> = BTreeMap::from([(
+            "local4".to_owned(),
+            "System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable<bool>.ConfiguredValueTaskAwaiter"
+                .to_owned(),
+        )]);
+        let declarations: String =
+            local_declarations("local4 = await local5;\nif (local4)\n{\n}", &[], &fields);
+        assert_eq!(declarations, "    bool local4;\n");
+    }
+
+    #[test]
+    fn awaited_generic_result_replaces_the_awaiter_storage_type() {
+        let fields: BTreeMap<String, String> = BTreeMap::from([(
+            "local4".to_owned(),
+            "System.Runtime.CompilerServices.ConfiguredTaskAwaitable<System.Collections.Generic.IReadOnlyList<EdgeCases.User>>.ConfiguredTaskAwaiter"
+                .to_owned(),
+        )]);
+        let declarations: String = local_declarations("local4 = await local5;\n", &[], &fields);
+        assert_eq!(
+            declarations,
+            "    System.Collections.Generic.IReadOnlyList<EdgeCases.User> local4;\n"
+        );
+    }
+
+    #[test]
+    fn reconstructed_await_retypes_the_existing_awaiter_declaration() {
+        let body: &str = "    System.Runtime.CompilerServices.ConfiguredTaskAwaitable<System.Collections.Generic.IReadOnlyList<EdgeCases.User>>.ConfiguredTaskAwaiter local4;\n    local4 = await local5;";
+        assert_eq!(
+            rewrite_awaiter_result_declarations(body),
+            "    System.Collections.Generic.IReadOnlyList<EdgeCases.User> local4;\n    local4 = await local5;"
+        );
     }
 
     #[test]

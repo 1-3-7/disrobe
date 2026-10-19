@@ -57,6 +57,8 @@ mod confuserex2_gauntlet;
 mod crypto_obfuscator;
 #[path = "../csharp_behaviour_strict.rs"]
 mod csharp_behaviour_strict;
+#[path = "../csharp_project_pinvoke.rs"]
+mod csharp_project_pinvoke;
 #[path = "../debug_framework.rs"]
 mod debug_framework;
 #[path = "../deepsea.rs"]

@@ -37,6 +37,7 @@ fn method_with_param_named(name: &str) -> MethodModel {
         parameters: vec![ParamModel {
             sequence: 1,
             name: name.to_owned(),
+            managed_byref_mode: None,
         }],
     }
 }

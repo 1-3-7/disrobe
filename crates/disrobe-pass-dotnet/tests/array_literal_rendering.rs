@@ -152,3 +152,93 @@ fn collection_expression_recovers_the_two_field_rva_integer_literals() {
         "the authenticated collection initializers must not retain a runtime-handle refusal:\n{body}"
     );
 }
+
+#[test]
+fn utf8_literal_recovers_the_field_rva_bytes_as_a_span_literal() {
+    let asm: DecompiledAssembly = decompile();
+    let body: String = body_of(&asm, "StringPlayground", "get_Utf8Literal");
+    assert!(
+        body.contains("return \"edge-cases-utf8\"u8;"),
+        "the FieldRVA-backed RuntimeHelpers.CreateSpan<byte> shape must preserve its bytes as a C# UTF-8 literal:\n{body}"
+    );
+    assert!(
+        !body.contains("__unreconstructed_runtime_handle"),
+        "the recovered UTF-8 span must not retain its FieldRVA handle refusal:\n{body}"
+    );
+}
+
+#[test]
+fn span_conversion_operator_renders_as_a_csharp_cast() {
+    let asm: DecompiledAssembly = decompile();
+    let body: String = body_of(&asm, "StringPlayground", "MakeUtf8Snapshot");
+    assert!(
+        body.contains("CopyTo((System.Span<byte>)local1)"),
+        "the conversion operator must be rendered in C# syntax:\n{body}"
+    );
+    assert!(
+        !body.contains("op_Implicit"),
+        "invalid metadata name:\n{body}"
+    );
+}
+
+#[test]
+fn framework_try_parse_member_ref_uses_the_out_keyword() {
+    let asm: DecompiledAssembly = decompile();
+    let body: String = body_of(&asm, "RefPlayground", "OutTryParse");
+    assert!(
+        body.contains("System.Int32.TryParse(input, out result)"),
+        "the framework MemberRef must preserve the known out contract:\n{body}"
+    );
+}
+
+#[test]
+fn static_framework_field_keeps_its_declaring_type() {
+    let asm: DecompiledAssembly = decompile();
+    let body: String = body_of(&asm, "PinvokePlayground", "ReadEnvVar");
+    assert!(
+        body.contains("return System.String.Empty;"),
+        "the static field owner must survive lifting:\n{body}"
+    );
+}
+
+fn contract_body(method: &str) -> StructuredMethod {
+    let bytes: Vec<u8> = std::fs::read(manifest(
+        "../../corpus/dotnet/csharp-contracts/CsharpContracts.dll",
+    ))
+    .expect("read compiler-authored C# contract fixture");
+    let assembly: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile C# contracts");
+    assembly
+        .methods
+        .into_iter()
+        .find(|candidate: &StructuredMethod| candidate.signature.contains(&format!(" {method}(")))
+        .unwrap_or_else(|| panic!("missing recovered contract method {method}"))
+}
+
+#[test]
+fn fake_system_try_parse_method_definition_retains_ref() {
+    let method: StructuredMethod = contract_body("FakeSystemTryParse");
+    assert!(
+        method
+            .body
+            .contains("System.Fake.Contracts.TryParse(input, ref "),
+        "the authored TryParse declaration takes ref, despite its System namespace:\n{}",
+        method.body
+    );
+    assert!(!method.body.contains("TryParse(input, out "));
+}
+
+#[test]
+fn integer_span_field_rva_is_not_reinterpreted_as_utf8() {
+    let method: StructuredMethod = contract_body("get_IntSpan");
+    assert!(
+        method.signature.contains("System.ReadOnlySpan<int>"),
+        "{}",
+        method.signature
+    );
+    assert!(
+        !method.body.contains("u8"),
+        "the compiler's CreateSpan<int> uses element counts and must retain integer semantics:\n{}",
+        method.body
+    );
+    assert!(method.body.contains("return "), "{}", method.body);
+}
