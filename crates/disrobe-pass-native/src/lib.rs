@@ -50,6 +50,7 @@ pub mod flow_facts;
 pub mod format;
 pub mod hardening;
 pub mod identify;
+pub mod indexed_strings;
 pub mod lang;
 #[cfg(feature = "llm-metadata")]
 pub mod llm;
@@ -179,6 +180,10 @@ pub use flirt::{
 pub use format::{DetectedFormat, NativeFormat, detect as detect_format};
 pub use identify::{
     IdentityHit, IdentityKind, IdentityReport, SupportRoute, detect as detect_identity,
+};
+pub use indexed_strings::{
+    IndexedStringAnnotation, IndexedStringRecovery, IndexedStringRefusal, IndexedStringRefusalKind,
+    recover_indexed_strings,
 };
 pub use lang::{LanguageHit, NativeLanguage, detect as detect_languages};
 #[cfg(feature = "llm-metadata")]

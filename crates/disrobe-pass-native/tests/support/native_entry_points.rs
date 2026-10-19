@@ -247,6 +247,16 @@ pub(crate) const ENTRY_POINTS: &[Entry] = &[
         },
     },
     Entry {
+        path: "indexed_strings::recover_indexed_strings",
+        cheap: false,
+        drive: |ctx: &Ctx<'_>| {
+            from_result(
+                indexed_strings::recover_indexed_strings(ctx.bytes)
+                    .map(|recovery| (recovery.annotations.len(), recovery.refusals.len())),
+            )
+        },
+    },
+    Entry {
         path: "entropy_viz::byte_histogram",
         cheap: true,
         drive: |ctx: &Ctx<'_>| {

@@ -7,6 +7,7 @@ mod copyprop_oracle;
 mod ebpf_oracle;
 mod emu_strings_memdelta_oracle;
 mod ignored_tests_are_classified;
+mod indexed_strings_oracle;
 mod msvc_decompile_behaviour;
 mod msvc_rust_behaviour;
 mod native_recompile_matrix;
