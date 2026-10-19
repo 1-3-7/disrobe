@@ -18,6 +18,7 @@ These points come from the dotnet/runtime sources at tag `v10.0.0` (MIT licence)
 - `MetadataManager.cs` leaves a method out of the stack-trace map when it is in the invoke map, or when its body is folded into another; the runtime names those through reflection metadata instead. For methods on generic types the owning type is the generic definition instantiated over its formal parameters, and a generic method's instantiation is recorded as its formal parameter names.
 - The resource index (`ResourceIndexNode.cs`) is a native hash table of (assembly name, resource name, offset, length) tuples into the resource data blob.
 - The AMD64 `RhpAssignRef` helper (`runtime/amd64/WriteBarriers.asm`) stores the reference from `rdx` through the destination in `rcx`, then updates the write-watch and generational card tables. The fixture's 97-byte helper body at RVA `0xb04e0` has SHA-256 `31e6a1f513121c857e2a2fd214e9aec33c1194d16d4978b389b8fb1804116e85`; the managed linker map independently bounds `Station<string>.Swap`, whose call at RVA `0x94519` targets that body.
+- The AMD64 `RhpNewFast` helper (`runtime/amd64/AllocFast.asm`) allocates a non-array object from the current thread's allocation context and falls back to `RhpNewObject`. The fixture's 64-byte helper body at RVA `0xb0280` has SHA-256 `17c584aed4a975d8939ddf0c9c840daa74dfa337bc3c77bb504a68219fbf28a8`; the managed linker map independently bounds `Program.Main`, including its call at RVA `0x833b7` to that body.
 
 | Runtime source (`src/coreclr/...` at `v10.0.0`) | sha256 |
 | --- | --- |
@@ -31,6 +32,7 @@ These points come from the dotnet/runtime sources at tag `v10.0.0` (MIT licence)
 | `tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/ResourceIndexNode.cs` | `316a3cece22aab485b731285bfb8513d8f3afffbd3661abc046cb3dc42ca3aab` |
 | `tools/Common/Internal/Runtime/MetadataBlob.cs` | `684172213616a8e0581277e131b7b8076e6a184dd6f41b86655b35934dd1be08` |
 | `runtime/amd64/WriteBarriers.asm` | `4452bd7f582853996230e568e7beba39d990154181bf94134ac110e4d4c1c4` |
+| `runtime/amd64/AllocFast.asm` | `e6f71e46f05118691209a46b6f7447cd894f51c7f3ae0dab938adba55a9cd7d6` |
 
 ## Toolchain
 
