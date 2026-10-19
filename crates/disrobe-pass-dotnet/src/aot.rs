@@ -34,7 +34,7 @@ pub use metadata_records::{
 pub use object_model::{
     AotObjectFieldStore, AotObjectHelperCall, AotObjectHelperEvidence, AotObjectHelperKind,
     AotObjectMethodEvidence, AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus,
-    AotObjectStoreWidth, recover_object_model,
+    AotObjectStoreWidth, AotObjectTypeReference, recover_object_model,
 };
 pub use resources::{
     AotManifestResource, AotResourceIndex, AotResourceRefusal, AotResourceStatus,

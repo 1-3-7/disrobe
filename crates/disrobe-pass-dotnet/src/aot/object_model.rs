@@ -13,6 +13,8 @@ const MAX_TOTAL_METHOD_BYTES: usize = 16 * 1024 * 1024;
 const MAX_FIELD_STORES: usize = 16_384;
 const MAX_HELPERS: usize = 4_096;
 const MAX_HELPER_CALLS: usize = 16_384;
+const MAX_METHOD_TABLES: usize = 65_536;
+const MAX_TYPE_REFERENCES: usize = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +39,9 @@ pub enum AotObjectModelRefusal {
     FieldStoreLimitExceeded,
     HelperCallLimitExceeded,
     HelperEvidenceAmbiguous,
+    MethodTableEvidenceAmbiguous,
+    MethodTableLimitExceeded,
+    TypeReferenceLimitExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +53,8 @@ pub struct AotObjectModel {
     pub field_stores: Vec<AotObjectFieldStore>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub helper_calls: Vec<AotObjectHelperCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_references: Vec<AotObjectTypeReference>,
 }
 impl Default for AotObjectModel {
     fn default() -> Self {
@@ -56,6 +63,7 @@ impl Default for AotObjectModel {
             type_layouts: Vec::new(),
             field_stores: Vec::new(),
             helper_calls: Vec::new(),
+            type_references: Vec::new(),
         }
     }
 }
@@ -104,6 +112,13 @@ pub struct AotObjectHelperCall {
     pub call_rva: u32,
     pub helper: AotObjectHelperEvidence,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotObjectTypeReference {
+    pub method_record_offset: u32,
+    pub instruction_rva: u32,
+    pub type_record_offset: u32,
+    pub method_table_rva: u32,
+}
 
 const fn refused(
     reason: AotObjectModelRefusal,
@@ -114,6 +129,7 @@ const fn refused(
         type_layouts,
         field_stores: Vec::new(),
         helper_calls: Vec::new(),
+        type_references: Vec::new(),
     }
 }
 fn field_store(bytes: &[u8], at: usize) -> Option<(AotObjectStoreWidth, u8, u8)> {
@@ -142,6 +158,15 @@ fn call_target(rva: u32, bytes: &[u8], at: usize) -> Option<u32> {
         .ok()?;
     let target =
         i64::from(rva.checked_add(5)?).checked_add(i64::from(i32::from_le_bytes(displacement)))?;
+    u32::try_from(target).ok()
+}
+fn method_table_target(rva: u32, bytes: &[u8]) -> Option<u32> {
+    if bytes.get(..3)? != [0x48, 0x8d, 0x0d] {
+        return None;
+    }
+    let displacement: [u8; 4] = bytes.get(3..7)?.try_into().ok()?;
+    let target =
+        i64::from(rva.checked_add(7)?).checked_add(i64::from(i32::from_le_bytes(displacement)))?;
     u32::try_from(target).ok()
 }
 pub fn recover_object_model(
@@ -210,6 +235,24 @@ pub fn recover_object_model(
             return refused(AotObjectModelRefusal::HelperEvidenceAmbiguous, type_layouts);
         }
     }
+    if attribution.method_table_references.len() > MAX_METHOD_TABLES {
+        return refused(
+            AotObjectModelRefusal::MethodTableLimitExceeded,
+            type_layouts,
+        );
+    }
+    let mut method_tables: BTreeMap<u32, u32> = BTreeMap::new();
+    for reference in &attribution.method_table_references {
+        if method_tables
+            .insert(reference.method_table_rva, reference.type_record_offset)
+            .is_some_and(|owner: u32| owner != reference.type_record_offset)
+        {
+            return refused(
+                AotObjectModelRefusal::MethodTableEvidenceAmbiguous,
+                type_layouts,
+            );
+        }
+    }
     if !image.starts_with(b"MZ") {
         return refused(AotObjectModelRefusal::UnsupportedContainer, type_layouts);
     }
@@ -220,6 +263,7 @@ pub fn recover_object_model(
     let mut total = 0usize;
     let mut stores = Vec::new();
     let mut calls = Vec::new();
+    let mut type_references = Vec::new();
     for evidence in method_evidence {
         let range = AotCodeRange {
             start_rva: evidence.start_rva,
@@ -274,6 +318,24 @@ pub fn recover_object_model(
                     helper: helper.clone(),
                 });
             }
+            if instruction.mnemonic == "lea"
+                && let Some((method_table_rva, type_record_offset)) =
+                    method_table_target(rva, &instruction.bytes)
+                        .and_then(|target: u32| method_tables.get_key_value(&target))
+            {
+                if type_references.len() == MAX_TYPE_REFERENCES {
+                    return refused(
+                        AotObjectModelRefusal::TypeReferenceLimitExceeded,
+                        type_layouts,
+                    );
+                }
+                type_references.push(AotObjectTypeReference {
+                    method_record_offset: evidence.method_record_offset,
+                    instruction_rva: rva,
+                    type_record_offset: *type_record_offset,
+                    method_table_rva: *method_table_rva,
+                });
+            }
             let Some((width, source_register, field_offset)) = field_store(&instruction.bytes, 0)
             else {
                 continue;
@@ -298,5 +360,6 @@ pub fn recover_object_model(
         type_layouts,
         field_stores: stores,
         helper_calls: calls,
+        type_references,
     }
 }

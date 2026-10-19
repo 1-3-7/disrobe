@@ -187,6 +187,7 @@ fn native_aot_station_field_layout_requires_linker_map_ownership_evidence() {
     );
     assert_eq!(report.object_model.status, AotObjectModelStatus::NotPresent);
     assert!(report.object_model.field_stores.is_empty());
+    assert!(report.object_model.type_references.is_empty());
     let recovered: AotObjectModel = recover_station(report, image());
     assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
     let store = recovered
@@ -260,6 +261,37 @@ fn native_aot_object_model_refuses_overlapping_method_evidence() {
 }
 
 #[test]
+fn native_aot_object_model_refuses_ambiguous_method_table_evidence() {
+    let report: &AotReport = report();
+    let mut attribution = report.metadata_attribution.clone();
+    let mut conflict = *attribution
+        .method_table_references
+        .first()
+        .unwrap_or_else(|| panic!("fixture has a MethodTable reference"));
+    conflict.type_record_offset = attribution
+        .types
+        .iter()
+        .map(|type_record| type_record.record_offset)
+        .find(|record_offset| *record_offset != conflict.type_record_offset)
+        .unwrap_or_else(|| panic!("fixture has a second metadata type"));
+    attribution.method_table_references.push(conflict);
+    let recovered: AotObjectModel = recover_object_model(
+        image(),
+        &attribution,
+        report.object_model.type_layouts.clone(),
+        &[station_swap_evidence(report, STATION_SWAP_SYMBOL)],
+        &[],
+    );
+    assert_eq!(
+        recovered.status,
+        AotObjectModelStatus::Refused {
+            reason: AotObjectModelRefusal::MethodTableEvidenceAmbiguous,
+        }
+    );
+    assert!(recovered.type_references.is_empty());
+}
+
+#[test]
 fn native_aot_station_reference_swap_recovers_write_barrier_call() {
     let report: &AotReport = report();
     let recovered: AotObjectModel = recover_station_reference_write(report, image());
@@ -304,6 +336,84 @@ fn native_aot_program_main_recovers_allocation_call() {
     assert_eq!(call.helper.rva, NEW_FAST_RVA);
     assert_eq!(call.helper.name, "RhpNewFast");
     assert_eq!(call.helper.kind, AotObjectHelperKind::Allocation);
+}
+
+fn program_with_evidenced_method_table(report: &AotReport) -> (Vec<u8>, u32, u32) {
+    let reference = report
+        .metadata_attribution
+        .method_table_references
+        .first()
+        .unwrap_or_else(|| panic!("fixture has an invoke-map MethodTable reference"));
+    let instruction_rva: u32 = 0x833B0;
+    let displacement: i32 =
+        i32::try_from(i64::from(reference.method_table_rva) - i64::from(instruction_rva + 7))
+            .unwrap_or_else(|_| panic!("fixture MethodTable is RIP-relative reachable"));
+    let mut patched: Vec<u8> = image().to_vec();
+    let pe = disrobe_pass_dotnet::pe::parse(patched.as_slice())
+        .unwrap_or_else(|error| panic!("fixture PE parses: {error}"));
+    let offset: usize = pe
+        .rva_to_offset(instruction_rva)
+        .unwrap_or_else(|| panic!("MethodTable instruction RVA is file backed"));
+    assert_eq!(&patched[offset..offset + 3], &[0x48, 0x8d, 0x0d]);
+    patched[offset + 3..offset + 7].copy_from_slice(&displacement.to_le_bytes());
+    (
+        patched,
+        reference.type_record_offset,
+        reference.method_table_rva,
+    )
+}
+
+#[test]
+fn native_aot_method_table_reference_matches_in_bounded_method() {
+    let report: &AotReport = report();
+    let (patched, type_record_offset, method_table_rva): (Vec<u8>, u32, u32) =
+        program_with_evidenced_method_table(report);
+    let recovered: AotObjectModel = recover_program_allocation(report, patched.as_slice());
+    assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
+    let reference = recovered
+        .type_references
+        .iter()
+        .find(|reference| reference.instruction_rva == 0x833B0)
+        .unwrap_or_else(|| panic!("evidenced MethodTable reference is recovered"));
+    assert_eq!(reference.type_record_offset, type_record_offset);
+    assert_eq!(reference.method_table_rva, method_table_rva);
+    assert_eq!(
+        reference.method_record_offset,
+        program_main_evidence(report).method_record_offset
+    );
+}
+
+#[test]
+fn native_aot_method_table_opcode_mutation_removes_the_match() {
+    let report: &AotReport = report();
+    let (mutated, _type_record_offset, _method_table_rva): (Vec<u8>, u32, u32) =
+        program_with_evidenced_method_table(report);
+    let baseline: AotObjectModel = recover_program_allocation(report, mutated.as_slice());
+    let instruction_rva: u32 = baseline
+        .type_references
+        .iter()
+        .find(|reference| reference.instruction_rva == 0x833B0)
+        .map_or_else(
+            || panic!("baseline MethodTable reference is recovered"),
+            |reference| reference.instruction_rva,
+        );
+    let mut mutated: Vec<u8> = mutated;
+    let pe = disrobe_pass_dotnet::pe::parse(mutated.as_slice())
+        .unwrap_or_else(|error| panic!("fixture PE parses: {error}"));
+    let offset: usize = pe
+        .rva_to_offset(instruction_rva)
+        .unwrap_or_else(|| panic!("MethodTable instruction RVA is file backed"));
+    *mutated
+        .get_mut(offset + 1)
+        .unwrap_or_else(|| panic!("MethodTable instruction opcode is file backed")) = 0x8b;
+    let recovered: AotObjectModel = recover_program_allocation(report, mutated.as_slice());
+    assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
+    assert!(
+        recovered
+            .type_references
+            .iter()
+            .all(|reference| reference.instruction_rva != instruction_rva)
+    );
 }
 
 #[test]
