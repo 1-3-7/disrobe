@@ -34,7 +34,7 @@ jobs:
       - name: require the Linux memory limiter
         run: command -v prlimit
       - name: replay the semantic seed contract
-        run: cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay -- --memory-limit-bytes "$SEED_REPLAY_MEMORY_LIMIT_BYTES" --check xtask/data/fuzz_seed_reach.json
+        run: cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay --locked -- --memory-limit-bytes "$SEED_REPLAY_MEMORY_LIMIT_BYTES" --check xtask/data/fuzz_seed_reach.json
 
   campaign:
     name: campaign (${{ matrix.target }})

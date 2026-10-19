@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
+use disrobe_core::scratch::ScratchDir;
 use disrobe_fuzz::python_bytecode;
 use disrobe_fuzz::seed_reach::{
     IsolatedReplayError, ReplayObservations, ReplayOptions, ReplayTarget, ReplayTrace,
@@ -62,13 +63,6 @@ fn replay_without_pyc_route(data: &[u8]) -> Result<AlternativeReferenceRouteRepl
         let _ = dump_reftable(body, version);
     })?;
     Ok(AlternativeReferenceRouteReplay { capture })
-}
-
-fn temporary_root() -> core::result::Result<PathBuf, Box<dyn std::error::Error>> {
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("disrobe-seed-reach-{}", std::process::id()));
-    fs::create_dir_all(&root)?;
-    Ok(root)
 }
 
 fn contract_text(source: &str, digest: &str, obligations: &str) -> String {
@@ -241,7 +235,8 @@ fn removing_the_pyc_route_cannot_keep_header_and_marshal_obligations()
 #[test]
 fn malformed_contracts_and_unavailable_seed_bytes_fail_closed()
 -> core::result::Result<(), Box<dyn std::error::Error>> {
-    let root: PathBuf = temporary_root()?;
+    let scratch: ScratchDir = ScratchDir::create("seed-reach")?;
+    let root: &Path = scratch.path();
     let contract_path: PathBuf = root.join("seed_reach.toml");
     let digest: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -335,7 +330,7 @@ fn malformed_contracts_and_unavailable_seed_bytes_fail_closed()
     fs::write(&contract_path, &seed)?;
     let missing_contract: SeedContract = SeedContract::read(&contract_path)?;
     let missing_result: Result<TargetReplay, SeedReachError> = replay_target(
-        &root,
+        root,
         &missing_contract,
         ReplayTarget::PythonBytecode,
         python_bytecode::replay,
@@ -351,7 +346,7 @@ fn malformed_contracts_and_unavailable_seed_bytes_fail_closed()
     )?;
     let stale_contract: SeedContract = SeedContract::read(&contract_path)?;
     let stale_result: Result<TargetReplay, SeedReachError> = replay_target(
-        &root,
+        root,
         &stale_contract,
         ReplayTarget::PythonBytecode,
         python_bytecode::replay,
@@ -360,7 +355,7 @@ fn malformed_contracts_and_unavailable_seed_bytes_fail_closed()
         matches!(stale_result, Err(SeedReachError::Invalid(message)) if message.contains("stale"))
     );
 
-    fs::remove_dir_all(&root)?;
+    scratch.close()?;
     Ok(())
 }
 
@@ -482,6 +477,7 @@ fn workflow_requires_the_linux_memory_limiter_for_seed_replay() {
     let workflow: &str = include_str!("../../.github/workflows/fuzz.yml");
     assert!(workflow.contains("command -v prlimit"));
     assert!(workflow.contains("--memory-limit-bytes"));
+    assert!(workflow.contains("--bin seed_replay --locked --"));
     assert!(workflow.contains("needs: seed-reach"));
 }
 
