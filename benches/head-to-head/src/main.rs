@@ -34,11 +34,13 @@ struct Options {
 struct MeasurementGenerator {
     id: &'static str,
     kind: MeasurementKind,
+    published: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum MeasurementKind {
     Apk,
+    ExternalJvm,
     Frisk,
     Gate,
 }
@@ -47,6 +49,7 @@ impl MeasurementKind {
     fn measure(self, root: &Path, run_dir: &Path) -> Result<(String, Value)> {
         match self {
             Self::Apk => apk::measure(root, run_dir),
+            Self::ExternalJvm => apk::measure_garlic_bytecode_viewer(root, run_dir),
             Self::Frisk => frisk::measure(root, run_dir),
             Self::Gate => gate::measure(root),
         }
@@ -55,6 +58,9 @@ impl MeasurementKind {
     fn require(self, root: &Path) -> Result<()> {
         match self {
             Self::Apk => require_apk_tools(root),
+            Self::ExternalJvm => {
+                apk::require_garlic_bytecode_viewer(root).map_err(eyre::Report::msg)
+            }
             Self::Frisk => require_frisk_tools(root),
             Self::Gate => Ok(()),
         }
@@ -65,14 +71,22 @@ const MEASUREMENT_GENERATORS: &[MeasurementGenerator] = &[
     MeasurementGenerator {
         id: "apk-jadx-cfr",
         kind: MeasurementKind::Apk,
+        published: true,
+    },
+    MeasurementGenerator {
+        id: "jvm-garlic-bytecode-viewer",
+        kind: MeasurementKind::ExternalJvm,
+        published: false,
     },
     MeasurementGenerator {
         id: "frisk-apkleaks",
         kind: MeasurementKind::Frisk,
+        published: true,
     },
     MeasurementGenerator {
         id: "gate-harvest",
         kind: MeasurementKind::Gate,
+        published: true,
     },
 ];
 
@@ -157,34 +171,49 @@ fn run(options: Options) -> Result<()> {
     let root: PathBuf = workspace_root(&bench_dir)?;
     let measured_dir: PathBuf = root.join("evidence").join("results").join("measured");
     let run_dir: PathBuf = create_run_dir(&root, options.artifact_root.as_deref())?;
+    let local_only: bool = matches!(
+        options.only.as_deref(),
+        Some(id) if matches!(measurement_generator(id), Ok(generator) if !generator.published)
+    );
 
     let outputs: Vec<(String, Value)> =
         measure_outputs(&root, &measured_dir, &run_dir, options.only.as_deref())?;
     if options.check {
-        for (id, value) in &outputs {
-            verify_json(&measured_dir.join(format!("{id}.json")), value)?;
+        if local_only {
+            println!(
+                "disrobe-bench-head-to-head --check: re-derived {} local-only measured result(s)",
+                outputs.len()
+            );
+        } else {
+            for (id, value) in &outputs {
+                verify_json(&measured_dir.join(format!("{id}.json")), value)?;
+            }
         }
         if options.only.is_none() {
             let report_md: String = render_report(&outputs);
             verify_text(&bench_dir.join("results.md"), &report_md)?;
         }
-        let scope: &str = options.only.as_deref().unwrap_or("all results");
-        println!(
-            "disrobe-bench-head-to-head --check: re-derived {} measured result(s); {scope} match regeneration",
-            outputs.len()
-        );
+        if !local_only {
+            let scope: &str = options.only.as_deref().unwrap_or("all results");
+            println!(
+                "disrobe-bench-head-to-head --check: re-derived {} measured result(s); {scope} match regeneration",
+                outputs.len()
+            );
+        }
     } else {
+        let output_dir: &Path = if local_only { &run_dir } else { &measured_dir };
         for (id, value) in &outputs {
-            write_json(&measured_dir.join(format!("{id}.json")), value)?;
+            write_json(&output_dir.join(format!("{id}.json")), value)?;
         }
         println!(
-            "disrobe-bench-head-to-head: wrote {} measured result(s) into {}",
+            "disrobe-bench-head-to-head: wrote {} {} result(s) into {}",
             outputs.len(),
-            measured_dir.display()
+            if local_only { "local-only" } else { "measured" },
+            output_dir.display()
         );
         if options.only.is_none() {
             write_file(&bench_dir.join("results.md"), &render_report(&outputs))?;
-        } else {
+        } else if !local_only {
             println!(
                 "disrobe-bench-head-to-head: {} was left as it is, because one selected result \
                  cannot rebuild a table that reports every committed result; rerun without --only \
@@ -290,6 +319,7 @@ fn committed_generators(measured_dir: &Path) -> Result<Vec<&'static MeasurementG
 
     let mut registered: Vec<&str> = MEASUREMENT_GENERATORS
         .iter()
+        .filter(|generator: &&MeasurementGenerator| generator.published)
         .map(|generator: &MeasurementGenerator| generator.id)
         .collect();
     registered.sort_unstable();
@@ -628,6 +658,14 @@ mod tests {
         };
         let missing: String = missing_error.to_string();
         assert!(missing.contains("gate-harvest.json"));
+        Ok(())
+    }
+
+    #[test]
+    fn external_jvm_comparator_is_selectable_but_not_published() -> Result<()> {
+        let generator: &MeasurementGenerator = measurement_generator("jvm-garlic-bytecode-viewer")?;
+        assert!(matches!(generator.kind, MeasurementKind::ExternalJvm));
+        assert!(!generator.published);
         Ok(())
     }
 

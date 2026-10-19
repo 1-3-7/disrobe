@@ -25,6 +25,8 @@ use crate::tool::{
     retain_tool_provenance, run, version_capture_checked, version_of_checked,
 };
 
+mod bcv_api;
+
 pub fn measure(root: &Path, run_dir: &Path) -> Result<(String, Value)> {
     let id: String = "apk-jadx-cfr".to_owned();
     let dex_path: PathBuf = root
@@ -2765,6 +2767,15 @@ fn compile(
     sources: &[&Path],
     timeout: Duration,
 ) -> std::result::Result<disrobe_core::subprocess::CapturedOutput, String> {
+    let args: Vec<std::ffi::OsString> = compile_arguments(stub, out_dir, sources)?;
+    compile_with_arguments(javac, &args, timeout)
+}
+
+fn compile_arguments(
+    stub: &Path,
+    out_dir: &Path,
+    sources: &[&Path],
+) -> std::result::Result<Vec<std::ffi::OsString>, String> {
     std::fs::create_dir_all(out_dir).map_err(|error: std::io::Error| {
         format!("could not create the javac output directory: {error}")
     })?;
@@ -2782,8 +2793,16 @@ fn compile(
     for source in sources {
         args.push(source.as_os_str().to_owned());
     }
+    Ok(args)
+}
+
+fn compile_with_arguments(
+    javac: &Path,
+    args: &[std::ffi::OsString],
+    timeout: Duration,
+) -> std::result::Result<disrobe_core::subprocess::CapturedOutput, String> {
     let captured: Option<disrobe_core::subprocess::CapturedOutput> =
-        disrobe_core::subprocess::run_captured(javac, &args, timeout, MAX_TOOL_CAPTURE_BYTES)
+        disrobe_core::subprocess::run_captured(javac, args, timeout, MAX_TOOL_CAPTURE_BYTES)
             .map_err(|error: std::io::Error| format!("could not start javac: {error}"))?;
     captured.ok_or_else(|| {
         format!(
@@ -3953,11 +3972,885 @@ pub fn require_pinned_versions(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+const GARLIC_SOURCE_COMMIT: &str = "700a7f4ea650f5ba5162604987f5a414a2e27026";
+const BYTECODE_VIEWER_SOURCE_COMMIT: &str = "31430e0033fa220db566b5ef461256727ff6793b";
+const EDGE_PROBE_SOURCE: &str =
+    include_str!("../../../crates/disrobe-pass-jvm/tests/fixtures/EdgeProbe.java");
+
+#[derive(Debug)]
+enum ProbeScore {
+    Matched {
+        observations: usize,
+    },
+    Diverged {
+        observations: usize,
+        differing: usize,
+    },
+    Unavailable {
+        detail: String,
+    },
+}
+
+impl ProbeScore {
+    fn to_json(&self) -> Value {
+        match self {
+            Self::Matched { observations } => json!({
+                "status": "matched",
+                "observations": observations,
+                "metric": "EdgeProbe observation agreement against the original JAR",
+            }),
+            Self::Diverged {
+                observations,
+                differing,
+            } => json!({
+                "status": "diverged",
+                "observations": observations,
+                "differing": differing,
+                "metric": "EdgeProbe observation agreement against the original JAR",
+            }),
+            Self::Unavailable { detail } => json!({
+                "status": "unavailable",
+                "detail": detail,
+                "metric": "EdgeProbe observation agreement against the original JAR",
+            }),
+        }
+    }
+}
+
+fn external_probe_score(
+    javac: &Path,
+    java: &Path,
+    original_jar: &Path,
+    sources: &BTreeMap<String, String>,
+    artifact: &Path,
+) -> ProbeScore {
+    let result: std::result::Result<ProbeScore, String> = (|| {
+        validate_source_set(sources)?;
+        let root: PathBuf = artifact.join("execution-probe");
+        let source_dir: PathBuf = root.join("sources");
+        let candidate_dir: PathBuf = root.join("candidate");
+        let probe_dir: PathBuf = root.join("probe");
+        std::fs::create_dir(&root)
+            .map_err(|error| format!("creating execution workspace: {error}"))?;
+        std::fs::create_dir(&source_dir)
+            .map_err(|error| format!("creating execution sources: {error}"))?;
+        let mut paths: Vec<PathBuf> = Vec::with_capacity(sources.len());
+        for (relative, source) in sources {
+            let path: PathBuf = source_dir.join(relative.replace('\\', "/"));
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("creating execution source parent: {error}"))?;
+            }
+            std::fs::write(&path, source)
+                .map_err(|error| format!("writing execution source: {error}"))?;
+            paths.push(path);
+        }
+        let source_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        let compiler: VersionCapture = version_capture_checked(javac, &["-version"], None)?;
+        let inputs: [(String, String); 2] = [
+            (
+                "EdgeCases-baseline.jar".to_owned(),
+                sha256_hex(
+                    &read_bounded_file(original_jar, MAX_FIXTURE_BYTES)
+                        .map_err(|error| error.to_string())?,
+                ),
+            ),
+            (
+                "EdgeProbe.java".to_owned(),
+                sha256_hex(EDGE_PROBE_SOURCE.as_bytes()),
+            ),
+        ];
+        let candidate_args: Vec<std::ffi::OsString> =
+            compile_arguments(original_jar, &candidate_dir, &source_refs)?;
+        let candidate_record_args: Vec<String> = retained_compile_arguments(&candidate_args)?;
+        let candidate = compile_with_arguments(javac, &candidate_args, TOOL_TIMEOUT)?;
+        retain_probe_compile(
+            &root.join("candidate-build"),
+            javac,
+            &compiler,
+            &inputs,
+            ProbeCompilation {
+                route: "edge-probe-candidate-javac",
+                args: &candidate_record_args,
+                output: &candidate,
+                classes: &candidate_dir,
+                class_prefix: "candidate-class",
+            },
+        )?;
+        if candidate.exit_code != Some(0) {
+            return Err(format!(
+                "candidate did not compile for execution: {}",
+                bounded_error_text(&combined_output(&candidate))
+            ));
+        }
+        let probe_source: PathBuf = root.join("EdgeProbe.java");
+        std::fs::write(&probe_source, EDGE_PROBE_SOURCE)
+            .map_err(|error| format!("writing EdgeProbe: {error}"))?;
+        let probe_args: Vec<std::ffi::OsString> =
+            compile_arguments(original_jar, &probe_dir, &[probe_source.as_path()])?;
+        let probe_record_args: Vec<String> = retained_compile_arguments(&probe_args)?;
+        let probe = compile_with_arguments(javac, &probe_args, TOOL_TIMEOUT)?;
+        retain_probe_compile(
+            &root.join("probe-build"),
+            javac,
+            &compiler,
+            &inputs,
+            ProbeCompilation {
+                route: "edge-probe-harness-javac",
+                args: &probe_record_args,
+                output: &probe,
+                classes: &probe_dir,
+                class_prefix: "probe-class",
+            },
+        )?;
+        if probe.exit_code != Some(0) {
+            return Err(format!(
+                "EdgeProbe did not compile: {}",
+                bounded_error_text(&combined_output(&probe))
+            ));
+        }
+        let version: VersionCapture = version_capture_checked(java, &["-version"], None)?;
+        let reference: BTreeMap<String, String> = run_edge_probe(
+            java,
+            &[probe_dir.as_path(), original_jar],
+            &root.join("reference-run"),
+            &version,
+            &inputs,
+        )?;
+        let candidate: BTreeMap<String, String> = run_edge_probe(
+            java,
+            &[probe_dir.as_path(), candidate_dir.as_path()],
+            &root.join("candidate-run"),
+            &version,
+            &inputs,
+        )?;
+        if reference.len() < 150 {
+            return Err(format!(
+                "original EdgeProbe produced only {} observations",
+                reference.len()
+            ));
+        }
+        Ok(compare_edge_observations(&reference, &candidate))
+    })();
+    match result {
+        Ok(score) => score,
+        Err(detail) => ProbeScore::Unavailable { detail },
+    }
+}
+
+fn compare_edge_observations(
+    reference: &BTreeMap<String, String>,
+    candidate: &BTreeMap<String, String>,
+) -> ProbeScore {
+    let differing: usize = reference
+        .iter()
+        .filter(|(name, value)| candidate.get(*name) != Some(*value))
+        .count()
+        + candidate
+            .keys()
+            .filter(|name: &&String| !reference.contains_key(*name))
+            .count();
+    if differing == 0 {
+        ProbeScore::Matched {
+            observations: reference.len(),
+        }
+    } else {
+        ProbeScore::Diverged {
+            observations: reference.len(),
+            differing,
+        }
+    }
+}
+
+fn run_edge_probe(
+    java: &Path,
+    classpath: &[&Path],
+    artifact: &Path,
+    version: &VersionCapture,
+    inputs: &[(String, String)],
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    std::fs::create_dir(artifact)
+        .map_err(|error| format!("creating EdgeProbe invocation directory: {error}"))?;
+    let joined = std::env::join_paths(classpath)
+        .map_err(|error| format!("joining EdgeProbe classpath: {error}"))?;
+    let args: Vec<String> = vec![
+        "-cp".to_owned(),
+        joined.to_string_lossy().into_owned(),
+        "EdgeProbe".to_owned(),
+        "5000".to_owned(),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let captured = run(java, &refs);
+    retain_tool_provenance(
+        artifact,
+        &ToolInvocation {
+            route: "edge-probe",
+            executable: java,
+            args: &args,
+            environment: &[],
+            output: captured.as_ref().ok(),
+        },
+        &["-version"],
+        version,
+        inputs,
+    )?;
+    let output = captured?;
+    if output.exit_code != Some(0) {
+        return Err(format!(
+            "EdgeProbe exited {:?}: {}",
+            output.exit_code,
+            bounded_error_text(&combined_output(&output))
+        ));
+    }
+    parse_edge_observations(&output.stdout)
+}
+
+fn retained_compile_arguments(
+    args: &[std::ffi::OsString],
+) -> std::result::Result<Vec<String>, String> {
+    args.iter()
+        .map(|argument: &std::ffi::OsString| {
+            argument
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "EdgeProbe javac argument is not valid Unicode".to_owned())
+        })
+        .collect()
+}
+
+struct ProbeCompilation<'a> {
+    route: &'a str,
+    args: &'a [String],
+    output: &'a disrobe_core::subprocess::CapturedOutput,
+    classes: &'a Path,
+    class_prefix: &'a str,
+}
+
+fn retain_probe_compile(
+    artifact: &Path,
+    javac: &Path,
+    compiler: &VersionCapture,
+    inputs: &[(String, String)],
+    compilation: ProbeCompilation<'_>,
+) -> std::result::Result<(), String> {
+    std::fs::create_dir(artifact)
+        .map_err(|error| format!("creating EdgeProbe javac record directory: {error}"))?;
+    let mut recorded_inputs: Vec<(String, String)> = inputs.to_vec();
+    if compilation.output.exit_code == Some(0) {
+        recorded_inputs.extend(compiled_class_hashes(
+            compilation.classes,
+            compilation.class_prefix,
+        )?);
+    }
+    retain_tool_provenance(
+        artifact,
+        &ToolInvocation {
+            route: compilation.route,
+            executable: javac,
+            args: compilation.args,
+            environment: &[],
+            output: Some(compilation.output),
+        },
+        &["-version"],
+        compiler,
+        &recorded_inputs,
+    )
+}
+
+fn compiled_class_hashes(
+    classes: &Path,
+    prefix: &str,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    let mut hashes: Vec<(String, String)> = Vec::new();
+    let mut total_bytes: usize = 0;
+    for entry in walkdir::WalkDir::new(classes).sort_by_file_name() {
+        let entry: walkdir::DirEntry =
+            entry.map_err(|error| format!("walking EdgeProbe javac output: {error}"))?;
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        if entry.file_type().is_symlink() || !entry.file_type().is_file() {
+            return Err(format!(
+                "EdgeProbe javac output contains a non-regular entry: {}",
+                entry.path().display()
+            ));
+        }
+        if hashes.len() >= MAX_TREE_FILES {
+            return Err(format!(
+                "EdgeProbe javac output exceeds the {MAX_TREE_FILES} file limit"
+            ));
+        }
+        let relative: &Path = entry
+            .path()
+            .strip_prefix(classes)
+            .map_err(|error| format!("relativizing EdgeProbe javac output: {error}"))?;
+        if relative.extension().and_then(std::ffi::OsStr::to_str) != Some("class") {
+            return Err(format!(
+                "EdgeProbe javac output contains a non-class file: {}",
+                relative.display()
+            ));
+        }
+        let relative: &str = relative
+            .to_str()
+            .ok_or_else(|| "EdgeProbe javac output path is not valid Unicode".to_owned())?;
+        let bytes: Vec<u8> = read_bounded_file(entry.path(), MAX_TEXT_BYTES)
+            .map_err(|error| format!("reading EdgeProbe class {relative}: {error}"))?;
+        total_bytes = total_bytes.checked_add(bytes.len()).ok_or_else(|| {
+            "EdgeProbe javac output byte count overflowed the platform size".to_owned()
+        })?;
+        if total_bytes > MAX_TREE_TEXT_BYTES {
+            return Err(format!(
+                "EdgeProbe javac output exceeds the {MAX_TREE_TEXT_BYTES} byte limit"
+            ));
+        }
+        hashes.push((
+            format!("{prefix}/{}", relative.replace('\\', "/")),
+            sha256_hex(&bytes),
+        ));
+    }
+    if hashes.is_empty() {
+        return Err("EdgeProbe javac exited successfully without emitting class files".to_owned());
+    }
+    Ok(hashes)
+}
+
+fn parse_edge_observations(bytes: &[u8]) -> std::result::Result<BTreeMap<String, String>, String> {
+    let stdout: &str = std::str::from_utf8(bytes)
+        .map_err(|error| format!("EdgeProbe stdout is not UTF-8: {error}"))?;
+    let mut observations: BTreeMap<String, String> = BTreeMap::new();
+    for line in stdout.lines() {
+        let (key, value): (&str, &str) = line
+            .split_once('=')
+            .ok_or_else(|| format!("malformed EdgeProbe observation `{line}`"))?;
+        if key.is_empty() || value.is_empty() {
+            return Err(format!("malformed EdgeProbe observation `{line}`"));
+        }
+        if observations
+            .insert(key.to_owned(), value.to_owned())
+            .is_some()
+        {
+            return Err(format!("duplicate EdgeProbe observation `{key}`"));
+        }
+    }
+    Ok(observations)
+}
+
+fn retain_probe_score(artifact: &Path, score: &ProbeScore) -> std::result::Result<(), String> {
+    let mut bytes: Vec<u8> = serde_json::to_vec_pretty(&score.to_json())
+        .map_err(|error| format!("serializing EdgeProbe score: {error}"))?;
+    bytes.push(b'\n');
+    write_new_file(&artifact.join("execution-probe.json"), &bytes)
+}
+
+fn read_probe_score(artifact: &Path) -> Result<Value> {
+    let path: PathBuf = artifact.join("execution-probe.json");
+    if !path.is_file() {
+        return Ok(ProbeScore::Unavailable {
+            detail: "producer emitted no source eligible for the execution probe".to_owned(),
+        }
+        .to_json());
+    }
+    let raw: String = read_bounded_string(&path, MAX_TEXT_BYTES)
+        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).wrap_err_with(|| format!("parsing {}", path.display()))
+}
+
+struct ProvenancedExternalTool {
+    executable: PathBuf,
+    provenance: PathBuf,
+    source_commit: &'static str,
+}
+
+fn environment_path(name: &str) -> std::result::Result<PathBuf, String> {
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{name} must name a repository-built tool artifact"))
+}
+
+fn validate_external_provenance(tool: &ProvenancedExternalTool) -> std::result::Result<(), String> {
+    if !tool.executable.is_file() {
+        return Err(format!(
+            "tool artifact is not a regular file: {}",
+            tool.executable.display()
+        ));
+    }
+    let raw: String = read_bounded_string(&tool.provenance, MAX_TEXT_BYTES)
+        .map_err(|error| format!("reading {}: {error}", tool.provenance.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("parsing {}: {error}", tool.provenance.display()))?;
+    let commit: &str = value
+        .get("source_commit")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{} has no source_commit", tool.provenance.display()))?;
+    if commit != tool.source_commit {
+        return Err(format!(
+            "{} records source commit {commit}, expected {}",
+            tool.provenance.display(),
+            tool.source_commit
+        ));
+    }
+    let expected: &str = value
+        .get("artifact_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{} has no artifact_sha256", tool.provenance.display()))?;
+    let actual: String = sha256_hex(
+        &read_bounded_file(&tool.executable, MAX_FIXTURE_BYTES)
+            .map_err(|error| format!("hashing {}: {error}", tool.executable.display()))?,
+    );
+    if expected != actual {
+        return Err(format!(
+            "{} does not bind {}: expected {expected}, got {actual}",
+            tool.provenance.display(),
+            tool.executable.display()
+        ));
+    }
+    Ok(())
+}
+
+fn garlic_tool() -> std::result::Result<ProvenancedExternalTool, String> {
+    Ok(ProvenancedExternalTool {
+        executable: environment_path("DISROBE_GARLIC_BIN")?,
+        provenance: environment_path("DISROBE_GARLIC_PROVENANCE")?,
+        source_commit: GARLIC_SOURCE_COMMIT,
+    })
+}
+
+fn bytecode_viewer_tool() -> std::result::Result<ProvenancedExternalTool, String> {
+    Ok(ProvenancedExternalTool {
+        executable: environment_path("DISROBE_BYTECODE_VIEWER_JAR")?,
+        provenance: environment_path("DISROBE_BYTECODE_VIEWER_PROVENANCE")?,
+        source_commit: BYTECODE_VIEWER_SOURCE_COMMIT,
+    })
+}
+
+pub fn require_garlic_bytecode_viewer(_root: &Path) -> std::result::Result<(), String> {
+    validate_external_provenance(&garlic_tool()?)?;
+    validate_external_provenance(&bytecode_viewer_tool()?)?;
+    find_on_path("java").ok_or_else(|| {
+        "java is required to run the repository-built Bytecode Viewer jar".to_owned()
+    })?;
+    find_on_path("javac")
+        .ok_or_else(|| "javac is required for the shared JVM semantic oracle".to_owned())?;
+    Ok(())
+}
+
+fn retain_comparator_jdk_provenance(
+    artifact: &Path,
+    java: &Path,
+    javac: &Path,
+    jar_bytes: &[u8],
+) -> std::result::Result<(), String> {
+    let java_home: &Path = java
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "java has no JDK home".to_owned())?;
+    let javac_home: &Path = javac
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "javac has no JDK home".to_owned())?;
+    if java_home != javac_home {
+        return Err(format!(
+            "java and javac must resolve from one JDK home: {} vs {}",
+            java_home.display(),
+            javac_home.display()
+        ));
+    }
+    let java_version: VersionCapture = version_capture_checked(java, &["-version"], None)?;
+    let javac_version: VersionCapture = version_capture_checked(javac, &["-version"], None)?;
+    let dir: PathBuf = artifact.join("jdk");
+    std::fs::create_dir(&dir)
+        .map_err(|error| format!("creating comparator JDK provenance: {error}"))?;
+    let java_dir: PathBuf = dir.join("java");
+    let javac_dir: PathBuf = dir.join("javac");
+    std::fs::create_dir(&java_dir).map_err(|error| format!("creating java provenance: {error}"))?;
+    std::fs::create_dir(&javac_dir)
+        .map_err(|error| format!("creating javac provenance: {error}"))?;
+    let inputs: [(String, String); 1] =
+        [("EdgeCases-baseline.jar".to_owned(), sha256_hex(jar_bytes))];
+    let version_args: Vec<String> = vec!["-version".to_owned()];
+    retain_tool_provenance(
+        &java_dir,
+        &ToolInvocation {
+            route: "reference-and-candidate-java",
+            executable: java,
+            args: &version_args,
+            environment: &[],
+            output: Some(&java_version.output),
+        },
+        &["-version"],
+        &java_version,
+        &inputs,
+    )?;
+    retain_tool_provenance(
+        &javac_dir,
+        &ToolInvocation {
+            route: "candidate-javac",
+            executable: javac,
+            args: &version_args,
+            environment: &[],
+            output: Some(&javac_version.output),
+        },
+        &["-version"],
+        &javac_version,
+        &inputs,
+    )
+}
+
+pub fn measure_garlic_bytecode_viewer(root: &Path, run_dir: &Path) -> Result<(String, Value)> {
+    require_garlic_bytecode_viewer(root).map_err(eyre::Report::msg)?;
+    let id: String = "jvm-garlic-bytecode-viewer".to_owned();
+    let javac: PathBuf =
+        find_on_path("javac").ok_or_else(|| eyre::eyre!("javac is unavailable"))?;
+    let java: PathBuf = find_on_path("java").ok_or_else(|| eyre::eyre!("java is unavailable"))?;
+    let jar_path: PathBuf = root.join("corpus/jvm/megafile/EdgeCases-baseline.jar");
+    let jar_bytes: Vec<u8> = read_bounded_file(&jar_path, MAX_FIXTURE_BYTES)
+        .wrap_err_with(|| format!("reading {}", jar_path.display()))?;
+    let original: String = read_bounded_string(
+        &root.join("corpus/jvm/megafile/EdgeCases.java"),
+        MAX_TEXT_BYTES,
+    )
+    .wrap_err("reading EdgeCases source")?;
+    let denominator: usize = main_class_method_ranges(&original).len().max(1);
+    let run: PathBuf = run_dir.join(&id);
+    std::fs::create_dir(&run).wrap_err("creating external comparator artifact directory")?;
+    retain_comparator_jdk_provenance(&run, &java, &javac, &jar_bytes).map_err(eyre::Report::msg)?;
+    let garlic: ProvenancedExternalTool = garlic_tool().map_err(eyre::Report::msg)?;
+    let bcv: ProvenancedExternalTool = bytecode_viewer_tool().map_err(eyre::Report::msg)?;
+    let disrobe_artifact: PathBuf = run.join("disrobe");
+    std::fs::create_dir(&disrobe_artifact).wrap_err("creating disrobe comparator artifact")?;
+    let (disrobe_sources, disrobe_score): (BTreeMap<String, String>, ToolScore) =
+        match disrobe_jar_source(&jar_bytes) {
+            Ok(source) => {
+                let sources: BTreeMap<String, String> =
+                    BTreeMap::from([(MAIN_CLASS_FILE.to_owned(), source)]);
+                let score: ToolScore =
+                    retain_sources_and_score(&javac, &sources, denominator, &disrobe_artifact)
+                        .unwrap_or_else(|detail| ToolScore::miss(denominator, detail));
+                (sources, score)
+            }
+            Err(detail) => (
+                BTreeMap::new(),
+                ToolScore::miss(denominator, format!("disrobe failed: {detail}")),
+            ),
+        };
+    let disrobe_probe: ProbeScore = external_probe_score(
+        &javac,
+        &java,
+        &jar_path,
+        &disrobe_sources,
+        &disrobe_artifact,
+    );
+    retain_probe_score(&disrobe_artifact, &disrobe_probe).map_err(eyre::Report::msg)?;
+    let garlic_score: ToolScore = score_garlic(
+        &javac,
+        &java,
+        &jar_path,
+        &jar_bytes,
+        denominator,
+        &run.join("garlic"),
+        &garlic,
+    )
+    .unwrap_or_else(|detail| ToolScore::miss(denominator, format!("garlic failed: {detail}")));
+    let bcv_score: ToolScore = score_bytecode_viewer(
+        &javac,
+        &java,
+        &jar_path,
+        &jar_bytes,
+        denominator,
+        &run.join("bytecode-viewer"),
+        &bcv,
+    )
+    .unwrap_or_else(|detail| {
+        ToolScore::miss(denominator, format!("bytecode viewer failed: {detail}"))
+    });
+    let garlic_probe: Value = read_probe_score(&run.join("garlic"))?;
+    let bcv_probe: Value = read_probe_score(&run.join("bytecode-viewer"))?;
+    let bcv_api_score: ToolScore = bcv_api::score(
+        &javac,
+        &java,
+        &jar_path,
+        &jar_bytes,
+        denominator,
+        &run.join("bytecode-viewer-cfr-api"),
+        &bcv,
+    )
+    .unwrap_or_else(|detail| {
+        ToolScore::miss(
+            denominator,
+            format!("bytecode viewer CFR API failed: {detail}"),
+        )
+    });
+    let bcv_api_probe: Value = read_probe_score(&run.join("bytecode-viewer-cfr-api"))?;
+    let disrobe_probe: Value = read_probe_score(&disrobe_artifact)?;
+    let mut disrobe_row: Value =
+        disrobe_score.to_json("disrobe (in-house JVM, JAR input)", IN_PROCESS_VERSION);
+    disrobe_row["execution_probe"] = disrobe_probe;
+    let mut garlic_row: Value = garlic_score.to_json("garlic (JAR input)", GARLIC_SOURCE_COMMIT);
+    garlic_row["execution_probe"] = garlic_probe;
+    let mut bcv_row: Value =
+        bcv_score.to_json("bytecode viewer (JAR input)", BYTECODE_VIEWER_SOURCE_COMMIT);
+    bcv_row["execution_probe"] = bcv_probe;
+    let mut bcv_api_row: Value = bcv_api_score.to_json(
+        "bytecode viewer (CFR API, empty explicit options, JAR input)",
+        BYTECODE_VIEWER_SOURCE_COMMIT,
+    );
+    bcv_api_row["execution_probe"] = bcv_api_probe;
+    Ok((
+        id,
+        json!({
+            "id": "jvm-garlic-bytecode-viewer",
+            "status": if disrobe_score.is_certified() && garlic_score.is_certified() && bcv_score.is_certified() && bcv_api_score.is_certified() { "ok" } else { "uncertified" },
+            "dataset": format!("{} (SHA-256 {})", jar_path.display(), sha256_hex(&jar_bytes)),
+            "oracle": "javac compile yield and bounded EdgeProbe observation agreement are separate quality fields. EdgeProbe compares one committed behavior suite with the original JAR; it does not establish unrestricted semantic equivalence.",
+            "tools": [
+                disrobe_row,
+                garlic_row,
+                bcv_row,
+                bcv_api_row,
+            ],
+        }),
+    ))
+}
+
+fn score_garlic(
+    javac: &Path,
+    java: &Path,
+    jar: &Path,
+    jar_bytes: &[u8],
+    denominator: usize,
+    artifact: &Path,
+    tool: &ProvenancedExternalTool,
+) -> std::result::Result<ToolScore, String> {
+    std::fs::create_dir(artifact)
+        .map_err(|error| format!("creating Garlic artifact directory: {error}"))?;
+    let output_dir: PathBuf = artifact.join("raw-output");
+    std::fs::create_dir(&output_dir)
+        .map_err(|error| format!("creating Garlic output directory: {error}"))?;
+    let args: Vec<String> = vec![
+        jar.to_string_lossy().into_owned(),
+        "-o".to_owned(),
+        output_dir.to_string_lossy().into_owned(),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let captured = run(&tool.executable, &refs);
+    let version: VersionCapture = version_capture_checked(&tool.executable, &["--help"], Some(0))?;
+    retain_tool_provenance(
+        artifact,
+        &ToolInvocation {
+            route: "garlic-cli",
+            executable: &tool.executable,
+            args: &args,
+            environment: &[],
+            output: captured.as_ref().ok(),
+        },
+        &["--help"],
+        &version,
+        &[("EdgeCases-baseline.jar".to_owned(), sha256_hex(jar_bytes))],
+    )?;
+    let process_output: disrobe_core::subprocess::CapturedOutput = captured?;
+    if process_output.exit_code != Some(0) {
+        return Ok(ToolScore::miss(
+            denominator,
+            bounded_error_text(&String::from_utf8_lossy(&process_output.stderr)),
+        ));
+    }
+    let sources: BTreeMap<String, String> = collect_edgecases_java(&output_dir)?;
+    if main_class_file(&sources).is_none() {
+        return Ok(ToolScore::miss(
+            denominator,
+            "garlic produced no EdgeCases source".to_owned(),
+        ));
+    }
+    let probe: ProbeScore = external_probe_score(javac, java, jar, &sources, artifact);
+    retain_probe_score(artifact, &probe)?;
+    retain_sources_and_score(javac, &sources, denominator, artifact)
+}
+
+fn score_bytecode_viewer(
+    javac: &Path,
+    java: &Path,
+    jar: &Path,
+    jar_bytes: &[u8],
+    denominator: usize,
+    artifact: &Path,
+    tool: &ProvenancedExternalTool,
+) -> std::result::Result<ToolScore, String> {
+    std::fs::create_dir(artifact)
+        .map_err(|error| format!("creating Bytecode Viewer artifact directory: {error}"))?;
+    let user_home: PathBuf = artifact.join("user-home");
+    let temporary: PathBuf = artifact.join("temporary");
+    for directory in [&user_home, &temporary] {
+        std::fs::create_dir(directory)
+            .map_err(|error| format!("creating Bytecode Viewer runtime directory: {error}"))?;
+    }
+    let output: PathBuf = artifact.join("EdgeCases.java");
+    let args: Vec<String> = vec![
+        "-Djava.awt.headless=true".to_owned(),
+        format!("-Duser.home={}", user_home.display()),
+        format!("-Djava.io.tmpdir={}", temporary.display()),
+        "-Xmx2g".to_owned(),
+        "-jar".to_owned(),
+        tool.executable.to_string_lossy().into_owned(),
+        "-decompiler".to_owned(),
+        "cfr".to_owned(),
+        "-i".to_owned(),
+        jar.to_string_lossy().into_owned(),
+        "-o".to_owned(),
+        output.to_string_lossy().into_owned(),
+        "-t".to_owned(),
+        "EdgeCases".to_owned(),
+        "-nowait".to_owned(),
+        "true".to_owned(),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let captured = run(java, &refs);
+    let version_args: Vec<String> = vec![
+        "-Djava.awt.headless=true".to_owned(),
+        format!("-Duser.home={}", user_home.display()),
+        format!("-Djava.io.tmpdir={}", temporary.display()),
+        "-Xmx2g".to_owned(),
+        "-jar".to_owned(),
+        tool.executable.to_string_lossy().into_owned(),
+        "-help".to_owned(),
+    ];
+    let version_refs: Vec<&str> = version_args.iter().map(String::as_str).collect();
+    let version: VersionCapture = version_capture_checked(java, &version_refs, None)?;
+    retain_tool_provenance(
+        artifact,
+        &ToolInvocation {
+            route: "bytecode-viewer-cli",
+            executable: java,
+            args: &args,
+            environment: &[],
+            output: captured.as_ref().ok(),
+        },
+        &version_refs,
+        &version,
+        &[
+            ("EdgeCases-baseline.jar".to_owned(), sha256_hex(jar_bytes)),
+            (
+                "bytecode-viewer.jar".to_owned(),
+                sha256_hex(
+                    &read_bounded_file(&tool.executable, MAX_FIXTURE_BYTES)
+                        .map_err(|error| error.to_string())?,
+                ),
+            ),
+        ],
+    )?;
+    let process_output: disrobe_core::subprocess::CapturedOutput = captured?;
+    if process_output.exit_code != Some(0) {
+        return Ok(ToolScore::miss(
+            denominator,
+            bounded_error_text(&String::from_utf8_lossy(&process_output.stderr)),
+        ));
+    }
+    let source: String = read_bounded_string(&output, MAX_TEXT_BYTES)
+        .map_err(|error| format!("reading Bytecode Viewer source: {error}"))?;
+    let sources: BTreeMap<String, String> = BTreeMap::from([(MAIN_CLASS_FILE.to_owned(), source)]);
+    let probe: ProbeScore = external_probe_score(javac, java, jar, &sources, artifact);
+    retain_probe_score(artifact, &probe)?;
+    retain_sources_and_score(javac, &sources, denominator, artifact)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+
+    #[test]
+    fn edge_probe_comparison_retains_reference_denominator_on_mutation()
+    -> core::result::Result<(), String> {
+        let reference: BTreeMap<String, String> = parse_edge_observations(
+            b"branch=17\nexception=IllegalArgumentException\narray=4,8,12\n",
+        )?;
+        assert!(matches!(
+            compare_edge_observations(&reference, &reference),
+            ProbeScore::Matched { observations: 3 }
+        ));
+        let changed: BTreeMap<String, String> =
+            parse_edge_observations(b"branch=18\narray=4,8,12\n")?;
+        assert!(matches!(
+            compare_edge_observations(&reference, &changed),
+            ProbeScore::Diverged {
+                observations: 3,
+                differing: 2
+            }
+        ));
+        let added: BTreeMap<String, String> = parse_edge_observations(
+            b"branch=17\nexception=IllegalArgumentException\narray=4,8,12\nunexpected=1\n",
+        )?;
+        assert!(matches!(
+            compare_edge_observations(&reference, &added),
+            ProbeScore::Diverged {
+                observations: 3,
+                differing: 1
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn external_tool_provenance_binds_the_artifact_and_pinned_commit()
+    -> core::result::Result<(), String> {
+        let root: ScratchDir = ScratchDir::create("disrobe-h2h-external-provenance")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        let artifact: PathBuf = root.path().join("tool.bin");
+        std::fs::write(&artifact, b"repository-built-tool")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        let provenance: PathBuf = root.path().join("tool-provenance.json");
+        let write = |commit: &str, digest: String| -> core::result::Result<(), String> {
+            std::fs::write(
+                &provenance,
+                serde_json::to_vec(&json!({
+                    "source_commit": commit,
+                    "artifact_sha256": digest,
+                }))
+                .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error: std::io::Error| error.to_string())
+        };
+        let digest: String = sha256_hex(b"repository-built-tool");
+        write(GARLIC_SOURCE_COMMIT, digest.clone())?;
+        let tool = ProvenancedExternalTool {
+            executable: artifact,
+            provenance: provenance.clone(),
+            source_commit: GARLIC_SOURCE_COMMIT,
+        };
+        validate_external_provenance(&tool)?;
+        write(GARLIC_SOURCE_COMMIT, "00".repeat(32))?;
+        assert!(validate_external_provenance(&tool).is_err());
+        write("0000000000000000000000000000000000000000", digest)?;
+        assert!(validate_external_provenance(&tool).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_external_tool_environment_is_named() -> core::result::Result<(), String> {
+        let name: &str = "DISROBE_TEST_MISSING_GARLIC_BIN_2A97B6";
+        let error: String = environment_path(name)
+            .err()
+            .ok_or_else(|| "test environment variable unexpectedly exists".to_owned())?;
+        assert!(error.contains(name));
+        assert!(error.contains("repository-built tool artifact"));
+        Ok(())
+    }
+
+    #[test]
+    fn edge_probe_parser_rejects_malformed_duplicate_and_non_utf8_records() {
+        assert!(parse_edge_observations(b"broken\n").is_err());
+        assert!(parse_edge_observations(b"a=1\na=2\n").is_err());
+        assert!(parse_edge_observations(&[b'a', b'=', 0xff, b'\n']).is_err());
+    }
+
+    #[test]
+    fn edge_probe_parser_retains_each_observation_once() -> core::result::Result<(), String> {
+        let observations: BTreeMap<String, String> = parse_edge_observations(b"a=1\nb=2\n")?;
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations.get("b"), Some(&"2".to_owned()));
+        Ok(())
+    }
+
     const PRODUCTION_DALVIK_CLEAN_METHODS: &str = r"EdgeCases.java\0private EmptyShape() {@2689:9
 EdgeCases.java\0private Object[] $record$getFieldsAsObjects() {@2557:9
 EdgeCases.java\0private Object[] $record$getFieldsAsObjects() {@2779:9
