@@ -3,9 +3,13 @@ use disrobe_nir::{DefUse, NirInstr, NirModule, SourceLang, ValueId};
 const X86_ARGUMENT_REGISTERS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
 const X86_MS64_ARGUMENT_REGISTERS: [&str; 4] = ["rcx", "rdx", "r8", "r9"];
 const X86_RETURN_REGISTER: &str = "rax";
+const X86_SCRATCH_REGISTERS: [&str; 2] = ["r10", "r11"];
+const X86_SYSV_ONLY_ARGUMENT_REGISTERS: [&str; 2] = ["rdi", "rsi"];
+const X86_FRAME_POINTER: &str = "rbp";
 
 const AARCH64_ARGUMENT_REGISTERS: [&str; 8] = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"];
 const AARCH64_RETURN_REGISTER: &str = "x0";
+const AARCH64_FRAME_POINTER: &str = "x29";
 
 const AARCH64_HIGHEST_NUMBERED_REGISTER: u8 = 30;
 
@@ -60,6 +64,38 @@ impl CallAbi {
         }
     }
 
+    pub(crate) fn detects_win64(self, module: &NirModule) -> bool {
+        self == Self::X86
+            && module.functions.iter().any(|function| {
+                function
+                    .instructions
+                    .iter()
+                    .take_while(|instr: &&NirInstr| instr.mnemonic.eq_ignore_ascii_case("push"))
+                    .any(|instr: &NirInstr| {
+                        instr.operands.iter().any(|operand: &String| {
+                            X86_SYSV_ONLY_ARGUMENT_REGISTERS
+                                .contains(&operand.trim().to_ascii_lowercase().as_str())
+                        })
+                    })
+            })
+    }
+
+    pub(crate) fn call_clobbered_registers(self, win64: bool) -> Vec<&'static str> {
+        let mut registers: Vec<&'static str> = self
+            .argument_registers()
+            .iter()
+            .copied()
+            .filter(|register: &&str| {
+                !(win64 && X86_SYSV_ONLY_ARGUMENT_REGISTERS.contains(register))
+            })
+            .collect();
+        registers.push(self.return_register());
+        if self == Self::X86 {
+            registers.extend(X86_SCRATCH_REGISTERS);
+        }
+        registers
+    }
+
     pub(crate) fn out_argument_candidates(self, index: u16) -> Vec<&'static str> {
         let index: usize = index as usize;
         match self {
@@ -89,6 +125,34 @@ impl CallAbi {
         match self {
             Self::X86 => is_x86_register(&name).then_some(name),
             Self::Aarch64 => canonical_aarch64(&name),
+        }
+    }
+
+    pub(crate) fn is_pointer_width_register(self, operand: &str) -> bool {
+        let name: String = operand.trim().to_ascii_lowercase();
+        match self {
+            Self::X86 => {
+                is_x86_register(&name) && ValueId::register(&name) == ValueId::Register(name)
+            }
+            Self::Aarch64 => {
+                matches!(name.as_str(), "sp" | "fp" | "lr")
+                    || (name.starts_with('x') && canonical_aarch64(&name).is_some())
+            }
+        }
+    }
+
+    pub(crate) const fn frame_pointer(self) -> &'static str {
+        match self {
+            Self::X86 => X86_FRAME_POINTER,
+            Self::Aarch64 => AARCH64_FRAME_POINTER,
+        }
+    }
+
+    pub(crate) fn is_stack_pointer(self, register: &str) -> bool {
+        let name: String = register.trim().to_ascii_lowercase();
+        match self {
+            Self::X86 => matches!(name.as_str(), "rsp" | "esp" | "sp" | "spl"),
+            Self::Aarch64 => matches!(name.as_str(), "sp" | "wsp"),
         }
     }
 
@@ -351,6 +415,49 @@ mod tests {
             }],
             symbols: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_prologue_that_saves_rsi_or_rdi_marks_the_image_win64() {
+        let function = |mnemonics: &[(&str, &str)]| NirFunction {
+            name: "f".to_owned(),
+            address: 0,
+            end: 0x10,
+            is_export: false,
+            instructions: mnemonics
+                .iter()
+                .map(|(mnemonic, operand): &(&str, &str)| {
+                    instr(SourceLang::NativeX86, mnemonic, &[operand])
+                })
+                .collect(),
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let module = |functions: Vec<NirFunction>| NirModule {
+            source_hash: [0; 32],
+            lang: SourceLang::NativeX86,
+            functions,
+            symbols: Vec::new(),
+        };
+        let win64: NirModule = module(vec![function(&[
+            ("push", "rbx"),
+            ("push", "rsi"),
+            ("ret", ""),
+        ])]);
+        assert!(CallAbi::X86.detects_win64(&win64));
+        assert!(!CallAbi::X86.call_clobbered_registers(true).contains(&"rsi"));
+        assert!(CallAbi::X86.call_clobbered_registers(true).contains(&"r10"));
+
+        let sysv: NirModule = module(vec![function(&[
+            ("push", "rbx"),
+            ("mov", "rsi"),
+            ("push", "rdi"),
+        ])]);
+        assert!(!CallAbi::X86.detects_win64(&sysv));
+        assert!(
+            CallAbi::X86
+                .call_clobbered_registers(false)
+                .contains(&"rsi")
+        );
     }
 
     #[test]

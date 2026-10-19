@@ -514,5 +514,9 @@ mod spdx_openvex_emit;
 #[path = "../vulnmatch_cli_e2e.rs"]
 mod vulnmatch_cli_e2e;
 
+#[cfg(windows)]
+#[path = "../taint_pe_parity.rs"]
+mod taint_pe_parity;
+
 #[path = "../yara_loader.rs"]
 mod yara_loader;

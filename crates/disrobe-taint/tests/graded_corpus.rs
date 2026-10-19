@@ -374,6 +374,228 @@ fn compile_combined(name: &str, bodies: &[&str]) -> CompiledFixture {
     }
 }
 
+#[cfg(windows)]
+const POINTER_CONTROL_WRITERS: &str = r#"
+#include <string.h>
+
+char *published_command;
+
+void run_through_pointer(char **command);
+void run_published(void);
+void run_received(char *command);
+void run_constant(char *command);
+char *append_environment(char *data);
+char *append_environment_elsewhere(char *data);
+
+static int read_into(char *data)
+{
+    size_t length = strlen(data);
+    return fgets(data + length, (int)(64 - length), stdin) != NULL;
+}
+
+TAINT_EXPORT __attribute__((noinline)) void pointer_cell_tainted(void)
+{
+    char buffer[64] = "dir ";
+    char *data = buffer;
+    if (!read_into(data)) return;
+    run_through_pointer(&data);
+}
+
+TAINT_EXPORT __attribute__((noinline)) void pointer_cell_redirected(void)
+{
+    char buffer[64] = "dir ";
+    char clean[64] = "dir";
+    char *data = buffer;
+    if (!read_into(data)) return;
+    data = clean;
+    run_through_pointer(&data);
+}
+
+TAINT_EXPORT __attribute__((noinline)) void returned_pointer_tainted(void)
+{
+    char buffer[64] = "dir ";
+    char *data = append_environment(buffer);
+    system(data);
+}
+
+TAINT_EXPORT __attribute__((noinline)) void returned_pointer_elsewhere(void)
+{
+    char buffer[64] = "dir ";
+    char *data = append_environment_elsewhere(buffer);
+    system(data);
+}
+
+TAINT_EXPORT __attribute__((noinline)) void global_pointer_tainted(void)
+{
+    char buffer[64] = "dir ";
+    char *data = buffer;
+    if (!read_into(data)) return;
+    published_command = data;
+    run_published();
+}
+
+TAINT_EXPORT __attribute__((noinline)) void global_pointer_redirected(void)
+{
+    char buffer[64] = "dir ";
+    char clean[64] = "dir";
+    char *data = buffer;
+    if (!read_into(data)) return;
+    published_command = clean;
+    run_published();
+}
+
+TAINT_EXPORT __attribute__((noinline)) void function_pointer_tainted(void)
+{
+    char buffer[64] = "dir ";
+    void (*volatile runner)(char *) = run_received;
+    if (!read_into(buffer)) return;
+    runner(buffer);
+}
+
+TAINT_EXPORT __attribute__((noinline)) void function_pointer_constant(void)
+{
+    char buffer[64] = "dir ";
+    void (*volatile runner)(char *) = run_constant;
+    if (!read_into(buffer)) return;
+    runner(buffer);
+}
+
+int main(void)
+{
+    pointer_cell_tainted();
+    pointer_cell_redirected();
+    returned_pointer_tainted();
+    returned_pointer_elsewhere();
+    global_pointer_tainted();
+    global_pointer_redirected();
+    function_pointer_tainted();
+    function_pointer_constant();
+    return 0;
+}
+"#;
+
+#[cfg(windows)]
+const POINTER_CONTROL_READERS: &str = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern char *published_command;
+
+static char elsewhere[64] = "dir";
+
+void run_through_pointer(char **command)
+{
+    system(*command);
+}
+
+void run_published(void)
+{
+    system(published_command);
+}
+
+void run_received(char *command)
+{
+    system(command);
+}
+
+void run_constant(char *command)
+{
+    (void)command;
+    system("dir");
+}
+
+char *append_environment(char *data)
+{
+    size_t length = strlen(data);
+    char *environment = getenv("ADD");
+    if (environment != NULL) strncat(data + length, environment, 63 - length);
+    return data;
+}
+
+char *append_environment_elsewhere(char *data)
+{
+    size_t length = strlen(data);
+    char *environment = getenv("ADD");
+    if (environment != NULL) strncat(data + length, environment, 63 - length);
+    return elsewhere;
+}
+"#;
+
+#[cfg(windows)]
+fn compile_units(name: &str, opt_flag: &str, units: &[(&str, &str)]) -> CompiledFixture {
+    let compiler: &'static str = host_c_compiler();
+    let fixture_dir: ScratchDir = fixture_directory(name);
+    let executable_path: PathBuf = fixture_dir.path().join(host_executable_name("fixture"));
+    let mut command: Command = Command::new(compiler);
+    command.args([opt_flag, "-fno-builtin"]);
+    for (file_name, body) in units {
+        let source_path: PathBuf = fixture_dir.path().join(file_name);
+        fs::write(&source_path, format!("{PORTABLE_PRELUDE}{body}"))
+            .expect("write translation unit");
+        command.arg(source_path);
+    }
+    let output: Output = command
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .unwrap_or_else(|error: std::io::Error| panic!("run {compiler}: {error}"));
+    assert!(
+        output.status.success(),
+        "{compiler} failed to build the {name} fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    CompiledFixture {
+        _directory: fixture_dir,
+        executable: executable_path,
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn compiled_pointer_constructs_flag_only_the_twin_whose_sink_reads_the_tainted_buffer() {
+    let expectations: [(&str, bool); 8] = [
+        ("pointer_cell_tainted", true),
+        ("pointer_cell_redirected", false),
+        ("returned_pointer_tainted", true),
+        ("returned_pointer_elsewhere", false),
+        ("global_pointer_tainted", true),
+        ("global_pointer_redirected", false),
+        ("function_pointer_tainted", true),
+        ("function_pointer_constant", false),
+    ];
+    for opt_flag in ["-O2", "-O0"] {
+        let fixture: CompiledFixture = compile_units(
+            "pointer-constructs",
+            opt_flag,
+            &[
+                ("writers.c", POINTER_CONTROL_WRITERS),
+                ("readers.c", POINTER_CONTROL_READERS),
+            ],
+        );
+        let bytes: Vec<u8> = fs::read(&fixture.executable).expect("read pointer control image");
+        let juliet_corpus::AnalyzeOutcome::Analyzed { report, .. } =
+            juliet_corpus::analyze_with_timeout(bytes, juliet_corpus::default_taint_config())
+        else {
+            panic!(
+                "{opt_flag}: the pointer control image did not finish within the analysis bound"
+            );
+        };
+        for (function, flows) in expectations {
+            let flagged: bool = report
+                .findings()
+                .iter()
+                .any(|finding: &disrobe_taint::TaintFinding| function_is(finding, function));
+            assert_eq!(
+                flagged, flows,
+                "{opt_flag} {function}: each tainted twin hands its sink the buffer the source \
+                 wrote and each severed twin hands it a pointer to clean memory, so the finding \
+                 must follow the pointer the sink actually reads: {report:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn juliet_harness_lift_and_analyze_path_sees_a_known_positive_control() {
     let fixture: CompiledFixture = compile_program("positive-control", FLOWING_BODY);
@@ -590,54 +812,54 @@ const O0_CATEGORY_FLOORS: [GradeFloor; 8] = [
         category: juliet_corpus::Category::DirectFlow,
         label: "direct flow, gcc -O0",
         groups: 15,
-        true_positive_floor: 0,
+        true_positive_floor: 15,
     },
     GradeFloor {
         category: juliet_corpus::Category::Field,
         label: "flow through a field, gcc -O0",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::ArrayElement,
         label: "flow through an array element, gcc -O0",
         groups: 5,
-        true_positive_floor: 0,
+        true_positive_floor: 5,
     },
     GradeFloor {
         category: juliet_corpus::Category::FunctionPointer,
         label: "flow across a function pointer, gcc -O0",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::ControlDependence,
         label: "implicit flow through a control dependence, gcc -O0",
         groups: 85,
-        true_positive_floor: 6,
+        true_positive_floor: 85,
     },
     GradeFloor {
         category: juliet_corpus::Category::Loop,
         label: "flow through a loop, gcc -O0",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthOne,
         label: "inter-procedural flow at depth one, gcc -O0",
         groups: 40,
-        true_positive_floor: 6,
+        true_positive_floor: 40,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthGtOne,
         label: "inter-procedural flow at depth greater than one, gcc -O0",
         groups: 15,
-        true_positive_floor: 0,
+        true_positive_floor: 15,
     },
 ];
 
 const O0_AGGREGATE_GROUPS: u64 = 190;
-const O0_AGGREGATE_TP_FLOOR: u64 = 12;
+const O0_AGGREGATE_TP_FLOOR: u64 = 190;
 
 fn assert_fresh_grade_clears_named_floors(
     report: &juliet_corpus::GradedReport,
@@ -716,8 +938,7 @@ fn juliet_cwe78_command_injection_precision_recall_o0() {
         &O0_CATEGORY_FLOORS,
         O0_AGGREGATE_GROUPS,
         O0_AGGREGATE_TP_FLOOR,
-        "aggregate 12 of 190 (6.3%) at -O0, published in docs/src/anti-analysis.md and in the \
-         taint-juliet-cwe78 evidence descriptor's note",
+        "aggregate (8 populated categories), gcc -O0",
     );
 }
 
@@ -1066,74 +1287,74 @@ fn juliet_cpp_corpus_selection_matches_the_declared_population() {
 
 const CPP_O2_AGGREGATE_LABEL: &str = "aggregate (5 populated c++ categories), g++ -O2";
 const CPP_O2_AGGREGATE_GROUPS: u64 = 50;
-const CPP_O2_AGGREGATE_TP_FLOOR: u64 = 10;
+const CPP_O2_AGGREGATE_TP_FLOOR: u64 = 40;
 
 const CPP_O2_CATEGORY_FLOORS: [GradeFloor; 5] = [
     GradeFloor {
         category: juliet_corpus::Category::DirectFlow,
         label: "direct flow, g++ -O2",
         groups: 5,
-        true_positive_floor: 3,
+        true_positive_floor: 5,
     },
     GradeFloor {
         category: juliet_corpus::Category::Field,
         label: "flow through a field, g++ -O2",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::Container,
         label: "flow through a container, g++ -O2",
         groups: 15,
-        true_positive_floor: 0,
+        true_positive_floor: 5,
     },
     GradeFloor {
         category: juliet_corpus::Category::VirtualCall,
         label: "flow across a virtual call, g++ -O2",
         groups: 10,
-        true_positive_floor: 4,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthOne,
         label: "inter-procedural flow at depth one, g++ -O2",
         groups: 10,
-        true_positive_floor: 3,
+        true_positive_floor: 10,
     },
 ];
 
 const CPP_O0_AGGREGATE_LABEL: &str = "aggregate (5 populated c++ categories), g++ -O0";
-const CPP_O0_AGGREGATE_TP_FLOOR: u64 = 0;
+const CPP_O0_AGGREGATE_TP_FLOOR: u64 = 50;
 
 const CPP_O0_CATEGORY_FLOORS: [GradeFloor; 5] = [
     GradeFloor {
         category: juliet_corpus::Category::DirectFlow,
         label: "direct flow, g++ -O0",
         groups: 5,
-        true_positive_floor: 0,
+        true_positive_floor: 5,
     },
     GradeFloor {
         category: juliet_corpus::Category::Field,
         label: "flow through a field, g++ -O0",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::Container,
         label: "flow through a container, g++ -O0",
         groups: 15,
-        true_positive_floor: 0,
+        true_positive_floor: 15,
     },
     GradeFloor {
         category: juliet_corpus::Category::VirtualCall,
         label: "flow across a virtual call, g++ -O0",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthOne,
         label: "inter-procedural flow at depth one, g++ -O0",
         groups: 10,
-        true_positive_floor: 0,
+        true_positive_floor: 10,
     },
 ];
 
@@ -1263,7 +1484,7 @@ fn leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss() {
 const PUBLISHED_O2_HEADING: &str = "Native taint source-to-sink flow (Juliet CWE-78 char/system corpus, gcc 16.2.0 -O2 -fno-builtin, Windows x86-64)";
 const PUBLISHED_O2_AGGREGATE_LABEL: &str = "aggregate (8 populated categories), gcc -O2";
 const PUBLISHED_O2_AGGREGATE_GROUPS: u64 = 190;
-const PUBLISHED_O2_AGGREGATE_TP_FLOOR: u64 = 182;
+const PUBLISHED_O2_AGGREGATE_TP_FLOOR: u64 = 190;
 
 const PUBLISHED_O2_CATEGORY_FLOORS: [GradeFloor; 8] = [
     GradeFloor {
@@ -1294,7 +1515,7 @@ const PUBLISHED_O2_CATEGORY_FLOORS: [GradeFloor; 8] = [
         category: juliet_corpus::Category::ControlDependence,
         label: "implicit flow through a control dependence, gcc -O2",
         groups: 85,
-        true_positive_floor: 84,
+        true_positive_floor: 85,
     },
     GradeFloor {
         category: juliet_corpus::Category::Loop,
@@ -1306,7 +1527,7 @@ const PUBLISHED_O2_CATEGORY_FLOORS: [GradeFloor; 8] = [
         category: juliet_corpus::Category::InterproceduralDepthOne,
         label: "inter-procedural flow at depth one, gcc -O2",
         groups: 40,
-        true_positive_floor: 33,
+        true_positive_floor: 40,
     },
     GradeFloor {
         category: juliet_corpus::Category::InterproceduralDepthGtOne,

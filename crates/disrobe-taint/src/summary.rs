@@ -94,7 +94,9 @@ pub(crate) struct PathId(u32);
 #[derive(Debug, Default)]
 pub(crate) struct Arena {
     string_index: BTreeMap<String, u32>,
+    strings: Vec<String>,
     path_index: BTreeMap<AccessPath, PathId>,
+    paths: Vec<AccessPath>,
 }
 
 impl Arena {
@@ -104,7 +106,21 @@ impl Arena {
         }
         let id: u32 = u32::try_from(self.string_index.len()).unwrap_or(u32::MAX);
         self.string_index.insert(value.to_owned(), id);
+        self.strings.push(value.to_owned());
         id
+    }
+
+    pub(crate) fn memory_projection(&self, id: PathId) -> Option<(&str, i64)> {
+        let path: &AccessPath = self.paths.get(usize::try_from(id.0).ok()?)?;
+        let Base::Memory(base) = path.base else {
+            return None;
+        };
+        let base: &str = self.strings.get(usize::try_from(base).ok()?)?;
+        match path.projections.as_slice() {
+            [Proj::Deref] => Some((base, 0)),
+            [Proj::Field(offset), Proj::Deref] => Some((base, *offset)),
+            _ => None,
+        }
     }
 
     fn intern_path(&mut self, mut path: AccessPath) -> PathId {
@@ -116,7 +132,8 @@ impl Arena {
             return *id;
         }
         let id: PathId = PathId(u32::try_from(self.path_index.len()).unwrap_or(u32::MAX));
-        self.path_index.insert(path, id);
+        self.path_index.insert(path.clone(), id);
+        self.paths.push(path);
         id
     }
 
@@ -147,6 +164,10 @@ impl Arena {
             .trim();
         let depth: usize = trimmed.bytes().filter(|b: &u8| *b == b'[').count();
         let inner: &str = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
+        if let Some(address) = relative_address(inner) {
+            let id: u32 = self.intern_string(&format!("rel {address:x}"));
+            return (Base::Memory(id), vec![Proj::Deref]);
+        }
         let mut tokens = inner.splitn(2, ['+', '-']);
         let Some(head): Option<&str> = tokens.next() else {
             let id: u32 = self.intern_string(inner);
@@ -177,6 +198,43 @@ impl Arena {
     }
 }
 
+pub(crate) fn relative_address(inner: &str) -> Option<u64> {
+    let mut address: Option<u64> = None;
+    let mut displacement: i64 = 0;
+    let body: &str = inner.trim().strip_prefix("rel ")?.trim();
+    let mut start: usize = 0;
+    let mut terms: Vec<&str> = Vec::new();
+    for (offset, ch) in body.char_indices() {
+        if offset > start && matches!(ch, '+' | '-') {
+            terms.push(&body[start..offset]);
+            start = offset;
+        }
+    }
+    terms.push(&body[start..]);
+    for term in terms {
+        let term: &str = term.trim();
+        let negative: bool = term.starts_with('-');
+        let value: u64 = parse_hex_literal(term.trim_start_matches(['+', '-']).trim())?;
+        if address.is_none() && !negative {
+            address = Some(value);
+        } else {
+            let value: i64 = i64::try_from(value).ok()?;
+            displacement = displacement.checked_add(if negative { -value } else { value })?;
+        }
+    }
+    address?.checked_add_signed(displacement)
+}
+
+fn parse_hex_literal(token: &str) -> Option<u64> {
+    if let Some(stripped) = token.strip_suffix('h') {
+        return u64::from_str_radix(stripped, 16).ok();
+    }
+    if let Some(stripped) = token.strip_prefix("0x") {
+        return u64::from_str_radix(stripped, 16).ok();
+    }
+    token.parse::<u64>().ok()
+}
+
 fn parse_offset(token: &str) -> Option<i64> {
     let core: &str = token.split(['+', '-']).next().unwrap_or(token);
     let core: &str = core.trim();
@@ -196,13 +254,22 @@ fn parse_offset(token: &str) -> Option<i64> {
 pub(crate) enum OutPort {
     Return,
     Argument(u16),
+    ArgumentMemory { argument: u16, offset: i64 },
+    ArgumentDeref { argument: u16, offset: i64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum InPort {
     Argument(u16),
     ArgumentMemory { argument: u16, offset: i64 },
+    ArgumentDeref { argument: u16, offset: i64 },
     Global(PathId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum PointerTarget {
+    ArgumentMemory { argument: u16, offset: i64 },
+    Global(u64),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -236,6 +303,7 @@ pub(crate) struct FunctionSummary {
     pub(crate) generations: BTreeMap<OutPort, GenValue>,
     pub(crate) propagations: BTreeMap<InPort, BTreeMap<OutPort, PropValue>>,
     pub(crate) frames: Vec<SinkFrame>,
+    pub(crate) pointer_stores: BTreeMap<(u16, i64), PointerTarget>,
 }
 
 impl FunctionSummary {
@@ -273,6 +341,12 @@ impl FunctionSummary {
         if entry.path.is_empty() {
             entry.path = path.to_vec();
         }
+    }
+
+    pub(crate) fn add_pointer_store(&mut self, argument: u16, offset: i64, target: PointerTarget) {
+        self.pointer_stores
+            .entry((argument, offset))
+            .or_insert(target);
     }
 
     pub(crate) fn add_frame(&mut self, frame: SinkFrame) {
@@ -324,6 +398,7 @@ impl FunctionSummary {
             generations,
             propagations,
             frames,
+            pointer_stores: self.pointer_stores.clone(),
         }
     }
 }
@@ -337,6 +412,7 @@ pub(crate) struct SummaryKey {
     generations: Vec<GenKey>,
     propagations: Vec<PropKey>,
     frames: Vec<FrameKey>,
+    pointer_stores: BTreeMap<(u16, i64), PointerTarget>,
 }
 
 #[cfg(test)]
@@ -381,6 +457,30 @@ mod tests {
         assert_eq!(cell, same);
         let other: PathId = arena.location(&ValueId::memory("[rbp-0x10]"));
         assert_ne!(cell, other);
+    }
+
+    #[test]
+    fn a_rip_relative_global_interns_by_address_not_by_spelling() {
+        let mut arena: Arena = Arena::default();
+        let padded: PathId = arena.location(&ValueId::memory("qword [rel 0A0h]"));
+        let bare: PathId = arena.location(&ValueId::memory("[rel A0h]"));
+        assert_eq!(padded, bare);
+        let displaced: PathId = arena.location(&ValueId::memory("[rel 140007038h+8]"));
+        let folded: PathId = arena.location(&ValueId::memory("[rel 140007040h]"));
+        assert_eq!(displaced, folded);
+        let neighbour: PathId = arena.location(&ValueId::memory("[rel 140007048h]"));
+        assert_ne!(folded, neighbour);
+    }
+
+    #[test]
+    fn an_interned_memory_location_reports_its_base_and_offset() {
+        let mut arena: Arena = Arena::default();
+        let field: PathId = arena.location(&ValueId::memory("[@rcx+18h]"));
+        let whole: PathId = arena.location(&ValueId::memory("[@rcx]"));
+        let register: PathId = arena.location(&ValueId::register("rcx"));
+        assert_eq!(arena.memory_projection(field), Some(("@rcx", 0x18)));
+        assert_eq!(arena.memory_projection(whole), Some(("@rcx", 0)));
+        assert_eq!(arena.memory_projection(register), None);
     }
 
     #[test]

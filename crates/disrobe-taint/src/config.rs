@@ -60,6 +60,39 @@ fn builtin_out_arguments(symbol: &str) -> Vec<OutArgument> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CopyTransfer {
+    pub(crate) destination: u16,
+    pub(crate) source: u16,
+}
+
+pub(crate) fn copy_transfer(symbol: &str) -> Option<CopyTransfer> {
+    let symbol: String = normalize_symbol(symbol)?;
+    let source: u16 = match symbol.as_str() {
+        "strcpy" | "strncpy" | "strcat" | "strncat" | "stpcpy" | "stpncpy" | "wcscpy"
+        | "wcsncpy" | "wcscat" | "wcsncat" | "memcpy" | "memmove" | "wmemcpy" | "wmemmove" => 1,
+        "strcpy_s" | "strncpy_s" | "strcat_s" | "strncat_s" | "wcscpy_s" | "wcsncpy_s"
+        | "wcscat_s" | "wcsncat_s" | "memcpy_s" | "memmove_s" | "wmemcpy_s" | "wmemmove_s" => 2,
+        _ => return None,
+    };
+    Some(CopyTransfer {
+        destination: 0,
+        source,
+    })
+}
+
+pub(crate) fn allocates(symbol: &str) -> bool {
+    let trimmed: &str = symbol.trim();
+    let mangled: &str = trimmed.trim_start_matches('_');
+    let itanium_new: bool =
+        mangled.len() < trimmed.len() && (mangled.starts_with("Znw") || mangled.starts_with("Zna"));
+    itanium_new
+        || trimmed.starts_with("??2@")
+        || trimmed.starts_with("??_U@")
+        || normalize_symbol(symbol)
+            .is_some_and(|symbol: String| matches!(symbol.as_str(), "malloc" | "calloc"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SinkPolicy {
     sensitive_kinds: u64,
@@ -363,6 +396,42 @@ mod tests {
             &[OutArgument::Fixed(1)]
         );
         assert!(config.source_out_arguments("not_a_source").is_empty());
+    }
+
+    #[test]
+    fn copy_routines_name_their_destination_and_source_arguments() {
+        assert_eq!(
+            copy_transfer("_strncat"),
+            Some(CopyTransfer {
+                destination: 0,
+                source: 1
+            })
+        );
+        assert_eq!(
+            copy_transfer("strcpy_s"),
+            Some(CopyTransfer {
+                destination: 0,
+                source: 2
+            })
+        );
+        assert_eq!(copy_transfer("strlen"), None);
+    }
+
+    #[test]
+    fn allocators_are_recognized_by_their_c_and_mangled_operator_names() {
+        for symbol in [
+            "malloc",
+            "calloc",
+            "_Znwy",
+            "_Znay",
+            "_ZnwmRKSt9nothrow_t",
+            "??2@YAPEAX_K@Z",
+        ] {
+            assert!(allocates(symbol), "{symbol}");
+        }
+        for symbol in ["free", "_ZdlPv", "realloc", "znwrapper", "Znwy"] {
+            assert!(!allocates(symbol), "{symbol}");
+        }
     }
 
     #[test]

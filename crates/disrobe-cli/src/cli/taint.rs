@@ -4,11 +4,9 @@ use std::path::PathBuf;
 
 use disrobe_llm_metadata::{MetadataSelection, PipelineStep};
 use disrobe_nir::{NirModule, NirOp};
-use disrobe_query::{
-    CallOutcome, FunctionIdentity, Module, NavigationCall, NavigationLimitError, NavigationLimits,
-};
+use disrobe_query::{CallOutcome, FunctionIdentity, Module, NavigationCall, NavigationLimits};
 use disrobe_taint::{
-    CallEdge, CallEdgeEvidence, TaintConfig, TaintFinding, TaintReport, TaintStep,
+    CallEdge, CallEdgeEvidence, PeFacts, TaintConfig, TaintFinding, TaintReport, TaintStep,
 };
 use serde::Serialize;
 use serde_json::Value as Json;
@@ -101,8 +99,15 @@ pub(crate) fn run(
         .map_err(|e| miette::miette!("DR-CLI-0850: cannot read {}: {e}", input.display()))?;
     let module: NirModule = lift_module_from_bytes(&input, &bytes)?;
     let config: TaintConfig = build_config(&sources, &sinks);
-    let call_edges: Vec<CallEdge> = navigation_call_edges(&module)?;
-    let report: TaintReport = disrobe_taint::analyze_with_call_edges(&module, &config, &call_edges);
+    let facts: PeFacts = disrobe_taint::pe_facts(&bytes, &module).map_err(edge_analysis_error)?;
+    let call_edges: Vec<CallEdge> =
+        with_import_edges(navigation_call_edges(&module)?, &facts.import_call_edges);
+    let report: TaintReport = disrobe_taint::analyze_with_constant_pointers(
+        &module,
+        &config,
+        &call_edges,
+        &facts.constant_pointers,
+    );
     let lang: &str = module.lang.label();
     let resolved_sources: Vec<&str> = config.sources().collect();
     let resolved_sinks: Vec<&str> = config.sinks().collect();
@@ -128,6 +133,22 @@ pub(crate) fn run(
     })
 }
 
+fn edge_analysis_error(error: impl std::fmt::Display) -> miette::Report {
+    miette::miette!("DR-CLI-0871: taint call-edge analysis: {error}")
+}
+
+fn with_import_edges(navigation: Vec<CallEdge>, import_edges: &[CallEdge]) -> Vec<CallEdge> {
+    let import_sites: BTreeSet<u64> = import_edges
+        .iter()
+        .map(|edge: &CallEdge| edge.site)
+        .collect();
+    navigation
+        .into_iter()
+        .filter(|edge: &CallEdge| !import_sites.contains(&edge.site))
+        .chain(import_edges.iter().cloned())
+        .collect()
+}
+
 fn navigation_call_edges(module: &NirModule) -> miette::Result<Vec<CallEdge>> {
     let query: Module = Module::from_nir(module);
     let extern_sites: BTreeSet<u64> = module
@@ -145,9 +166,7 @@ fn navigation_call_edges(module: &NirModule) -> miette::Result<Vec<CallEdge>> {
             candidate_records: MAX_NAVIGATION_CANDIDATE_RECORDS,
             retained_bytes: MAX_NAVIGATION_RETAINED_BYTES,
         })
-        .map_err(|error: NavigationLimitError| {
-            miette::miette!("DR-CLI-0871: taint call-edge analysis: {error}")
-        })?;
+        .map_err(edge_analysis_error)?;
     let targets: BTreeSet<u64> = calls
         .iter()
         .filter_map(|call: &NavigationCall| call.outcome.target_address())

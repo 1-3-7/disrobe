@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use disrobe_nir::{
-    DefUse, NirBlock, NirClass, NirFunction, NirInstr, NirModule, NirOp, NirSymbol, SourceLang,
-    ValueId, basic_blocks, def_use,
+    BinaryOp, DefUse, NirBlock, NirClass, NirFunction, NirInstr, NirModule, NirOp, NirSymbol,
+    SourceLang, ValueId, basic_blocks, def_use,
 };
 
 use crate::abi::CallAbi;
@@ -10,16 +10,21 @@ use crate::callgraph::{
     CallEdge, CallEdgeEvidence, CallEdgeLabel, normalize_call_edges, scc_bottom_up,
     unresolved_non_internal_edge,
 };
-use crate::config::{OutArgument, ResolvedSinkPolicy, TaintConfig};
+use crate::config::{
+    CopyTransfer, OutArgument, ResolvedSinkPolicy, TaintConfig, allocates, copy_transfer,
+};
+use crate::pointers::ConstantPointers;
 use crate::report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
 use crate::summary::{
-    Arena, FeatureSet, FunctionSummary, InPort, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
+    Arena, FeatureSet, FunctionSummary, InPort, KindSet, OutPort, PathId, PointerTarget, SinkFrame,
+    SummaryKey, relative_address,
 };
 use crate::thunks::ImportThunks;
 
 const MAX_PATH_STEPS: usize = 128;
 const MAX_RECORDED_UNRESOLVED_CALLS: usize = 4096;
 const PATH_TRUNCATED_KIND: &str = "path-truncated";
+const TRACKED_CALL_KIND: &str = "call-finite-set";
 
 type Summaries = BTreeMap<u64, FunctionSummary>;
 type FactMap = BTreeMap<FactKey, Fact>;
@@ -73,12 +78,15 @@ struct ResolvedModule<'a> {
     symbol_by_addr: BTreeMap<u64, &'a NirSymbol>,
     function_at: BTreeMap<u64, usize>,
     thunks: &'a ImportThunks,
+    constant_pointers: &'a ConstantPointers,
     abi: CallAbi,
     call_targets_by_site: BTreeMap<u64, Vec<u64>>,
     call_kind_by_site: BTreeMap<u64, &'static str>,
     call_symbols_by_site: BTreeMap<u64, BTreeSet<String>>,
     uncertain_call_sites: BTreeSet<u64>,
+    external_tail_calls: BTreeSet<u64>,
     call_edges: Vec<CallEdge>,
+    win64: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +118,12 @@ fn call_kind_rank(kind: &str) -> u8 {
 }
 
 impl<'a> ResolvedModule<'a> {
-    fn new(module: &'a NirModule, thunks: &'a ImportThunks, call_edges: &[CallEdge]) -> Self {
+    fn new(
+        module: &'a NirModule,
+        thunks: &'a ImportThunks,
+        constant_pointers: &'a ConstantPointers,
+        call_edges: &[CallEdge],
+    ) -> Self {
         let symbol_by_addr: BTreeMap<u64, &'a NirSymbol> = module
             .symbols
             .iter()
@@ -126,8 +139,29 @@ impl<'a> ResolvedModule<'a> {
         let supplied_sites: BTreeSet<u64> =
             call_edges.iter().map(|edge: &CallEdge| edge.site).collect();
         let mut collected: Vec<CallEdge> = call_edges.to_vec();
+        let mut external_tail_calls: BTreeSet<u64> = BTreeSet::new();
         for function in &module.functions {
             for instr in &function.instructions {
+                if let NirOp::Branch {
+                    target: Some(target),
+                } = instr.op
+                    && !(function.address..function.end).contains(&target)
+                    && !supplied_sites.contains(&instr.address)
+                    && let Some(symbol) = thunks.name_at(target).map(str::to_owned).or_else(|| {
+                        symbol_by_addr
+                            .get(&target)
+                            .filter(|symbol: &&&'a NirSymbol| symbol.kind.is_external())
+                            .map(|symbol: &&'a NirSymbol| symbol.name.clone())
+                    })
+                {
+                    external_tail_calls.insert(instr.address);
+                    collected.push(CallEdge::definite(
+                        instr.address,
+                        target,
+                        CallEdgeEvidence::NamedExternal { symbol },
+                    ));
+                    continue;
+                }
                 if let NirOp::Branch {
                     target: Some(target),
                 } = instr.op
@@ -236,13 +270,26 @@ impl<'a> ResolvedModule<'a> {
             symbol_by_addr,
             function_at,
             thunks,
+            constant_pointers,
             abi,
             call_targets_by_site,
             call_kind_by_site,
             call_symbols_by_site,
             uncertain_call_sites,
+            external_tail_calls,
             call_edges,
+            win64: abi.detects_win64(module),
         }
+    }
+
+    fn argument_candidates(&self, index: u16) -> Vec<&'static str> {
+        let mut candidates: Vec<&'static str> = self.abi.out_argument_candidates(index);
+        candidates.retain(|register: &&str| self.passes_arguments_in(register));
+        candidates
+    }
+
+    fn passes_arguments_in(&self, register: &str) -> bool {
+        !(self.win64 && matches!(register, "rdi" | "rsi"))
     }
 
     fn named_at(&self, addr: u64) -> Option<String> {
@@ -368,7 +415,13 @@ struct Ctx<'a> {
 
 #[must_use]
 pub fn analyze(module: &NirModule, config: &TaintConfig) -> TaintReport {
-    analyze_with_call_edges_and_import_thunks(module, config, &[], &ImportThunks::new())
+    analyze_with_inputs(
+        module,
+        config,
+        &[],
+        &ImportThunks::new(),
+        &ConstantPointers::new(),
+    )
 }
 
 #[must_use]
@@ -377,7 +430,13 @@ pub fn analyze_with_call_edges(
     config: &TaintConfig,
     call_edges: &[CallEdge],
 ) -> TaintReport {
-    analyze_with_call_edges_and_import_thunks(module, config, call_edges, &ImportThunks::new())
+    analyze_with_inputs(
+        module,
+        config,
+        call_edges,
+        &ImportThunks::new(),
+        &ConstantPointers::new(),
+    )
 }
 
 #[must_use]
@@ -386,16 +445,34 @@ pub fn analyze_with_import_thunks(
     config: &TaintConfig,
     thunks: &ImportThunks,
 ) -> TaintReport {
-    analyze_with_call_edges_and_import_thunks(module, config, &[], thunks)
+    analyze_with_inputs(module, config, &[], thunks, &ConstantPointers::new())
 }
 
-fn analyze_with_call_edges_and_import_thunks(
+#[must_use]
+pub fn analyze_with_constant_pointers(
+    module: &NirModule,
+    config: &TaintConfig,
+    call_edges: &[CallEdge],
+    constant_pointers: &ConstantPointers,
+) -> TaintReport {
+    analyze_with_inputs(
+        module,
+        config,
+        call_edges,
+        &ImportThunks::new(),
+        constant_pointers,
+    )
+}
+
+fn analyze_with_inputs(
     module: &NirModule,
     config: &TaintConfig,
     call_edges: &[CallEdge],
     thunks: &ImportThunks,
+    constant_pointers: &ConstantPointers,
 ) -> TaintReport {
-    let resolved: ResolvedModule<'_> = ResolvedModule::new(module, thunks, call_edges);
+    let resolved: ResolvedModule<'_> =
+        ResolvedModule::new(module, thunks, constant_pointers, call_edges);
     if config.is_empty() {
         return TaintReport::empty().with_call_edges(resolved.call_edges);
     }
@@ -534,9 +611,22 @@ struct BlockState {
     values: BTreeMap<PathId, FactMap>,
     flag: FactMap,
     established: BTreeMap<PathId, Option<String>>,
+    inherited: BTreeMap<PathId, String>,
+    cells: BTreeMap<PathId, String>,
 }
 
 impl BlockState {
+    fn alias_of(&self, loc: PathId) -> Option<&str> {
+        self.established.get(&loc).map_or_else(
+            || self.inherited.get(&loc).map(String::as_str),
+            |alias: &Option<String>| alias.as_deref(),
+        )
+    }
+
+    fn holds_argument(&self, loc: PathId) -> bool {
+        self.established.contains_key(&loc) || self.inherited.contains_key(&loc)
+    }
+
     fn visit_key(&self) -> StateKey {
         let values: ValueSig = self
             .values
@@ -547,6 +637,8 @@ impl BlockState {
             values,
             flag: fact_signature(&self.flag),
             established: self.established.clone(),
+            inherited: self.inherited.clone(),
+            cells: self.cells.clone(),
         }
     }
 
@@ -563,6 +655,12 @@ impl BlockState {
         for (loc, expr) in &incoming.established {
             self.established.entry(*loc).or_insert_with(|| expr.clone());
         }
+        for (loc, expr) in &incoming.inherited {
+            self.inherited.entry(*loc).or_insert_with(|| expr.clone());
+        }
+        for (loc, expr) in &incoming.cells {
+            self.cells.entry(*loc).or_insert_with(|| expr.clone());
+        }
     }
 }
 
@@ -578,6 +676,8 @@ struct StateKey {
     values: ValueSig,
     flag: FactSig,
     established: BTreeMap<PathId, Option<String>>,
+    inherited: BTreeMap<PathId, String>,
+    cells: BTreeMap<PathId, String>,
 }
 
 fn merge_fact(map: &mut FactMap, fact: Fact) {
@@ -657,10 +757,14 @@ fn terminator_target_outside_blocks(block: &NirBlock, index_of: &BTreeMap<u64, u
 
 fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
     for (index, register) in ctx.resolved.abi.argument_registers().iter().enumerate() {
+        if !ctx.resolved.passes_arguments_in(register) {
+            continue;
+        }
         let arg: u16 = index as u16;
         let fact: Fact = formal_fact(ctx.function, arg);
         let loc: PathId = reg_loc(arena, register);
         state.values.entry(loc).or_default().insert(fact.key, fact);
+        state.inherited.insert(loc, formal_pointee_expr(register));
     }
     let flag_fact: Fact = formal_fact(ctx.function, 0);
     state.flag.insert(flag_fact.key, flag_fact);
@@ -670,7 +774,20 @@ fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
             let ValueId::Memory(expr) = value else {
                 continue;
             };
+            if let Some(target) = constant_pointer_target(ctx, expr) {
+                let global: ValueId = ValueId::memory(&global_expr(target));
+                let loc: PathId = arena.location(&global);
+                let fact: Fact = formal_input_fact(ctx.function, InPort::Global(loc));
+                state.values.entry(loc).or_default().insert(fact.key, fact);
+            }
             let input: Option<InPort> = memory_argument_projection(ctx.resolved.abi, expr)
+                .filter(|(argument, _offset): &(u16, i64)| {
+                    ctx.resolved
+                        .abi
+                        .argument_registers()
+                        .get(*argument as usize)
+                        .is_some_and(|register: &&str| ctx.resolved.passes_arguments_in(register))
+                })
                 .map(|(argument, offset): (u16, i64)| InPort::ArgumentMemory { argument, offset })
                 .or_else(|| {
                     is_relative_memory(expr).then(|| InPort::Global(arena.location(value)))
@@ -683,6 +800,154 @@ fn seed_formals(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
             state.values.entry(loc).or_default().insert(fact.key, fact);
         }
     }
+}
+
+fn formal_pointee_expr(register: &str) -> String {
+    format!("[@{register}]")
+}
+
+fn nested_pointee_expr(register: &str) -> String {
+    format!("[@@{register}]")
+}
+
+fn formal_pointee(abi: CallAbi, arena: &Arena, loc: PathId) -> Option<InPort> {
+    let (base, offset): (&str, i64) = arena.memory_projection(loc)?;
+    let (nested, register): (bool, &str) = match base.strip_prefix("@@") {
+        Some(register) => (true, register),
+        None => (false, base.strip_prefix('@')?),
+    };
+    let argument: u16 = u16::try_from(
+        abi.argument_registers()
+            .iter()
+            .position(|candidate: &&str| *candidate == register)?,
+    )
+    .ok()?;
+    Some(if nested {
+        InPort::ArgumentDeref { argument, offset }
+    } else {
+        InPort::ArgumentMemory { argument, offset }
+    })
+}
+
+fn pointer_stored_at(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    state: &BlockState,
+    expr: &str,
+) -> Option<String> {
+    let loc: PathId = arena.location(&ValueId::memory(expr));
+    if let Some(pointee) = state.cells.get(&loc) {
+        return Some(pointee.clone());
+    }
+    let InPort::ArgumentMemory {
+        argument,
+        offset: 0,
+    } = formal_pointee(ctx.resolved.abi, arena, loc)?
+    else {
+        return None;
+    };
+    let register: &str = ctx
+        .resolved
+        .abi
+        .argument_registers()
+        .get(argument as usize)?;
+    Some(nested_pointee_expr(register))
+}
+
+fn pointee_of_argument_pointer(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    state: &BlockState,
+    argument_loc: PathId,
+    offset: i64,
+) -> Option<String> {
+    let cell: String = offset_memory_expr(state.alias_of(argument_loc)?, 0)?;
+    let pointee: String = pointer_stored_at(ctx, arena, state, &cell)?;
+    offset_memory_expr(&pointee, offset)
+}
+
+fn global_expr(address: u64) -> String {
+    format!("[rel {address:X}h]")
+}
+
+fn constant_pointer_target(ctx: &Ctx<'_>, expr: &str) -> Option<u64> {
+    let slot: u64 = relative_address(memory_inner(expr)?)?;
+    ctx.resolved.constant_pointers.target_at(slot)
+}
+
+fn read_location(ctx: &Ctx<'_>, arena: &mut Arena, state: &BlockState, expr: &str) -> FactMap {
+    let loc: PathId = arena.location(&ValueId::memory(expr));
+    if let Some(facts) = state.values.get(&loc) {
+        return facts.clone();
+    }
+    let mut facts: FactMap = FactMap::new();
+    if let Some(input) = formal_pointee(ctx.resolved.abi, arena, loc) {
+        let fact: Fact = formal_input_fact(ctx.function, input);
+        facts.insert(fact.key, fact);
+    }
+    facts
+}
+
+fn materialize_formal_pointee(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    state: &mut BlockState,
+    expr: &str,
+) {
+    let loc: PathId = arena.location(&ValueId::memory(expr));
+    if state.values.contains_key(&loc) {
+        return;
+    }
+    let Some(input): Option<InPort> = formal_pointee(ctx.resolved.abi, arena, loc) else {
+        return;
+    };
+    let fact: Fact = formal_input_fact(ctx.function, input);
+    state.values.entry(loc).or_default().insert(fact.key, fact);
+}
+
+fn memory_base_and_displacement(abi: CallAbi, expr: &str) -> Option<(String, i64)> {
+    let inner: &str = memory_inner(expr)?;
+    let mut base: Option<String> = None;
+    let mut displacement: i64 = 0;
+    for (position, term) in signed_terms(inner) {
+        let negative: bool = term.starts_with('-');
+        let core: &str = term.trim_start_matches(['+', '-']).trim();
+        let register_part: &str = core.split('*').next().unwrap_or_default();
+        if let Some(register) = abi.canonical_register(register_part) {
+            if position == 0 && !negative && !core.contains('*') {
+                base = Some(register);
+            }
+        } else {
+            let value: i64 = parse_native_integer(core)?;
+            displacement = displacement.checked_add(if negative {
+                value.checked_neg()?
+            } else {
+                value
+            })?;
+        }
+    }
+    Some((base?, displacement))
+}
+
+fn alias_reads(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    defuse: &DefUse,
+    state: &mut BlockState,
+) -> Vec<ValueId> {
+    let abi: CallAbi = ctx.resolved.abi;
+    let mut reads: Vec<ValueId> = Vec::new();
+    for value in &defuse.uses {
+        let ValueId::Memory(expr) = value else {
+            continue;
+        };
+        let Some(redirected): Option<String> = pointee_through_base(abi, arena, state, expr) else {
+            continue;
+        };
+        materialize_formal_pointee(ctx, arena, state, &redirected);
+        reads.push(ValueId::memory(&redirected));
+    }
+    reads
 }
 
 fn formal_fact(function: &NirFunction, arg: u16) -> Fact {
@@ -760,9 +1025,19 @@ fn walk_block(
 ) -> BlockState {
     let mut state: BlockState = incoming;
     for instr in &block.instructions {
-        let defuse: DefUse = taint_def_use(ctx.resolved.abi, instr);
-        let is_call: bool = instr.op.class() == NirClass::Call;
-        let callees: Vec<(u64, &'static str)> = ctx.resolved.callee_internals(instr);
+        let tail_call: bool = ctx.resolved.external_tail_calls.contains(&instr.address);
+        let mut defuse: DefUse = taint_def_use(ctx.resolved.abi, instr);
+        if tail_call {
+            defuse.defs = vec![ValueId::register(ctx.resolved.abi.return_register())];
+        }
+        let is_call: bool = tail_call || instr.op.class() == NirClass::Call;
+        let mut returned_pointee: Option<String> = None;
+        let mut callees: Vec<(u64, &'static str)> = ctx.resolved.callee_internals(instr);
+        if callees.is_empty()
+            && let Some(target) = tracked_call_target(ctx, arena, instr, &state)
+        {
+            callees.push((target, TRACKED_CALL_KIND));
+        }
         if !callees.is_empty() {
             let incoming: BlockState = state.clone();
             let mut merged: Option<BlockState> = None;
@@ -797,7 +1072,7 @@ fn walk_block(
         } else if let Some(symbol) = ctx.resolved.external_symbol(instr) {
             let external_defuse: DefUse = external_taint_def_use(ctx, instr, &symbol, defuse);
             let call_kind: &'static str = ctx.resolved.call_kind(instr);
-            dispatch_external(
+            returned_pointee = dispatch_external(
                 ctx,
                 arena,
                 mode,
@@ -808,16 +1083,22 @@ fn walk_block(
                 &mut state,
                 out,
             );
+        } else if is_call {
+            propagate(arena, instr, &defuse, &mut state);
         } else {
-            if !is_call {
-                track_established_registers(ctx.resolved.abi, arena, instr, &defuse, &mut state);
-            }
+            let reads: Vec<ValueId> = alias_reads(ctx, arena, &defuse, &mut state);
+            defuse.uses.extend(reads);
+            track_established_locations(ctx, arena, instr, &defuse, &mut state);
             propagate(arena, instr, &defuse, &mut state);
         }
         if is_call {
-            clear_established_argument_registers(ctx, arena, &mut state);
+            clear_call_clobbered_aliases(ctx, arena, &mut state);
+            if let Some(pointee) = returned_pointee {
+                let returned: PathId = reg_loc(arena, ctx.resolved.abi.return_register());
+                state.established.insert(returned, Some(pointee));
+            }
         }
-        if mode == WalkMode::Summarize && matches!(instr.op, NirOp::Return) {
+        if mode == WalkMode::Summarize && (tail_call || matches!(instr.op, NirOp::Return)) {
             extract_outputs(ctx.resolved.abi, arena, instr, &state, &mut out.summary);
         }
         if severs_wasm_stack_value(instr) {
@@ -829,7 +1110,47 @@ fn walk_block(
     state
 }
 
+fn tracked_call_target(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    instr: &NirInstr,
+    state: &BlockState,
+) -> Option<u64> {
+    let indirect: bool = matches!(instr.op, NirOp::IndirectCall)
+        || matches!(direct_call(instr), Some(DirectCall::ToUnknown));
+    if !indirect || instr.operands.len() != 1 {
+        return None;
+    }
+    let operand: &str = instr.operands.first()?;
+    let pointee: String = if let Some(register) = ctx.resolved.abi.register_value(operand) {
+        state.alias_of(arena.location(&register))?.to_owned()
+    } else if memory_inner(operand).is_some() {
+        state
+            .cells
+            .get(&arena.location(&ValueId::memory(operand)))?
+            .clone()
+    } else {
+        return None;
+    };
+    let target: u64 = relative_address(memory_inner(&pointee)?)?;
+    (ctx.resolved.function_at.contains_key(&target)
+        && ctx.resolved.thunks.name_at(target).is_none())
+    .then_some(target)
+}
+
 fn taint_def_use(abi: CallAbi, instr: &NirInstr) -> DefUse {
+    if is_flag_comparison(instr) {
+        return DefUse {
+            defs: Vec::new(),
+            uses: abi.normalize_def_use(def_use(instr)).uses,
+        };
+    }
+    if zeroes_register(abi, instr) {
+        return DefUse {
+            defs: abi.normalize_def_use(def_use(instr)).defs,
+            uses: Vec::new(),
+        };
+    }
     if let Some(address) = abi.address_calculation(instr) {
         return address;
     }
@@ -851,14 +1172,33 @@ fn taint_def_use(abi: CallAbi, instr: &NirInstr) -> DefUse {
     defuse
 }
 
+fn zeroes_register(abi: CallAbi, instr: &NirInstr) -> bool {
+    let [destination, source]: &[String] = instr.operands.as_slice() else {
+        return false;
+    };
+    matches!(
+        instr.op,
+        NirOp::BinOp {
+            op: BinaryOp::Xor | BinaryOp::Sub
+        }
+    ) && abi
+        .register_value(destination)
+        .is_some_and(|register: ValueId| abi.register_value(source) == Some(register))
+}
+
+fn is_flag_comparison(instr: &NirInstr) -> bool {
+    crate::abi::is_native(instr.source.lang)
+        && (instr.mnemonic.eq_ignore_ascii_case("cmp")
+            || instr.mnemonic.eq_ignore_ascii_case("test"))
+}
+
 fn external_taint_def_use(ctx: &Ctx<'_>, instr: &NirInstr, symbol: &str, defuse: DefUse) -> DefUse {
     let configured: bool = ctx.config.source_kind(symbol).is_some()
         || ctx.config.sink_policy(symbol).is_some()
         || ctx.config.sanitizer_feature(symbol).is_some();
-    if !crate::abi::is_native(instr.source.lang)
-        || !matches!(direct_call(instr), Some(DirectCall::ToAddress(_)))
-        || !configured
-    {
+    let addressed: bool = matches!(direct_call(instr), Some(DirectCall::ToAddress(_)))
+        || ctx.resolved.external_tail_calls.contains(&instr.address);
+    if !crate::abi::is_native(instr.source.lang) || !addressed || !configured {
         return defuse;
     }
     DefUse {
@@ -868,6 +1208,7 @@ fn external_taint_def_use(ctx: &Ctx<'_>, instr: &NirInstr, symbol: &str, defuse:
             .abi
             .argument_registers()
             .iter()
+            .filter(|register: &&&str| ctx.resolved.passes_arguments_in(register))
             .map(|register: &&str| ValueId::register(register))
             .collect(),
     }
@@ -884,7 +1225,7 @@ fn dispatch_external(
     defuse: &DefUse,
     state: &mut BlockState,
     out: &mut Outputs,
-) {
+) -> Option<String> {
     if let Some(kind) = ctx.config.source_kind(symbol) {
         apply_source(ctx, arena, instr, symbol, call_kind, kind, defuse, state);
     } else if let Some(policy) = ctx.config.sink_policy(symbol) {
@@ -892,10 +1233,89 @@ fn dispatch_external(
             ctx, arena, mode, instr, symbol, call_kind, &policy, defuse, state, out,
         );
     } else if let Some(feature) = ctx.config.sanitizer_feature(symbol) {
-        apply_sanitizer(arena, instr, symbol, call_kind, feature, defuse, state);
+        apply_sanitizer(ctx, arena, instr, symbol, call_kind, feature, defuse, state);
+    } else if let Some(transfer) = copy_transfer(symbol) {
+        return apply_copy(
+            ctx, arena, instr, symbol, call_kind, transfer, defuse, state,
+        );
+    } else if allocates(symbol) {
+        propagate(arena, instr, defuse, state);
+        return Some(heap_object_expr(instr.address));
     } else {
         propagate(arena, instr, defuse, state);
     }
+    None
+}
+
+fn heap_object_expr(site: u64) -> String {
+    format!("[#{site:X}]")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_copy(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    instr: &NirInstr,
+    symbol: &str,
+    call_kind: &str,
+    transfer: CopyTransfer,
+    defuse: &DefUse,
+    state: &mut BlockState,
+) -> Option<String> {
+    let mut copied: FactMap = FactMap::new();
+    if crate::abi::is_native(instr.source.lang) {
+        for register in ctx.resolved.argument_candidates(transfer.source) {
+            let loc: PathId = reg_loc(arena, register);
+            if !state.holds_argument(loc) {
+                continue;
+            }
+            let alias: Option<String> = state.alias_of(loc).map(str::to_owned);
+            if let Some(facts) = state.values.get(&loc) {
+                for fact in facts.values() {
+                    merge_fact(&mut copied, fact.clone());
+                }
+            }
+            if let Some(alias) = alias {
+                for fact in read_location(ctx, arena, state, &alias).into_values() {
+                    merge_fact(&mut copied, fact);
+                }
+            }
+        }
+    }
+    for fact in copied.values_mut() {
+        append_step(&mut fact.path, step(instr.address, symbol, call_kind));
+        append_step(&mut fact.path, step(instr.address, symbol, "propagate"));
+    }
+    if !copied.is_empty() {
+        for target in buffer_targets(ctx, arena, state, transfer.destination) {
+            if let ValueId::Memory(expr) = &target {
+                materialize_formal_pointee(ctx, arena, state, expr);
+            }
+            let loc: PathId = arena.location(&target);
+            let entry: &mut FactMap = state.values.entry(loc).or_default();
+            for fact in copied.values() {
+                merge_fact(entry, fact.clone());
+            }
+        }
+    }
+    for def in &defuse.defs {
+        let loc: PathId = arena.location(def);
+        if copied.is_empty() {
+            state.values.remove(&loc);
+        } else {
+            state.values.insert(loc, copied.clone());
+        }
+    }
+    ctx.resolved
+        .argument_candidates(transfer.destination)
+        .into_iter()
+        .find_map(|register: &str| {
+            state
+                .established
+                .get(&reg_loc(arena, register))
+                .cloned()
+                .flatten()
+        })
 }
 
 fn apply_source(
@@ -940,8 +1360,7 @@ fn established_out_argument_defs(
     if !crate::abi::is_native(instr.source.lang) {
         return Vec::new();
     }
-    let abi: CallAbi = ctx.resolved.abi;
-    let register_count: usize = abi.argument_registers().len();
+    let register_count: usize = ctx.resolved.abi.argument_registers().len();
     let mut defs: Vec<ValueId> = Vec::new();
     let out_arguments: &[OutArgument] = ctx.config.source_out_arguments(symbol);
     for out_argument in out_arguments {
@@ -949,25 +1368,40 @@ fn established_out_argument_defs(
             let Ok(index): Result<u16, _> = u16::try_from(index) else {
                 continue;
             };
-            for register in abi.out_argument_candidates(index) {
-                let value: ValueId = ValueId::register(register);
-                let loc: PathId = arena.location(&value);
-                let Some(established_via) = state.established.get(&loc) else {
-                    continue;
-                };
-                defs.push(value);
-                if let Some(reduced) = established_via {
-                    defs.push(ValueId::memory(reduced));
-                    if let Some(base) = memory_base_register(abi, reduced)
-                        && !matches!(base.as_str(), "rsp" | "esp" | "sp")
-                    {
-                        defs.push(ValueId::register(&base));
-                    }
-                }
-            }
+            defs.extend(buffer_targets(ctx, arena, state, index));
         }
     }
     defs
+}
+
+fn buffer_targets(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    state: &BlockState,
+    index: u16,
+) -> Vec<ValueId> {
+    let abi: CallAbi = ctx.resolved.abi;
+    let mut targets: Vec<ValueId> = Vec::new();
+    for register in ctx.resolved.argument_candidates(index) {
+        let value: ValueId = ValueId::register(register);
+        let loc: PathId = arena.location(&value);
+        let Some(established_via) = state.established.get(&loc) else {
+            continue;
+        };
+        targets.push(value);
+        let Some(reduced) = established_via else {
+            continue;
+        };
+        targets.push(ValueId::memory(reduced));
+        let Some(base) = memory_base_register(abi, reduced) else {
+            continue;
+        };
+        if abi.is_stack_pointer(&base) {
+            continue;
+        }
+        targets.push(ValueId::register(&base));
+    }
+    targets
 }
 
 fn memory_base_register(abi: CallAbi, expr: &str) -> Option<String> {
@@ -984,40 +1418,166 @@ fn memory_base_register(abi: CallAbi, expr: &str) -> Option<String> {
         })
 }
 
-fn clear_established_argument_registers(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
-    for register in ctx.resolved.abi.argument_registers() {
+fn clear_call_clobbered_aliases(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
+    for register in ctx
+        .resolved
+        .abi
+        .call_clobbered_registers(ctx.resolved.win64)
+    {
         let loc: PathId = reg_loc(arena, register);
         state.established.remove(&loc);
+        state.inherited.remove(&loc);
     }
 }
 
-fn track_established_registers(
-    abi: CallAbi,
+fn track_established_locations(
+    ctx: &Ctx<'_>,
     arena: &mut Arena,
     instr: &NirInstr,
     defuse: &DefUse,
     state: &mut BlockState,
 ) {
-    let established_via: Option<String> = if instr.mnemonic.eq_ignore_ascii_case("lea") {
-        instr.operands.get(1).and_then(|expr: &String| {
-            reduce_indexed_memory_expr(abi, expr)
-                .or_else(|| memory_inner(expr).map(|inner: &str| format!("[{inner}]")))
-        })
+    let abi: CallAbi = ctx.resolved.abi;
+    let is_lea: bool = instr.mnemonic.eq_ignore_ascii_case("lea");
+    let register_alias: Option<String> = if is_lea {
+        instr
+            .operands
+            .get(1)
+            .filter(|expr: &&String| !sets_frame_base(abi, instr, expr))
+            .and_then(|expr: &String| {
+                pointee_through_base(abi, arena, state, expr).or_else(|| {
+                    reduce_indexed_memory_expr(abi, expr)
+                        .or_else(|| memory_inner(expr).map(|inner: &str| format!("[{inner}]")))
+                })
+            })
+    } else if keeps_pointer(instr) {
+        defuse
+            .uses
+            .iter()
+            .find_map(|value: &ValueId| {
+                let ValueId::Register(_) = value else {
+                    return None;
+                };
+                state.alias_of(arena.location(value)).map(str::to_owned)
+            })
+            .and_then(|alias: String| match immediate_displacement(instr) {
+                Some(displacement) => offset_memory_expr(&alias, displacement),
+                None => Some(alias),
+            })
     } else {
+        None
+    };
+    let loads_pointer: bool = !is_lea
+        && instr
+            .operands
+            .first()
+            .is_some_and(|operand: &String| abi.is_pointer_width_register(operand));
+    let loaded_alias: Option<String> = if loads_pointer {
         defuse.uses.iter().find_map(|value: &ValueId| {
-            let ValueId::Register(_) = value else {
+            let ValueId::Memory(expr) = value else {
                 return None;
             };
-            let loc: PathId = arena.location(value);
-            state.established.get(&loc).cloned().flatten()
+            constant_pointer_target(ctx, expr)
+                .map(global_expr)
+                .or_else(|| pointer_stored_at(ctx, arena, state, expr))
         })
+    } else {
+        None
     };
+    let stores_pointer: bool = instr
+        .operands
+        .get(1)
+        .is_some_and(|operand: &String| abi.is_pointer_width_register(operand));
+    let stored: Option<&String> = register_alias.as_ref().filter(|_| stores_pointer);
     for def in &defuse.defs {
-        if matches!(def, ValueId::Register(_)) {
-            let loc: PathId = arena.location(def);
-            state.established.insert(loc, established_via.clone());
+        match def {
+            ValueId::Register(_) => {
+                let loc: PathId = arena.location(def);
+                state.inherited.remove(&loc);
+                state
+                    .established
+                    .insert(loc, register_alias.clone().or_else(|| loaded_alias.clone()));
+            }
+            ValueId::Memory(expr) => {
+                let resolved: Option<ValueId> = pointee_through_base(abi, arena, state, expr)
+                    .map(|pointee: String| ValueId::memory(&pointee));
+                for cell in core::iter::once(def).chain(resolved.as_ref()) {
+                    let loc: PathId = arena.location(cell);
+                    match stored {
+                        Some(alias) => {
+                            state.cells.insert(loc, alias.clone());
+                        }
+                        None => {
+                            state.cells.remove(&loc);
+                        }
+                    }
+                }
+            }
+            ValueId::Stack(_) => {}
         }
     }
+}
+
+const fn keeps_pointer(instr: &NirInstr) -> bool {
+    !matches!(
+        instr.op,
+        NirOp::BinOp {
+            op: BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Rem
+                | BinaryOp::And
+                | BinaryOp::Or
+                | BinaryOp::Xor
+                | BinaryOp::Shl
+                | BinaryOp::Shr
+                | BinaryOp::Rol
+                | BinaryOp::Ror
+                | BinaryOp::Not
+                | BinaryOp::Neg
+        }
+    )
+}
+
+fn immediate_displacement(instr: &NirInstr) -> Option<i64> {
+    let negative: bool = match instr.mnemonic.to_ascii_lowercase().as_str() {
+        "add" => false,
+        "sub" => true,
+        _ => return None,
+    };
+    let [_destination, operand]: &[String] = instr.operands.as_slice() else {
+        return None;
+    };
+    let value: i64 = parse_native_integer(operand)?;
+    Some(if negative {
+        value.checked_neg()?
+    } else {
+        value
+    })
+}
+
+fn sets_frame_base(abi: CallAbi, instr: &NirInstr, expr: &str) -> bool {
+    instr
+        .operands
+        .first()
+        .and_then(|operand: &String| abi.register_value(operand))
+        == Some(ValueId::register(abi.frame_pointer()))
+        && memory_base_and_displacement(abi, expr)
+            .is_some_and(|(base, _displacement): (String, i64)| abi.is_stack_pointer(&base))
+}
+
+fn pointee_through_base(
+    abi: CallAbi,
+    arena: &mut Arena,
+    state: &BlockState,
+    expr: &str,
+) -> Option<String> {
+    let (base, displacement): (String, i64) = memory_base_and_displacement(abi, expr)?;
+    if abi.is_stack_pointer(&base) {
+        return None;
+    }
+    let base_loc: PathId = arena.location(&ValueId::register(&base));
+    let alias: &str = state.alias_of(base_loc)?;
+    offset_memory_expr(alias, displacement)
 }
 
 fn reduce_indexed_memory_expr(abi: CallAbi, expr: &str) -> Option<String> {
@@ -1082,7 +1642,7 @@ fn apply_sink(
     state: &mut BlockState,
     out: &mut Outputs,
 ) {
-    for (fact, via_flag) in gather_reaching(arena, defuse, state) {
+    for (fact, via_flag) in gather_reaching(ctx, arena, defuse, state) {
         if fact.is_concrete() {
             if mode == WalkMode::Collect
                 && fact.kinds.intersects(policy.sensitive)
@@ -1115,7 +1675,9 @@ fn apply_sink(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_sanitizer(
+    ctx: &Ctx<'_>,
     arena: &mut Arena,
     instr: &NirInstr,
     symbol: &str,
@@ -1124,7 +1686,7 @@ fn apply_sanitizer(
     defuse: &DefUse,
     state: &mut BlockState,
 ) {
-    let incoming: Vec<(Fact, bool)> = gather_reaching(arena, defuse, state);
+    let incoming: Vec<(Fact, bool)> = gather_reaching(ctx, arena, defuse, state);
     let mut produced: FactMap = FactMap::new();
     for (mut fact, _via_flag) in incoming {
         fact.features.insert(feature);
@@ -1145,7 +1707,12 @@ fn apply_sanitizer(
     }
 }
 
-fn gather_reaching(arena: &mut Arena, defuse: &DefUse, state: &BlockState) -> Vec<(Fact, bool)> {
+fn gather_reaching(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    defuse: &DefUse,
+    state: &BlockState,
+) -> Vec<(Fact, bool)> {
     let mut reached: Vec<(Fact, bool)> = Vec::new();
     for value in &defuse.uses {
         let loc: PathId = arena.location(value);
@@ -1155,13 +1722,10 @@ fn gather_reaching(arena: &mut Arena, defuse: &DefUse, state: &BlockState) -> Ve
             }
         }
         if matches!(value, ValueId::Register(_))
-            && let Some(alias) = state.established.get(&loc).and_then(Option::as_deref)
+            && let Some(alias) = state.alias_of(loc)
         {
-            let memory: PathId = arena.location(&ValueId::memory(alias));
-            if let Some(map) = state.values.get(&memory) {
-                for fact in map.values() {
-                    reached.push((fact.clone(), false));
-                }
+            for fact in read_location(ctx, arena, state, alias).into_values() {
+                reached.push((fact, false));
             }
         }
     }
@@ -1205,7 +1769,9 @@ fn instantiate_callee(
     let summary: FunctionSummary = summary.clone();
 
     for (port, generation) in &summary.generations {
-        let Some(loc): Option<PathId> = out_port_location(&arg_locs, returned, *port) else {
+        let Some(loc): Option<PathId> =
+            out_port_location(ctx, arena, state, &arg_locs, returned, *port)
+        else {
             continue;
         };
         let fact: Fact = Fact {
@@ -1219,6 +1785,13 @@ fn instantiate_callee(
                 step(instr.address, &callee_name, "source"),
             ],
         };
+        if matches!(
+            port,
+            OutPort::ArgumentMemory { .. } | OutPort::ArgumentDeref { .. }
+        ) {
+            merge_fact(state.values.entry(loc).or_default(), fact);
+            continue;
+        }
         let mut map: FactMap = FactMap::new();
         map.insert(fact.key, fact.clone());
         state.values.insert(loc, map);
@@ -1228,9 +1801,11 @@ fn instantiate_callee(
     }
 
     for (input, outs) in &summary.propagations {
-        let sources: FactMap = resolve_input_facts(arena, state, &arg_locs, *input);
+        let sources: FactMap = resolve_input_facts(ctx, arena, state, &arg_locs, *input);
         for (port, propagation) in outs {
-            let Some(loc): Option<PathId> = out_port_location(&arg_locs, returned, *port) else {
+            let Some(loc): Option<PathId> =
+                out_port_location(ctx, arena, state, &arg_locs, returned, *port)
+            else {
                 continue;
             };
             for source_fact in sources.values() {
@@ -1251,6 +1826,8 @@ fn instantiate_callee(
         }
     }
 
+    instantiate_pointer_stores(arena, state, &arg_locs, &summary.pointer_stores);
+
     for frame in &summary.frames {
         instantiate_frame(
             ctx,
@@ -1269,6 +1846,7 @@ fn instantiate_callee(
 }
 
 fn resolve_input_facts(
+    ctx: &Ctx<'_>,
     arena: &mut Arena,
     state: &BlockState,
     arg_locs: &[PathId],
@@ -1280,40 +1858,48 @@ fn resolve_input_facts(
                 return FactMap::new();
             };
             let mut facts: FactMap = state.values.get(argument_loc).cloned().unwrap_or_default();
-            if let Some(alias) = state
-                .established
-                .get(argument_loc)
-                .and_then(Option::as_deref)
-            {
-                let loc: PathId = arena.location(&ValueId::memory(alias));
-                if let Some(alias_facts) = state.values.get(&loc) {
-                    for fact in alias_facts.values() {
-                        merge_fact(&mut facts, fact.clone());
-                    }
+            if let Some(alias) = state.alias_of(*argument_loc) {
+                for fact in read_location(ctx, arena, state, alias).into_values() {
+                    merge_fact(&mut facts, fact);
                 }
             }
             facts
         }
-        InPort::Global(loc) => state.values.get(&loc).cloned().unwrap_or_default(),
+        InPort::Global(loc) => {
+            let mut facts: FactMap = state.values.get(&loc).cloned().unwrap_or_default();
+            if let Some(pointee) = state.cells.get(&loc) {
+                for fact in read_location(ctx, arena, state, pointee).into_values() {
+                    merge_fact(&mut facts, fact);
+                }
+            }
+            facts
+        }
+        InPort::ArgumentDeref { argument, offset } => {
+            let Some(argument_loc): Option<&PathId> = arg_locs.get(argument as usize) else {
+                return FactMap::new();
+            };
+            pointee_of_argument_pointer(ctx, arena, state, *argument_loc, offset)
+                .map(|pointee: String| read_location(ctx, arena, state, &pointee))
+                .unwrap_or_default()
+        }
         InPort::ArgumentMemory { argument, offset } => {
             let Some(argument_loc): Option<&PathId> = arg_locs.get(argument as usize) else {
                 return FactMap::new();
             };
             let mut facts: FactMap = state.values.get(argument_loc).cloned().unwrap_or_default();
-            let Some(alias): Option<&str> = state
-                .established
-                .get(argument_loc)
-                .and_then(Option::as_deref)
-            else {
+            let Some(alias): Option<&str> = state.alias_of(*argument_loc) else {
                 return facts;
             };
             let Some(projected): Option<String> = offset_memory_expr(alias, offset) else {
                 return facts;
             };
+            for fact in read_location(ctx, arena, state, &projected).into_values() {
+                merge_fact(&mut facts, fact);
+            }
             let loc: PathId = arena.location(&ValueId::memory(&projected));
-            if let Some(projected_facts) = state.values.get(&loc) {
-                for fact in projected_facts.values() {
-                    merge_fact(&mut facts, fact.clone());
+            if let Some(pointee) = state.cells.get(&loc) {
+                for fact in read_location(ctx, arena, state, pointee).into_values() {
+                    merge_fact(&mut facts, fact);
                 }
             }
             facts
@@ -1323,22 +1909,30 @@ fn resolve_input_facts(
 
 fn offset_memory_expr(expr: &str, added: i64) -> Option<String> {
     let inner: &str = memory_inner(expr)?;
+    if let Some(address) = relative_address(inner) {
+        return Some(global_expr(address.checked_add_signed(added)?));
+    }
     let mut base: Option<&str> = None;
     let mut offset: i64 = added;
     for (_position, term) in signed_terms(inner) {
-        let sign: i64 = if term.starts_with('-') { -1 } else { 1 };
+        let negative: bool = term.starts_with('-');
         let core: &str = term.trim_start_matches(['+', '-']);
         if core.contains('*') {
             return None;
         }
-        if core.bytes().any(|byte: u8| byte.is_ascii_alphabetic())
-            && parse_native_integer(core).is_none()
-        {
-            if base.replace(core).is_some() {
-                return None;
+        match parse_native_integer(core) {
+            Some(value) => {
+                offset = offset.checked_add(if negative {
+                    value.checked_neg()?
+                } else {
+                    value
+                })?;
             }
-        } else {
-            offset = offset.checked_add(sign * parse_native_integer(core)?)?;
+            None => {
+                if negative || base.replace(core).is_some() {
+                    return None;
+                }
+            }
         }
     }
     let base: &str = base?;
@@ -1369,7 +1963,7 @@ fn instantiate_frame(
     let candidates: FactMap = if frame.via_flag {
         flag_facts.clone()
     } else {
-        resolve_input_facts(arena, state, arg_locs, frame.input)
+        resolve_input_facts(ctx, arena, state, arg_locs, frame.input)
     };
     for cf in candidates.values() {
         let effective: FeatureSet = cf.features.union(frame.accumulated);
@@ -1407,10 +2001,61 @@ fn instantiate_frame(
     }
 }
 
-fn out_port_location(arg_locs: &[PathId], returned: PathId, port: OutPort) -> Option<PathId> {
+fn out_port_location(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    state: &mut BlockState,
+    arg_locs: &[PathId],
+    returned: PathId,
+    port: OutPort,
+) -> Option<PathId> {
     match port {
         OutPort::Return => Some(returned),
         OutPort::Argument(index) => arg_locs.get(index as usize).copied(),
+        OutPort::ArgumentMemory { argument, offset } => {
+            let argument_loc: PathId = *arg_locs.get(argument as usize)?;
+            let projected: String = offset_memory_expr(state.alias_of(argument_loc)?, offset)?;
+            materialize_formal_pointee(ctx, arena, state, &projected);
+            Some(arena.location(&ValueId::memory(&projected)))
+        }
+        OutPort::ArgumentDeref { argument, offset } => {
+            let argument_loc: PathId = *arg_locs.get(argument as usize)?;
+            let pointee: String =
+                pointee_of_argument_pointer(ctx, arena, state, argument_loc, offset)?;
+            materialize_formal_pointee(ctx, arena, state, &pointee);
+            Some(arena.location(&ValueId::memory(&pointee)))
+        }
+    }
+}
+
+fn instantiate_pointer_stores(
+    arena: &mut Arena,
+    state: &mut BlockState,
+    arg_locs: &[PathId],
+    stores: &BTreeMap<(u16, i64), PointerTarget>,
+) {
+    for ((argument, offset), target) in stores {
+        let Some(argument_loc): Option<&PathId> = arg_locs.get(*argument as usize) else {
+            continue;
+        };
+        let Some(cell): Option<String> = state
+            .alias_of(*argument_loc)
+            .and_then(|alias: &str| offset_memory_expr(alias, *offset))
+        else {
+            continue;
+        };
+        let pointee: Option<String> = match target {
+            PointerTarget::ArgumentMemory { argument, offset } => arg_locs
+                .get(*argument as usize)
+                .and_then(|loc: &PathId| state.alias_of(*loc))
+                .and_then(|alias: &str| offset_memory_expr(alias, *offset)),
+            PointerTarget::Global(address) => Some(global_expr(*address)),
+        };
+        let Some(pointee) = pointee else {
+            continue;
+        };
+        let loc: PathId = arena.location(&ValueId::memory(&cell));
+        state.cells.insert(loc, pointee);
     }
 }
 
@@ -1427,6 +2072,14 @@ fn extract_outputs(
             record_output(summary, OutPort::Return, fact, instr);
         }
     }
+    if let Some(pointee) = state.alias_of(returned) {
+        let pointee: PathId = arena.location(&ValueId::memory(pointee));
+        if let Some(map) = state.values.get(&pointee) {
+            for fact in map.values() {
+                record_output(summary, OutPort::Return, fact, instr);
+            }
+        }
+    }
     for (index, register) in abi.argument_registers().iter().enumerate() {
         let loc: PathId = reg_loc(arena, register);
         let Some(map): Option<&FactMap> = state.values.get(&loc) else {
@@ -1440,6 +2093,40 @@ fn extract_outputs(
                 continue;
             }
             record_output(summary, OutPort::Argument(index as u16), fact, instr);
+        }
+    }
+    for (loc, map) in &state.values {
+        let (own, port): (InPort, OutPort) = match formal_pointee(abi, arena, *loc) {
+            Some(own @ InPort::ArgumentMemory { argument, offset }) => {
+                (own, OutPort::ArgumentMemory { argument, offset })
+            }
+            Some(own @ InPort::ArgumentDeref { argument, offset }) => {
+                (own, OutPort::ArgumentDeref { argument, offset })
+            }
+            Some(InPort::Argument(_) | InPort::Global(_)) | None => continue,
+        };
+        for fact in map.values() {
+            if fact.formal_input() != Some(own) {
+                record_output(summary, port, fact, instr);
+            }
+        }
+    }
+    for (loc, pointee) in &state.cells {
+        let Some(InPort::ArgumentMemory { argument, offset }) = formal_pointee(abi, arena, *loc)
+        else {
+            continue;
+        };
+        let pointee_loc: PathId = arena.location(&ValueId::memory(pointee));
+        let target: Option<PointerTarget> = match formal_pointee(abi, arena, pointee_loc) {
+            Some(InPort::ArgumentMemory { argument, offset }) => {
+                Some(PointerTarget::ArgumentMemory { argument, offset })
+            }
+            _ => memory_inner(pointee)
+                .and_then(relative_address)
+                .map(PointerTarget::Global),
+        };
+        if let Some(target) = target {
+            summary.add_pointer_store(argument, offset, target);
         }
     }
 }
