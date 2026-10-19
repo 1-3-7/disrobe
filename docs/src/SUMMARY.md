@@ -33,6 +33,7 @@
 - [WebAssembly](./languages/wasm.md)
 - [JVM and Android](./languages/jvm-android.md)
 - [.NET / CIL](./languages/dotnet.md)
+  - [.NET build comparison](./languages/dotnet-compare.md)
 - [Native (PE / ELF / Mach-O / NE)](./languages/native.md)
   - [Native decompile](./languages/native-decompile.md)
   - [Verify a native reconstruction](./languages/native-verify.md)

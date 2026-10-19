@@ -127,6 +127,7 @@ Nested commands are listed by ecosystem below. For measurements and their limits
 | `disrobe dotnet native-aot <image>` | Recover NativeAOT names, types, method boundaries and managed signatures. Takes a PE, ELF or Mach-O image, not a managed assembly. |
 | `disrobe dotnet backends` | Report .NET backends on PATH. |
 | `disrobe dotnet interop <dll\|exe>` | List the boundaries a .NET assembly crosses into native code: P/Invoke and COM imports with their DLLs, entry points and marshalling, and unmanaged exports. |
+| `disrobe dotnet compare <old> <new>` | Compare two builds of a .NET assembly: added, removed and changed types, members, P/Invoke imports, assembly references, resources and custom attributes; method bodies classified as changed IL or renumbered tokens; version, public key token, MVID, target framework and PE timestamp changes; each finding cites its metadata row on both sides (`--json` for the document) |
 
 ## Native
 
