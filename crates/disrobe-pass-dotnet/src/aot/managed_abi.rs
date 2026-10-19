@@ -1234,6 +1234,7 @@ mod tests {
             name: "Probe".to_owned(),
             signature: Some(signature),
             entrypoint_rva: Some(0x1000),
+            instantiation_entrypoint_rvas: Vec::new(),
             code_range: Some(AotCodeRange {
                 start_rva: 0x1000,
                 end_rva: 0x1004,
@@ -1485,6 +1486,7 @@ mod tests {
                     name: "Probe".to_owned(),
                     signature: None,
                     entrypoint_rva: None,
+                    instantiation_entrypoint_rvas: Vec::new(),
                     code_range: None,
                     body: None,
                 },

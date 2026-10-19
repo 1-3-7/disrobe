@@ -19,13 +19,25 @@ mod managed_abi;
 mod metadata_records;
 mod method_bodies;
 mod method_boundaries;
+mod native_hashtable;
+mod resources;
+mod stack_trace_map;
 
+pub use invoke_map::AotInvokeMapRefusal;
 pub use metadata_records::{
     AOT_SIGNATURE_ABSTENTIONS, AotCodeRange, AotMetadataAttribution, AotMetadataStatus, AotMethod,
     AotMethodBody, AotMethodSignature, AotSignatureAbstention, AotSignatureProvenance, AotType,
     AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 use metadata_records::{AotFieldLayout, AotTypeLayout};
+pub use resources::{
+    AotManifestResource, AotResourceIndex, AotResourceRefusal, AotResourceStatus,
+    manifest_resource_data, recover_manifest_resources,
+};
+pub use stack_trace_map::{
+    AotStackTraceMap, AotStackTraceMethod, AotStackTraceName, AotStackTraceRefusal,
+    AotStackTraceStatus, recover_stack_trace_map,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotReport {
@@ -38,6 +50,12 @@ pub struct AotReport {
     pub recovered_names: Vec<String>,
     #[serde(default)]
     pub metadata_attribution: AotMetadataAttribution,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invoke_map_refusals: Vec<AotInvokeMapRefusal>,
+    #[serde(default)]
+    pub stack_trace_map: AotStackTraceMap,
+    #[serde(default)]
+    pub manifest_resources: AotResourceIndex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -928,6 +946,69 @@ fn section_bytes_for_address<'a>(
     None
 }
 
+struct AotContainer<'a> {
+    file: ObjFile<'a, &'a [u8]>,
+    address_base: u64,
+}
+
+fn open_container(image: &[u8]) -> crate::error::Result<AotContainer<'_>> {
+    let native: NativeFile = parse_native(image).map_err(|error: disrobe_binfmt::Error| {
+        crate::error::Error::AotContainerRead(error.to_string())
+    })?;
+    if !supported_native_format(native.format) || !matches!(native.endian, Endian::Little) {
+        return Err(crate::error::Error::UnsupportedAotContainer(
+            native.format.label(),
+        ));
+    }
+    let file: ObjFile<'_, &[u8]> = ObjFile::parse(image)
+        .map_err(|error: object::Error| crate::error::Error::AotContainerRead(error.to_string()))?;
+    if !section_views_agree(&native, &file) {
+        return Err(crate::error::Error::AotContainerRead(
+            "container parsers disagree on section layout".to_owned(),
+        ));
+    }
+    let address_base: u64 = container_address_base(&file).ok_or_else(|| {
+        crate::error::Error::AotContainerRead("container has no mapped address base".to_owned())
+    })?;
+    Ok(AotContainer { file, address_base })
+}
+
+fn unique_section(
+    header: &ReadyToRunHeader,
+    id: i32,
+    invalid: fn(usize, &'static str) -> crate::error::Error,
+) -> crate::error::Result<Option<&AotSection>> {
+    let mut found: Option<&AotSection> = None;
+    for section in &header.sections {
+        if section.id != id {
+            continue;
+        }
+        if found.is_some() {
+            return Err(invalid(0, "ahead-of-time section appears more than once"));
+        }
+        found = Some(section);
+    }
+    Ok(found)
+}
+
+fn container_section_bytes<'a>(
+    image: &'a [u8],
+    container: &AotContainer<'a>,
+    section: &AotSection,
+    invalid: fn(usize, &'static str) -> crate::error::Error,
+) -> crate::error::Result<&'a [u8]> {
+    let start: u64 = container
+        .address_base
+        .checked_add(u64::from(section.start_rva))
+        .ok_or_else(|| invalid(0, "ahead-of-time section start address overflowed"))?;
+    let end: u64 = container
+        .address_base
+        .checked_add(u64::from(section.end_rva))
+        .ok_or_else(|| invalid(0, "ahead-of-time section end address overflowed"))?;
+    section_bytes_for_address(image, &container.file, start, end)
+        .ok_or_else(|| invalid(0, "ahead-of-time section is not entirely file backed"))
+}
+
 const MIN_NAME_LEN: usize = 2;
 const MAX_NAME_LEN: usize = 256;
 const NAME_RUN_THRESHOLDS: [usize; 4] = [1, 2, 3, 4];
@@ -1127,13 +1208,27 @@ pub fn detect(image: &[u8]) -> AotReport {
         .map_or_else(Vec::new, |header: &ReadyToRunHeader| {
             recover_metadata_names(image, header)
         });
-    let metadata_attribution: AotMetadataAttribution = ready_to_run.as_ref().map_or_else(
-        AotMetadataAttribution::default,
-        |header: &ReadyToRunHeader| match recover_metadata_attribution(image, header) {
-            Ok(attribution) => attribution,
-            Err(error) => AotMetadataAttribution::rejected(error),
+    let (metadata_attribution, invoke_map_refusals): (
+        AotMetadataAttribution,
+        Vec<AotInvokeMapRefusal>,
+    ) = ready_to_run.as_ref().map_or_else(
+        || (AotMetadataAttribution::default(), Vec::new()),
+        |header: &ReadyToRunHeader| {
+            metadata_records::recover_metadata_with_invoke_refusals(image, header).unwrap_or_else(
+                |error: crate::error::Error| (AotMetadataAttribution::rejected(error), Vec::new()),
+            )
         },
     );
+    let stack_trace_map: AotStackTraceMap = ready_to_run
+        .as_ref()
+        .map_or_else(AotStackTraceMap::default, |header: &ReadyToRunHeader| {
+            recover_stack_trace_map(image, header)
+        });
+    let manifest_resources: AotResourceIndex = ready_to_run
+        .as_ref()
+        .map_or_else(AotResourceIndex::default, |header: &ReadyToRunHeader| {
+            recover_manifest_resources(image, header)
+        });
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")
@@ -1149,6 +1244,9 @@ pub fn detect(image: &[u8]) -> AotReport {
         ready_to_run,
         recovered_names,
         metadata_attribution,
+        invoke_map_refusals,
+        stack_trace_map,
+        manifest_resources,
     }
 }
 

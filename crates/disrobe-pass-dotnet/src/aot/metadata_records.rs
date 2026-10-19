@@ -5,7 +5,7 @@ use disrobe_bytes::bounded_element_capacity;
 use object::read::File as ObjFile;
 use serde::{Deserialize, Serialize};
 
-use super::invoke_map::attach_invoke_map_entrypoints;
+use super::invoke_map::{AotInvokeMapRefusal, attach_invoke_map_entrypoints};
 use super::method_bodies::attach_method_bodies;
 use super::method_boundaries::attach_method_boundaries;
 use super::{
@@ -15,23 +15,23 @@ use super::{
 
 const METADATA_SECTION_ID: i32 = 313;
 const METADATA_SIGNATURE: u32 = 0xDEAD_DFFD;
-const HANDLE_ARRAY_SIGNATURE: u8 = 0x01;
-const HANDLE_BY_REFERENCE_SIGNATURE: u8 = 0x02;
+pub(super) const HANDLE_ARRAY_SIGNATURE: u8 = 0x01;
+pub(super) const HANDLE_BY_REFERENCE_SIGNATURE: u8 = 0x02;
 const HANDLE_FUNCTION_POINTER_SIGNATURE: u8 = 0x25;
 const HANDLE_METHOD_SIGNATURE: u8 = 0x2b;
-const HANDLE_METHOD_TYPE_VARIABLE_SIGNATURE: u8 = 0x2c;
-const HANDLE_NAMESPACE_DEFINITION: u8 = 0x2f;
-const HANDLE_NAMESPACE_REFERENCE: u8 = 0x30;
-const HANDLE_POINTER_SIGNATURE: u8 = 0x32;
-const HANDLE_SZ_ARRAY_SIGNATURE: u8 = 0x37;
-const HANDLE_SCOPE_DEFINITION: u8 = 0x38;
-const HANDLE_SCOPE_REFERENCE: u8 = 0x39;
-const HANDLE_MODIFIED_TYPE: u8 = 0x2d;
-const HANDLE_TYPE_DEFINITION: u8 = 0x3a;
-const HANDLE_TYPE_INSTANTIATION_SIGNATURE: u8 = 0x3c;
-const HANDLE_TYPE_REFERENCE: u8 = 0x3d;
-const HANDLE_TYPE_SPECIFICATION: u8 = 0x3e;
-const HANDLE_TYPE_VARIABLE_SIGNATURE: u8 = 0x3f;
+pub(super) const HANDLE_METHOD_TYPE_VARIABLE_SIGNATURE: u8 = 0x2c;
+pub(super) const HANDLE_NAMESPACE_DEFINITION: u8 = 0x2f;
+pub(super) const HANDLE_NAMESPACE_REFERENCE: u8 = 0x30;
+pub(super) const HANDLE_POINTER_SIGNATURE: u8 = 0x32;
+pub(super) const HANDLE_SZ_ARRAY_SIGNATURE: u8 = 0x37;
+pub(super) const HANDLE_SCOPE_DEFINITION: u8 = 0x38;
+pub(super) const HANDLE_SCOPE_REFERENCE: u8 = 0x39;
+pub(super) const HANDLE_MODIFIED_TYPE: u8 = 0x2d;
+pub(super) const HANDLE_TYPE_DEFINITION: u8 = 0x3a;
+pub(super) const HANDLE_TYPE_INSTANTIATION_SIGNATURE: u8 = 0x3c;
+pub(super) const HANDLE_TYPE_REFERENCE: u8 = 0x3d;
+pub(super) const HANDLE_TYPE_SPECIFICATION: u8 = 0x3e;
+pub(super) const HANDLE_TYPE_VARIABLE_SIGNATURE: u8 = 0x3f;
 const MAX_METADATA_COLLECTION: usize = 65_536;
 const MAX_METADATA_RECORDS: usize = 65_536;
 const MAX_METADATA_STRING_RECORDS: usize = 131_072;
@@ -56,7 +56,7 @@ struct MetadataProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SerializedHandleEncoding {
+pub(super) enum SerializedHandleEncoding {
     Kind8Offset24,
     Kind7Offset25,
 }
@@ -68,6 +68,22 @@ impl SerializedHandleEncoding {
             Self::Kind7Offset25 => (value & 0x7f, value >> 7),
         }
     }
+
+    pub(super) const fn split_token(self, token: u32) -> (u32, u32) {
+        match self {
+            Self::Kind8Offset24 => (token >> 24, token & 0x00ff_ffff),
+            Self::Kind7Offset25 => (token >> 25, token & 0x01ff_ffff),
+        }
+    }
+}
+
+pub(super) fn handle_encoding_for(header: &ReadyToRunHeader) -> Option<SerializedHandleEncoding> {
+    METADATA_PROFILES
+        .iter()
+        .find(|profile: &&MetadataProfile| {
+            profile.matches(header.major_version, header.minor_version)
+        })
+        .map(|profile: &MetadataProfile| profile.handle_encoding)
 }
 
 impl MetadataProfile {
@@ -184,6 +200,8 @@ pub struct AotMethod {
     pub signature: Option<AotMethodSignature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entrypoint_rva: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instantiation_entrypoint_rvas: Vec<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_range: Option<AotCodeRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -346,18 +364,18 @@ pub struct AotTypeSignature {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RawHandle {
-    kind: u8,
-    offset: u32,
+pub(super) struct RawHandle {
+    pub(super) kind: u8,
+    pub(super) offset: u32,
 }
 
-struct MetadataBudget {
+pub(super) struct MetadataBudget {
     values: usize,
     output_bytes: usize,
 }
 
 impl MetadataBudget {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             values: 0,
             output_bytes: 0,
@@ -395,14 +413,14 @@ impl MetadataBudget {
     }
 }
 
-struct MetadataCursor<'a> {
+pub(super) struct MetadataCursor<'a> {
     bytes: &'a [u8],
     at: usize,
     handle_encoding: SerializedHandleEncoding,
 }
 
 impl<'a> MetadataCursor<'a> {
-    fn new(
+    pub(super) fn new(
         bytes: &'a [u8],
         offset: u32,
         handle_encoding: SerializedHandleEncoding,
@@ -423,7 +441,7 @@ impl<'a> MetadataCursor<'a> {
         })
     }
 
-    fn unsigned(&mut self) -> crate::error::Result<u32> {
+    pub(super) fn unsigned(&mut self) -> crate::error::Result<u32> {
         let start: usize = self.at;
         let (value, width): (u32, usize) = decode_metadata_unsigned(self.bytes, self.at)
             .ok_or_else(|| invalid_metadata(start, "metadata unsigned value is malformed"))?;
@@ -434,11 +452,11 @@ impl<'a> MetadataCursor<'a> {
         Ok(value)
     }
 
-    fn typed_handle(&mut self) -> crate::error::Result<u32> {
+    pub(super) fn typed_handle(&mut self) -> crate::error::Result<u32> {
         self.unsigned()
     }
 
-    fn signed(&mut self) -> crate::error::Result<i32> {
+    pub(super) fn signed(&mut self) -> crate::error::Result<i32> {
         let start: usize = self.at;
         let first: u8 = *self
             .bytes
@@ -530,7 +548,7 @@ impl<'a> MetadataCursor<'a> {
         Ok(value)
     }
 
-    fn raw_handle(&mut self) -> crate::error::Result<RawHandle> {
+    pub(super) fn raw_handle(&mut self) -> crate::error::Result<RawHandle> {
         let start: usize = self.at;
         let value: u32 = self.unsigned()?;
         let (kind_value, offset): (u32, u32) = self.handle_encoding.decode(value);
@@ -601,7 +619,7 @@ impl<'a> MetadataCursor<'a> {
         Ok(())
     }
 
-    fn raw_collection(
+    pub(super) fn raw_collection(
         &mut self,
         budget: &mut MetadataBudget,
     ) -> crate::error::Result<Vec<RawHandle>> {
@@ -1235,7 +1253,7 @@ impl MetadataStrings {
     }
 }
 
-fn invalid_metadata(at: usize, reason: &'static str) -> crate::error::Error {
+pub(super) fn invalid_metadata(at: usize, reason: &'static str) -> crate::error::Error {
     let offset: u32 = u32::try_from(at).map_or(u32::MAX, |value: u32| value);
     crate::error::Error::InvalidAotMetadata { offset, reason }
 }
@@ -2407,6 +2425,7 @@ fn parse_metadata_records(
             name: method.name,
             signature: Some(public_method_signature(signature)?),
             entrypoint_rva: None,
+            instantiation_entrypoint_rvas: Vec::new(),
             code_range: None,
             body: None,
         });
@@ -2414,7 +2433,9 @@ fn parse_metadata_records(
     Ok((attributed_types, attributed_methods, layouts))
 }
 
-fn metadata_section(header: &ReadyToRunHeader) -> crate::error::Result<Option<&AotSection>> {
+pub(super) fn metadata_section(
+    header: &ReadyToRunHeader,
+) -> crate::error::Result<Option<&AotSection>> {
     let mut found: Option<&AotSection> = None;
     for section in &header.sections {
         if section.id != METADATA_SECTION_ID {
@@ -2431,7 +2452,7 @@ fn metadata_section(header: &ReadyToRunHeader) -> crate::error::Result<Option<&A
     Ok(found)
 }
 
-fn metadata_section_bytes<'a>(
+pub(super) fn metadata_section_bytes<'a>(
     image: &'a [u8],
     section: &AotSection,
 ) -> crate::error::Result<&'a [u8]> {
@@ -2483,8 +2504,17 @@ pub fn recover_metadata_attribution(
     image: &[u8],
     header: &ReadyToRunHeader,
 ) -> crate::error::Result<AotMetadataAttribution> {
+    recover_metadata_with_invoke_refusals(image, header).map(
+        |(attribution, _refusals): (AotMetadataAttribution, Vec<AotInvokeMapRefusal>)| attribution,
+    )
+}
+
+pub(super) fn recover_metadata_with_invoke_refusals(
+    image: &[u8],
+    header: &ReadyToRunHeader,
+) -> crate::error::Result<(AotMetadataAttribution, Vec<AotInvokeMapRefusal>)> {
     let Some(section): Option<&AotSection> = metadata_section(header)? else {
-        return Ok(AotMetadataAttribution::default());
+        return Ok((AotMetadataAttribution::default(), Vec::new()));
     };
     let profile: Option<MetadataProfile> =
         METADATA_PROFILES
@@ -2494,27 +2524,34 @@ pub fn recover_metadata_attribution(
                 profile.matches(header.major_version, header.minor_version)
             });
     let Some(profile): Option<MetadataProfile> = profile else {
-        return Ok(AotMetadataAttribution {
-            status: AotMetadataStatus::UnsupportedVersion {
-                major_version: header.major_version,
-                minor_version: header.minor_version,
+        return Ok((
+            AotMetadataAttribution {
+                status: AotMetadataStatus::UnsupportedVersion {
+                    major_version: header.major_version,
+                    minor_version: header.minor_version,
+                },
+                types: Vec::new(),
+                methods: Vec::new(),
             },
-            types: Vec::new(),
-            methods: Vec::new(),
-        });
+            Vec::new(),
+        ));
     };
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
     let (types, mut methods, layouts): (Vec<AotType>, Vec<AotMethod>, Vec<AotTypeLayout>) =
         parse_metadata_records(bytes, profile)?;
-    attach_invoke_map_entrypoints(image, header, &mut methods)?;
+    let refusals: Vec<AotInvokeMapRefusal> =
+        attach_invoke_map_entrypoints(image, header, &mut methods)?;
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
         attach_method_bodies(image, &pe, &types, &layouts, &mut methods)?;
     }
-    Ok(AotMetadataAttribution {
-        status: AotMetadataStatus::Recovered,
-        types,
-        methods,
-    })
+    Ok((
+        AotMetadataAttribution {
+            status: AotMetadataStatus::Recovered,
+            types,
+            methods,
+        },
+        refusals,
+    ))
 }
 
 #[cfg(test)]

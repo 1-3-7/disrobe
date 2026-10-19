@@ -137,6 +137,19 @@ fn read_ranges(image: &[u8], pe: &PeImage) -> crate::error::Result<Option<Vec<Ao
     Ok(Some(ranges))
 }
 
+pub(super) fn runtime_function_ranges(
+    image: &[u8],
+) -> crate::error::Result<Option<Vec<AotCodeRange>>> {
+    if !image.starts_with(b"MZ") {
+        return Ok(None);
+    }
+    let pe: PeImage = crate::pe::parse(image)?;
+    if pe.bitness != PeBitness::Pe32Plus || pe.machine != AMD64_MACHINE {
+        return Ok(None);
+    }
+    read_ranges(image, &pe)
+}
+
 pub(super) fn attach_method_boundaries(
     image: &[u8],
     methods: &mut [AotMethod],

@@ -145,6 +145,8 @@ mod native_aot_chain;
 mod native_aot_invoke_map;
 #[path = "../native_aot_managed_abi.rs"]
 mod native_aot_managed_abi;
+#[path = "../native_aot_maps_net10.rs"]
+mod native_aot_maps_net10;
 #[path = "../native_aot_method_boundaries.rs"]
 mod native_aot_method_boundaries;
 #[path = "../native_aot_names_coverage.rs"]

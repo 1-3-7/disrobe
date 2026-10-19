@@ -372,6 +372,7 @@ mod tests {
                 name: "Add".to_owned(),
                 signature: None,
                 entrypoint_rva: Some(range.start_rva),
+                instantiation_entrypoint_rvas: Vec::new(),
                 code_range: Some(range),
                 body: None,
             })
