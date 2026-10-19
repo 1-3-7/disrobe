@@ -45,6 +45,7 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "detect",
     "diff",
     "dotnet analyze",
+    "dotnet compare",
     "dotnet decompile",
     "dotnet deobfuscate",
     "dotnet interop",

@@ -41,6 +41,8 @@ pub(crate) mod detect;
 pub(crate) mod doctor;
 #[cfg(feature = "dotnet")]
 pub(crate) mod dotnet;
+#[cfg(feature = "dotnet")]
+pub(crate) mod dotnet_compare;
 pub(crate) mod electron;
 #[cfg(any(
     feature = "as3",

@@ -513,6 +513,17 @@ pub(crate) enum DotnetCmd {
         json: bool,
     },
     #[command(
+        about = "compare two builds of a .NET assembly: added, removed and changed types, members, P/Invoke imports, assembly references, resources and custom attributes, method bodies split into changed IL and renumbered tokens, and identity changes, each citing its metadata row"
+    )]
+    Compare {
+        #[arg(help = "the earlier build (.dll or .exe)")]
+        old: PathBuf,
+        #[arg(help = "the later build (.dll or .exe)")]
+        new: PathBuf,
+        #[arg(long, help = "print the comparison as JSON")]
+        json: bool,
+    },
+    #[command(
         name = "native-aot",
         about = "recover NativeAOT names, types, method boundaries and managed signatures from an ahead-of-time compiled .NET image (PE, ELF or Mach-O)"
     )]
@@ -618,6 +629,7 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
         } => deobfuscate(input, out, protector),
         DotnetCmd::Analyze { input, out } => analyze(input, out),
         DotnetCmd::Interop { input, json } => interop(&input, json),
+        DotnetCmd::Compare { old, new, json } => super::dotnet_compare::run(&old, &new, json),
         DotnetCmd::NativeAot { input, out, json } => native_aot(input, out, json),
         DotnetCmd::Backends => backends(),
     }
