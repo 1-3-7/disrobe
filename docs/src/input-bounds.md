@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2578 bounds (count 244, other 1219, output 72, recursion 251, size 592, work 200).
+2579 bounds (count 244, other 1220, output 72, recursion 251, size 592, work 200).
 
-Exceeded: error 1060, recorded 233, panic 0, delegated 54, silent 1172, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1172, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1099,6 +1099,7 @@ Exceeded: error 1060, recorded 233, panic 0, delegated 54, silent 1172, unclassi
 | `disrobe-pass-jvm` | `MAX_CLASSES_FINGERPRINTED` | other | silent: `.take()` in `identify_jar`; `.take()` in `minified_class_names` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/android_identify.rs` |
 | `disrobe-pass-jvm` | `MAX_IDENTITY_HITS` | other | recorded: flag `truncated` | `usize` | `4_096` | `crates/disrobe-pass-jvm/src/android_identify.rs` |
 | `disrobe-pass-jvm` | `MAX_MAP_ENTRIES` | count | silent: `.min()` clamp in `data_item_order` | `usize` | `64` | `crates/disrobe-pass-jvm/src/android_identify.rs` |
+| `disrobe-pass-jvm` | `MAX_CONST4_REGISTER` | other | error: untyped error | `u16` | `15` | `crates/disrobe-pass-jvm/src/android_neutralize.rs` |
 | `disrobe-pass-jvm` | `V1_SIGNATURE_ENTRY_BYTES_CAP` | size | error: `Error::Zip` (DR-JVM-0011) | `u64` | `16 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/apk_sig.rs` |
 | `disrobe-pass-jvm` | `V1_SIGNATURE_FILE_COUNT_CAP` | count | error: `Error::Zip` (DR-JVM-0011) | `usize` | `256` | `crates/disrobe-pass-jvm/src/apk_sig.rs` |
 | `disrobe-pass-jvm` | `V1_SIGNATURE_PREALLOC_BYTES_CAP` | size | allocation: `with_capacity` in `read_v1_signature_file` | `u64` | `1024 * 1024` | `crates/disrobe-pass-jvm/src/apk_sig.rs` |
