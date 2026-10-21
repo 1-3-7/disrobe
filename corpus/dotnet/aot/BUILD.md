@@ -70,3 +70,41 @@ The excerpt has 4,482 lines. The full map is 3,207,969 bytes with sha256 `3da765
 | `aot_maps_net10_x86_64.link-map-managed.txt.gz` | 67,002 | `0c1ec71b7342320d18234f04215be3b5ca7a56cdbed787498bbaede7d723c610` |
 
 `gauge_curve.bin` holds bytes `(37 * i + 11) mod 256` for `i` from 0 to 511.
+
+# NativeAOT constructor initializers
+
+`aot_ctor_net10_x86_64/` holds a second C# program written for this repository, the .NET 10 NativeAOT executable published from it and the managed excerpt of its linker map. `crates/disrobe-pass-dotnet/tests/native_aot_constructor_fixture.rs` grades constructor initializer recovery against the constants the source assigns. The executable is never run.
+
+The program is shaped so that the compiler produces every store form a constant-assigning constructor can take:
+
+- `Berth` declares 49 instance fields of every primitive width (bool, byte, sbyte, short, ushort, char, int, uint, long, ulong, float, double, an int enum and a string) and its parameterless constructor assigns each one a literal. The runtime lays the fields out by size, not declaration order, so the object spans 0xd0 bytes and the 1- and 2-byte fields sit past offset 0x80, which forces 32-bit displacements.
+- `Buoy` declares three fields inside the 8-bit displacement range.
+- `Main` names both types in `typeof(T).GetFields` with `BindingFlags.NonPublic | BindingFlags.Instance` and reads each field through `GetValue`, so ILCompiler keeps the field metadata and emits a FieldAccessMap entry for every field, and enumerates both constructors through `GetConstructors`, so each `.ctor` keeps its invoke-map entry and entrypoint; without those calls the names, offsets and constructor records are trimmed.
+- Both constructors carry `MethodImplOptions.NoInlining`, so each keeps a body the linker map bounds.
+
+## Compiler output the tests rely on
+
+Observed with llvm-objdump 19.1.7 on the committed image (`Berth..ctor` at RVA 0x661e0, `Buoy..ctor` at RVA 0x66530):
+
+- Immediate stores through `rcx`: `c6 41|81 disp imm8`, `66 c7 41|81 disp imm16`, `c7 41|81 disp imm32` and `48 c7 41|81 disp imm32` (sign-extended to 64 bits), with an 8-bit displacement below 0x80 and a 32-bit one above.
+- Constants that do not fit a sign-extended 32-bit immediate (`0x1122334455667788`, `0x100000000`, the double 51.4779) are loaded with `48 b8 imm64` into `rax` and stored by the next instruction `48 89 41|81 disp`.
+- Adjacent fields are coalesced: `_lit = true; _lane = 200` becomes one `mov word ptr [rcx+0xd6], 0xc801`, `_light0`/`_light1` one word store, and each pair of consecutive `int` fields one `movabs rax, imm64; mov qword ptr [rcx+disp], rax`. The reader splits such a store across the FieldAccessMap offsets it covers.
+- The float 182.5 is stored as the dword immediate `0x43368000`; the string `"north pier"` is a `lea rax, [rip+disp]` of a frozen string object followed by a pointer store, which the initializer reader does not resolve (listed by name as the one reference field in the test).
+
+## Toolchain and build
+
+Same SDK, ILCompiler packages and MSVC linker as `aot_maps_net10_x86_64` above (.NET SDK 10.0.100, `Microsoft.DotNet.ILCompiler` and `runtime.win-x64.Microsoft.DotNet.ILCompiler` 10.0.0 with the package sha512 values listed there, MSVC 14.44.35207). Copy `Program.cs` and the project file into an empty directory, rename `aot_ctor_net10_x86_64.csproj.txt` to `aot_ctor_net10_x86_64.csproj`, and run:
+
+```sh
+dotnet publish aot_ctor_net10_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish --disable-build-servers -p:UseSharedCompilation=false -nodeReuse:false
+```
+
+`publish/aot_ctor_net10_x86_64.exe` is the committed executable; the image carries zero occurrences of `C:\` in ASCII and in UTF-16LE. The managed excerpt of `obj/Release/net10.0/win-x64/native/aot_ctor_net10_x86_64.link.map` is produced with the same `awk` and `gzip -9 -n` commands as above (object name `aot_ctor_net10_x86_64.obj`) and has 3,308 lines. The full map is 2,602,843 bytes with sha256 `921e7c6a088678ffa6e1d6b8b85f98cf3687c1670ad69912c4da0b7979ed29f1`; the ILCompiler map (`aot_ctor_net10_x86_64.map.xml`, not committed) has sha256 `95c216eacf5b0437bd186aa89c8bfdf56b46cab6ff5181bce6680ac76d8d1ddd`.
+
+| File | Bytes | sha256 |
+| --- | --- | --- |
+| `Program.cs` | 6,740 | `baebfa30f539429c58d8d45e04fb6c01b21187cc61fbfbb5ad4136bb6503d333` |
+| `aot_ctor_net10_x86_64.csproj.txt` | 785 | `38e0db2e9d9218aadbb6751d68be1e0c3a4e76a92363c7bf90ea8ab885fc6e82` |
+| `aot_ctor_net10_x86_64.exe` | 1,575,424 | `fd1da3fe33adfc9bc680202b6eab4601cb4ab272ae4453f5769d5fd5a90389a1` |
+| `aot_ctor_net10_x86_64.link-map-managed.txt` (decompressed) | | `c91b2d6aa4926bd3da2564cbfb196b1de899719945bf17df2a3f823439483253` |
+| `aot_ctor_net10_x86_64.link-map-managed.txt.gz` | 50,980 | `d83e1e7e9216d7dfc25f6952c85898223eb202294d2baec703e09d9a2ae6d4a2` |
