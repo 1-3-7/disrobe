@@ -1,0 +1,30 @@
+Binary APK
+Package name=com.disrobe.resfixture id=7f
+  type bool id=01 entryCount=1
+    resource 0x7f010000 bool/is_production
+      () true
+  type color id=02 entryCount=2
+    resource 0x7f020000 color/brand_accent
+      () #ffcc0000
+    resource 0x7f020001 color/brand_primary
+      () #ff336699
+  type dimen id=03 entryCount=2
+    resource 0x7f030000 dimen/padding_default
+      () 16.000000dp
+    resource 0x7f030001 dimen/text_size_title
+      () 22.000000sp
+  type id id=04 entryCount=1
+    resource 0x7f040000 id/title
+      () (id)
+  type integer id=05 entryCount=1
+    resource 0x7f050000 integer/max_retries
+      () 5
+  type layout id=06 entryCount=1
+    resource 0x7f060000 layout/activity_main
+      () (file) res/layout/activity_main.xml type=XML
+      (v1) (file) res/layout-v1/activity_main.xml type=XML
+  type string id=07 entryCount=2
+    resource 0x7f070000 string/app_name
+      () "DisrobeRes"
+    resource 0x7f070001 string/greeting
+      () "Hello Disrobe"

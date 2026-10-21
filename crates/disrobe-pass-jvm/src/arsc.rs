@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::axml::{ResourceIdResolver, format_res_value};
+use crate::axml::{ResourceIdResolver, TYPE_STRING, format_res_value};
 use crate::error::{Error, Result};
 
 pub const RES_NULL_TYPE: u16 = 0x0000;
@@ -1122,11 +1122,40 @@ pub fn parse_arsc(bytes: &[u8]) -> Result<ResourceTable> {
             })?;
     }
 
-    Ok(ResourceTable {
+    let mut table: ResourceTable = ResourceTable {
         package_count,
         global_strings,
         packages,
-    })
+    };
+    resolve_string_values(&mut table);
+    Ok(table)
+}
+
+fn resolve_string_values(table: &mut ResourceTable) {
+    let strings: &[String] = &table.global_strings.strings;
+    let resolve = |value: &mut ResValue| {
+        if value.data_type == TYPE_STRING
+            && let Some(text) = usize::try_from(value.data)
+                .ok()
+                .and_then(|index: usize| strings.get(index))
+        {
+            value.formatted.clone_from(text);
+        }
+    };
+    for package in &mut table.packages {
+        for type_config in &mut package.types {
+            for entry in &mut type_config.entries {
+                match &mut entry.value {
+                    ResEntryValue::Simple(value) => resolve(value),
+                    ResEntryValue::Bag { items, .. } => {
+                        for item in items {
+                            resolve(&mut item.value);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

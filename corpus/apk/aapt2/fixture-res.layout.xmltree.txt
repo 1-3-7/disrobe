@@ -1,0 +1,3 @@
+N: android=http://schemas.android.com/apk/res/android (line=2)
+  E: LinearLayout (line=2)
+      E: TextView (line=7)

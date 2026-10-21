@@ -1,4 +1,5 @@
 mod aab_extract;
+mod aapt2_dump_parity;
 mod apk_extract;
 mod apk_resources_oracle;
 mod apk_v4_idsig;

@@ -46,3 +46,16 @@ path = "fixture-res.apk"
 schemes = []
 toolchain = "aapt2 2.19 (build-tools 34) compile + link against android-34 framework"
 note = "real aapt2-linked APK (package com.disrobe.resfixture, id 0x7f) carrying a binary res/layout/activity_main.xml (LinearLayout + TextView with @dimen/@string/@color/@id references, match_parent/wrap_content/vertical enum values) plus an ARSC values table (string app_name=DisrobeRes, greeting=Hello Disrobe; color brand_primary=#ff336699, brand_accent=#ffcc0000; dimen padding_default=16dp, text_size_title=22sp; bool is_production=true; integer max_retries=5). ground truth for the disrobe-pass-mobile res/ decode oracle is the pre-compile source res/ written before aapt2 ran, NOT disrobe output. layout-v1 variant holds the linked attributes."
+
+[[reference]]
+path = "aapt2/"
+tool = "aapt2 from Android build-tools 36.1 (android-16 directory), captured 2026-10-21"
+files = [
+    "fixture-rich.manifest.xmltree.txt (aapt2 dump xmltree --file AndroidManifest.xml fixture-rich.apk)",
+    "fixture-rich.resources.txt (aapt2 dump resources fixture-rich.apk)",
+    "fixture-rich.badging.txt (aapt2 dump badging fixture-rich.apk)",
+    "fixture-res.manifest.xmltree.txt, fixture-res.resources.txt, fixture-res.badging.txt (the same three dumps of fixture-res.apk)",
+    "fixture-res.layout.xmltree.txt (aapt2 dump xmltree --file res/layout/activity_main.xml fixture-res.apk; aapt2 prints no attributes for this hand-authored layout, so only the element names are a reference)",
+]
+note = "Independent references for the binary XML and resources.arsc decoders: tests/formats/aapt2_dump_parity.rs requires the decoded element tree, typed attribute values, resource ids, names and per-configuration values to equal these dumps, and turns red when one value in a dump is changed."
+

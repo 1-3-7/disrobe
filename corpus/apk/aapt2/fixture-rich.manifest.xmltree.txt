@@ -1,0 +1,25 @@
+N: android=http://schemas.android.com/apk/res/android (line=2)
+  E: manifest (line=2)
+    A: http://schemas.android.com/apk/res/android:versionCode(0x0101021b)=7
+    A: http://schemas.android.com/apk/res/android:versionName(0x0101021c)="2.5" (Raw: "2.5")
+    A: package="com.disrobe.rich" (Raw: "com.disrobe.rich")
+      E: uses-sdk (line=6)
+        A: http://schemas.android.com/apk/res/android:minSdkVersion(0x0101020c)=24
+        A: http://schemas.android.com/apk/res/android:targetSdkVersion(0x01010270)=34
+      E: uses-permission (line=7)
+        A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.permission.INTERNET" (Raw: "android.permission.INTERNET")
+      E: application (line=8)
+        A: http://schemas.android.com/apk/res/android:label(0x01010001)=@0x7f030000
+        A: http://schemas.android.com/apk/res/android:debuggable(0x0101000f)=true
+        A: http://schemas.android.com/apk/res/android:allowBackup(0x01010280)=false
+          E: activity (line=9)
+            A: http://schemas.android.com/apk/res/android:name(0x01010003)="com.disrobe.rich.MainActivity" (Raw: "com.disrobe.rich.MainActivity")
+            A: http://schemas.android.com/apk/res/android:exported(0x01010010)=true
+              E: intent-filter (line=10)
+                  E: action (line=11)
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.action.MAIN" (Raw: "android.intent.action.MAIN")
+                  E: category (line=12)
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.LAUNCHER" (Raw: "android.intent.category.LAUNCHER")
+          E: service (line=15)
+            A: http://schemas.android.com/apk/res/android:name(0x01010003)=".SyncService" (Raw: ".SyncService")
+            A: http://schemas.android.com/apk/res/android:exported(0x01010010)=false

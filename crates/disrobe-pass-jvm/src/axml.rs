@@ -48,14 +48,14 @@ const COMPLEX_RADIX_SHIFT: u32 = 4;
 const COMPLEX_MANTISSA_SHIFT: u32 = 8;
 const COMPLEX_MANTISSA_MASK: u32 = 0x00FF_FFFF;
 
-const DIMENSION_UNITS: [&str; 8] = ["px", "dip", "sp", "pt", "in", "mm", "", ""];
+const DIMENSION_UNITS: [&str; 8] = ["px", "dp", "sp", "pt", "in", "mm", "", ""];
 const FRACTION_UNITS: [&str; 2] = ["%", "%p"];
 
 const RADIX_MULTIPLIERS: [f64; 4] = [
-    1.0 / (1u64 << 23) as f64,
-    1.0 / (1u64 << 15) as f64,
-    1.0 / (1u64 << 7) as f64,
     1.0,
+    1.0 / (1u64 << 7) as f64,
+    1.0 / (1u64 << 15) as f64,
+    1.0 / (1u64 << 23) as f64,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -834,8 +834,13 @@ mod tests {
 
     #[test]
     fn decodes_dimension() {
-        let data: u32 = (16u32 << COMPLEX_MANTISSA_SHIFT) | (3u32 << COMPLEX_RADIX_SHIFT) | 1u32;
-        assert_eq!(format_res_value(TYPE_DIMENSION, data, None), "16.0dip");
+        let data: u32 = (16u32 << COMPLEX_MANTISSA_SHIFT) | 1u32;
+        assert_eq!(format_res_value(TYPE_DIMENSION, data, None), "16.0dp");
+        let half: u32 =
+            ((1u32 << 22) << COMPLEX_MANTISSA_SHIFT) | (3u32 << COMPLEX_RADIX_SHIFT) | 2u32;
+        assert_eq!(format_res_value(TYPE_DIMENSION, half, None), "0.5sp");
+        let quarter: u32 = (32u32 << COMPLEX_MANTISSA_SHIFT) | (1u32 << COMPLEX_RADIX_SHIFT);
+        assert_eq!(format_res_value(TYPE_DIMENSION, quarter, None), "0.25px");
     }
 
     #[test]

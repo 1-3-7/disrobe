@@ -108,9 +108,10 @@ fn resource_table_maps_ids_to_names() {
     match &e.value {
         disrobe_pass_jvm::ResEntryValue::Simple(v) => {
             assert_eq!(v.data_type, 0x03, "app_name is a STRING value");
+            assert_eq!(v.data, 0, "string value points at global pool index 0");
             assert_eq!(
-                v.formatted, "0",
-                "string value points at global pool index 0"
+                v.formatted, "DisrobeFixture",
+                "the formatted value resolves the global pool entry"
             );
         }
         disrobe_pass_jvm::ResEntryValue::Bag { .. } => panic!("app_name is not a bag"),
@@ -249,7 +250,7 @@ fn authored_axml_with_typed_values() -> Vec<u8> {
     let attrs: [(u32, u32, u8, u32); 3] = [
         (3, u32::MAX, 0x12, 1),
         (4, u32::MAX, 0x01, 0x7f01_0000),
-        (5, u32::MAX, 0x05, (16u32 << 8) | (3u32 << 4) | 1u32),
+        (5, u32::MAX, 0x05, (16u32 << 8) | 1u32),
     ];
     let mut start_elem: Vec<u8> = Vec::new();
     let elem_size: u32 = 16 + 20 + (attrs.len() as u32) * 20;
@@ -329,8 +330,8 @@ fn authored_axml_decodes_every_value_type() {
         "REFERENCE with no resolver -> @0x...; got:\n{xml}"
     );
     assert!(
-        xml.contains("android:size=\"16.0dip\""),
-        "DIMENSION mantissa=16 radix=3 unit=dip -> 16.0dip; got:\n{xml}"
+        xml.contains("android:size=\"16.0dp\""),
+        "DIMENSION mantissa=16 radix=0 unit=dp -> 16.0dp, as aapt2 prints it; got:\n{xml}"
     );
     assert!(xml.contains("<widget") && xml.contains("</widget>"));
 }

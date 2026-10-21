@@ -1,0 +1,13 @@
+Binary APK
+Package name=com.disrobe.rich id=7f
+  type bool id=01 entryCount=1
+    resource 0x7f010000 bool/is_debug
+      () true
+  type integer id=02 entryCount=1
+    resource 0x7f020000 integer/max_count
+      () 42
+  type string id=03 entryCount=2
+    resource 0x7f030000 string/app_name
+      () "DisrobeRich"
+    resource 0x7f030001 string/extra
+      () "Extra Value"

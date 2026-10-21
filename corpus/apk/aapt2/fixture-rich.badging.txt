@@ -1,0 +1,17 @@
+package: name='com.disrobe.rich' versionCode='7' versionName='2.5'
+minSdkVersion:'24'
+targetSdkVersion:'34'
+uses-permission: name='android.permission.INTERNET'
+application-label:'DisrobeRich'
+application: label='DisrobeRich' icon=''
+application-debuggable
+launchable-activity: name='com.disrobe.rich.MainActivity'  label='' icon=''
+feature-group: label=''
+  uses-feature: name='android.hardware.faketouch'
+  uses-implied-feature: name='android.hardware.faketouch' reason='default feature for all apps'
+main
+other-services
+supports-screens: 'small' 'normal' 'large' 'xlarge'
+supports-any-density: 'true'
+locales: '--_--'
+densities: '160'
