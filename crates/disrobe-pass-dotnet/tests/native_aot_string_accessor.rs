@@ -245,3 +245,19 @@ fn a_corrupted_table_byte_changes_exactly_one_decoded_literal() {
         "only the literal whose first byte was corrupted changes or is refused: {changed:?} {refused:?}"
     );
 }
+
+#[test]
+fn the_generic_native_recovery_cannot_serve_this_accessor_which_is_why_the_aot_path_exists() {
+    let generic: disrobe_pass_native::IndexedStringRecovery =
+        disrobe_pass_native::recover_indexed_strings(image()).expect("generic recovery runs");
+    let accessor: &AotStringAccessor = the_accessor(&report().string_accessors);
+    let accessor_va: u64 = 0x1_4000_0000 + u64::from(accessor.accessor_rva);
+    assert!(
+        generic
+            .annotations
+            .iter()
+            .all(|annotation| annotation.accessor != accessor_va),
+        "the generic path has no allocation host and a higher index floor: {:?}",
+        generic.annotations
+    );
+}

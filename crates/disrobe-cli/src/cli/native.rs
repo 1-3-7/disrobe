@@ -3608,6 +3608,43 @@ fn annotate_indexed_strings(
         .collect())
 }
 
+#[cfg(feature = "dotnet")]
+fn annotate_native_aot_strings(
+    bytes: &[u8],
+    image: &native_scope::Image<'_>,
+    instructions: &mut [native_scope::ListedInstruction],
+) {
+    if disrobe_pass_dotnet::aot::locate_ready_to_run_header(bytes).is_none() {
+        return;
+    }
+    let report: disrobe_pass_dotnet::aot::AotReport = disrobe_pass_dotnet::aot::detect(bytes);
+    let mut by_site: std::collections::BTreeMap<
+        u64,
+        Vec<disrobe_pass_native::IndexedStringAnnotation>,
+    > = std::collections::BTreeMap::new();
+    for accessor in &report.string_accessors {
+        let accessor_va: u64 = image.va(u64::from(accessor.accessor_rva));
+        for literal in &accessor.literals {
+            for call_rva in &literal.call_rvas {
+                by_site
+                    .entry(image.va(u64::from(*call_rva)))
+                    .or_default()
+                    .push(disrobe_pass_native::IndexedStringAnnotation {
+                        site: image.va(u64::from(*call_rva)),
+                        accessor: accessor_va,
+                        index: literal.index,
+                        literal: literal.value.clone(),
+                    });
+            }
+        }
+    }
+    for instruction in instructions {
+        if let Some(mut found) = by_site.remove(&image.va(instruction.rva)) {
+            instruction.indexed_strings.append(&mut found);
+        }
+    }
+}
+
 pub(crate) fn disasm_scope(
     input: PathBuf,
     request: native_scope::ScopeRequest,
@@ -3621,6 +3658,8 @@ pub(crate) fn disasm_scope(
         native_scope::list_scope(&image, &scope)?;
     let indexed_string_refusals: Vec<disrobe_pass_native::IndexedStringRefusal> =
         annotate_indexed_strings(&bytes, &image, &mut instructions)?;
+    #[cfg(feature = "dotnet")]
+    annotate_native_aot_strings(&bytes, &image, &mut instructions);
     let report: ScopedDisassembly = ScopedDisassembly {
         schema: "disrobe.native.scoped-disassembly/v1",
         input: input.display().to_string(),
