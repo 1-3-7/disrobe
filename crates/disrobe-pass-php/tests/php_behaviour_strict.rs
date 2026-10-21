@@ -10,26 +10,16 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PHP_OPCACHE, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, require_php,
+    unmeasured,
+};
 use disrobe_core::chain::{
     DetectContext, DetectVerdict, Detector, FAMILY_INTERPRETER_BYTECODE, Pass,
 };
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
 use disrobe_pass_php::{Decompilation, RecoveryReport, RecoveryStage, recover_php};
-use php_toolchain::{
-    PHP_OPCACHE, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, require_php,
-    unmeasured,
-};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

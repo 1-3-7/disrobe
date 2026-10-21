@@ -12,23 +12,13 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{PhpRuntime, require_php};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Decompilation, OPARRAY_MAGIC, OPARRAY_VERSION, RecoveryReport, RecoveryStage, recover_php,
 };
-use php_toolchain::{PhpRuntime, require_php};
 
 fn build_oparray_echo(literal: &str) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::new();

@@ -12,18 +12,10 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PhpRun, PhpRuntime, require_php, residual_decode_primitives, with_open_tag,
+};
 use disrobe_pass_php::{PeelOptions, PeelReport, peel_eval_chain};
-use php_toolchain::{PhpRun, PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoaderRuns {

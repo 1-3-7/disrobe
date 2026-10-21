@@ -9,20 +9,10 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
-use php_toolchain::{PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
 
 const MARKER: &str = "DISROBE-PHP-LOOP-4C71";
 
@@ -622,7 +612,7 @@ fn all_empty_destructuring_targets_are_refused() {
             "<?php $parts = [base64_decode('{encoded}')]; $body = ''; for ($i = 0; $i < 1; $i++) {{ {target} = $parts; $body = $parts[0]; }} ev\x61l($body);"
         )
         .into_bytes();
-        let reference: php_toolchain::PhpRun =
+        let reference: crate::php_toolchain::PhpRun =
             php.run_reporting_errors(&format!("all-empty-{label}-target"), &blob);
         assert!(
             !reference.exited_clean && reference.stderr.contains("Cannot use empty list"),
@@ -734,7 +724,8 @@ fn invalid_destructuring_grammar_is_proven_by_php_and_refused() {
         ),
     ];
     for (label, expected_error, source) in cases {
-        let reference: php_toolchain::PhpRun = php.run_reporting_errors(label, source.as_bytes());
+        let reference: crate::php_toolchain::PhpRun =
+            php.run_reporting_errors(label, source.as_bytes());
         assert!(
             !reference.exited_clean && reference.stderr.contains(expected_error),
             "PHP must reject {label} before refusal is graded; got stdout {:?}, stderr {:?}",

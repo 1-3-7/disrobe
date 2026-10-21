@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{BcgKind, read_bcg_header};
 
 #[test]
 fn reads_tiny_bcg_header() {
-    let blob = common::build_tiny_bcg();
+    let blob = crate::common::build_tiny_bcg();
     let header = read_bcg_header(&blob).expect("header");
     assert_eq!(header.kind, BcgKind::Bcg);
     assert_eq!(header.php_major, Some(8));

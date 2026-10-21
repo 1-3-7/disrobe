@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{EncoderFamily, zend_guard_encoder};
 
 #[test]
 fn detects_zend_guard_3_marker() {
-    let blob = common::build_zend_guard_min();
+    let blob = crate::common::build_zend_guard_min();
     let detection = zend_guard_encoder::detect(&blob).expect("detect");
     assert_eq!(detection.family, EncoderFamily::ZendGuard);
     assert_eq!(detection.version_label, "zend-3");

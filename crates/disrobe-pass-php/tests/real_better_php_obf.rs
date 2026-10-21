@@ -8,21 +8,11 @@
     clippy::missing_const_for_fn
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::required_corpus;
 use disrobe_pass_php::{
     PhpDetection, PhpKind, RecoveryReport, RecoveryStage, ScanReport, TokKind, Token, detect_php,
     recover_php, signature_scan, tokenize,
 };
-use php_toolchain::required_corpus;
 
 #[derive(Debug, Clone, Copy)]
 struct PinnedTokenStream {

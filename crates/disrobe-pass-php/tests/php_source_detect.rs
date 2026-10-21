@@ -11,8 +11,6 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{PhpConfidence, PhpKind, detect_php};
 
 #[test]
@@ -72,7 +70,10 @@ fn rejects_unrelated_bytes_as_unknown() {
 
 #[test]
 fn detects_phar_archive_when_halt_and_signature_present() {
-    let phar = common::build_tiny_phar(&common::default_phar_stub(), &[("a.php", b"<?php 1;")]);
+    let phar = crate::common::build_tiny_phar(
+        &crate::common::default_phar_stub(),
+        &[("a.php", b"<?php 1;")],
+    );
     let detection = detect_php(&phar);
     assert_eq!(detection.kind, PhpKind::PharArchive);
     assert!(detection.has_halt_compiler);

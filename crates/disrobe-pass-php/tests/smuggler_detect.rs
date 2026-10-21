@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{SignatureFamily, signature_scan};
 
 #[test]
 fn detects_smuggler_markers() {
-    let blob = common::build_smuggler();
+    let blob = crate::common::build_smuggler();
     let report = signature_scan(&blob);
     let count: u32 = report
         .families

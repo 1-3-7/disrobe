@@ -6,18 +6,8 @@
     clippy::nursery
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{PhpRuntime, goto_count, require_php, required_corpus};
 use disrobe_pass_php::deflatten::{DeflattenReport, deflatten};
-use php_toolchain::{PhpRuntime, goto_count, require_php, required_corpus};
 
 fn graded_for(sample: &str) -> String {
     format!(

@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{SignatureFamily, signature_scan};
 
 #[test]
 fn detects_php_encoder_online_banner_and_alias() {
-    let blob = common::build_php_encoder_online();
+    let blob = crate::common::build_php_encoder_online();
     let report = signature_scan(&blob);
     let count: u32 = report
         .families

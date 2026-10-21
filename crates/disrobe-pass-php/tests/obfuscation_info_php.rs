@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{SignatureFamily, signature_scan};
 
 #[test]
 fn detects_obfuscation_info_wrap_markers() {
-    let blob = common::build_obfuscation_info();
+    let blob = crate::common::build_obfuscation_info();
     let report = signature_scan(&blob);
     let count: u32 = report
         .families

@@ -11,14 +11,12 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{PeelLayer, PeelOptions, peel_eval_chain};
 
 #[test]
 fn peels_fopo_single_layer_to_inner_php() {
     let inner: &str = "echo 'fopo-inner';";
-    let obfuscated = common::build_fopo(inner);
+    let obfuscated = crate::common::build_fopo(inner);
     let report = peel_eval_chain(&obfuscated, PeelOptions::default()).expect("peel");
     assert!(report.layer_counts.contains_key(&PeelLayer::Fopo));
     let recovered = String::from_utf8_lossy(&report.final_source);
@@ -28,7 +26,7 @@ fn peels_fopo_single_layer_to_inner_php() {
 #[test]
 fn non_fopo_inline_base64_does_not_take_fopo_path() {
     let inner: &str = "echo 'inline-not-fopo';";
-    let blob = common::build_b64_only_eval(inner);
+    let blob = crate::common::build_b64_only_eval(inner);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peels via eval-chain");
     assert!(
         !report.layer_counts.contains_key(&PeelLayer::Fopo),

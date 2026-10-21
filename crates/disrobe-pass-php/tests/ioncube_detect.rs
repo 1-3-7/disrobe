@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{EncoderFamily, ioncube_encoder};
 
 #[test]
 fn detects_ioncube_v9_marker() {
-    let blob = common::build_ioncube_v9_min();
+    let blob = crate::common::build_ioncube_v9_min();
     let detection = ioncube_encoder::detect(&blob).expect("detect");
     assert_eq!(detection.family, EncoderFamily::IonCube);
     assert_eq!(detection.version_label, "v9");

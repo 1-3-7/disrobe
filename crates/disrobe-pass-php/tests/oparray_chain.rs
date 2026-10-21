@@ -1,15 +1,8 @@
 #![allow(clippy::expect_used, clippy::too_many_arguments)]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source,
+};
 use disrobe_core::chain::{
     DetectContext, DetectVerdict, Detector, FAMILY_INTERPRETER_BYTECODE, Pass,
 };
@@ -19,7 +12,6 @@ use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{Error, PhpKind, detect_php, parse_oparray};
 use disrobe_testkit::authorized_authored_source;
-use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

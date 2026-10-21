@@ -12,23 +12,15 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source,
+};
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Decompilation, Error, Literal, OPARRAY_MAX_VERSION, OPARRAY_MIN_VERSION, Op, OpArray,
     UnrecoveredOp, decompile_oparray, opcode_name, parse_oparray,
 };
 use disrobe_testkit::authorized_authored_source;
-use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured, write_opcache_source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

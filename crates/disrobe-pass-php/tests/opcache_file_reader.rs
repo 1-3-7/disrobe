@@ -10,25 +10,15 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PHP_OPCACHE, PhpRuntime, compile_opcache_image, corpus_path, opcache_extension, require_php,
+    unmeasured, write_opcache_source,
+};
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Error, Literal, Op, OpArray, OpArrayKind, OperandType, parse_oparray, parse_opcache_file,
 };
 use disrobe_testkit::authorized_authored_source;
-use php_toolchain::{
-    PHP_OPCACHE, PhpRuntime, compile_opcache_image, corpus_path, opcache_extension, require_php,
-    unmeasured, write_opcache_source,
-};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

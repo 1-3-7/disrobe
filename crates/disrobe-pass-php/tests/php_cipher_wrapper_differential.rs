@@ -9,22 +9,12 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PhpRuntime, require_php, require_php_extensions, residual_decode_primitives, with_open_tag,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
 use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
-use php_toolchain::{
-    PhpRuntime, require_php, require_php_extensions, residual_decode_primitives, with_open_tag,
-};
 
 const MARKER: &str = "DISROBE-PHP-CIPHER-5B3D";
 const OPENSSL: &[(&str, &str)] = &[("openssl", "openssl_decrypt")];

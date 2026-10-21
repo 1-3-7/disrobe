@@ -1,22 +1,12 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{PHP, PhpRun, require_toolchain};
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Decompilation, Literal, Op, OpArray, OperandType, RecoveryReport, RecoveryStage,
     decompile_oparray, parse_oparray, recover_php,
 };
 use disrobe_testkit::authorized_authored_source;
-use php_toolchain::{PHP, PhpRun, require_toolchain};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -27,7 +17,7 @@ const RECV_VARIADIC: u8 = 164;
 const SEND_UNPACK: u8 = 165;
 const CHECK_UNDEF_ARGS: u8 = 199;
 
-fn opcache_dll(php: &php_toolchain::PhpRuntime) -> Option<PathBuf> {
+fn opcache_dll(php: &crate::php_toolchain::PhpRuntime) -> Option<PathBuf> {
     if let Some(configured) = std::env::var_os("DZOA_OPCACHE_DLL") {
         let path: PathBuf = PathBuf::from(configured);
         return path.is_file().then_some(path);

@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{EncoderFamily, sourceguardian_encoder};
 
 #[test]
 fn detects_sourceguardian_version_comment() {
-    let blob = common::build_sourceguardian_min();
+    let blob = crate::common::build_sourceguardian_min();
     let detection = sourceguardian_encoder::detect(&blob).expect("detect");
     assert_eq!(detection.family, EncoderFamily::SourceGuardian);
     assert_eq!(detection.version_label, "version-comment");

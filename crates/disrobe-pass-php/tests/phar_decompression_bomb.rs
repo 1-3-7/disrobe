@@ -13,13 +13,11 @@
     dead_code
 )]
 
-mod common;
-
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::io::Write as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{PHAR_FLAG_DEFLATE, PharFixtureEntry};
+use crate::common::{PHAR_FLAG_DEFLATE, PharFixtureEntry};
 use disrobe_pass_php::{
     Error, PHAR_DECOMPRESS_CAP, PharArchive, parse_phar, phar_decompress_ceiling,
 };
@@ -32,19 +30,26 @@ const BOMB_CHUNKS: usize = 1024;
 const BOMB_EXPANDED: usize = BOMB_CHUNK * BOMB_CHUNKS;
 const ALLOCATION_ALLOWANCE: usize = 4 * 1024 * 1024;
 
-static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
-static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static LIVE_BYTES: Cell<usize> = const { Cell::new(0) };
+    static PEAK_BYTES: Cell<usize> = const { Cell::new(0) };
+}
 
 struct PeakTracking;
 
 impl PeakTracking {
     fn charge(size: usize) {
-        let live: usize = LIVE_BYTES.fetch_add(size, Ordering::Relaxed) + size;
-        PEAK_BYTES.fetch_max(live, Ordering::Relaxed);
+        let live: usize = LIVE_BYTES
+            .try_with(|live: &Cell<usize>| {
+                live.set(live.get().saturating_add(size));
+                live.get()
+            })
+            .unwrap_or_default();
+        let _ = PEAK_BYTES.try_with(|peak: &Cell<usize>| peak.set(peak.get().max(live)));
     }
 
     fn release(size: usize) {
-        LIVE_BYTES.fetch_sub(size, Ordering::Relaxed);
+        let _ = LIVE_BYTES.try_with(|live: &Cell<usize>| live.set(live.get().saturating_sub(size)));
     }
 }
 
@@ -112,8 +117,8 @@ fn declared_length_past_what_the_compressed_bytes_support_is_refused_without_all
     );
 
     let declared: u32 = u32::try_from(BOMB_EXPANDED).expect("declared size fits u32");
-    let phar: Vec<u8> = common::build_phar_with_entries(
-        &common::default_phar_stub(),
+    let phar: Vec<u8> = crate::common::build_phar_with_entries(
+        &crate::common::default_phar_stub(),
         &[PharFixtureEntry {
             name: "bomb.php",
             stored: &bomb,
@@ -129,10 +134,10 @@ fn declared_length_past_what_the_compressed_bytes_support_is_refused_without_all
     );
     assert!(ceiling <= PHAR_DECOMPRESS_CAP);
 
-    let baseline: usize = LIVE_BYTES.load(Ordering::Relaxed);
-    PEAK_BYTES.store(baseline, Ordering::Relaxed);
+    let baseline: usize = LIVE_BYTES.with(Cell::get);
+    PEAK_BYTES.with(|peak: &Cell<usize>| peak.set(baseline));
     let outcome: Result<PharArchive, Error> = parse_phar(&phar);
-    let peak: usize = PEAK_BYTES.load(Ordering::Relaxed).saturating_sub(baseline);
+    let peak: usize = PEAK_BYTES.with(Cell::get).saturating_sub(baseline);
 
     match outcome {
         Err(Error::PharDeclaredSizeImplausible {
@@ -148,6 +153,10 @@ fn declared_length_past_what_the_compressed_bytes_support_is_refused_without_all
         }
         other => panic!("expected a refused declared length, got {other:?}"),
     }
+    assert!(
+        peak > 0,
+        "the refusal allocated nothing on the test thread, so the counters did not observe the reader"
+    );
     assert!(
         peak < ALLOCATION_ALLOWANCE,
         "refusing the bomb allocated {peak} bytes, past the {ALLOCATION_ALLOWANCE}-byte allowance; \

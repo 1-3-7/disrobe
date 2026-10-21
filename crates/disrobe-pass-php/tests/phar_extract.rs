@@ -12,14 +12,12 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{Error, PharArchive, PharEntry, extract_phar_entry, parse_phar};
 
 #[test]
 fn parses_tiny_phar_with_one_file() {
-    let phar = common::build_tiny_phar(
-        &common::default_phar_stub(),
+    let phar = crate::common::build_tiny_phar(
+        &crate::common::default_phar_stub(),
         &[("hello.php", b"<?php echo 'hi';")],
     );
     let archive = parse_phar(&phar).expect("parse");
@@ -32,21 +30,22 @@ fn parses_tiny_phar_with_one_file() {
 #[test]
 fn extracts_uncompressed_payload_byte_perfect() {
     let body: &[u8] = b"<?php return 42;";
-    let phar = common::build_tiny_phar(&common::default_phar_stub(), &[("r.php", body)]);
+    let phar =
+        crate::common::build_tiny_phar(&crate::common::default_phar_stub(), &[("r.php", body)]);
     let archive = parse_phar(&phar).expect("parse");
     let extracted = extract_phar_entry(&archive, &phar, "r.php").expect("extract");
     assert_eq!(extracted, body);
 }
 
 fn deflate_entry_phar(declared_uncompressed: u32, stored: &[u8]) -> Vec<u8> {
-    common::build_phar_with_entries(
-        &common::default_phar_stub(),
-        &[common::PharFixtureEntry {
+    crate::common::build_phar_with_entries(
+        &crate::common::default_phar_stub(),
+        &[crate::common::PharFixtureEntry {
             name: "bounded.php",
             stored,
             declared_uncompressed,
             crc32: 0,
-            flags: common::PHAR_FLAG_DEFLATE,
+            flags: crate::common::PHAR_FLAG_DEFLATE,
         }],
     )
 }
@@ -54,7 +53,7 @@ fn deflate_entry_phar(declared_uncompressed: u32, stored: &[u8]) -> Vec<u8> {
 #[test]
 fn compressed_entry_with_a_truthful_declared_length_extracts() {
     let payload: &[u8] = b"<?php return 42;";
-    let compressed: Vec<u8> = common::deflate(payload);
+    let compressed: Vec<u8> = crate::common::deflate(payload);
     let declared: u32 = u32::try_from(payload.len()).expect("declared size");
     let phar: Vec<u8> = deflate_entry_phar(declared, &compressed);
     let archive: PharArchive = parse_phar(&phar).expect("parse");
@@ -66,7 +65,7 @@ fn compressed_entry_with_a_truthful_declared_length_extracts() {
 #[test]
 fn forged_uncompressed_size_is_refused_rather_than_trusted() {
     let payload: &[u8] = b"<?php return 42;";
-    let compressed: Vec<u8> = common::deflate(payload);
+    let compressed: Vec<u8> = crate::common::deflate(payload);
     let phar: Vec<u8> = deflate_entry_phar(u32::MAX, &compressed);
     let err: Error = parse_phar(&phar).expect_err("forged size must refuse during parsing");
     let msg: String = format!("{err}");
@@ -93,7 +92,7 @@ fn forged_uncompressed_size_is_refused_rather_than_trusted() {
 #[test]
 fn declared_length_the_stream_cannot_reach_is_refused() {
     let payload: &[u8] = b"<?php return 42;";
-    let compressed: Vec<u8> = common::deflate(payload);
+    let compressed: Vec<u8> = crate::common::deflate(payload);
     let declared: u32 = 1000;
     assert!(
         usize::try_from(declared).expect("declared fits usize")
@@ -116,7 +115,7 @@ fn declared_length_the_stream_cannot_reach_is_refused() {
 fn extract_from_post_parse_truncated_buffer_returns_payload_error() {
     let body: &[u8] = b"<?php echo 'safe';";
     let phar: Vec<u8> =
-        common::build_tiny_phar(&common::default_phar_stub(), &[("late.php", body)]);
+        crate::common::build_tiny_phar(&crate::common::default_phar_stub(), &[("late.php", body)]);
     let archive: PharArchive = parse_phar(&phar).expect("parse");
     let entry: &PharEntry = archive.entries.get("late.php").expect("entry");
     let kept_payload: usize = usize::try_from(entry.stored_size / 2).expect("stored size");
@@ -142,8 +141,8 @@ fn extract_from_post_parse_truncated_buffer_returns_payload_error() {
 
 #[test]
 fn parses_multi_entry_phar_sorted_btree() {
-    let phar = common::build_tiny_phar(
-        &common::default_phar_stub(),
+    let phar = crate::common::build_tiny_phar(
+        &crate::common::default_phar_stub(),
         &[
             ("zeta.php", b"<?php //z"),
             ("alpha.php", b"<?php //a"),
@@ -180,8 +179,8 @@ fn rejects_truncated_manifest_after_halt_sentinel() {
 #[test]
 fn rejects_entry_metadata_outside_declared_manifest() {
     let mut phar: Vec<u8> =
-        common::build_tiny_phar(&common::default_phar_stub(), &[("empty.php", b"")]);
-    let manifest_offset: usize = common::default_phar_stub().len() + 1;
+        crate::common::build_tiny_phar(&crate::common::default_phar_stub(), &[("empty.php", b"")]);
+    let manifest_offset: usize = crate::common::default_phar_stub().len() + 1;
     phar[manifest_offset..manifest_offset + 4].copy_from_slice(&14u32.to_le_bytes());
     let err: Error = parse_phar(&phar).expect_err("metadata past manifest must fail");
     let msg: String = format!("{err}");
@@ -192,11 +191,11 @@ fn rejects_entry_metadata_outside_declared_manifest() {
 fn malformed_later_manifest_record_precedes_earlier_payload_failure() {
     let first_name: &str = "first.php";
     let second_name: &str = "second.php";
-    let mut phar: Vec<u8> = common::build_tiny_phar(
-        &common::default_phar_stub(),
+    let mut phar: Vec<u8> = crate::common::build_tiny_phar(
+        &crate::common::default_phar_stub(),
         &[(first_name, b"a"), (second_name, b"b")],
     );
-    let manifest_offset: usize = common::default_phar_stub().len() + 1;
+    let manifest_offset: usize = crate::common::default_phar_stub().len() + 1;
     let manifest_header_len: usize = 4 + 4 + 2 + 4 + 4 + "test.phar".len() + 4;
     let first_record_offset: usize = manifest_offset + manifest_header_len;
     let first_stored_size_offset: usize = first_record_offset + 4 + first_name.len() + 4 + 4;

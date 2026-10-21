@@ -9,25 +9,15 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
 use std::any::Any;
 use std::collections::BTreeSet;
 use std::panic::UnwindSafe;
 use std::path::PathBuf;
 
-use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
-use php_toolchain::{
+use crate::php_toolchain::{
     PhpRun, PhpRuntime, require_php, required_fixture, residual_decode_primitives, with_open_tag,
 };
+use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
 
 const GRADED: &str =
     "the php eval-chain corpus, each recovered file re-executed under the real php interpreter";
@@ -205,7 +195,7 @@ const GOLDEN: [Golden; 24] = [
 const EXPECTED_REL: &str = "php_real_chains/EXPECTED.txt";
 
 fn fixtures_on_disk() -> BTreeSet<String> {
-    let dir: PathBuf = php_toolchain::fixture_path("php_real_chains");
+    let dir: PathBuf = crate::php_toolchain::fixture_path("php_real_chains");
     let entries: std::fs::ReadDir = std::fs::read_dir(&dir).unwrap_or_else(|err: std::io::Error| {
         panic!(
             "the eval-chain corpus at {} is tracked in this repository and every statement this \

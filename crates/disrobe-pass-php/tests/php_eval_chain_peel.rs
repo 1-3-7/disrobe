@@ -11,8 +11,6 @@
     clippy::cargo
 )]
 
-mod common;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use disrobe_pass_php::{PeelLayer, PeelOptions, peel_eval_chain};
@@ -23,7 +21,7 @@ use std::io::Write as _;
 #[test]
 fn peels_base64_gzinflate_eval_chain_to_plaintext() {
     let original: &str = "echo 'recovered from chain';";
-    let blob = common::build_eval_chain(original);
+    let blob = crate::common::build_eval_chain(original);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peel");
     assert!(report.layer_counts.contains_key(&PeelLayer::GzInflate));
     let recovered = String::from_utf8_lossy(&report.final_source);
@@ -36,7 +34,7 @@ fn peels_base64_gzinflate_eval_chain_to_plaintext() {
 #[test]
 fn peels_arbitrary_order_nested_chain_rot13_interposed_between_b64_and_gz() {
     let original: &str = "$secret = 'triple-nested'; echo $secret;";
-    let blob = common::build_rot13_interposed_chain(original);
+    let blob = crate::common::build_rot13_interposed_chain(original);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peel");
     let recovered = String::from_utf8_lossy(&report.final_source);
     assert!(
@@ -57,7 +55,7 @@ fn peels_arbitrary_order_nested_chain_rot13_interposed_between_b64_and_gz() {
 #[test]
 fn peels_base64_decode_wrapping_a_nested_strrev_call_in_the_eval_arg() {
     let original: &str = "echo 'strrev-inside-base64';";
-    let blob = common::build_b64_wrapping_strrev_chain(original);
+    let blob = crate::common::build_b64_wrapping_strrev_chain(original);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peel");
     let recovered = String::from_utf8_lossy(&report.final_source);
     assert!(
@@ -73,7 +71,7 @@ fn peels_base64_decode_wrapping_a_nested_strrev_call_in_the_eval_arg() {
 #[test]
 fn peels_base64_arg_built_from_concatenated_string_literals() {
     let original: &str = "echo 'split-literal-b64';";
-    let blob = common::build_split_literal_b64_chain(original);
+    let blob = crate::common::build_split_literal_b64_chain(original);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peel");
     let recovered = String::from_utf8_lossy(&report.final_source);
     assert!(
@@ -86,7 +84,7 @@ fn peels_base64_arg_built_from_concatenated_string_literals() {
 #[test]
 fn peels_base64_only_eval() {
     let original: &str = "echo 'b64-only';";
-    let blob = common::build_b64_only_eval(original);
+    let blob = crate::common::build_b64_only_eval(original);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peel");
     assert!(report.layer_counts.contains_key(&PeelLayer::Base64Decode));
     let recovered = String::from_utf8_lossy(&report.final_source);
@@ -96,7 +94,7 @@ fn peels_base64_only_eval() {
 #[test]
 fn peeling_records_size_reduction_in_trace() {
     let original: &str = "echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';";
-    let blob = common::build_eval_chain(original);
+    let blob = crate::common::build_eval_chain(original);
     let report = peel_eval_chain(&blob, PeelOptions::default()).expect("peel");
     let total_layers: usize = report.layers.len();
     assert!(total_layers >= 1, "expected at least one layer");
@@ -150,7 +148,7 @@ fn depth_budget_caps_pathological_nesting() {
         stop_when_clean: true,
     };
     let original: &str = "echo 'deep';";
-    let blob = common::build_eval_chain(original);
+    let blob = crate::common::build_eval_chain(original);
     let report = peel_eval_chain(&blob, opts).expect("shallow chain within budget");
     assert!(report.layers.len() <= 4);
 }

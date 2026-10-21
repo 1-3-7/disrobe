@@ -7,21 +7,11 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{
+    PHP, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, required_fixture,
+};
 use disrobe_pass_php::{
     Decompilation, Op, OpArray, OperandType, decompile_oparray, parse_oparray, parse_opcache_file,
-};
-use php_toolchain::{
-    PHP, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, required_fixture,
 };
 use std::path::PathBuf;
 
@@ -31,7 +21,7 @@ const FREE: u8 = 70;
 type OpMutation = fn(&mut Op);
 
 fn graded_php(graded: &str) -> PhpRuntime {
-    php_toolchain::require_toolchain(&PHP, graded).unwrap_or_else(|| {
+    crate::php_toolchain::require_toolchain(&PHP, graded).unwrap_or_else(|| {
         panic!(
             "{graded} requires a php 8.4 interpreter at DISROBE_PHP_BIN; a missing runtime \
                  cannot count as a passing differential"

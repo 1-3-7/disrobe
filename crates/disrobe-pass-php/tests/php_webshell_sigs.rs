@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{SignatureFamily, signature_scan};
 
 #[test]
 fn flags_post_eval_and_request_shell_exec_as_webshell() {
-    let blob = common::build_webshell();
+    let blob = crate::common::build_webshell();
     let report = signature_scan(&blob);
     let count: u32 = report
         .families
@@ -29,7 +27,7 @@ fn flags_post_eval_and_request_shell_exec_as_webshell() {
 
 #[test]
 fn flags_known_named_shells_individually() {
-    let blob = common::build_named_shell_samples();
+    let blob = crate::common::build_named_shell_samples();
     let report = signature_scan(&blob);
     let count: u32 = report
         .families

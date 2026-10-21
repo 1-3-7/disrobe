@@ -8,18 +8,8 @@
     clippy::missing_const_for_fn
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::required_corpus;
 use disrobe_pass_php::{PharArchive, PharCompression, extract_phar_entry, parse_phar};
-use php_toolchain::required_corpus;
 
 const HELLO_PHAR_ENTRIES: usize = 2;
 const EDGE_CASES_PHAR_ENTRIES: usize = 3;

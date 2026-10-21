@@ -7,9 +7,7 @@
     clippy::cargo
 )]
 
-mod common;
-
-use common::{PHAR_FLAG_DEFLATE, PharFixtureEntry};
+use crate::common::{PHAR_FLAG_DEFLATE, PharFixtureEntry};
 use disrobe_pass_php::{Error, PHAR_DECOMPRESS_CAP, extract_phar_entry, parse_phar};
 
 const ENTRY_OUTPUT_BYTES: usize = 64 * 1024;
@@ -17,7 +15,7 @@ const QUOTA_ENTRY_COUNT: usize = PHAR_DECOMPRESS_CAP / ENTRY_OUTPUT_BYTES;
 
 fn build_quota_archive(entry_count: usize) -> Vec<u8> {
     let payload: Vec<u8> = vec![b'Q'; ENTRY_OUTPUT_BYTES];
-    let compressed: Vec<u8> = common::deflate(&payload);
+    let compressed: Vec<u8> = crate::common::deflate(&payload);
     let names: Vec<String> = (0..entry_count)
         .map(|index: usize| format!("members/{index:05}.php"))
         .collect();
@@ -31,7 +29,7 @@ fn build_quota_archive(entry_count: usize) -> Vec<u8> {
             flags: PHAR_FLAG_DEFLATE,
         })
         .collect();
-    common::build_phar_with_entries(&common::default_phar_stub(), &entries)
+    crate::common::build_phar_with_entries(&crate::common::default_phar_stub(), &entries)
 }
 
 #[test]

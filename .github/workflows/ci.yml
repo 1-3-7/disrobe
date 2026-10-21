@@ -1522,9 +1522,9 @@ jobs:
       - name: mruby opcode table graded against the installed ops.h
         run: cargo test -p disrobe-pass-ruby --test mruby_isa_coverage -- --nocapture
       - name: php op_array behavioral differential
-        run: cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture
+        run: cargo test -p disrobe-pass-php --test it -- oparray_behavioral --nocapture
       - name: php loader re-execution differential
-        run: cargo test -p disrobe-pass-php --test loader_behavioral -- --nocapture
+        run: cargo test -p disrobe-pass-php --test it -- loader_behavioral --nocapture
       - name: node re-execution differential for the js deobfuscator
         run: >
           cargo test -p disrobe-pass-js-deob --test it jsconfuser_node_oracle:: -- --nocapture

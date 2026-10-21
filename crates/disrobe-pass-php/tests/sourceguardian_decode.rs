@@ -11,8 +11,6 @@
     clippy::cargo
 )]
 
-mod common;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use disrobe_pass_php::encoder::AuthorizationToken;
@@ -22,7 +20,7 @@ const HELLO_DZOA: &[u8] = include_bytes!("fixtures/protector_oparray/hello.dzoa"
 
 #[test]
 fn decode_requires_authorization() {
-    let blob = common::build_sourceguardian_min();
+    let blob = crate::common::build_sourceguardian_min();
     let err = sourceguardian_encoder::decode(&blob, None).expect_err("must require auth");
     assert!(format!("{err}").contains("DR-PHP-0070"));
 }
@@ -42,7 +40,7 @@ fn decode_without_authorization_recovers_static_raw_oparray_body() {
 
 #[test]
 fn authorized_decode_returns_structural_for_version_comment() {
-    let blob = common::build_sourceguardian_min();
+    let blob = crate::common::build_sourceguardian_min();
     let outcome = sourceguardian_encoder::decode(&blob, Some(AuthorizationToken::user_attested()))
         .expect("decode");
     let DecodeOutcome::StructuralOnly { header, ciphertext } = outcome else {

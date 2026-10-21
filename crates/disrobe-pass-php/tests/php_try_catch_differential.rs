@@ -7,22 +7,12 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
-use disrobe_pass_php::{Decompilation, OpArray, decompile_oparray, parse_oparray};
-use disrobe_testkit::authorized_authored_source;
-use php_toolchain::{
+use crate::php_toolchain::{
     PHP, PHP_OPCACHE, PhpRun, PhpRuntime, fixture_path, require_toolchain, required_fixture,
     write_opcache_source,
 };
+use disrobe_pass_php::{Decompilation, OpArray, decompile_oparray, parse_oparray};
+use disrobe_testkit::authorized_authored_source;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

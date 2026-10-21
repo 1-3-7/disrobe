@@ -11,8 +11,6 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{TokKind, tokenize};
 
 #[test]

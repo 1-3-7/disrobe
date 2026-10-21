@@ -9,20 +9,10 @@
     clippy::cargo
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
 use std::collections::BTreeSet;
 
+use crate::php_toolchain::required_fixture;
 use disrobe_pass_php::{DEFAULT_LOADER_DEPTH, LoaderReport, LoaderSink, peel_modern_loader};
-use php_toolchain::required_fixture;
 
 #[derive(Debug, Clone, Copy)]
 struct PinnedLoader {

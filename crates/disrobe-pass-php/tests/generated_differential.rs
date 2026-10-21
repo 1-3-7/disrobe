@@ -6,26 +6,16 @@
     clippy::redundant_pub_crate
 )]
 
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::PathBuf;
 
-use disrobe_core::scratch::ScratchDir;
-use disrobe_pass_php::{Decompilation, RecoveryReport, recover_php};
-use php_toolchain::{
+use crate::php_toolchain::{
     PHP_OPCACHE, PhpRun, PhpRuntime, compile_opcache_image, opcache_extension, require_php,
     unmeasured,
 };
+use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_php::{Decompilation, RecoveryReport, recover_php};
 
 const GRADED: &str = "the generated PHP program differential";
 const PROGRAMS: u64 = 1000;

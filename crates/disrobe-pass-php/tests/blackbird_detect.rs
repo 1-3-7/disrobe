@@ -11,13 +11,11 @@
     clippy::cargo
 )]
 
-mod common;
-
 use disrobe_pass_php::{SignatureFamily, signature_scan};
 
 #[test]
 fn detects_blackbird_global_handle_and_loader() {
-    let blob = common::build_blackbird();
+    let blob = crate::common::build_blackbird();
     let report = signature_scan(&blob);
     let count: u32 = report
         .families

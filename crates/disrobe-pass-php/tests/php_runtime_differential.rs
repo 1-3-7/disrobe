@@ -9,20 +9,8 @@
     clippy::cargo
 )]
 
-mod common;
-
-#[path = "support/php_toolchain.rs"]
-#[allow(
-    dead_code,
-    clippy::redundant_pub_crate,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic
-)]
-mod php_toolchain;
-
+use crate::php_toolchain::{PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
 use disrobe_pass_php::{RecoveryReport, RecoveryStage, recover_php};
-use php_toolchain::{PhpRuntime, require_php, residual_decode_primitives, with_open_tag};
 
 const MARKER: &str = "DISROBE-PHP-DIFF-9F3A";
 
@@ -85,79 +73,79 @@ fn assert_runtime_equivalent(label: &str, obfuscated: &[u8], expected_marker: &s
 
 #[test]
 fn base64_gzinflate_eval_chain_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_eval_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_eval_chain(&marker_payload());
     assert_runtime_equivalent("base64+gzinflate", &blob, MARKER);
 }
 
 #[test]
 fn base64_only_eval_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_b64_only_eval(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_b64_only_eval(&marker_payload());
     assert_runtime_equivalent("base64-only", &blob, MARKER);
 }
 
 #[test]
 fn rot13_interposed_chain_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_rot13_interposed_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_rot13_interposed_chain(&marker_payload());
     assert_runtime_equivalent("gzinflate(str_rot13(base64))", &blob, MARKER);
 }
 
 #[test]
 fn strrev_wrapped_chain_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_b64_wrapping_strrev_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_b64_wrapping_strrev_chain(&marker_payload());
     assert_runtime_equivalent("base64(strrev)", &blob, MARKER);
 }
 
 #[test]
 fn split_literal_b64_chain_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_split_literal_b64_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_split_literal_b64_chain(&marker_payload());
     assert_runtime_equivalent("base64(concat-literals)", &blob, MARKER);
 }
 
 #[test]
 fn fopo_loader_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_fopo(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_fopo(&marker_payload());
     assert_runtime_equivalent("fopo", &blob, MARKER);
 }
 
 #[test]
 fn str_rot13_base64_loader_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_str_rot13_b64(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_str_rot13_b64(&marker_payload());
     assert_runtime_equivalent("base64(str_rot13)", &blob, MARKER);
 }
 
 #[test]
 fn array_indexed_function_dispatch_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_array_indexed_dispatch(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_array_indexed_dispatch(&marker_payload());
     assert_runtime_equivalent("array-indexed dispatch", &blob, MARKER);
 }
 
 #[test]
 fn strtr_custom_alphabet_base64_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_strtr_custom_alphabet_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_strtr_custom_alphabet_chain(&marker_payload());
     assert_runtime_equivalent("base64(strtr custom alphabet)", &blob, MARKER);
 }
 
 #[test]
 fn dot_append_base64_payload_builder_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_dot_append_b64_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_dot_append_b64_chain(&marker_payload());
     assert_runtime_equivalent("dot-append base64", &blob, MARKER);
 }
 
 #[test]
 fn dot_append_gzinflate_payload_builder_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_dot_append_gzinflate_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_dot_append_gzinflate_chain(&marker_payload());
     assert_runtime_equivalent("dot-append gzinflate", &blob, MARKER);
 }
 
 #[test]
 fn xor_keystream_loop_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_loop_xor_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_loop_xor_chain(&marker_payload());
     assert_runtime_equivalent("xor-keystream-loop", &blob, MARKER);
 }
 
 #[test]
 fn rc4_static_key_loop_runtime_equivalent() {
-    let blob: Vec<u8> = common::build_rc4_static_key_chain(&marker_payload());
+    let blob: Vec<u8> = crate::common::build_rc4_static_key_chain(&marker_payload());
     assert_runtime_equivalent("rc4-static-key", &blob, MARKER);
 }
 
@@ -192,9 +180,10 @@ fn the_differential_rejects_a_loader_whose_recovery_keeps_a_decode_layer() {
         return;
     };
     let inner: String = marker_payload();
-    let once_wrapped: Vec<u8> = common::build_b64_only_eval(&inner);
-    let twice_wrapped: Vec<u8> =
-        common::build_b64_only_eval(&String::from_utf8_lossy(&once_wrapped).replace("<?php ", ""));
+    let once_wrapped: Vec<u8> = crate::common::build_b64_only_eval(&inner);
+    let twice_wrapped: Vec<u8> = crate::common::build_b64_only_eval(
+        &String::from_utf8_lossy(&once_wrapped).replace("<?php ", ""),
+    );
 
     let outer_stdout: Vec<u8> = php.stdout_of("twice-wrapped", &twice_wrapped);
     let inner_stdout: Vec<u8> = php.stdout_of("once-wrapped", &once_wrapped);
