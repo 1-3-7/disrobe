@@ -1166,7 +1166,7 @@
 - `"LUKS1 input {} was refused before payload allocation: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:690`, `crates/disrobe-cli/src/cli/extract.rs:40`
 - `"cannot read bounded LUKS1 input {}: {}"`: `crates/disrobe-cli/src/cli/luks1_input.rs:55`
 - `"cannot reopen input {}: {}"`: `crates/disrobe-cli/src/cli/luks1_input.rs:46`
-- `` "the requested metadata selects no category `taint` can produce; it contributes cfg and dfg, so pass --cfg, --dfg, --metadata-pack-2, --metadata-pack-3 or --llm" ``: `crates/disrobe-cli/src/cli/taint.rs:263`
+- `` "the requested metadata selects no category `taint` can produce; it contributes cfg and dfg, so pass --cfg, --dfg, --metadata-pack-2, --metadata-pack-3 or --llm" ``: `crates/disrobe-cli/src/cli/taint.rs:306`
 - `"{} exceeds the {} JVM hierarchy-node limit"`: `crates/disrobe-cli/src/cli/query.rs:188`
 
 ### `DR-CLI-0855`
@@ -1220,12 +1220,12 @@
 
 ### `DR-CLI-0871`
 
-- `"taint call-edge analysis: {}"`: `crates/disrobe-cli/src/cli/taint.rs:137`
+- `"taint call-edge analysis: {}"`: `crates/disrobe-cli/src/cli/taint.rs:180`
 - `"{} is {} bytes, over the {} byte semantic diff input cap"`: `crates/disrobe-cli/src/cli/semdiff.rs:554`
 
 ### `DR-CLI-0872`
 
-- `"navigation returned an empty ambiguous call target set at {}"`: `crates/disrobe-cli/src/cli/taint.rs:227`
+- `"navigation returned an empty ambiguous call target set at {}"`: `crates/disrobe-cli/src/cli/taint.rs:270`
 - `"semdiff pairs exactly two builds, got {} OTHER argument(s); pass --lineage to track one base across several builds at once"`: `crates/disrobe-cli/src/cli/semdiff.rs:100`
 
 ### `DR-CLI-0875`
@@ -2482,8 +2482,8 @@
 - `DR-CLI-0841`: `crates/disrobe-cli/src/cli/capabilities.rs:38`, `crates/disrobe-cli/src/cli/query.rs:123`
 - `DR-CLI-0842`: `crates/disrobe-cli/src/cli/capabilities.rs:46`, `crates/disrobe-cli/src/cli/query.rs:149`
 - `DR-CLI-0843`: `crates/disrobe-cli/src/cli/query.rs:181`, `crates/disrobe-cli/src/main.rs:2365`
-- `DR-CLI-0844`: `crates/disrobe-cli/src/cli/chain_v1.rs:690`, `crates/disrobe-cli/src/cli/extract.rs:40`, `crates/disrobe-cli/src/cli/luks1_input.rs:43`, `crates/disrobe-cli/src/cli/luks1_input.rs:46`, `crates/disrobe-cli/src/cli/luks1_input.rs:55`, `crates/disrobe-cli/src/cli/luks1_input.rs:62`, `crates/disrobe-cli/src/cli/query.rs:188`, `crates/disrobe-cli/src/cli/taint.rs:263`
-- `DR-CLI-0850`: `crates/disrobe-cli/src/cli/taint.rs:99`
+- `DR-CLI-0844`: `crates/disrobe-cli/src/cli/chain_v1.rs:690`, `crates/disrobe-cli/src/cli/extract.rs:40`, `crates/disrobe-cli/src/cli/luks1_input.rs:43`, `crates/disrobe-cli/src/cli/luks1_input.rs:46`, `crates/disrobe-cli/src/cli/luks1_input.rs:55`, `crates/disrobe-cli/src/cli/luks1_input.rs:62`, `crates/disrobe-cli/src/cli/query.rs:188`, `crates/disrobe-cli/src/cli/taint.rs:306`
+- `DR-CLI-0850`: `crates/disrobe-cli/src/cli/taint.rs:142`
 - `DR-CLI-0851`: `crates/disrobe-cli/src/cli/nir_source.rs:41`
 - `DR-CLI-0852`: `crates/disrobe-cli/src/cli/nir_source.rs:58`
 - `DR-CLI-0853`: `crates/disrobe-cli/src/cli/nir_source.rs:65`
@@ -2504,8 +2504,8 @@
 - `DR-CLI-0868`: `crates/disrobe-cli/src/cli/flutter.rs:904`
 - `DR-CLI-0869`: `crates/disrobe-cli/src/cli/flutter.rs:907`
 - `DR-CLI-0870`: `crates/disrobe-cli/src/cli/flutter.rs:909`, `crates/disrobe-cli/src/cli/semdiff.rs:550`, `crates/disrobe-cli/src/cli/semdiff.rs:560`, `crates/disrobe-cli/src/cli/vulnmatch.rs:56`
-- `DR-CLI-0871`: `crates/disrobe-cli/src/cli/semdiff.rs:554`, `crates/disrobe-cli/src/cli/taint.rs:137`
-- `DR-CLI-0872`: `crates/disrobe-cli/src/cli/semdiff.rs:100`, `crates/disrobe-cli/src/cli/taint.rs:227`
+- `DR-CLI-0871`: `crates/disrobe-cli/src/cli/semdiff.rs:554`, `crates/disrobe-cli/src/cli/taint.rs:180`
+- `DR-CLI-0872`: `crates/disrobe-cli/src/cli/semdiff.rs:100`, `crates/disrobe-cli/src/cli/taint.rs:270`
 - `DR-CLI-0873`: `crates/disrobe-cli/src/cli/semdiff.rs:276`
 - `DR-CLI-0874`: `crates/disrobe-cli/src/cli/semdiff.rs:542`
 - `DR-CLI-0875`: `crates/disrobe-cli/src/cli/hermes.rs:259`, `crates/disrobe-cli/src/cli/hermes.rs:270`, `crates/disrobe-cli/src/cli/hermes.rs:288`, `crates/disrobe-cli/src/cli/hermes.rs:292`, `crates/disrobe-cli/src/cli/hermes.rs:354`, `crates/disrobe-cli/src/cli/hermes.rs:358`
