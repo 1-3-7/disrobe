@@ -11,27 +11,28 @@ build = [
     "aapt2 link -I android-4.1.1.4.jar --manifest AndroidManifest.xml, classes.dex added with jar --update --no-manifest, zipalign -f 4",
     "keytool RSA-2048 keystore (CN=Disrobe Audit Fixture) generated per build with a random store password; apksigner sign (v1 to v3) and apksigner verify",
 ]
-sources = ["src/com/planted/audit/Plants.java", "src/com/planted/audit/Control.java", "AndroidManifest.xml"]
+sources = ["src/com/planted/audit/Plants.java", "src/com/planted/audit/Control.java", "src/com/planted/audit/Flows.java", "src/com/google/android/play/core/integrity/IntegrityManager.java", "src/com/google/android/gms/safetynet/SafetyNetClient.java", "AndroidManifest.xml"]
+manifest_permissions = ["INTERNET", "SEND_SMS", "READ_SMS", "ACCESS_FINE_LOCATION", "CAMERA", "RECORD_AUDIO", "READ_PHONE_STATE", "READ_CONTACTS", "RECEIVE_BOOT_COMPLETED", "SYSTEM_ALERT_WINDOW"]
 oracle = "The source itself: each Plants method is one planted site and names its rule; Control must produce no finding."
 
 [[fixture]]
 path = "audit-plants.apk"
-sha256 = "45e5454d10191e11bdc385247b886a2d53fcf5c2f806535292702fc716ca4d5a"
-bytes = 12689
+sha256 = "2c0d1212f8ac2306573925833a2b5faf57d10bbd36621e08160bab913551f731"
+bytes = 12692
 classes = ["Lcom/planted/audit/Plants;", "Lcom/planted/audit/Plants$TrustAll;", "Lcom/planted/audit/Plants$AllowAllHosts;", "Lcom/planted/audit/Plants$IgnoreSslErrors;", "Lcom/google/android/play/core/integrity/IntegrityManager;", "Lcom/google/android/gms/safetynet/SafetyNetClient;"]
 note = "51 planted sites (46 Plants methods, 3 TrustAll methods, AllowAllHosts.verify, IgnoreSslErrors.onReceivedSslError); the two com.google interfaces are authored stand-ins for the Play Integrity and SafetyNet client classes so the attestation plants compile without the Play libraries; graded by tests/android_audit.rs"
 
 [[fixture]]
 path = "audit-control.apk"
-sha256 = "7ba42f5bd9e0c19010f5db173041a1fae4ebd8dc8a469d5cbd2c1155ed6069a6"
-bytes = 12689
+sha256 = "b06771df56598f3c4c991e666d9fdb85d7d6a84494944eda1996b8be1113838b"
+bytes = 12692
 classes = ["Lcom/planted/audit/Control;", "Lcom/planted/audit/Control$Pinned;", "Lcom/planted/audit/Control$StrictHosts;", "Lcom/planted/audit/Control$FailSslErrors;"]
 note = "no-plant control: zero findings required"
 
 [[fixture]]
 path = "audit-flows.apk"
-sha256 = "edaf18f048639eec168f7b46954f16d7f14719ae06b2a89bb11523264f55f9b5"
-bytes = 8593
+sha256 = "b6bad37df3485d0b708ce944d7d6147b54a22380d8a6c12b81b0d76096b85f53"
+bytes = 8596
 classes = ["Lcom/planted/audit/Flows;"]
 note = "taint fixture built from src/com/planted/audit/Flows.java by `build.sh Flows` (same toolchain): four methods carry a real source-to-sink flow (IMEI to SMS, IMSI to Log, location to Log, clipboard to SMS), separateSourceAndSink calls a source and a sink without passing the value, sourceOnly has no sink; graded by crates/disrobe-cli/tests/taint_android.rs"
 
