@@ -30,7 +30,7 @@ The four boundaries apply according to the selected command: sample parsing, env
 | Path traversal (zip-slip and kin) | Every container extraction path routes through `sanitize_entry_path` and siblings before any write. | `crates/disrobe-binfmt/src/quota.rs` |
 | Container-recursion bombs | Recursion-depth cap plus content-hash cycle detection in the chain runner (default depth 8). | chain runner |
 | Malformed-length-field bombs | Length fields are validated against remaining buffer length before allocation; no length field is trusted to size an allocation. | binfmt + envelope decoder |
-| Signature defeat (scrambled magic, renamed sections, corrupted markers) | Detection falls back from magic to validated internal structure for supported formats. | `crates/disrobe-binfmt/src/structural.rs` |
+| Signature defeat (scrambled magic, renamed sections, corrupted markers) | Detection falls back from magic to validated internal structure for supported formats. | `crates/disrobe-core/src/structural.rs` |
 
 The envelope decoder and the container layer are the two most-exposed parsing surfaces and are fuzzed.
 
