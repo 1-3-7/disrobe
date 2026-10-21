@@ -40,6 +40,10 @@ pub enum RuntimeCheck {
     JsDebuggerTrap,
     JsConsoleHijack,
     JsIntegrityHash,
+    AndroidDebuggerConnected,
+    AndroidEmulatorFingerprint,
+    AndroidRootBinary,
+    AndroidSuExecution,
 }
 
 impl RuntimeCheck {
@@ -76,6 +80,10 @@ impl RuntimeCheck {
             Self::JsDebuggerTrap => "js-debugger-trap",
             Self::JsConsoleHijack => "js-console-hijack",
             Self::JsIntegrityHash => "js-integrity-hash",
+            Self::AndroidDebuggerConnected => "android-debugger-connected",
+            Self::AndroidEmulatorFingerprint => "android-emulator-fingerprint",
+            Self::AndroidRootBinary => "android-root-binary",
+            Self::AndroidSuExecution => "android-su-execution",
         }
     }
 
@@ -98,13 +106,19 @@ impl RuntimeCheck {
             | Self::TlsCallback
             | Self::VectoredExceptionHandler
             | Self::JsDebuggerTrap
-            | Self::JsConsoleHijack => Technique::AntiDebug,
+            | Self::JsConsoleHijack
+            | Self::AndroidDebuggerConnected => Technique::AntiDebug,
             Self::RdtscDelta
             | Self::TickCountDelta
             | Self::PerformanceCounterDelta
             | Self::JsDateLock => Technique::TimingEvasion,
-            Self::CpuidHypervisorBit | Self::CpuidHypervisorLeaf => Technique::AntiVm,
-            Self::JsDomainLock | Self::JsHostEnvironmentProbe => Technique::AntiSandbox,
+            Self::CpuidHypervisorBit
+            | Self::CpuidHypervisorLeaf
+            | Self::AndroidEmulatorFingerprint => Technique::AntiVm,
+            Self::JsDomainLock
+            | Self::JsHostEnvironmentProbe
+            | Self::AndroidRootBinary
+            | Self::AndroidSuExecution => Technique::AntiSandbox,
             Self::JsIntegrityHash => Technique::Rasp,
         }
     }
@@ -164,6 +178,14 @@ impl RuntimeCheck {
             Self::JsIntegrityHash => {
                 "script hashes its own function source and traps when the digest differs from the embedded one"
             }
+            Self::AndroidDebuggerConnected => {
+                "android.os.Debug.isDebuggerConnected result consumed by the caller"
+            }
+            Self::AndroidEmulatorFingerprint => {
+                "android.os.Build property compared against an emulator literal"
+            }
+            Self::AndroidRootBinary => "java.io.File.exists on a root indicator path",
+            Self::AndroidSuExecution => "Runtime.exec of su",
         }
     }
 }
