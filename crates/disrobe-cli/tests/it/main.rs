@@ -531,3 +531,6 @@ mod identify_android;
 
 #[path = "../apk_neutralize.rs"]
 mod apk_neutralize;
+
+#[path = "../behavior_android.rs"]
+mod behavior_android;

@@ -231,6 +231,14 @@ pub(crate) fn run(path: PathBuf, fmt: OutputFormat, effects: bool) -> miette::Re
     let uri: String = path.display().to_string();
     let imports: Vec<String> = native_import_tokens(&bytes);
     let anti: AntiAnalysisReport = anti_analysis::scan(&bytes, Some(&uri));
+    #[cfg(feature = "jvm")]
+    let report: BehaviorReport = {
+        let mut report: BehaviorReport =
+            behavior::analyze_with_anti_analysis(&bytes, &imports, Some(&uri), &anti);
+        behavior::merge_categories(&mut report, android_behaviors(&bytes)?);
+        report
+    };
+    #[cfg(not(feature = "jvm"))]
     let report: BehaviorReport =
         behavior::analyze_with_anti_analysis(&bytes, &imports, Some(&uri), &anti);
     if !effects {
@@ -258,6 +266,131 @@ pub(crate) fn run(path: PathBuf, fmt: OutputFormat, effects: bool) -> miette::Re
         render_anti_analysis(&anti);
         render_effects(&combined.effects);
     })
+}
+
+#[cfg(feature = "jvm")]
+fn android_behaviors(bytes: &[u8]) -> miette::Result<Vec<disrobe_core::behavior::CategoryFinding>> {
+    use disrobe_core::behavior::{Category, CategoryFinding, Evidence};
+    use disrobe_pass_jvm::{AndroidAuditReport, audit_android_bytes};
+
+    let audit: AndroidAuditReport = audit_android_bytes(bytes)
+        .map_err(|e| miette::miette!("DR-BEH-0052: android code-pattern audit: {e}"))?;
+    let mut by_category: BTreeMap<Category, (&'static str, Vec<Evidence>, Vec<&'static str>)> =
+        BTreeMap::new();
+    for finding in &audit.findings {
+        let Some((category, description, attack_id)) = android_behavior(&finding.rule_id) else {
+            continue;
+        };
+        let slot: &mut (&'static str, Vec<Evidence>, Vec<&'static str>) = by_category
+            .entry(category)
+            .or_insert_with(|| (description, Vec::new(), Vec::new()));
+        slot.1.push(Evidence {
+            signal: format!(
+                "{}->{} {} ({})",
+                finding.class, finding.method, finding.evidence, finding.rule_id
+            ),
+            source: "dex",
+            attack_id,
+        });
+        if let Some(id) = attack_id
+            && !slot.2.contains(&id)
+        {
+            slot.2.push(id);
+        }
+    }
+    Ok(by_category
+        .into_iter()
+        .map(
+            |(category, (description, evidence, attack_ids)): (
+                Category,
+                (&'static str, Vec<Evidence>, Vec<&'static str>),
+            )| CategoryFinding {
+                category,
+                description,
+                evidence,
+                attack_ids,
+            },
+        )
+        .collect())
+}
+
+#[cfg(feature = "jvm")]
+fn android_behavior(
+    rule_id: &str,
+) -> Option<(
+    disrobe_core::behavior::Category,
+    &'static str,
+    Option<&'static str>,
+)> {
+    use disrobe_core::behavior::Category;
+    let hit: (Category, &'static str, Option<&'static str>) = match rule_id {
+        "DR-APK-EXEC-COMMAND" | "DR-APK-ROOT-SU-COMMAND" => (
+            Category::ProcessExec,
+            "runs shell commands",
+            Some("T1623.001"),
+        ),
+        "DR-APK-DYNAMIC-CODE-LOADING" | "DR-APK-NATIVE-LOAD-PATH" => (
+            Category::DynamicCode,
+            "loads code at run time",
+            Some("T1407"),
+        ),
+        "DR-APK-REFLECTION" => (Category::DynamicCode, "loads code at run time", None),
+        "DR-APK-DEBUGGER-CHECK" | "DR-APK-EMULATOR-CHECK" | "DR-APK-ROOT-DETECTION" => (
+            Category::AntiAnalysis,
+            "checks for an analysis environment",
+            Some("T1633.001"),
+        ),
+        "DR-APK-DEVICE-IDENTIFIER" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1426"),
+        ),
+        "DR-APK-SMS-SEND" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1582"),
+        ),
+        "DR-APK-CLIPBOARD-READ" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1414"),
+        ),
+        "DR-APK-AUDIO-CAPTURE" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1429"),
+        ),
+        "DR-APK-CAMERA-CAPTURE" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1512"),
+        ),
+        "DR-APK-LOCATION-ACCESS" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1430"),
+        ),
+        "DR-APK-INSTALLED-APPS" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1418"),
+        ),
+        _ if rule_id.starts_with("DR-APK-CRYPTO-") => {
+            (Category::Crypto, "uses cryptographic primitives", None)
+        }
+        _ if rule_id.starts_with("DR-APK-STORAGE-") || rule_id.starts_with("DR-APK-SQL-") => (
+            Category::Filesystem,
+            "touches application and external storage",
+            None,
+        ),
+        _ if rule_id.starts_with("DR-APK-SSL-") || rule_id.starts_with("DR-APK-WEBVIEW-") => (
+            Category::Network,
+            "configures web content and transport security",
+            None,
+        ),
+        _ => return None,
+    };
+    Some(hit)
 }
 
 #[cfg(test)]
