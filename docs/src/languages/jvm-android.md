@@ -141,7 +141,7 @@ Only two things are absent from the static artifact and therefore unrecoverable:
 | Logging | every `android.util.Log` call, raised when a literal in the message mentions a password, token, secret, key or credential |
 | Dangerous APIs | `Runtime.exec` and `ProcessBuilder`; `DexClassLoader`, `PathClassLoader` and in-memory class loaders; `System.load` by path; `Method.invoke` |
 | Privacy | IMEI, MEID, IMSI, SIM serial, line number, `ANDROID_ID` and `Build.SERIAL`; SMS sending; clipboard reads; microphone, camera and location access; installed package enumeration |
-| Anti-analysis | `su` execution and root-indicator paths and packages; emulator fingerprints compared against `Build` properties; `Debug.isDebuggerConnected` |
+| Anti-analysis | `su` execution and root-indicator paths and packages; emulator fingerprints compared against `Build` properties; `Debug.isDebuggerConnected`; Frida indicator literals; `getPackageInfo` with the signing-certificate flags (a signature self-check); Play Integrity and SafetyNet attestation calls |
 
 The grader is the authored `corpus/recon/android-audit` pair: a plant APK with one insecure use per method and a control APK that uses the same API families correctly, both built by `javac`, `d8`, `aapt2` and `apksigner` from committed sources. The test requires every plant to be reported at its own method and nothing else, and no finding on the control. Register values are tracked linearly within a method, so an argument that reaches the call through a branch merge is reported only when the literal is still the last write to that register; a transformation or mode computed at run time is not reported.
 

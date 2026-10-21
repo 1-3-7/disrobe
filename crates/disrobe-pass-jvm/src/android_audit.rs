@@ -240,6 +240,26 @@ const EMULATOR_CHECK: Rule = rule(
     AuditCategory::AntiAnalysis,
     AuditSeverity::Info,
 );
+const SIGNATURE_CHECK: Rule = rule(
+    "DR-APK-SIGNATURE-CHECK",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const FRIDA_CHECK: Rule = rule(
+    "DR-APK-FRIDA-CHECK",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const PLAY_INTEGRITY: Rule = rule(
+    "DR-APK-PLAY-INTEGRITY",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const SAFETYNET_ATTEST: Rule = rule(
+    "DR-APK-SAFETYNET-ATTEST",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
 const DEBUGGER_CHECK: Rule = rule(
     "DR-APK-DEBUGGER-CHECK",
     AuditCategory::AntiAnalysis,
@@ -327,6 +347,18 @@ const ROOT_INDICATORS: &[&str] = &[
     "com.koushikdutta.superuser",
     "test-keys",
 ];
+const FRIDA_INDICATORS: &[&str] = &[
+    "frida-agent",
+    "frida-server",
+    "re.frida.server",
+    "/data/local/tmp/re.frida.server",
+    "gum-js-loop",
+    "linjector",
+    "LIBFRIDA",
+    "frida-gadget",
+];
+const GET_SIGNATURES: i64 = 0x40;
+const GET_SIGNING_CERTIFICATES: i64 = 0x0800_0000;
 const EMULATOR_INDICATORS: &[&str] = &[
     "goldfish",
     "ranchu",
@@ -641,6 +673,9 @@ fn string_rules(text: &str, reads_build: bool, pc: u32, sink: &mut Sink<'_>) {
             format!("root indicator literal {text:?}"),
         );
     }
+    if FRIDA_INDICATORS.contains(&text) {
+        sink.push(pc, FRIDA_CHECK, format!("Frida indicator literal {text:?}"));
+    }
     if reads_build && EMULATOR_INDICATORS.contains(&text) {
         sink.push(
             pc,
@@ -920,6 +955,20 @@ fn call_rules(
         ("Ljava/lang/reflect/Method;", "invoke") => Some((REFLECTION, site)),
         ("Landroid/os/Debug;", "isDebuggerConnected" | "waitingForDebugger") => {
             Some((DEBUGGER_CHECK, site))
+        }
+        ("Landroid/content/pm/PackageManager;", "getPackageInfo") => lit_param(params, 1)
+            .filter(|flags: &i64| flags & (GET_SIGNATURES | GET_SIGNING_CERTIFICATES) != 0)
+            .map(|flags: i64| {
+                (
+                    SIGNATURE_CHECK,
+                    format!("{site} with flags {flags:#x} reads the signing certificates"),
+                )
+            }),
+        ("Lcom/google/android/play/core/integrity/IntegrityManager;", "requestIntegrityToken") => {
+            Some((PLAY_INTEGRITY, site))
+        }
+        ("Lcom/google/android/gms/safetynet/SafetyNetClient;", "attest") => {
+            Some((SAFETYNET_ATTEST, site))
         }
         (
             "Landroid/telephony/TelephonyManager;",

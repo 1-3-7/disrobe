@@ -91,10 +91,13 @@ fn the_plant_apk_names_its_signatures_and_anti_analysis_checks() {
     assert_eq!(
         names(&plants, AndroidIdentityKind::AntiAnalysis),
         BTreeSet::from([
+            "attestation call".to_owned(),
             "debugger check".to_owned(),
             "dynamic code loading".to_owned(),
             "emulator check".to_owned(),
+            "instrumentation check".to_owned(),
             "root check".to_owned(),
+            "signature check".to_owned(),
         ]),
         "{:#?}",
         plants.hits

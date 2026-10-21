@@ -78,6 +78,10 @@ const EXPECTED: &[(&str, &str, &str)] = &[
     (PLANTS, "cameraCapture", "DR-APK-CAMERA-CAPTURE"),
     (PLANTS, "locationAccess", "DR-APK-LOCATION-ACCESS"),
     (PLANTS, "installedApps", "DR-APK-INSTALLED-APPS"),
+    (PLANTS, "signatureCheck", "DR-APK-SIGNATURE-CHECK"),
+    (PLANTS, "fridaCheck", "DR-APK-FRIDA-CHECK"),
+    (PLANTS, "playIntegrity", "DR-APK-PLAY-INTEGRITY"),
+    (PLANTS, "safetyNetAttest", "DR-APK-SAFETYNET-ATTEST"),
     (
         "Lcom/planted/audit/Plants$TrustAll;",
         "checkClientTrusted",

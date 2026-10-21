@@ -265,6 +265,9 @@ fn anti_analysis_hits(audit: &AndroidAuditReport, name: &str, identity: &mut And
             "DR-APK-EMULATOR-CHECK" => Some("emulator check"),
             "DR-APK-ROOT-DETECTION" | "DR-APK-ROOT-SU-COMMAND" => Some("root check"),
             "DR-APK-DYNAMIC-CODE-LOADING" => Some("dynamic code loading"),
+            "DR-APK-FRIDA-CHECK" => Some("instrumentation check"),
+            "DR-APK-SIGNATURE-CHECK" => Some("signature check"),
+            "DR-APK-PLAY-INTEGRITY" | "DR-APK-SAFETYNET-ATTEST" => Some("attestation call"),
             _ => None,
         };
         if let Some(label) = label {

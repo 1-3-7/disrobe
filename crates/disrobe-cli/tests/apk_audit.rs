@@ -29,7 +29,7 @@ fn apk_json_carries_the_code_pattern_audit_anchored_to_methods() {
     assert_eq!(audit["dex_files"], 1);
     assert_eq!(audit["truncated"], false);
     let findings: &Vec<serde_json::Value> = audit["findings"].as_array().expect("findings array");
-    assert_eq!(findings.len(), 47, "{findings:#?}");
+    assert_eq!(findings.len(), 51, "{findings:#?}");
     let hardcoded: &serde_json::Value = findings
         .iter()
         .find(|f: &&serde_json::Value| f["rule_id"] == "DR-APK-CRYPTO-HARDCODED-KEY")
@@ -54,7 +54,7 @@ fn apk_text_lists_each_audit_finding_and_the_control_has_none() {
     ]);
     assert_eq!(plants.code, 0, "{}", plants.stderr);
     assert!(
-        plants.stdout.contains("  audit:        47 findings over"),
+        plants.stdout.contains("  audit:        51 findings over"),
         "{}",
         plants.stdout
     );
