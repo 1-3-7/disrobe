@@ -1366,11 +1366,11 @@
 
 ### `DR-JVM-0093`
 
-- `"DEX code parser produced no body for a method requiring code"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1749`
-- `"JVM emitter refusal: width-conflict"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1732`
+- `"DEX code parser produced no body for a method requiring code"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1788`
+- `"JVM emitter refusal: width-conflict"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1771`
 - `"method body not recovered: {}"`: `crates/disrobe-pass-jvm/src/error.rs:126`
-- `"{} JVM emitter refusal: {}"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1676`
-- `"{} JVM emitter refused opcode {}"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1682`
+- `"{} JVM emitter refusal: {}"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1715`
+- `"{} JVM emitter refused opcode {}"`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1721`
 
 ### `DR-MCP-0330`
 
@@ -2780,7 +2780,7 @@
 - `DR-JVM-0090`: `crates/disrobe-pass-jvm/src/error.rs:96`
 - `DR-JVM-0091`: `crates/disrobe-pass-jvm/src/error.rs:101`
 - `DR-JVM-0092`: `crates/disrobe-pass-jvm/src/error.rs:140`
-- `DR-JVM-0093`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1676`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1682`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1732`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1749`, `crates/disrobe-pass-jvm/src/error.rs:126`
+- `DR-JVM-0093`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1715`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1721`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1771`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1788`, `crates/disrobe-pass-jvm/src/error.rs:126`
 - `DR-JVM-0094`: `crates/disrobe-pass-jvm/src/error.rs:110`
 - `DR-JVM-0095`: `crates/disrobe-pass-jvm/src/error.rs:123`
 - `DR-JVM-0096`: `crates/disrobe-pass-jvm/src/error.rs:117`
