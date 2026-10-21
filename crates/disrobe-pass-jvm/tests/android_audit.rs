@@ -3,8 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use disrobe_pass_jvm::dex::parse as parse_dex;
-use disrobe_pass_jvm::{AndroidAuditReport, AuditFinding, audit_android_apk, audit_android_dex};
+use disrobe_pass_jvm::{AndroidAuditReport, AuditFinding, audit_android_apk};
 
 const PLANTS: &str = "Lcom/planted/audit/Plants;";
 
@@ -180,9 +179,19 @@ fn the_control_build_of_the_same_api_families_is_silent() {
 fn a_dex_without_android_api_calls_is_silent() {
     let path: PathBuf =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/jvm/dex/Hello.dex");
-    let bytes: Vec<u8> = std::fs::read(&path).expect("read Hello.dex");
-    let dex = parse_dex(&bytes).expect("parse Hello.dex");
-    let report: AndroidAuditReport = audit_android_dex(&dex, &bytes);
+    let dex: Vec<u8> = std::fs::read(&path).expect("read Hello.dex");
+    let mut apk: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer: zip::ZipWriter<&mut std::io::Cursor<Vec<u8>>> =
+            zip::ZipWriter::new(&mut apk);
+        writer
+            .start_file("classes.dex", zip::write::SimpleFileOptions::default())
+            .expect("start classes.dex");
+        std::io::Write::write_all(&mut writer, &dex).expect("write classes.dex");
+        writer.finish().expect("finish zip");
+    }
+    let report: AndroidAuditReport =
+        audit_android_apk(apk.get_ref()).expect("audit the wrapped dex");
     assert!(report.methods_scanned > 0);
     assert!(report.findings.is_empty(), "{:#?}", report.findings);
 }

@@ -133,7 +133,6 @@ pub mod yguard;
 
 pub use android_audit::{
     AndroidAuditReport, AuditCategory, AuditFinding, AuditSeverity, audit_apk as audit_android_apk,
-    audit_dex as audit_android_dex,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use android_backend::{

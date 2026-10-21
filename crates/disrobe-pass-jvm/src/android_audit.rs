@@ -360,17 +360,6 @@ enum Value {
     Field(String),
 }
 
-#[must_use]
-pub fn audit_dex(dex: &DexFile, bytes: &[u8]) -> AndroidAuditReport {
-    let mut report: AndroidAuditReport = AndroidAuditReport {
-        dex_files: 1,
-        ..AndroidAuditReport::default()
-    };
-    audit_dex_into(dex, bytes, &mut report);
-    finish(&mut report);
-    report
-}
-
 pub fn audit_apk(bytes: &[u8]) -> Result<AndroidAuditReport> {
     let extract: ApkExtract = extract_apk(bytes)?;
     let mut report: AndroidAuditReport = AndroidAuditReport::default();
