@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
-
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,12 +16,12 @@ struct Toolchain {
 }
 
 fn toolchain_51() -> Option<Toolchain> {
-    common::lua_toolchain::toolchain(common::lua_toolchain::Dialect::Lua51)
+    crate::common::lua_toolchain::toolchain(crate::common::lua_toolchain::Dialect::Lua51)
         .map(|(luac, lua): (String, String)| Toolchain { luac, lua })
 }
 
 fn toolchain_54() -> Option<Toolchain> {
-    common::lua_toolchain::toolchain(common::lua_toolchain::Dialect::Lua54)
+    crate::common::lua_toolchain::toolchain(crate::common::lua_toolchain::Dialect::Lua54)
         .map(|(luac, lua): (String, String)| Toolchain { luac, lua })
 }
 

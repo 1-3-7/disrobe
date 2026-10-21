@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
-
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -140,8 +138,8 @@ fn moonsec_v1_base64_xor_loader_recovers_original_source() {
 #[test]
 fn moonsec_v1_recovered_source_executes_identically() {
     let Some(interp): Option<String> = find_lua() else {
-        common::lua_toolchain::missing_tool(
-            common::lua_toolchain::ANY_LUA,
+        crate::common::lua_toolchain::missing_tool(
+            crate::common::lua_toolchain::ANY_LUA,
             "a Lua interpreter on PATH",
         );
         return;
@@ -245,8 +243,8 @@ fn clean_lua_does_not_trigger_markerless_detection() {
 #[test]
 fn markerless_recovered_source_executes_identically() {
     let Some(interp): Option<String> = find_lua() else {
-        common::lua_toolchain::missing_tool(
-            common::lua_toolchain::ANY_LUA,
+        crate::common::lua_toolchain::missing_tool(
+            crate::common::lua_toolchain::ANY_LUA,
             "a Lua interpreter on PATH",
         );
         return;

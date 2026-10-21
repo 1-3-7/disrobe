@@ -1,14 +1,10 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "support/lua_toolchain.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod lua_toolchain;
-
 use std::fs;
 use std::path::PathBuf;
 
+use crate::lua_toolchain::{LuaInterpreter, require_interpreter, run_lua};
 use disrobe_pass_lua::ironbrew2_recover::recover_runnable;
-use lua_toolchain::{LuaInterpreter, require_interpreter, run_lua};
 
 fn corpus_dir() -> PathBuf {
     let manifest_dir: &str = env!("CARGO_MANIFEST_DIR");

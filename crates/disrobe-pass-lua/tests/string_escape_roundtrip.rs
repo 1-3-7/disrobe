@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -122,7 +120,7 @@ fn assert_string_constants_survive(luac: &str, tag: &str) {
 #[test]
 fn string_constants_round_trip_lua_5_1() {
     let Some(luac): Option<String> =
-        common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua51)
+        crate::common::lua_toolchain::compiler(crate::common::lua_toolchain::Dialect::Lua51)
     else {
         return;
     };
@@ -132,7 +130,7 @@ fn string_constants_round_trip_lua_5_1() {
 #[test]
 fn string_constants_round_trip_lua_5_4() {
     let Some(luac): Option<String> =
-        common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua54)
+        crate::common::lua_toolchain::compiler(crate::common::lua_toolchain::Dialect::Lua54)
     else {
         return;
     };

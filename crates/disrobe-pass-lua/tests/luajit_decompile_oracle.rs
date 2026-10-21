@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
-
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -89,8 +87,8 @@ fn strip_src_locations(line: &str) -> String {
 
 fn oracle(name: &str, variant: &str) {
     let Some(interp): Option<String> = find_luajit() else {
-        common::lua_toolchain::missing_tool(
-            common::lua_toolchain::Dialect::LuaJit.prerequisite(),
+        crate::common::lua_toolchain::missing_tool(
+            crate::common::lua_toolchain::Dialect::LuaJit.prerequisite(),
             "luajit on PATH",
         );
         return;
@@ -172,8 +170,8 @@ fn oracle_luajit_20_version_byte() {
 #[test]
 fn megafile_recovers_and_runs_under_luajit() {
     let Some(interp): Option<String> = find_luajit() else {
-        common::lua_toolchain::missing_tool(
-            common::lua_toolchain::Dialect::LuaJit.prerequisite(),
+        crate::common::lua_toolchain::missing_tool(
+            crate::common::lua_toolchain::Dialect::LuaJit.prerequisite(),
             "luajit on PATH",
         );
         return;

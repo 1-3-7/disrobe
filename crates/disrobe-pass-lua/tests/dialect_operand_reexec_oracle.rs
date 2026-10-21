@@ -1,13 +1,11 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
-
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use common::lua_toolchain::{Dialect, interpreter, toolchain};
+use crate::common::lua_toolchain::{Dialect, interpreter, toolchain};
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_lua::decompile::{DecompiledChunk, decompile_auto, decompile_chunk};
 use disrobe_pass_lua::reader::common::{

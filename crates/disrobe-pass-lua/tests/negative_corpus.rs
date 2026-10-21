@@ -1486,6 +1486,10 @@ fn luaobfuscator_com_inflated_instruction_count_reserves_by_remaining_bytes() {
         peel.residual_markers
     );
     assert!(
+        peak > 0,
+        "the peel allocated nothing on the test thread, so the counter did not observe the reader"
+    );
+    assert!(
         peak <= ceiling,
         "a declared 2^20 instructions over 0 remaining bytes reserved {peak} bytes in one allocation"
     );

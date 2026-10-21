@@ -1,6 +1,4 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,12 +85,12 @@ fn run_math_type(interp: &str, dir: &Path, chunk: &str) -> Option<String> {
 #[test]
 fn lua54_float_literals_keep_float_type_after_recovery() {
     let Some(luac): Option<String> =
-        common::lua_toolchain::compiler(common::lua_toolchain::Dialect::Lua54)
+        crate::common::lua_toolchain::compiler(crate::common::lua_toolchain::Dialect::Lua54)
     else {
         return;
     };
     let Some(interp): Option<String> =
-        common::lua_toolchain::interpreter(common::lua_toolchain::Dialect::Lua54)
+        crate::common::lua_toolchain::interpreter(crate::common::lua_toolchain::Dialect::Lua54)
     else {
         return;
     };

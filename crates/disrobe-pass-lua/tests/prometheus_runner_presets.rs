@@ -1,23 +1,17 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-mod common;
-
-#[path = "support/prometheus_residue.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod prometheus_residue;
-
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use common::lua_toolchain::{Dialect, interpreter};
+use crate::common::lua_toolchain::{Dialect, interpreter};
+use crate::prometheus_residue::prometheus_layer_residue;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_lua::error::Error;
 use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
 use disrobe_pass_lua::prometheus;
-use prometheus_residue::prometheus_layer_residue;
 
 const PROGRAMS: [&str; 3] = ["values", "loops", "branches"];
 const PRESETS: [&str; 4] = ["Minify", "Weak", "Medium", "Strong"];

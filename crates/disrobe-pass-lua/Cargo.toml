@@ -1,5 +1,6 @@
 [package]
 name = "disrobe-pass-lua"
+autotests = false
 description = "Lua + LuaJIT + Roblox Luau bytecode readers + decompilers + obfuscator reversers: Prometheus, MoonSec V1/V2/V3, Ironbrew2, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com."
 version.workspace = true
 readme.workspace = true
@@ -35,6 +36,10 @@ default = []
 disrobe-binfmt = { workspace = true }
 disrobe-testkit = { workspace = true }
 tempfile = "3"
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
 
 [package.metadata.disrobe]
 level = 8

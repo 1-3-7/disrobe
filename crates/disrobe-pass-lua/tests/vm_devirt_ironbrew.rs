@@ -1,22 +1,18 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "support/dvm1_reference.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod dvm1_reference;
-
 use std::fmt::Write as _;
 
-use disrobe_pass_lua::decompile::lift::{LiftedProto, lift_proto_dialect};
-use disrobe_pass_lua::obfuscator::vm_devirt::{
-    BootstrapKeys, DevirtReport, Devirtualized, VM_KIND_IRONBREW2, devirtualize,
-};
-use disrobe_pass_lua::reader::common::{LuaDialect, LuaProto};
-use dvm1_reference::{
+use crate::dvm1_reference::{
     CANONICAL_HANDLERS, PermRecipe, VmModule, assert_no_answer_key_in_bootstrap,
     build_permutation_program, encode_module, encoded_for_vop, known_module, reference_encoded,
     render_bootstrap, solved_permutation, to_hex, to_lua_byte_table, to_lua_decimal_escape,
     vop_for_index,
 };
+use disrobe_pass_lua::decompile::lift::{LiftedProto, lift_proto_dialect};
+use disrobe_pass_lua::obfuscator::vm_devirt::{
+    BootstrapKeys, DevirtReport, Devirtualized, VM_KIND_IRONBREW2, devirtualize,
+};
+use disrobe_pass_lua::reader::common::{LuaDialect, LuaProto};
 
 #[test]
 fn devirt_recovers_handlers_and_constants() {

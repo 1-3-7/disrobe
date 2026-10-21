@@ -1,17 +1,13 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "support/prometheus_residue.rs"]
-#[allow(clippy::redundant_pub_crate)]
-mod prometheus_residue;
-
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::prometheus_residue::{assert_no_prometheus_layer, prometheus_layer_residue};
 use disrobe_pass_lua::decompile::{DecompiledChunk, Fidelity, decompile_auto};
-use prometheus_residue::{assert_no_prometheus_layer, prometheus_layer_residue};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 

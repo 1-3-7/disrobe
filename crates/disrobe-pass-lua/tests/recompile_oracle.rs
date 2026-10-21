@@ -5,9 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-mod common;
-
-use common::lua_toolchain::{self, Dialect};
+use crate::common::lua_toolchain::{self, Dialect};
 use disrobe_pass_lua::LuaDialect;
 use disrobe_pass_lua::decompile::decompile_auto;
 use disrobe_pass_lua::decompile::opcode::{Decoded, Op, decode};

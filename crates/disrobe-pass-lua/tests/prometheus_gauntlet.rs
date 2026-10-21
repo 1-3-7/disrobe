@@ -1,12 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "support/lua_toolchain.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod lua_toolchain;
-
 use std::path::PathBuf;
 
-use lua_toolchain::{LuaInterpreter, require_interpreter_present, run_lua};
+use crate::lua_toolchain::{LuaInterpreter, require_interpreter_present, run_lua};
 
 use disrobe_pass_lua::obfuscator::{
     DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult,

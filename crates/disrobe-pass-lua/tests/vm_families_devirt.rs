@@ -1,18 +1,10 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "support/dvm1_reference.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod dvm1_reference;
-
-#[path = "support/lua_toolchain.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod lua_toolchain;
-
 use std::path::PathBuf;
 
+use crate::dvm1_reference::{PermRecipe, bootstrap_with_payload};
+use crate::lua_toolchain::{LuaInterpreter, require_interpreter, run_lua};
 use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
-use dvm1_reference::{PermRecipe, bootstrap_with_payload};
-use lua_toolchain::{LuaInterpreter, require_interpreter, run_lua};
 
 const fn recipe(seed: u32, step: u32, base: u32) -> PermRecipe {
     PermRecipe {
@@ -59,10 +51,10 @@ fn assert_executes_like_original(family: &str, result: &PeelResult) {
     let expected: String = run_lua(&interp, "the known original", "print(40 + 2)");
     assert_eq!(
         expected.trim_end(),
-        dvm1_reference::KNOWN_MODULE_STDOUT,
+        crate::dvm1_reference::KNOWN_MODULE_STDOUT,
         "the known original must print {}, so a run where it prints {:?} is comparing against \
          nothing meaningful",
-        dvm1_reference::KNOWN_MODULE_STDOUT,
+        crate::dvm1_reference::KNOWN_MODULE_STDOUT,
         expected.trim_end()
     );
     let actual: String = run_lua(&interp, family, &recovered);

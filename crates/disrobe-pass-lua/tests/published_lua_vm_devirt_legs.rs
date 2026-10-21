@@ -1,24 +1,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-#[path = "support/dvm1_reference.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod dvm1_reference;
-
-#[path = "support/lua_toolchain.rs"]
-#[allow(clippy::redundant_pub_crate, dead_code)]
-mod lua_toolchain;
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::dvm1_reference::PermRecipe;
+use crate::lua_toolchain::{LuaInterpreter, run_lua};
 use disrobe_pass_lua::Result as LuaResult;
 use disrobe_pass_lua::ironbrew2_recover::{
     RecoveredProgram, recover, recover_runnable, recovered_strings,
 };
 use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult};
-use dvm1_reference::PermRecipe;
-use lua_toolchain::{LuaInterpreter, run_lua};
 
 const PUBLISHED_GROUP: &str = "Obfuscator and bundler family coverage";
 
@@ -528,7 +520,7 @@ fn measure_real_samples() -> Vec<RealSampleOutcome> {
 
 fn peel_reference_container(family: &InHouseFamily) -> PeelResult {
     let (boot, _payload): (String, Vec<u8>) =
-        dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
+        crate::dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
     let opts: DeobfOptions = DeobfOptions {
         i_have_authorization: family.authorization_required,
     };
@@ -947,7 +939,8 @@ fn recovered_real_ironbrew2_output_executes_like_the_original_under_real_lua() {
     let graded: String = format!(
         "the `{REAL_TOOL_BAR}` leg over {REAL_SAMPLE_DENOMINATOR} committed IronBrew2 samples"
     );
-    let Some(interpreter): Option<LuaInterpreter> = lua_toolchain::require_interpreter(&graded)
+    let Some(interpreter): Option<LuaInterpreter> =
+        crate::lua_toolchain::require_interpreter(&graded)
     else {
         return;
     };
@@ -1124,7 +1117,7 @@ fn a_missing_interpreter_fails_the_execution_leg_by_name() {
     let defect: &str = "no interpreter was found on PATH";
 
     let outcome: std::thread::Result<()> = quietly(|| {
-        lua_toolchain::unmeasured(graded, defect);
+        crate::lua_toolchain::unmeasured(graded, defect);
     });
 
     let payload: String = match &outcome {
@@ -1137,9 +1130,9 @@ fn a_missing_interpreter_fails_the_execution_leg_by_name() {
         outcome.is_err(),
         "an absent interpreter must fail the run unless tests/optional.toml lists {}; the gate \
          returned success instead, which is how an execution differential silently stops grading",
-        lua_toolchain::PREREQUISITE
+        crate::lua_toolchain::PREREQUISITE
     );
-    for named in [lua_toolchain::PREREQUISITE, graded, defect] {
+    for named in [crate::lua_toolchain::PREREQUISITE, graded, defect] {
         assert!(
             payload.contains(named),
             "the failure must name `{named}` so a CI log says what was missing and why; it read: \
@@ -1155,7 +1148,7 @@ fn the_in_house_container_is_ours_and_carries_no_real_family_wire_format() {
         .find(|family: &InHouseFamily| family.name == "moonsec_v3")
         .expect("the MoonSec-shape leg must be on the in-house roster");
     let (boot, payload): (String, Vec<u8>) =
-        dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
+        crate::dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
 
     assert!(
         payload.starts_with(disrobe_pass_lua::obfuscator::vm_devirt::VM_MAGIC),
@@ -1183,7 +1176,7 @@ fn the_real_tool_recovery_path_rejects_the_in_house_container() {
         .find(|family: &InHouseFamily| family.name == "moonsec_v3")
         .expect("the MoonSec-shape leg must be on the in-house roster");
     let (boot, _payload): (String, Vec<u8>) =
-        dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
+        crate::dvm1_reference::bootstrap_with_payload(family.header, &family.recipe);
 
     let smuggled: bool =
         recover(&boot).is_ok_and(|program: RecoveredProgram| program.stats.fully_recovered());

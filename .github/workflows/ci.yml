@@ -1501,11 +1501,11 @@ jobs:
       - name: wasmtime re-execution differential (recovered wasm runs identically to clean)
         run: cargo test -p disrobe-pass-wasm-deob --features sandbox,dwarf -- --nocapture
       - name: lua interpreter re-execution differential
-        run: cargo test -p disrobe-pass-lua --test ironbrew2_real_oracle -- --nocapture
+        run: cargo test -p disrobe-pass-lua --test it -- ironbrew2_real_oracle --nocapture
       - name: lua 5.1 to 5.4 and luajit re-execution oracles
         run: cargo test -p disrobe-pass-lua --all-features --tests -- --nocapture
       - name: luau decompile re-execution differential
-        run: cargo test -p disrobe-pass-lua --test luau_decompile_oracle -- --nocapture
+        run: cargo test -p disrobe-pass-lua --test it -- luau_decompile_oracle --nocapture
       - name: ruby yarv recompile differential
         env:
           DISROBE_YARV_EVIDENCE_DIR: ${{ runner.temp }}/yarv-evidence
