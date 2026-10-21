@@ -2207,7 +2207,8 @@ fn lift_method(
         inlined_helpers,
     )
     .with_parameter_names(parameter_names)
-    .with_code(&item.insns);
+    .with_code(&item.insns)
+    .with_locals(&item.locals);
     let states: Option<TypeStates> = method_type_states(dex, &built, identity, item);
     let caught_webs: std::collections::BTreeSet<usize> = structured
         .caught
@@ -2834,6 +2835,41 @@ fn parameter_types(
         .collect()
 }
 
+fn debug_local_name(
+    ctx: &MethodContext<'_>,
+    built: &DalvikMethodCfg,
+    flow: &RegisterFlow,
+    web: usize,
+    register: u16,
+) -> Option<String> {
+    if ctx.locals.is_empty() {
+        return None;
+    }
+    let defs: Vec<usize> = flow.web_defs(web);
+    let mut chosen: Option<&str> = None;
+    for insn in defs {
+        let def: &DalvikInsn = built.insns.get(insn)?;
+        let pc: u32 = def.pc;
+        let after: u32 = pc.saturating_add(u32::from(def.width));
+        let name: &str = ctx
+            .locals
+            .iter()
+            .find(|local: &&crate::dex::DebugLocal| {
+                local.register == register && local.start_pc <= after && pc < local.end_pc
+            })
+            .map(|local: &crate::dex::DebugLocal| local.name.as_str())?;
+        match chosen {
+            Some(existing) if existing != name => return None,
+            _ => chosen = Some(name),
+        }
+    }
+    let name: &str = chosen?;
+    let writable: bool = descriptor::java_writable_identifier(name) == name
+        && !ctx.param_regs.values().any(|param: &String| param == name)
+        && name != "this";
+    writable.then(|| name.to_owned())
+}
+
 fn method_locals(
     ctx: &MethodContext<'_>,
     identity: MethodIdentity<'_>,
@@ -2999,13 +3035,15 @@ fn method_locals(
                     declared: false,
                 }
             } else {
+                let debug_name: Option<String> = debug_local_name(ctx, built, flow, web, register)
+                    .filter(|candidate: &String| !naming.by_name.contains_key(candidate));
                 let shared: Option<&String> = ty.as_ref().and_then(|wanted: &LocalType| {
                     typed_names
                         .iter()
                         .find(|(seen, _): &&(LocalType, String)| seen == wanted)
                         .map(|(_, name): &(LocalType, String)| name)
                 });
-                let name: String = shared.cloned().unwrap_or_else(|| {
+                let name: String = debug_name.or_else(|| shared.cloned()).unwrap_or_else(|| {
                     let fresh: String = if suffix == 0 {
                         format!("var{register}")
                     } else {
@@ -4992,6 +5030,7 @@ mod tests {
             insns,
             tries: Vec::new(),
             param_names: Vec::new(),
+            locals: Vec::new(),
         };
         let interfaces: crate::dalvik_desugar::DefaultInterfaceRecovery =
             crate::dalvik_desugar::DefaultInterfaceRecovery::default();

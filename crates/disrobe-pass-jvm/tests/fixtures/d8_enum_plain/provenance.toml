@@ -23,3 +23,11 @@ output_bytes = 3856
 enums = ["EnumProbe$Level", "EnumProbe$Flag"]
 constants_with_arguments = 3
 switch_over_enum = true
+
+[debug_build]
+javac_command = "javac -g -Xlint:-options --release 8 -d classes EnumProbe.java"
+d8_command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --debug --min-api 21 --output dex classes/*.class"
+output = "EnumProbe-min21-debug.dex"
+output_sha256 = "a65b232ace708a509bbd3735975f349894a7c76df131de7148e747a280a09266"
+output_bytes = 3908
+note = "same source and toolchain with local-variable tables kept; the grader for debug_info local names"

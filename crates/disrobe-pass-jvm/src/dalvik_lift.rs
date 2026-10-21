@@ -30,6 +30,7 @@ pub(crate) struct MethodContext<'a> {
     pub(crate) register_kinds: BTreeMap<u16, ValueKind>,
     pub(crate) naming: Option<&'a RegisterNaming>,
     pub(crate) code: &'a [u16],
+    pub(crate) locals: &'a [crate::dex::DebugLocal],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +161,7 @@ impl<'a> MethodContext<'a> {
             register_kinds,
             naming: None,
             code: &[],
+            locals: &[],
         }
     }
 
@@ -177,6 +179,11 @@ impl<'a> MethodContext<'a> {
 
     pub(crate) const fn with_code(mut self, code: &'a [u16]) -> Self {
         self.code = code;
+        self
+    }
+
+    pub(crate) const fn with_locals(mut self, locals: &'a [crate::dex::DebugLocal]) -> Self {
+        self.locals = locals;
         self
     }
 

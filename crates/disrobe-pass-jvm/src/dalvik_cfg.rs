@@ -353,6 +353,18 @@ impl RegisterFlow {
             })
     }
 
+    pub(crate) fn web_defs(&self, web: usize) -> Vec<usize> {
+        let mut defs: Vec<usize> = self
+            .def_nodes
+            .iter()
+            .filter(|entry: &(&(usize, u16), &usize)| self.web_of(*entry.1) == Some(web))
+            .map(|entry: (&(usize, u16), &usize)| entry.0.0)
+            .collect();
+        defs.sort_unstable();
+        defs.dedup();
+        defs
+    }
+
     pub(crate) fn def_uses(&self, insn: usize, register: u16) -> Option<DefUses> {
         self.def_nodes
             .get(&(insn, register))

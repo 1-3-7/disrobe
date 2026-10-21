@@ -3306,6 +3306,7 @@ mod tests {
                 insns,
                 tries: Vec::new(),
                 param_names: Vec::new(),
+                locals: Vec::new(),
             };
             let mut cp: ConstantPool = ConstantPool::default();
             let body: BuiltBody =

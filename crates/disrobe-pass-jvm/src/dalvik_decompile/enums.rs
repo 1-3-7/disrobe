@@ -113,7 +113,7 @@ fn constant_initialisers(qualified: &str, block: &str) -> Option<Vec<(String, St
 
 fn is_enum_synthetic(simple: &str, qualified: &str, first: &str) -> bool {
     let values: String = format!("public static {qualified}[] values()");
-    let value_of: String = format!("public static {qualified} valueOf(String arg0)");
+    let value_of: String = format!("public static {qualified} valueOf(String ");
     let synthetic_values: String = format!("static {qualified}[] $values()");
     first.starts_with(&values)
         || first.starts_with(&value_of)

@@ -2369,6 +2369,16 @@ pub struct CodeItem {
     pub insns: Vec<u16>,
     pub tries: Vec<TryItem>,
     pub param_names: Vec<Option<String>>,
+    #[serde(default)]
+    pub locals: Vec<DebugLocal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DebugLocal {
+    pub register: u16,
+    pub name: String,
+    pub start_pc: u32,
+    pub end_pc: u32,
 }
 
 #[derive(Debug)]
@@ -2510,21 +2520,31 @@ fn read_sleb128(bytes: &[u8], off: usize) -> Result<(i32, usize)> {
     Ok((decoded, end))
 }
 
-type ParsedCode = (u16, u16, u16, Vec<u16>, Vec<TryItem>, Vec<Option<String>>);
+type ParsedCode = (
+    u16,
+    u16,
+    u16,
+    Vec<u16>,
+    Vec<TryItem>,
+    Vec<Option<String>>,
+    Vec<DebugLocal>,
+);
+type DebugInfo = (Vec<Option<String>>, Vec<DebugLocal>);
+const MAX_DEBUG_LOCALS: usize = 65_536;
 type CatchHandlers = Vec<(Option<String>, u32)>;
 type HandlerSet = (CatchHandlers, Option<u32>);
 type ParsedHandlers = (CatchHandlers, Option<u32>, usize);
 
-fn parse_debug_param_names(
+fn parse_debug_info(
     bytes: &[u8],
     debug_off: usize,
     data_start: usize,
     registers_size: u16,
     type_names: &[String],
     strings: &[String],
-) -> Result<Vec<Option<String>>> {
+) -> Result<DebugInfo> {
     if debug_off == 0 {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     if debug_off < data_start || debug_off >= bytes.len() {
         return Err(Error::BadBytecode {
@@ -2565,6 +2585,22 @@ fn parse_debug_param_names(
             names.push(Some(name.clone()));
         }
     }
+    let mut address: u32 = 0;
+    let mut open: BTreeMap<u16, (String, u32)> = BTreeMap::new();
+    let mut last_name: BTreeMap<u16, String> = BTreeMap::new();
+    let mut locals: Vec<DebugLocal> = Vec::new();
+    let mut close = |register: u16, at: u32, open: &mut BTreeMap<u16, (String, u32)>| {
+        if let Some((name, start_pc)) = open.remove(&register)
+            && locals.len() < MAX_DEBUG_LOCALS
+        {
+            locals.push(DebugLocal {
+                register,
+                name,
+                start_pc,
+                end_pc: at,
+            });
+        }
+    };
     loop {
         let Some(opcode): Option<u8> = bytes.get(cursor).copied() else {
             return Err(Error::Truncated {
@@ -2577,7 +2613,8 @@ fn parse_debug_param_names(
         match opcode {
             0x00 => break,
             0x01 => {
-                let (_, next): (u32, usize) = read_uleb128(bytes, cursor)?;
+                let (delta, next): (u32, usize) = read_uleb128(bytes, cursor)?;
+                address = address.saturating_add(delta);
                 cursor = next;
             }
             0x02 => {
@@ -2618,6 +2655,14 @@ fn parse_debug_param_names(
                     )?;
                     cursor = after_signature;
                 }
+                let register: u16 = register as u16;
+                close(register, address, &mut open);
+                if name_idx_p1 != 0
+                    && let Some(name) = strings.get((name_idx_p1 - 1) as usize)
+                {
+                    open.insert(register, (name.clone(), address));
+                    last_name.insert(register, name.clone());
+                }
             }
             0x05 | 0x06 => {
                 let (register, next): (u32, usize) = read_uleb128(bytes, cursor)?;
@@ -2628,6 +2673,13 @@ fn parse_debug_param_names(
                     });
                 }
                 cursor = next;
+                let register: u16 = register as u16;
+                close(register, address, &mut open);
+                if opcode == 0x06
+                    && let Some(name) = last_name.get(&register)
+                {
+                    open.insert(register, (name.clone(), address));
+                }
             }
             0x07 | 0x08 => {}
             0x09 => {
@@ -2640,10 +2692,17 @@ fn parse_debug_param_names(
                 )?;
                 cursor = next;
             }
-            _ => {}
+            special => {
+                address = address.saturating_add(u32::from((special - 0x0A) / 15));
+            }
         }
     }
-    Ok(names)
+    let still_open: Vec<u16> = open.keys().copied().collect();
+    for register in still_open {
+        close(register, u32::MAX, &mut open);
+    }
+    locals.sort_by_key(|local: &DebugLocal| (local.register, local.start_pc, local.end_pc));
+    Ok((names, locals))
 }
 
 fn validate_debug_index(
@@ -2855,7 +2914,7 @@ fn parse_code_item(
             });
         }
     }
-    let param_names: Vec<Option<String>> = parse_debug_param_names(
+    let (param_names, locals): DebugInfo = parse_debug_info(
         bytes,
         debug_info_off,
         data_start,
@@ -2870,6 +2929,7 @@ fn parse_code_item(
         insns,
         tries,
         param_names,
+        locals,
     ))
 }
 
@@ -3468,6 +3528,7 @@ fn walk_encoded_methods(
                         insns,
                         tries,
                         param_names,
+                        locals,
                     ): ParsedCode = parsed;
                     match validate_code_references(&insns, context.dex, code_item_offset + 16) {
                         Ok(()) => {
@@ -3483,6 +3544,7 @@ fn walk_encoded_methods(
                                 insns,
                                 tries,
                                 param_names,
+                                locals,
                             });
                             DexCodeState::Decoded(item_index)
                         }
@@ -4214,10 +4276,11 @@ mod tests {
 
     #[test]
     fn debug_uleb128p1_zero_remains_an_absent_index() {
-        let names: Vec<Option<String>> =
-            parse_debug_param_names(&[0xFF, 0x00, 0x01, 0x00, 0x00], 1, 1, 0, &[], &[])
+        let (names, locals): DebugInfo =
+            parse_debug_info(&[0xFF, 0x00, 0x01, 0x00, 0x00], 1, 1, 0, &[], &[])
                 .expect("debug stream");
         assert_eq!(names, vec![None]);
+        assert!(locals.is_empty());
     }
 
     #[test]

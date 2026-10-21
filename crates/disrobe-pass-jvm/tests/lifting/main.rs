@@ -17,6 +17,7 @@ mod dalvik_member_metadata;
 mod dalvik_sources_are_compilation_units;
 mod dalvik_stub_diag;
 mod dead_store_recovery;
+mod debug_local_names;
 mod expr_construct_recovery;
 mod foreach_multicatch_recovery;
 mod generic_signature_recovery;
