@@ -1,6 +1,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+#[path = "../android_audit.rs"]
+mod android_audit;
+
 #[path = "../apk_signature_verify.rs"]
 mod apk_signature_verify;
 

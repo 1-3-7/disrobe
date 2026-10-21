@@ -16,6 +16,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_attrs;
+pub mod android_audit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_backend;
 #[cfg(not(target_arch = "wasm32"))]
@@ -130,6 +131,10 @@ pub mod stub_emulator;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod yguard;
 
+pub use android_audit::{
+    AndroidAuditReport, AuditCategory, AuditFinding, AuditSeverity, audit_apk as audit_android_apk,
+    audit_dex as audit_android_dex,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use android_backend::{
     AndroidDecompileOutput, AndroidDecompiler, BackendPreference, JadxOutcome, JadxRefusal,
