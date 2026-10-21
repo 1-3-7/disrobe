@@ -73,7 +73,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-jvm",
-        18,
+        16,
         "most are convenience wrappers a sibling function already exposes to real callers \
          (assemble_jar, decompile_classfile_bytes, emit_method_body and friends) and detector \
          variants proven by their own gauntlet test (detect_rasp_in_apk, \

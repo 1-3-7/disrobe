@@ -4,13 +4,13 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2122 |
-| Emission sites | 2751 |
-| Sites carrying a message | 2651 |
-| Distinct emitted codes | 2012 |
+| Scanned source files | 2125 |
+| Emission sites | 2754 |
+| Sites carrying a message | 2654 |
+| Distinct emitted codes | 2015 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 312 |
-| Emitted codes missing from the registry | 1835 |
+| Emitted codes missing from the registry | 1838 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (312)
@@ -599,22 +599,22 @@
 - `"--decryption-keys requires --i-have-authorization"`: `crates/disrobe-cli/src/cli/llm.rs:274`
 - `"backend {} failed: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1814`
 - `"cannot read mapping file: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:565`
-- `"cannot write native source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2281`
+- `"cannot write native source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2292`
 
 ### `DR-CLI-0421`
 
 - `"android backend {} failed: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1842`
-- `"cannot write native disasm: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2286`
+- `"cannot write native disasm: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2297`
 - `"proguard mapping parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:567`
 
 ### `DR-CLI-0422`
 
-- `"cannot write native dex source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2261`
+- `"cannot write native dex source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2266`
 - `"name-restoration serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1126`
 
 ### `DR-CLI-0423`
 
-- `"cannot create class out dir: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2328`
+- `"cannot create class out dir: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2339`
 - `"cannot write name-restoration.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1128`
 
 ### `DR-CLI-0429`
@@ -1018,28 +1018,28 @@
 
 ### `DR-CLI-0700`
 
-- `"cannot read apk: {}"`: `crates/disrobe-cli/src/cli/apk.rs:84`
+- `"cannot read apk: {}"`: `crates/disrobe-cli/src/cli/apk.rs:85`
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/swift.rs:68`
 
 ### `DR-CLI-0701`
 
-- `"apk resource analysis: {}"`: `crates/disrobe-cli/src/cli/apk.rs:86`
+- `"apk resource analysis: {}"`: `crates/disrobe-cli/src/cli/apk.rs:87`
 - `"input is not a Mach-O binary"`: `crates/disrobe-cli/src/cli/swift.rs:70`
 
 ### `DR-CLI-0702`
 
-- `"cannot create out dir {}: {}"`: `crates/disrobe-cli/src/cli/apk.rs:101`
+- `"cannot create out dir {}: {}"`: `crates/disrobe-cli/src/cli/apk.rs:105`
 - `` "input is a fat Mach-O; use `disrobe macho classdump` for fat binaries" ``: `crates/disrobe-cli/src/cli/swift.rs:73`
 
 ### `DR-CLI-0703`
 
-- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/apk.rs:108`
+- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/apk.rs:112`
 - `"parse slice: {}"`: `crates/disrobe-cli/src/cli/swift.rs:77`
 
 ### `DR-CLI-0704`
 
 - `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/swift.rs:88`
-- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/apk.rs:120`
+- `"cannot write {}: {}"`: `crates/disrobe-cli/src/cli/apk.rs:124`
 
 ### `DR-CLI-0760`
 
@@ -1362,7 +1362,7 @@
 - `"annotation attribute lookup failed"`: `crates/disrobe-pass-jvm/src/attributes.rs:981`
 - `"malformed declaration annotation attribute: duplicate {} attributes"`: `crates/disrobe-pass-jvm/src/attributes.rs:972`
 - `"malformed declaration annotation attribute: {}"`: `crates/disrobe-pass-jvm/src/attributes.rs:31`
-- `"not an Android Archive (missing classes.jar entry at the .aar zip root)"`: `crates/disrobe-pass-jvm/src/error.rs:170`
+- `"not an Android Archive (missing classes.jar entry at the .aar zip root)"`: `crates/disrobe-pass-jvm/src/error.rs:175`
 
 ### `DR-JVM-0093`
 
@@ -1825,7 +1825,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:173`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1835)
+## Emitted codes missing from the registry (1838)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -2173,11 +2173,11 @@
 - `DR-CLI-0417`: `crates/disrobe-cli/src/cli/electron.rs:34`, `crates/disrobe-cli/src/cli/electron.rs:38`, `crates/disrobe-cli/src/cli/electron.rs:43`
 - `DR-CLI-0418`: `crates/disrobe-cli/src/cli/electron.rs:130`, `crates/disrobe-cli/src/cli/resources.rs:36`, `crates/disrobe-cli/src/cli/resources.rs:40`, `crates/disrobe-cli/src/cli/resources.rs:45`, `crates/disrobe-cli/src/cli/resources.rs:47`, `crates/disrobe-cli/src/cli/resources.rs:57`, `crates/disrobe-cli/src/cli/resources.rs:74`
 - `DR-CLI-0419`: `crates/disrobe-cli/src/cli/macho.rs:288`, `crates/disrobe-cli/src/cli/macho.rs:292`, `crates/disrobe-cli/src/cli/macho.rs:297`, `crates/disrobe-cli/src/cli/macho.rs:299`, `crates/disrobe-cli/src/cli/macho.rs:302`
-- `DR-CLI-0420`: `crates/disrobe-cli/src/cli/jvm.rs:565`, `crates/disrobe-cli/src/cli/jvm.rs:1814`, `crates/disrobe-cli/src/cli/jvm.rs:2281`, `crates/disrobe-cli/src/cli/llm.rs:274`
-- `DR-CLI-0421`: `crates/disrobe-cli/src/cli/jvm.rs:567`, `crates/disrobe-cli/src/cli/jvm.rs:1842`, `crates/disrobe-cli/src/cli/jvm.rs:2286`
-- `DR-CLI-0422`: `crates/disrobe-cli/src/cli/jvm.rs:1126`, `crates/disrobe-cli/src/cli/jvm.rs:2261`
-- `DR-CLI-0423`: `crates/disrobe-cli/src/cli/jvm.rs:1128`, `crates/disrobe-cli/src/cli/jvm.rs:2328`
-- `DR-CLI-0424`: `crates/disrobe-cli/src/cli/jvm.rs:2332`
+- `DR-CLI-0420`: `crates/disrobe-cli/src/cli/jvm.rs:565`, `crates/disrobe-cli/src/cli/jvm.rs:1814`, `crates/disrobe-cli/src/cli/jvm.rs:2292`, `crates/disrobe-cli/src/cli/llm.rs:274`
+- `DR-CLI-0421`: `crates/disrobe-cli/src/cli/jvm.rs:567`, `crates/disrobe-cli/src/cli/jvm.rs:1842`, `crates/disrobe-cli/src/cli/jvm.rs:2297`
+- `DR-CLI-0422`: `crates/disrobe-cli/src/cli/jvm.rs:1126`, `crates/disrobe-cli/src/cli/jvm.rs:2266`
+- `DR-CLI-0423`: `crates/disrobe-cli/src/cli/jvm.rs:1128`, `crates/disrobe-cli/src/cli/jvm.rs:2339`
+- `DR-CLI-0424`: `crates/disrobe-cli/src/cli/jvm.rs:2343`
 - `DR-CLI-0425`: `crates/disrobe-cli/src/cli/jvm.rs:540`
 - `DR-CLI-0426`: `crates/disrobe-cli/src/cli/jvm.rs:1158`
 - `DR-CLI-0427`: `crates/disrobe-cli/src/cli/jvm.rs:1163`
@@ -2366,11 +2366,11 @@
 - `DR-CLI-0670`: `crates/disrobe-cli/src/cli/pickle.rs:329`
 - `DR-CLI-0671`: `crates/disrobe-cli/src/cli/pickle.rs:252`
 - `DR-CLI-0672`: `crates/disrobe-cli/src/cli/pickle.rs:255`
-- `DR-CLI-0700`: `crates/disrobe-cli/src/cli/apk.rs:84`, `crates/disrobe-cli/src/cli/swift.rs:68`
-- `DR-CLI-0701`: `crates/disrobe-cli/src/cli/apk.rs:86`, `crates/disrobe-cli/src/cli/swift.rs:70`
-- `DR-CLI-0702`: `crates/disrobe-cli/src/cli/apk.rs:101`, `crates/disrobe-cli/src/cli/swift.rs:73`
-- `DR-CLI-0703`: `crates/disrobe-cli/src/cli/apk.rs:108`, `crates/disrobe-cli/src/cli/swift.rs:77`
-- `DR-CLI-0704`: `crates/disrobe-cli/src/cli/apk.rs:120`, `crates/disrobe-cli/src/cli/swift.rs:88`
+- `DR-CLI-0700`: `crates/disrobe-cli/src/cli/apk.rs:85`, `crates/disrobe-cli/src/cli/swift.rs:68`
+- `DR-CLI-0701`: `crates/disrobe-cli/src/cli/apk.rs:87`, `crates/disrobe-cli/src/cli/swift.rs:70`
+- `DR-CLI-0702`: `crates/disrobe-cli/src/cli/apk.rs:105`, `crates/disrobe-cli/src/cli/swift.rs:73`
+- `DR-CLI-0703`: `crates/disrobe-cli/src/cli/apk.rs:112`, `crates/disrobe-cli/src/cli/swift.rs:77`
+- `DR-CLI-0704`: `crates/disrobe-cli/src/cli/apk.rs:124`, `crates/disrobe-cli/src/cli/swift.rs:88`
 - `DR-CLI-0705`: `crates/disrobe-cli/src/cli/swift.rs:91`
 - `DR-CLI-0706`: `crates/disrobe-cli/src/cli/swift.rs:93`
 - `DR-CLI-0707`: `crates/disrobe-cli/src/cli/swift.rs:98`
@@ -2534,6 +2534,8 @@
 - `DR-CLI-0991`: `crates/disrobe-cli/src/cli/evm.rs:122`, `crates/disrobe-cli/src/cli/evm.rs:131`, `crates/disrobe-cli/src/cli/evm.rs:137`, `crates/disrobe-cli/src/cli/evm.rs:143`
 - `DR-CLI-0992`: `crates/disrobe-cli/src/cli/evm.rs:146`
 - `DR-CLI-0993`: `crates/disrobe-cli/src/cli/macho.rs:138`, `crates/disrobe-cli/src/cli/macho.rs:142`, `crates/disrobe-cli/src/cli/macho.rs:147`, `crates/disrobe-cli/src/cli/macho.rs:149`, `crates/disrobe-cli/src/cli/macho.rs:152`, `crates/disrobe-cli/src/cli/macho.rs:157`, `crates/disrobe-cli/src/cli/macho.rs:161`, `crates/disrobe-cli/src/cli/macho.rs:168`
+- `DR-CLI-0994`: `crates/disrobe-cli/src/cli/jvm.rs:2270`
+- `DR-CLI-0995`: `crates/disrobe-cli/src/cli/apk.rs:92`
 - `DR-CORE-0003`: `crates/disrobe-core/src/error.rs:8`
 - `DR-CORE-0004`: `crates/disrobe-core/src/error.rs:12`
 - `DR-CORE-0040`: `crates/disrobe-core/src/neutralize.rs:351`
@@ -2674,7 +2676,7 @@
 - `DR-HL-0008`: `crates/disrobe-pass-scriptlang/src/lang/hashlink.rs:166`
 - `DR-HL-0009`: `crates/disrobe-pass-scriptlang/src/lang/hashlink.rs:168`
 - `DR-IDENTIFY-0050`: `crates/disrobe-cli/src/cli/identify.rs:18`
-- `DR-IDENTIFY-0051`: `crates/disrobe-cli/src/cli/identify.rs:24`
+- `DR-IDENTIFY-0051`: `crates/disrobe-cli/src/cli/identify.rs:29`
 - `DR-IND-0060`: `crates/disrobe-cli/src/cli/indicators.rs:74`
 - `DR-IND-0061`: `crates/disrobe-cli/src/cli/indicators.rs:80`
 - `DR-IND-0062`: `crates/disrobe-cli/src/cli/indicators.rs:87`
@@ -2765,28 +2767,29 @@
 - `DR-JVM-0024`: `crates/disrobe-pass-jvm/src/error.rs:104`
 - `DR-JVM-0025`: `crates/disrobe-pass-jvm/src/error.rs:107`
 - `DR-JVM-0026`: `crates/disrobe-pass-jvm/src/error.rs:61`
-- `DR-JVM-0027`: `crates/disrobe-pass-jvm/src/error.rs:138`
-- `DR-JVM-0028`: `crates/disrobe-pass-jvm/src/error.rs:141`
-- `DR-JVM-0029`: `crates/disrobe-pass-jvm/src/error.rs:144`
-- `DR-JVM-0030`: `crates/disrobe-pass-jvm/src/error.rs:148`
-- `DR-JVM-0031`: `crates/disrobe-pass-jvm/src/error.rs:154`
-- `DR-JVM-0032`: `crates/disrobe-pass-jvm/src/error.rs:159`
-- `DR-JVM-0033`: `crates/disrobe-pass-jvm/src/error.rs:167`
-- `DR-JVM-0034`: `crates/disrobe-pass-jvm/src/attributes.rs:31`, `crates/disrobe-pass-jvm/src/attributes.rs:972`, `crates/disrobe-pass-jvm/src/attributes.rs:981`, `crates/disrobe-pass-jvm/src/error.rs:170`
-- `DR-JVM-0035`: `crates/disrobe-pass-jvm/src/error.rs:173`
-- `DR-JVM-0036`: `crates/disrobe-pass-jvm/src/error.rs:177`
+- `DR-JVM-0027`: `crates/disrobe-pass-jvm/src/error.rs:143`
+- `DR-JVM-0028`: `crates/disrobe-pass-jvm/src/error.rs:146`
+- `DR-JVM-0029`: `crates/disrobe-pass-jvm/src/error.rs:149`
+- `DR-JVM-0030`: `crates/disrobe-pass-jvm/src/error.rs:153`
+- `DR-JVM-0031`: `crates/disrobe-pass-jvm/src/error.rs:159`
+- `DR-JVM-0032`: `crates/disrobe-pass-jvm/src/error.rs:164`
+- `DR-JVM-0033`: `crates/disrobe-pass-jvm/src/error.rs:172`
+- `DR-JVM-0034`: `crates/disrobe-pass-jvm/src/attributes.rs:31`, `crates/disrobe-pass-jvm/src/attributes.rs:972`, `crates/disrobe-pass-jvm/src/attributes.rs:981`, `crates/disrobe-pass-jvm/src/error.rs:175`
+- `DR-JVM-0035`: `crates/disrobe-pass-jvm/src/error.rs:178`
+- `DR-JVM-0036`: `crates/disrobe-pass-jvm/src/error.rs:182`
 - `DR-JVM-0090`: `crates/disrobe-pass-jvm/src/error.rs:96`
 - `DR-JVM-0091`: `crates/disrobe-pass-jvm/src/error.rs:101`
-- `DR-JVM-0092`: `crates/disrobe-pass-jvm/src/error.rs:135`
+- `DR-JVM-0092`: `crates/disrobe-pass-jvm/src/error.rs:140`
 - `DR-JVM-0093`: `crates/disrobe-pass-jvm/src/dex2jar.rs:1676`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1682`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1732`, `crates/disrobe-pass-jvm/src/dex2jar.rs:1749`, `crates/disrobe-pass-jvm/src/error.rs:126`
 - `DR-JVM-0094`: `crates/disrobe-pass-jvm/src/error.rs:110`
 - `DR-JVM-0095`: `crates/disrobe-pass-jvm/src/error.rs:123`
 - `DR-JVM-0096`: `crates/disrobe-pass-jvm/src/error.rs:117`
 - `DR-JVM-0097`: `crates/disrobe-pass-jvm/src/error.rs:120`
-- `DR-JVM-0098`: `crates/disrobe-pass-jvm/src/error.rs:183`
-- `DR-JVM-0099`: `crates/disrobe-pass-jvm/src/error.rs:186`
+- `DR-JVM-0098`: `crates/disrobe-pass-jvm/src/error.rs:188`
+- `DR-JVM-0099`: `crates/disrobe-pass-jvm/src/error.rs:191`
 - `DR-JVM-0100`: `crates/disrobe-pass-jvm/src/error.rs:129`
 - `DR-JVM-0101`: `crates/disrobe-pass-jvm/src/error.rs:132`
+- `DR-JVM-0102`: `crates/disrobe-pass-jvm/src/error.rs:136`
 - `DR-JVM-0902`: `crates/disrobe-pass-jvm/src/chain_detector.rs:105`
 - `DR-JVM-0906`: `crates/disrobe-pass-jvm/src/chain_detector.rs:173`
 - `DR-JVM-0907`: `crates/disrobe-pass-jvm/src/chain_detector.rs:180`, `crates/disrobe-pass-jvm/src/chain_detector.rs:242`
