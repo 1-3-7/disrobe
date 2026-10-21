@@ -10,6 +10,7 @@ build = [
     "d8 --release --min-api 21 over the compiled com/planted/audit classes",
     "aapt2 compile --dir res, aapt2 link -I android-4.1.1.4.jar --manifest AndroidManifest.xml res.zip (a real resources.arsc with the app label, so apktool can rebuild the APK), classes.dex added with jar --update --no-manifest, zipalign -f 4",
     "keytool RSA-2048 keystore (CN=Disrobe Audit Fixture) generated per build with a random store password; apksigner sign (v1 to v3) and apksigner verify",
+    "obfuscate.sh: Obfuscapk 8ac7cf4c (MIT; source inspected before use, no network obfuscator enabled) over audit-plants.apk with -i and an ignore-packages file naming com.google.android, one transform family per output plus the full chain",
 ]
 sources = ["src/com/planted/audit/Plants.java", "src/com/planted/audit/Control.java", "src/com/planted/audit/Flows.java", "src/com/google/android/play/core/integrity/IntegrityManager.java", "src/com/google/android/gms/safetynet/SafetyNetClient.java", "AndroidManifest.xml", "res/values/strings.xml"]
 manifest_permissions = ["INTERNET", "SEND_SMS", "READ_SMS", "ACCESS_FINE_LOCATION", "CAMERA", "RECORD_AUDIO", "READ_PHONE_STATE", "READ_CONTACTS", "RECEIVE_BOOT_COMPLETED", "SYSTEM_ALERT_WINDOW"]
@@ -36,3 +37,39 @@ bytes = 12692
 classes = ["Lcom/planted/audit/Flows;"]
 note = "taint fixture built from src/com/planted/audit/Flows.java by `build.sh Flows` (same toolchain): four methods carry a real source-to-sink flow (IMEI to SMS, IMSI to Log, location to Log, clipboard to SMS), separateSourceAndSink calls a source and a sink without passing the value, sourceOnly has no sink; graded by crates/disrobe-cli/tests/taint_android.rs"
 
+
+[[fixture]]
+path = "obfuscapk/goto.apk"
+sha256 = "029d83adbaea2a9eddf1f2b45b928f4bdfa6ac57c4e5162955841a8db2278769"
+bytes = 16787
+note = "audit-plants.apk through Obfuscapk 8ac7cf4c (MIT, 2024-07-27) Goto + Rebuild + NewAlignment + NewSignature via obfuscate.sh (apktool 3.0.3, apksigner and zipalign from build-tools 36.1, Obfuscapk's bundled keystore); every method body starts with a goto past its code and ends with a goto back"
+
+[[fixture]]
+path = "obfuscapk/reorder.apk"
+sha256 = "b7cece677e084b2483cf3506e682eebb6d9e1a00eee3b0af99ec1081a20c802b"
+bytes = 16787
+note = "same build with Reorder: basic blocks shuffled and rejoined with goto/32 and nop padding; Obfuscapk draws its labels at random, so a rebuild differs byte for byte"
+
+[[fixture]]
+path = "obfuscapk/callind.apk"
+sha256 = "fd02d5c6a217f5432292bdf58b2a22677ae8364ca79ead561582930cfa0a09f9"
+bytes = 16787
+note = "same build with CallIndirection: each API call is moved into a random-named static forwarding method on the calling class"
+
+[[fixture]]
+path = "obfuscapk/advreflection.apk"
+sha256 = "7d158324079991acf4aabb1431f42168f828145ec22baa8dce1cf6dd8a4fb134"
+bytes = 16787
+note = "same build with AdvancedReflection: LocationManager.getLastKnownLocation is called through com.apireflectionmanager.AdvancedApiReflection.obfuscate(index, receiver, args) over a static List filled by getDeclaredMethod"
+
+[[fixture]]
+path = "obfuscapk/strings.apk"
+sha256 = "e0def7e547168098e5949b523b38b16caa9fc0c52088a4d7f5b8aacf7f1eb3d0"
+bytes = 16787
+note = "same build with ConstStringEncryption: every const-string becomes a hex literal passed to DecryptString.decryptString, which derives an AES-128 key with PBKDF2WithHmacSHA1 from a random 32-character password and salt (128 iterations) and decrypts with AES/ECB/PKCS5Padding"
+
+[[fixture]]
+path = "obfuscapk/full.apk"
+sha256 = "943f9d28a9eb2e483393ffae5ec376a2ec6334e11a908ae2f2f7c60377fd00a9"
+bytes = 29075
+note = "same build with ConstStringEncryption, Reflection, AdvancedReflection, ArithmeticBranch, Goto, Nop, Reorder, CallIndirection, MethodOverload, DebugRemoval, ClassRename, MethodRename and FieldRename; com.google.android stand-ins keep their names through the ignore-packages file"
