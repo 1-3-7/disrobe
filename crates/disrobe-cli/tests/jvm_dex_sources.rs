@@ -113,3 +113,88 @@ fn a_source_path_that_escapes_the_output_directory_is_refused_by_name() {
     assert!(error.to_string().contains("../escape/Evil.java"), "{error}");
     assert!(!root.exists(), "nothing is written when a path is refused");
 }
+
+#[test]
+fn include_and_exclude_globs_select_the_source_units_and_the_manifest_records_them() {
+    let scratch = temp_dir("dex-sources-filter");
+    let dex: PathBuf = corpus("corpus/jvm/dex/EdgeCases.dex");
+    let out: PathBuf = scratch.path().join("included");
+    let run = run_disrobe(&[
+        "jvm",
+        "decompile",
+        dex.to_str().expect("utf-8 path"),
+        "--include",
+        "com.android.**",
+        "--out",
+        out.to_str().expect("utf-8 path"),
+    ]);
+    assert_eq!(run.code, 0, "jvm decompile failed: {}", run.stderr);
+    let files: Vec<PathBuf> = java_files(&out.join("sources"));
+    assert_eq!(
+        files,
+        vec![out.join("sources/com/android/tools/r8/RecordTag.java")],
+        "only the D8 synthetic package matches the include glob"
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.join("manifest.json")).expect("manifest"),
+    )
+    .expect("manifest json");
+    assert_eq!(manifest["class_filter"]["units_written"], 1);
+    assert!(
+        manifest["class_filter"]["units_skipped"]
+            .as_u64()
+            .expect("skipped")
+            >= 10
+    );
+    assert_eq!(manifest["class_filter"]["include"][0], "com.android.**");
+
+    let excluded: PathBuf = scratch.path().join("excluded");
+    let run = run_disrobe(&[
+        "jvm",
+        "decompile",
+        dex.to_str().expect("utf-8 path"),
+        "--exclude",
+        "EdgeCases$*",
+        "--exclude",
+        "com/android/**",
+        "--out",
+        excluded.to_str().expect("utf-8 path"),
+    ]);
+    assert_eq!(run.code, 0, "jvm decompile failed: {}", run.stderr);
+    let names: Vec<String> = java_files(&excluded.join("sources"))
+        .iter()
+        .map(|f: &PathBuf| {
+            f.file_name()
+                .and_then(|n: &std::ffi::OsStr| n.to_str())
+                .expect("utf-8 file name")
+                .to_owned()
+        })
+        .collect();
+    assert!(
+        names.contains(&"EdgeCases.java".to_owned())
+            && names.contains(&"EdgeCases_u002D_IA.java".to_owned())
+            && names.iter().all(|n: &String| !n.starts_with("EdgeCases$")),
+        "the nest members and the D8 package are excluded, the top-level unit and the marker class stay: {names:?}"
+    );
+    assert!(
+        !excluded.join("sources/com").exists(),
+        "the excluded package directory is not created"
+    );
+    let unfiltered: PathBuf = scratch.path().join("all");
+    let run = run_disrobe(&[
+        "jvm",
+        "decompile",
+        dex.to_str().expect("utf-8 path"),
+        "--out",
+        unfiltered.to_str().expect("utf-8 path"),
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(unfiltered.join("manifest.json")).expect("manifest"),
+    )
+    .expect("manifest json");
+    assert!(
+        manifest.get("class_filter").is_none(),
+        "no filter, no class_filter entry: {manifest}"
+    );
+}

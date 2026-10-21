@@ -65,6 +65,8 @@ An `ACC_ENUM` class whose static initializer only allocates its own constants is
 
 When a DEX keeps its `debug_info_item` local tables (a `d8 --debug` build of `javac -g` output), the decompiler names each recovered local after the table entry that covers the register at its definition, as it already does for parameters; a name is used only when every definition of the variable falls under the same entry, the name is a writable Java identifier and no parameter or earlier local carries it. Release builds carry no tables and keep the synthetic `varN` names. `tests/lifting/debug_local_names.rs` grades the debug and release builds of the same fixture.
 
+`disrobe jvm decompile --include GLOB --exclude GLOB` limits the per-class source tree to the units whose binary class name matches: `*` matches within a package segment, `**` across segments, and `.` or `/` may separate packages. Nest members live inside their top-level unit, so a glob names top-level classes; the combined listing is always written in full. `manifest.json` records the globs with the written and skipped unit counts under `class_filter`; `crates/disrobe-cli/tests/jvm_dex_sources.rs` grades both directions on the D8 fixture.
+
 `disrobe jvm callgraph` walks every method body in a DEX or APK and records one edge per caller-to-callee pair, with the number of call sites behind it, and one node per method that has a body or is called; a callee that no class in the DEX defines is marked external. The output is JSON or Graphviz DOT. `tests/dalvik_call_graph.rs` requires the edge set on the plants APK to equal androguard's `cg` output (`corpus/recon/android-audit/reference/plants.androguard-cg.gml`, 77 edges) and the external node count to match its 57.
 
 ### Containers

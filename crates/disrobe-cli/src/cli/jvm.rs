@@ -82,6 +82,18 @@ pub(crate) enum JvmCmd {
         )]
         library: Vec<PathBuf>,
         #[arg(
+            long = "include",
+            value_name = "GLOB",
+            help = "write only the source units whose binary class name matches this glob (`*` within a package segment, `**` across segments, `.` and `/` both accepted); repeatable"
+        )]
+        include: Vec<String>,
+        #[arg(
+            long = "exclude",
+            value_name = "GLOB",
+            help = "skip the source units whose binary class name matches this glob; repeatable, applied after --include"
+        )]
+        exclude: Vec<String>,
+        #[arg(
             long,
             help = "force the protector-peel pass (Zelix/Allatori/DashO/DexGuard string-decrypt + control-flow unflattening) even when no protector is auto-detected; peel runs automatically whenever a protector is detected"
         )]
@@ -196,6 +208,8 @@ struct DecompileOptions {
     yguard_log: Option<PathBuf>,
     library: Vec<PathBuf>,
     peel: bool,
+    include: Vec<String>,
+    exclude: Vec<String>,
 }
 
 pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
@@ -210,6 +224,8 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             mapping,
             yguard_log,
             library,
+            include,
+            exclude,
             peel,
         } => decompile(DecompileOptions {
             input,
@@ -222,6 +238,8 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             yguard_log,
             library,
             peel,
+            include,
+            exclude,
         }),
         JvmCmd::Extract { input, out } => extract(input, out),
         JvmCmd::Dex2Jar { input, out } => dex2jar(input, out),
@@ -1433,7 +1451,10 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
         yguard_log,
         library,
         peel,
+        include,
+        exclude,
     }: DecompileOptions = options;
+    let class_filter: ClassFilter = ClassFilter::new(include, exclude);
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0400: cannot read input: {e}"))?;
     let stem: String = input
@@ -1464,6 +1485,7 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
     let caps: BackendCapability = detect_available();
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let mut class_report: Option<(usize, usize)> = None;
+    let mut filter_report: Option<(usize, usize)> = None;
     let mut peel_summaries: Vec<PeelSummary> = Vec::new();
     let mut symbol_sidecar: Option<PathBuf> = None;
 
@@ -1505,12 +1527,14 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
             if let Some(s) = dex_peel_summary(&string_recovery) {
                 peel_summaries.push(s);
             }
-            let emitted: bool = emit_native_dex(&emit_kinds, &out_dir, &stem, &native)?;
+            let emit: SourceEmit =
+                emit_native_dex(&emit_kinds, &out_dir, &stem, &native, &class_filter)?;
+            filter_report = Some((emit.written, emit.skipped));
             let invocation: Option<BackendInvocation> =
                 run_android_backend(&caps, backend_choice, &input, &out_dir, timeout_secs)?;
             (
                 dex_summary(&input, &dx, &native, &string_recovery, invocation.as_ref()),
-                emitted,
+                emit.want_source,
             )
         }
         ClassformatKind::Jar => {
@@ -1541,10 +1565,15 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
         }
         ClassformatKind::Apk => {
             let native: DecompiledDex = decompile_apk_dexes(&bytes);
-            let emitted: bool = emit_native_dex(&emit_kinds, &out_dir, &stem, &native)?;
+            let emit: SourceEmit =
+                emit_native_dex(&emit_kinds, &out_dir, &stem, &native, &class_filter)?;
+            filter_report = Some((emit.written, emit.skipped));
             let invocation: Option<BackendInvocation> =
                 run_android_backend(&caps, backend_choice, &input, &out_dir, timeout_secs)?;
-            (apk_summary(&input, &native, invocation.as_ref()), emitted)
+            (
+                apk_summary(&input, &native, invocation.as_ref()),
+                emit.want_source,
+            )
         }
         ClassformatKind::Unknown => {
             return Err(miette::miette!(
@@ -1553,6 +1582,16 @@ fn decompile(options: DecompileOptions) -> miette::Result<()> {
         }
     };
 
+    let mut summary: serde_json::Value = summary;
+    if let (Some((written, skipped)), serde_json::Value::Object(fields)) =
+        (filter_report, &mut summary)
+        && !class_filter.is_empty()
+    {
+        fields.insert(
+            "class_filter".to_owned(),
+            class_filter.summary(written, skipped),
+        );
+    }
     let manifest_bytes: Vec<u8> = serde_json::to_vec_pretty(&summary)
         .map_err(|e| miette::miette!("DR-CLI-0406: manifest serialize: {e}"))?;
     std::fs::write(&manifest_path, manifest_bytes)
@@ -2323,26 +2362,114 @@ fn operand_text(insn: &Instruction) -> String {
     }
 }
 
+pub(crate) struct ClassFilter {
+    include: Vec<String>,
+    exclude: Vec<String>,
+}
+
+impl ClassFilter {
+    const fn new(include: Vec<String>, exclude: Vec<String>) -> Self {
+        Self { include, exclude }
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    fn keeps(&self, internal_name: &str) -> bool {
+        let included: bool = self.include.is_empty()
+            || self
+                .include
+                .iter()
+                .any(|pattern: &String| glob_matches(pattern, internal_name));
+        included
+            && !self
+                .exclude
+                .iter()
+                .any(|pattern: &String| glob_matches(pattern, internal_name))
+    }
+
+    fn summary(&self, written: usize, skipped: usize) -> serde_json::Value {
+        serde_json::json!({
+            "include": self.include,
+            "exclude": self.exclude,
+            "units_written": written,
+            "units_skipped": skipped,
+        })
+    }
+}
+
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.replace('.', "/").chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    glob_tail(&pattern, &name)
+}
+
+fn glob_tail(pattern: &[char], name: &[char]) -> bool {
+    match pattern.first() {
+        None => name.is_empty(),
+        Some('*') if pattern.get(1) == Some(&'*') => {
+            let rest: &[char] = &pattern[2..];
+            (0..=name.len()).any(|skip: usize| glob_tail(rest, &name[skip..]))
+        }
+        Some('*') => {
+            let rest: &[char] = &pattern[1..];
+            (0..=name.len())
+                .take_while(|&skip: &usize| skip == 0 || name[skip - 1] != '/')
+                .any(|skip: usize| glob_tail(rest, &name[skip..]))
+        }
+        Some('?') => !name.is_empty() && name[0] != '/' && glob_tail(&pattern[1..], &name[1..]),
+        Some(&literal) => name.first() == Some(&literal) && glob_tail(&pattern[1..], &name[1..]),
+    }
+}
+
+struct SourceEmit {
+    want_source: bool,
+    written: usize,
+    skipped: usize,
+}
+
 fn emit_native_dex(
     emit_kinds: &[String],
     out_dir: &std::path::Path,
     stem: &str,
     native: &DecompiledDex,
-) -> miette::Result<bool> {
+    filter: &ClassFilter,
+) -> miette::Result<SourceEmit> {
     let spec: EmitSpec = EmitSpec::parse(emit_kinds)?;
     let want_source: bool = spec.is_empty() || spec.contains(EmitKind::Source);
+    let mut written: usize = 0;
+    let mut skipped: usize = 0;
     if want_source {
         let path: PathBuf = out_dir.join(format!("{stem}.java"));
         std::fs::write(&path, &native.source)
             .map_err(|e| miette::miette!("DR-CLI-0422: cannot write native dex source: {e}"))?;
-        if !native.sources.is_empty() {
-            disrobe_pass_jvm::write_source_tree(&out_dir.join("sources"), &native.sources)
-                .map_err(|e| {
-                    miette::miette!("DR-CLI-0994: cannot write the per-class source tree: {e}")
-                })?;
+        let kept: std::collections::BTreeMap<String, String> = native
+            .sources
+            .iter()
+            .filter(|(unit, _): &(&String, &String)| {
+                let internal: &str = unit.strip_suffix(".java").unwrap_or(unit);
+                let keep: bool = filter.keeps(internal);
+                if keep {
+                    written += 1;
+                } else {
+                    skipped += 1;
+                }
+                keep
+            })
+            .map(|(unit, text): (&String, &String)| (unit.clone(), text.clone()))
+            .collect();
+        if !kept.is_empty() {
+            disrobe_pass_jvm::write_source_tree(&out_dir.join("sources"), &kept).map_err(|e| {
+                miette::miette!("DR-CLI-0994: cannot write the per-class source tree: {e}")
+            })?;
         }
     }
-    Ok(want_source)
+    Ok(SourceEmit {
+        want_source,
+        written,
+        skipped,
+    })
 }
 
 fn emit_native_artifacts(
