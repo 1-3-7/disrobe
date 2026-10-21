@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -4442,6 +4442,14 @@ fn pe_delay_load_imports<Pe: object::read::pe::ImageNtHeaders>(bytes: &[u8]) -> 
     rows
 }
 
+fn is_elf_mapping_symbol(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('$') else {
+        return false;
+    };
+    let kind: &str = rest.split('.').next().unwrap_or(rest);
+    matches!(kind, "x" | "d" | "t" | "a" | "v" | "m" | "f" | "p")
+}
+
 fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
     if let Ok(native) = parse_native(bytes)
         && matches!(
@@ -4472,11 +4480,22 @@ fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
         .sections()
         .filter_map(|s| s.name().ok().map(|n| (s.index().0, n.to_owned())))
         .collect();
-    for symbol in file.symbols() {
+    let mut seen_rows: BTreeSet<(String, u64, String)> = BTreeSet::new();
+    for symbol in file.symbols().chain(file.dynamic_symbols()) {
         let Ok(name): Result<&str, object::Error> = symbol.name() else {
             continue;
         };
-        if name.is_empty() {
+        if name.is_empty()
+            || is_elf_mapping_symbol(name)
+            || matches!(
+                symbol.kind(),
+                object::SymbolKind::Section | object::SymbolKind::File
+            )
+        {
+            continue;
+        }
+        let kind: String = format!("{:?}", symbol.kind()).to_lowercase();
+        if !seen_rows.insert((name.to_owned(), symbol.address(), kind.clone())) {
             continue;
         }
         let section: Option<String> = match symbol.section() {
@@ -4487,26 +4506,7 @@ fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
             name: name.to_owned(),
             address: symbol.address(),
             size: symbol.size(),
-            kind: format!("{:?}", symbol.kind()).to_lowercase(),
-            section,
-        });
-    }
-    for symbol in file.dynamic_symbols() {
-        let Ok(name): Result<&str, object::Error> = symbol.name() else {
-            continue;
-        };
-        if name.is_empty() {
-            continue;
-        }
-        let section: Option<String> = match symbol.section() {
-            object::SymbolSection::Section(idx) => section_names.get(&idx.0).cloned(),
-            _ => None,
-        };
-        exports.push(SymbolRow {
-            name: name.to_owned(),
-            address: symbol.address(),
-            size: symbol.size(),
-            kind: format!("{:?}", symbol.kind()).to_lowercase(),
+            kind,
             section,
         });
     }

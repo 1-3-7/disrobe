@@ -537,3 +537,6 @@ mod behavior_android;
 
 #[path = "../taint_android.rs"]
 mod taint_android;
+
+#[path = "../native_symbols_parity.rs"]
+mod native_symbols_parity;
