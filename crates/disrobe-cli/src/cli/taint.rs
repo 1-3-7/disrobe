@@ -15,6 +15,7 @@ use crate::cli::ir_metadata;
 use crate::cli::llm::{self as llm_cli, LlmFlags};
 use crate::cli::nir_source::lift_module_from_bytes;
 use crate::cli::output::{self, OutputFormat};
+use disrobe_nir::SourceLang;
 
 const DEFAULT_SOURCES: &[&str] = &[
     "recv",
@@ -37,6 +38,48 @@ const DEFAULT_SOURCES: &[&str] = &[
     "request.args.get",
     "request.form.get",
     "request.get_data",
+];
+
+const ANDROID_SOURCES: &[&str] = &[
+    "android.telephony.TelephonyManager.getDeviceId",
+    "android.telephony.TelephonyManager.getImei",
+    "android.telephony.TelephonyManager.getMeid",
+    "android.telephony.TelephonyManager.getSubscriberId",
+    "android.telephony.TelephonyManager.getSimSerialNumber",
+    "android.telephony.TelephonyManager.getLine1Number",
+    "android.provider.Settings$Secure.getString",
+    "android.location.LocationManager.getLastKnownLocation",
+    "android.location.Location.getLatitude",
+    "android.location.Location.getLongitude",
+    "android.content.ClipboardManager.getText",
+    "android.content.ClipboardManager.getPrimaryClip",
+    "android.content.ContentResolver.query",
+    "android.accounts.AccountManager.getAccounts",
+    "android.accounts.AccountManager.getAccountsByType",
+    "android.content.pm.PackageManager.getInstalledPackages",
+    "android.content.pm.PackageManager.getInstalledApplications",
+];
+
+const ANDROID_SINKS: &[&str] = &[
+    "android.telephony.SmsManager.sendTextMessage",
+    "android.telephony.SmsManager.sendMultipartTextMessage",
+    "android.telephony.SmsManager.sendDataMessage",
+    "android.util.Log.v",
+    "android.util.Log.d",
+    "android.util.Log.i",
+    "android.util.Log.w",
+    "android.util.Log.e",
+    "java.net.URL.<init>",
+    "java.net.HttpURLConnection.getOutputStream",
+    "java.io.OutputStream.write",
+    "java.io.FileOutputStream.write",
+    "java.io.FileWriter.write",
+    "android.webkit.WebView.loadUrl",
+    "android.webkit.WebView.postUrl",
+    "android.database.sqlite.SQLiteDatabase.execSQL",
+    "android.database.sqlite.SQLiteDatabase.rawQuery",
+    "java.lang.Runtime.exec",
+    "android.content.Intent.putExtra",
 ];
 
 const DEFAULT_SINKS: &[&str] = &[
@@ -98,7 +141,7 @@ pub(crate) fn run(
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0850: cannot read {}: {e}", input.display()))?;
     let module: NirModule = lift_module_from_bytes(&input, &bytes)?;
-    let config: TaintConfig = build_config(&sources, &sinks);
+    let config: TaintConfig = build_config(&sources, &sinks, module.lang);
     let facts: PeFacts = disrobe_taint::pe_facts(&bytes, &module).map_err(edge_analysis_error)?;
     let call_edges: Vec<CallEdge> =
         with_import_edges(navigation_call_edges(&module)?, &facts.import_call_edges);
@@ -283,10 +326,21 @@ fn default_bundle_anchor(input: &Path) -> PathBuf {
     PathBuf::from("./out").join(stem)
 }
 
-fn build_config(sources: &[String], sinks: &[String]) -> TaintConfig {
+fn build_config(sources: &[String], sinks: &[String], lang: SourceLang) -> TaintConfig {
+    let managed: bool = matches!(lang, SourceLang::Dalvik | SourceLang::Jvm);
+    let default_sources: &[&str] = if managed {
+        ANDROID_SOURCES
+    } else {
+        DEFAULT_SOURCES
+    };
+    let default_sinks: &[&str] = if managed {
+        ANDROID_SINKS
+    } else {
+        DEFAULT_SINKS
+    };
     let mut config: TaintConfig = TaintConfig::new();
     if sources.is_empty() {
-        for source in DEFAULT_SOURCES {
+        for source in default_sources {
             config = config.with_source(*source);
         }
     } else {
@@ -295,7 +349,7 @@ fn build_config(sources: &[String], sinks: &[String]) -> TaintConfig {
         }
     }
     if sinks.is_empty() {
-        for sink in DEFAULT_SINKS {
+        for sink in default_sinks {
             config = config.with_sink(*sink);
         }
     } else {

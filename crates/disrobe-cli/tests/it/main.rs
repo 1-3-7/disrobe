@@ -534,3 +534,6 @@ mod apk_neutralize;
 
 #[path = "../behavior_android.rs"]
 mod behavior_android;
+
+#[path = "../taint_android.rs"]
+mod taint_android;
