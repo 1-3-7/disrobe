@@ -165,6 +165,8 @@ mod native_aot_param;
 mod native_aot_real_image;
 #[path = "../native_aot_sret.rs"]
 mod native_aot_sret;
+#[path = "../native_aot_string_accessor.rs"]
+mod native_aot_string_accessor;
 #[path = "../native_not_applicable_corpus.rs"]
 mod native_not_applicable_corpus;
 #[path = "../native_stub_surface.rs"]

@@ -130,6 +130,19 @@ is reported as a frozen string beside it. Stores inside bodies shared by several
 are not reported. The x86-64 forms are graded against a committed .NET 10 NativeAOT build
 whose source assigns 51 constants (`corpus/dotnet/aot/BUILD.md`).
 
+`string_accessors` lists functions that hide string literals behind an index: a body that at
+least two call sites reach with an immediate in `ecx` (`mov ecx, imm32` or `xor ecx, ecx`
+directly before the `call`) and that itself addresses at least two preinitialized frozen arrays
+through `lea`. Each accessor carries its call sites with their indexes and the arrays' element
+sizes and lengths, and `literals` holds the text each index yields: the accessor body is run in
+the bounded in-process x86-64 emulator with only its own pages executable, the image's data
+mapped read-only, a host that serves array allocation (a MethodTable with a component size in
+`rcx`, a length in `rdx`) from scratch memory and declines every other call, and a step budget;
+the single byte buffer the body filled is read back as UTF-8. An index whose run faults, exceeds
+the budget or allocates anything else is listed in `decode_refusals` with the reason. The grade is
+a committed build whose eight plaintexts are kept beside it in `plain.txt` and appear nowhere in
+the image (`corpus/dotnet/aot/BUILD.md`).
+
 ### Obfuscator reversal
 
 `disrobe` registers detection rules for <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The per-family evidence below states what artifact is graded, what data is recovered, and where static recovery stops.

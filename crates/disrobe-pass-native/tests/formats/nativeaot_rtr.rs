@@ -10,9 +10,11 @@ use disrobe_pass_native::{EvidenceKind, FileIdReport, SupportRoute, identify_fil
 use disrobe_testkit::{CommandSpec, ToolOutput, tool_output};
 
 const NOW_SECS: u64 = 1_798_761_600;
-const NATIVEAOT_PE_FIXTURES: [&str; 3] = [
+const NATIVEAOT_PE_FIXTURES: [&str; 5] = [
     "dotnet/HelloAppAot.exe",
+    "dotnet/aot/aot_ctor_net10_x86_64/aot_ctor_net10_x86_64.exe",
     "dotnet/aot/aot_maps_net10_x86_64/aot_maps_net10_x86_64.exe",
+    "dotnet/aot/aot_strings_net10_x86_64/aot_strings_net10_x86_64.exe",
     "dotnet/megafile/EdgeCases.nativeaot.exe",
 ];
 

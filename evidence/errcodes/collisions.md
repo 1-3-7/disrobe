@@ -4,7 +4,7 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2121 |
+| Scanned source files | 2122 |
 | Emission sites | 2751 |
 | Sites carrying a message | 2651 |
 | Distinct emitted codes | 2012 |

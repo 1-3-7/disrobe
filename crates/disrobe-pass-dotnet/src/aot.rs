@@ -24,6 +24,7 @@ mod native_hashtable;
 mod object_model;
 mod resources;
 mod stack_trace_map;
+mod string_accessor;
 
 pub use field_map::AotFieldMapRefusal;
 pub use invoke_map::AotInvokeMapRefusal;
@@ -48,6 +49,10 @@ pub use stack_trace_map::{
     AotStackTraceMap, AotStackTraceMethod, AotStackTraceName, AotStackTraceRefusal,
     AotStackTraceStatus, recover_stack_trace_map,
 };
+pub use string_accessor::{
+    AotFrozenArray, AotStringAccessor, AotStringAccessorCallSite, AotStringDecodeRefusal,
+    AotStringLiteral, decode_string_accessors, recover_string_accessors,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotReport {
@@ -68,6 +73,8 @@ pub struct AotReport {
     pub field_map_refusals: Vec<AotFieldMapRefusal>,
     #[serde(default)]
     pub stack_trace_map: AotStackTraceMap,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub string_accessors: Vec<AotStringAccessor>,
     #[serde(default)]
     pub manifest_resources: AotResourceIndex,
 }
@@ -1278,19 +1285,24 @@ pub fn detect(image: &[u8]) -> AotReport {
         &constructor_evidence,
         &[],
     );
-    if let Some(region) = ready_to_run
+    let frozen_region: Option<AotCodeRange> = ready_to_run
         .as_ref()
         .and_then(|header: &ReadyToRunHeader| header.section(FROZEN_OBJECT_REGION_SECTION_ID))
-    {
-        object_model.frozen_strings = resolve_frozen_strings(
-            image,
-            AotCodeRange {
-                start_rva: region.start_rva,
-                end_rva: region.end_rva,
-            },
-            &object_model.reference_stores,
-        );
+        .map(|region: &AotSection| AotCodeRange {
+            start_rva: region.start_rva,
+            end_rva: region.end_rva,
+        });
+    if let Some(region) = frozen_region {
+        object_model.frozen_strings =
+            resolve_frozen_strings(image, region, &object_model.reference_stores);
     }
+    let mut string_accessors: Vec<AotStringAccessor> = recover_string_accessors(
+        image,
+        &metadata_attribution,
+        &stack_trace_map,
+        frozen_region,
+    );
+    decode_string_accessors(image, &mut string_accessors);
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")
@@ -1310,6 +1322,7 @@ pub fn detect(image: &[u8]) -> AotReport {
         invoke_map_refusals,
         field_map_refusals,
         stack_trace_map,
+        string_accessors,
         manifest_resources,
     }
 }

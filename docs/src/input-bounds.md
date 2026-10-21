@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2559 bounds (count 242, other 1211, output 72, recursion 250, size 587, work 197).
+2570 bounds (count 242, other 1215, output 72, recursion 250, size 592, work 199).
 
-Exceeded: error 1059, recorded 230, panic 0, delegated 53, silent 1158, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1059, recorded 230, panic 0, delegated 54, silent 1168, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -727,6 +727,17 @@ Exceeded: error 1059, recorded 230, panic 0, delegated 53, silent 1158, unclassi
 | `disrobe-pass-dotnet` | `MAX_STACK_TRACE_ENTRIES` | count | error: `invalid_map()` | `usize` | `4_194_304` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_STACK_TRACE_MAP_BYTES` | size | error: `invalid_map()` | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
 | `disrobe-pass-dotnet` | `MAX_STRING_STORAGE_BYTES` | size | error: untyped error | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/stack_trace_map.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSORS` | other | silent: `return` in `recover_string_accessors` | `usize` | `256` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_BODIES` | other | silent: `return` in `recover_string_accessors` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_BODY_BYTES` | size | silent: `return` in `body_instructions` | `usize` | `256 * 1024` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_CALL_SITES` | other | silent: `return` in `recover_string_accessors` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_TOTAL_BYTES` | size | silent: `return` in `recover_string_accessors` | `usize` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ALLOCATIONS_PER_INDEX` | other | silent: `return` in `dispatch` | `usize` | `8` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_DECODED_BYTES` | size | silent: `return` in `dispatch` | `u64` | `1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_DECODED_LITERALS` | work | silent: `break` in `decode_string_accessors` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_DECODE_STEPS` | work | delegated: `.run()?` | `u64` | `2_000_000` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_FROZEN_ARRAY_LENGTH` | size | silent: `return` in `frozen_array` | `u32` | `16 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_IMAGE_MAP_BYTES` | size | silent: `return` in `map_image` | `u64` | `512 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
 | `disrobe-pass-dotnet` | `MAX_BACKEND_CAPTURE` | other | delegated: `subprocess::run_captured()?` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-dotnet/src/backends.rs` |
 | `disrobe-pass-dotnet` | `MAX_ARRAY_RANK` | other | error: `Error::other()`; `Fault::Bound` | `u32` | `64` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
 | `disrobe-pass-dotnet` | `MAX_DEBUG_ENTRIES` | count | error: `Error::other()`; `Fault::Bound` | `usize` | `1024` | `crates/disrobe-pass-dotnet/src/build_compare.rs` |
@@ -2583,7 +2594,7 @@ Exceeded: error 1059, recorded 230, panic 0, delegated 53, silent 1158, unclassi
 
 ## Silent stops
 
-1158 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1168 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2826,6 +2837,16 @@ Exceeded: error 1059, recorded 230, panic 0, delegated 53, silent 1158, unclassi
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | `return` in `read_ready_to_run_header` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_FROZEN_STRING_CHARS` | `return` in `frozen_string` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSORS` | `return` in `recover_string_accessors` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_BODIES` | `return` in `recover_string_accessors` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_BODY_BYTES` | `return` in `body_instructions` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_CALL_SITES` | `return` in `recover_string_accessors` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ACCESSOR_TOTAL_BYTES` | `return` in `recover_string_accessors` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_ALLOCATIONS_PER_INDEX` | `return` in `dispatch` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_DECODED_BYTES` | `return` in `dispatch` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_DECODED_LITERALS` | `break` in `decode_string_accessors` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_FROZEN_ARRAY_LENGTH` | `return` in `frozen_array` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
+| `disrobe-pass-dotnet` | `MAX_IMAGE_MAP_BYTES` | `return` in `map_image` | `crates/disrobe-pass-dotnet/src/aot/string_accessor.rs` |
 | `disrobe-pass-dotnet` | `MAX_FILE_STEM` | `.take()` in `file_name`; fallback value in `file_name` | `crates/disrobe-pass-dotnet/src/csharp_project.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_DEPTH` | `return` in `append_output_expression`; `return` in `binary`; `return` in `expression_contains_stack_input` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_NODES` | `return` in `binary` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
