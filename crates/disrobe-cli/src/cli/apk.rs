@@ -1,12 +1,17 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use disrobe_core::neutralize::{
+    Applied, NeutralizationPlan, NeutralizationReport, Selection, apply, neutralized_path,
+};
 use disrobe_pass_jvm::{
-    AndroidAuditReport, ApkResourceReport, CertificateInfo, JniSurfaceReport, ManifestFacts,
-    ResolvedNative, ResourceEntrySummary, analyze_apk_resources, audit_android_apk,
+    AndroidAuditReport, ApkResourceReport, CertificateInfo, DexNeutralization, JniSurfaceReport,
+    ManifestFacts, ResolvedNative, ResourceEntrySummary, analyze_apk_resources, audit_android_apk,
+    plan_apk_neutralization,
 };
 use serde::Serialize;
 
+use crate::cli::native::NeutralizeMode;
 use crate::cli::output::{self, OutputFormat};
 
 use super::util::push_format;
@@ -34,6 +39,109 @@ struct ApkAnalysis {
     jni_unresolved: Vec<JniUnresolvedEntry>,
     jni_ambiguous: Vec<JniAmbiguousEntry>,
     audit: AndroidAuditReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    neutralization: Option<NeutralizationSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NeutralizedDex {
+    entry: String,
+    audited_sites: usize,
+    plan: NeutralizationPlan,
+    report: NeutralizationReport,
+    output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NeutralizationSummary {
+    schema: &'static str,
+    mode: &'static str,
+    report_path: String,
+    dex: Vec<NeutralizedDex>,
+}
+
+const NEUTRALIZATION_REPORT_FILE: &str = "android-neutralization.json";
+
+fn neutralize_apk(
+    input: &Path,
+    bytes: &[u8],
+    out: Option<&Path>,
+    mode: NeutralizeMode,
+) -> miette::Result<NeutralizationSummary> {
+    let stem: String = input
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("apk")
+        .to_owned();
+    let out_dir: PathBuf = out.map_or_else(
+        || PathBuf::from(format!("./out/{stem}-apk")),
+        Path::to_path_buf,
+    );
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        miette::miette!(
+            "DR-CLI-0996: cannot create out dir {}: {e}",
+            out_dir.display()
+        )
+    })?;
+    let plans: Vec<DexNeutralization> = plan_apk_neutralization(bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0997: cannot plan apk neutralization: {e}"))?;
+    let mut dex: Vec<NeutralizedDex> = Vec::with_capacity(plans.len());
+    for planned in plans {
+        let selection: Selection = match mode {
+            NeutralizeMode::Apply => Selection::All,
+            NeutralizeMode::Skip => Selection::Skip,
+            NeutralizeMode::Ask if planned.plan.is_empty() => Selection::Skip,
+            NeutralizeMode::Ask => {
+                eprintln!("{}:", planned.entry);
+                super::native::ask_each_patch(&planned.plan)
+            }
+        };
+        let applied: Applied = apply(&planned.bytes, &planned.plan, &selection)
+            .map_err(|e| miette::miette!("DR-CLI-0998: neutralization refused: {e}"))?;
+        let output: Option<String> = if applied.report.applied.is_empty() {
+            None
+        } else {
+            let path: PathBuf = neutralized_path(&out_dir.join(&planned.entry));
+            std::fs::write(&path, &applied.bytes).map_err(|e| {
+                miette::miette!("DR-CLI-0999: cannot write {}: {e}", path.display())
+            })?;
+            Some(path.display().to_string())
+        };
+        eprintln!(
+            "apk neutralize ({}) {}: {} patch(es) offered, {} refused; applied {}, declined {}, skipped {}{}",
+            mode.label(),
+            planned.entry,
+            planned.plan.patches.len(),
+            planned.plan.refusals.len(),
+            applied.report.applied.len(),
+            applied.report.declined.len(),
+            applied.report.skipped.len(),
+            output
+                .as_deref()
+                .map_or_else(String::new, |p: &str| format!("; wrote {p}")),
+        );
+        dex.push(NeutralizedDex {
+            entry: planned.entry,
+            audited_sites: planned.audited_sites,
+            plan: planned.plan,
+            report: applied.report,
+            output,
+        });
+    }
+    let summary: NeutralizationSummary = NeutralizationSummary {
+        schema: "disrobe.apk.neutralization/v1",
+        mode: mode.label(),
+        report_path: out_dir
+            .join(NEUTRALIZATION_REPORT_FILE)
+            .display()
+            .to_string(),
+        dex,
+    };
+    let encoded: Vec<u8> = serde_json::to_vec_pretty(&summary)
+        .map_err(|e| miette::miette!("DR-CLI-0989: serialize neutralization report: {e}"))?;
+    std::fs::write(&summary.report_path, encoded)
+        .map_err(|e| miette::miette!("DR-CLI-0988: cannot write {}: {e}", summary.report_path))?;
+    Ok(summary)
 }
 
 fn derive_jni_unresolved(surface: &JniSurfaceReport) -> Vec<JniUnresolvedEntry> {
@@ -80,7 +188,12 @@ fn derive_jni_ambiguous(surface: &JniSurfaceReport) -> Vec<JniAmbiguousEntry> {
     out
 }
 
-pub(crate) fn run(path: PathBuf, out: Option<PathBuf>, fmt: OutputFormat) -> miette::Result<()> {
+pub(crate) fn run(
+    path: PathBuf,
+    out: Option<PathBuf>,
+    neutralize: Option<NeutralizeMode>,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
     let bytes: Vec<u8> =
         std::fs::read(&path).map_err(|e| miette::miette!("DR-CLI-0700: cannot read apk: {e}"))?;
     let report: ApkResourceReport = analyze_apk_resources(&bytes)
@@ -88,12 +201,17 @@ pub(crate) fn run(path: PathBuf, out: Option<PathBuf>, fmt: OutputFormat) -> mie
     if let Some(out_dir) = out.as_deref() {
         write_outputs(out_dir, &report)?;
     }
+    let neutralization: Option<NeutralizationSummary> = match neutralize {
+        Some(mode) => Some(neutralize_apk(&path, &bytes, out.as_deref(), mode)?),
+        None => None,
+    };
     let audit: AndroidAuditReport = audit_android_apk(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0995: apk code-pattern audit: {e}"))?;
     let analysis: ApkAnalysis = ApkAnalysis {
         jni_unresolved: derive_jni_unresolved(&report.jni),
         jni_ambiguous: derive_jni_ambiguous(&report.jni),
         audit,
+        neutralization,
         report,
     };
     output::emit(fmt, &analysis, || render_text(&path, &analysis))

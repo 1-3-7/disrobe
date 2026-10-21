@@ -331,7 +331,7 @@ impl NeutralizeMode {
         })
     }
 
-    const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Ask => "ask",
             Self::Apply => "apply",
@@ -398,7 +398,7 @@ fn read_patch_answer(lines: &mut std::io::Lines<std::io::StdinLock<'_>>) -> Patc
     }
 }
 
-fn ask_each_patch(
+pub(crate) fn ask_each_patch(
     plan: &disrobe_core::neutralize::NeutralizationPlan,
 ) -> disrobe_core::neutralize::Selection {
     use std::io::BufRead as _;

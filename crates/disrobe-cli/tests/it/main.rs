@@ -528,3 +528,6 @@ mod apk_audit;
 
 #[path = "../identify_android.rs"]
 mod identify_android;
+
+#[path = "../apk_neutralize.rs"]
+mod apk_neutralize;

@@ -660,6 +660,12 @@ enum Cmd {
             help = "write the decoded AndroidManifest.xml and the resource id->name table to this directory"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_enum,
+            help = "offer patches for the anti-analysis checks the audit finds (debugger, emulator and root checks): ask per patch, apply all, or skip; the input is never modified, accepted patches go to a copy of classes.dex beside the report"
+        )]
+        neutralize: Option<native::NeutralizeMode>,
     },
     #[cfg(feature = "dotnet")]
     #[command(
@@ -2240,7 +2246,11 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "jvm")]
         Cmd::Jvm { action } => jvm::run(action),
         #[cfg(feature = "jvm")]
-        Cmd::Apk { path, out } => apk::run(path, out, fmt),
+        Cmd::Apk {
+            path,
+            out,
+            neutralize,
+        } => apk::run(path, out, neutralize, fmt),
         #[cfg(feature = "dotnet")]
         Cmd::Dotnet { action } => dotnet::run(action),
         #[cfg(feature = "mobile")]
