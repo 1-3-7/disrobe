@@ -38,6 +38,9 @@ for class in ${*:-Plants Control Flows}; do
         --manifest "$here/AndroidManifest.xml" "$work/res.zip"
 
     (cd "$work/dex" && jar --update --no-manifest --file "$work/base.apk" classes.dex)
+    if [ "$class" = Native ]; then
+        (cd "$here/native" && jar --update --no-manifest --file "$work/base.apk" lib)
+    fi
     "$ANDROID_BUILD_TOOLS/zipalign" -f 4 "$work/base.apk" "$work/aligned.apk"
 
     java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" sign \
