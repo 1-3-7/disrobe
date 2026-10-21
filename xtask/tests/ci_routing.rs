@@ -1007,7 +1007,7 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     let php_oparray: &Value = &differential_steps[php_oparray_index];
     assert_eq!(
         php_oparray.get("run").and_then(Value::as_str),
-        Some("cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture")
+        Some("cargo test -p disrobe-pass-php --test it -- oparray_behavioral --nocapture")
     );
     let release: Value = workflow("release.yml");
     let release_on: &Value = release
