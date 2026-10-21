@@ -1,0 +1,148 @@
+#![allow(clippy::expect_used, clippy::panic)]
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use disrobe_pass_jvm::{
+    AndroidIdentity, AndroidIdentityHit, AndroidIdentityKind, identify_android,
+};
+
+fn corpus(rel: &str) -> Vec<u8> {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus")
+        .join(rel);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+fn identify(rel: &str) -> AndroidIdentity {
+    identify_android(&corpus(rel), Some(rel))
+        .unwrap_or_else(|| panic!("{rel} is an Android or JVM artifact"))
+}
+
+fn names(identity: &AndroidIdentity, kind: AndroidIdentityKind) -> BTreeSet<String> {
+    identity
+        .hits
+        .iter()
+        .filter(|h: &&AndroidIdentityHit| h.kind == kind)
+        .map(|h: &AndroidIdentityHit| h.name.clone())
+        .collect()
+}
+
+#[test]
+fn a_d8_built_dex_names_its_version_and_writer() {
+    let identity: AndroidIdentity = identify("jvm/dex/EdgeCases.dex");
+    assert_eq!(identity.format, "dex");
+    assert_eq!(identity.dex_files, 1);
+    assert_eq!(
+        names(&identity, AndroidIdentityKind::Format),
+        BTreeSet::from(["dex 035".to_owned()])
+    );
+    assert_eq!(
+        names(&identity, AndroidIdentityKind::Compiler),
+        BTreeSet::from(["d8/r8".to_owned()])
+    );
+    assert!(
+        names(&identity, AndroidIdentityKind::Obfuscator).is_empty(),
+        "{:#?}",
+        identity.hits
+    );
+    let kotlin: AndroidIdentity = identify("jvm/dex/EdgeCasesKt.dex");
+    assert_eq!(
+        names(&kotlin, AndroidIdentityKind::Format),
+        BTreeSet::from(["dex 039".to_owned()])
+    );
+    assert_eq!(
+        names(&kotlin, AndroidIdentityKind::Compiler),
+        BTreeSet::from(["d8/r8".to_owned()])
+    );
+}
+
+#[test]
+fn r8_minified_names_are_reported_and_the_clean_build_is_not() {
+    let minified: AndroidIdentity = identify("jvm/dex/obfuscators/r8/Widget-r8.dex");
+    assert_eq!(
+        names(&minified, AndroidIdentityKind::Obfuscator),
+        BTreeSet::from(["ProGuard/R8 renaming".to_owned()]),
+        "{:#?}",
+        minified.hits
+    );
+    let clean: AndroidIdentity = identify("jvm/dex/obfuscators/r8/Widget-clean.dex");
+    assert!(
+        names(&clean, AndroidIdentityKind::Obfuscator).is_empty(),
+        "{:#?}",
+        clean.hits
+    );
+}
+
+#[test]
+fn the_plant_apk_names_its_signatures_and_anti_analysis_checks() {
+    let plants: AndroidIdentity = identify("recon/android-audit/audit-plants.apk");
+    assert_eq!(plants.format, "apk");
+    assert_eq!(
+        names(&plants, AndroidIdentityKind::Signature),
+        BTreeSet::from([
+            "v1 (JAR signing)".to_owned(),
+            "v2".to_owned(),
+            "v3".to_owned()
+        ]),
+        "{:#?}",
+        plants.hits
+    );
+    assert_eq!(
+        names(&plants, AndroidIdentityKind::AntiAnalysis),
+        BTreeSet::from([
+            "debugger check".to_owned(),
+            "dynamic code loading".to_owned(),
+            "emulator check".to_owned(),
+            "root check".to_owned(),
+        ]),
+        "{:#?}",
+        plants.hits
+    );
+    assert!(
+        plants
+            .hits
+            .iter()
+            .all(|h: &AndroidIdentityHit| !h.detail.is_empty()),
+        "every hit carries evidence"
+    );
+    let control: AndroidIdentity = identify("recon/android-audit/audit-control.apk");
+    assert!(
+        names(&control, AndroidIdentityKind::AntiAnalysis).is_empty(),
+        "{:#?}",
+        control.hits
+    );
+    assert_eq!(
+        names(&control, AndroidIdentityKind::Compiler),
+        BTreeSet::from(["d8/r8".to_owned()])
+    );
+}
+
+#[test]
+fn an_allatori_class_names_its_obfuscator() {
+    let identity: AndroidIdentity = identify("jvm/allatori/AllatoriStrings.class");
+    assert_eq!(identity.format, "class");
+    assert_eq!(identity.class_files, 1);
+    assert_eq!(
+        names(&identity, AndroidIdentityKind::Obfuscator),
+        BTreeSet::from(["Allatori".to_owned()]),
+        "{:#?}",
+        identity.hits
+    );
+}
+
+#[test]
+fn a_zip_without_dex_manifest_or_classes_is_not_an_android_artifact() {
+    let mut zip: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer: zip::ZipWriter<&mut std::io::Cursor<Vec<u8>>> =
+            zip::ZipWriter::new(&mut zip);
+        writer
+            .start_file("readme.txt", zip::write::SimpleFileOptions::default())
+            .expect("start entry");
+        std::io::Write::write_all(&mut writer, b"plain archive").expect("write entry");
+        writer.finish().expect("finish zip");
+    }
+    assert!(identify_android(zip.get_ref(), Some("plain.zip")).is_none());
+    assert!(identify_android(b"not an archive at all", None).is_none());
+}

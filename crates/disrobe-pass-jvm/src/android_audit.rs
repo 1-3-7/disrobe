@@ -377,7 +377,7 @@ fn finish(report: &mut AndroidAuditReport) {
     report.findings.dedup();
 }
 
-fn audit_dex_into(dex: &DexFile, bytes: &[u8], report: &mut AndroidAuditReport) {
+pub(crate) fn audit_dex_into(dex: &DexFile, bytes: &[u8], report: &mut AndroidAuditReport) {
     let code = parse_code_items(dex, bytes);
     for item in code.decoded() {
         report.methods_scanned = report.methods_scanned.saturating_add(1);

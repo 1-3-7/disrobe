@@ -19,6 +19,7 @@ pub mod android_attrs;
 pub mod android_audit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_backend;
+pub mod android_identify;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apk_resources;
 #[cfg(not(target_arch = "wasm32"))]
@@ -139,6 +140,9 @@ pub use android_audit::{
 pub use android_backend::{
     AndroidDecompileOutput, AndroidDecompiler, BackendPreference, JadxOutcome, JadxRefusal,
     decompile_dex as android_decompile_dex, run_jadx_on_bytes, run_jadx_on_bytes_detailed,
+};
+pub use android_identify::{
+    AndroidIdentity, AndroidIdentityHit, AndroidIdentityKind, identify_android,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use apk_resources::{

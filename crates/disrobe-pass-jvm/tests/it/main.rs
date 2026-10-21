@@ -1,6 +1,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+#[path = "../android_identify.rs"]
+mod android_identify;
+
 #[path = "../android_audit.rs"]
 mod android_audit;
 
