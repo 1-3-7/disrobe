@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2580 bounds (count 244, other 1221, output 72, recursion 251, size 592, work 200).
+2586 bounds (count 244, other 1224, output 72, recursion 252, size 592, work 202).
 
-Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1063, recorded 233, panic 0, delegated 54, silent 1177, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1089,6 +1089,8 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassi
 | `disrobe-pass-js-deob` | `MAX_STRING_LEN` | size | silent: `continue` in `extract_framed_strings` | `u32` | `1u32 << 24u32` | `crates/disrobe-pass-js-deob/src/v8/serialized_code.rs` |
 | `disrobe-pass-jvm` | `MAX_AUDIT_FINDINGS` | other | recorded: flag `truncated` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/android_audit.rs` |
 | `disrobe-pass-jvm` | `MAX_METHOD_LITERALS` | work | silent: skipped in `audit_method` | `usize` | `4_096` | `crates/disrobe-pass-jvm/src/android_audit.rs` |
+| `disrobe-pass-jvm` | `MAX_REFLECTION_TABLE` | other | silent: skipped in `reflection_table` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/android_audit_resolve.rs` |
+| `disrobe-pass-jvm` | `MAX_WRAPPER_HOPS` | work | silent: `for` range in `resolve` | `usize` | `4` | `crates/disrobe-pass-jvm/src/android_audit_resolve.rs` |
 | `disrobe-pass-jvm` | `MAX_JADX_INPUT_FILE_NAME_BYTES` | size | error: `JadxRefusal::InvalidInputFileName` | `usize` | `255` | `crates/disrobe-pass-jvm/src/android_backend.rs` |
 | `disrobe-pass-jvm` | `MAX_JADX_INPUT_FILE_NAME_UTF16_UNITS` | other | error: `JadxRefusal::InvalidInputFileName` | `usize` | `255` | `crates/disrobe-pass-jvm/src/android_backend.rs` |
 | `disrobe-pass-jvm` | `MAX_JADX_OUTPUT_TREE_BYTES` | output | error: `JadxRefusal::OutputLimit` | `u64` | `128 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/android_backend.rs` |
@@ -1155,6 +1157,8 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassi
 | `disrobe-pass-jvm` | `MAX_RECURSION_DEPTH` | recursion | error: `SkipReason::BudgetExhausted` | `u32` | `12` | `crates/disrobe-pass-jvm/src/dalvik_interp.rs` |
 | `disrobe-pass-jvm` | `STEP_BUDGET` | work | error: `SkipReason::BudgetExhausted` | `u64` | `2_000_000` | `crates/disrobe-pass-jvm/src/dalvik_interp.rs` |
 | `disrobe-pass-jvm` | `TOTAL_STEP_BUDGET` | work | error: `SkipReason::BudgetExhausted` | `u64` | `16 * STEP_BUDGET` | `crates/disrobe-pass-jvm/src/dalvik_interp.rs` |
+| `disrobe-pass-jvm` | `MAX_CIPHER_INPUT` | other | error: `SkipReason::OutputTooLarge` | `usize` | `1 << 20` | `crates/disrobe-pass-jvm/src/dalvik_interp/crypto.rs` |
+| `disrobe-pass-jvm` | `MAX_PBKDF2_ITERATIONS` | work | error: `SkipReason::BudgetExhausted`; `SkipReason::Unsound` | `i32` | `100_000` | `crates/disrobe-pass-jvm/src/dalvik_interp/crypto.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_DATA_ELEMENTS` | other | silent: `return` in `array_data_elements` | `usize` | `16_384` | `crates/disrobe-pass-jvm/src/dalvik_lift.rs` |
 | `disrobe-pass-jvm` | `MAX_INLINE_DEPTH` | recursion | silent: `return` in `inline_helper_body` | `u16` | `2` | `crates/disrobe-pass-jvm/src/dalvik_lift.rs` |
 | `disrobe-pass-jvm` | `MAX_HANDLER_BLOCKS` | other | silent: `break` in `monitor_handler` | `usize` | `4` | `crates/disrobe-pass-jvm/src/dalvik_monitor.rs` |
@@ -1167,6 +1171,8 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassi
 | `disrobe-pass-jvm` | `MAX_HEAP_OBJECTS` | other | error: `EvalError::HeapExhausted` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dalvik_strdec.rs` |
 | `disrobe-pass-jvm` | `STEP_LIMIT` | work | error: `EvalError::StepLimitExceeded` | `u64` | `2_000_000` | `crates/disrobe-pass-jvm/src/dalvik_strdec.rs` |
 | `disrobe-pass-jvm` | `MAX_CANDIDATE_PARAMS` | other | silent: `return` in `signature_weight` | `usize` | `2` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
+| `disrobe-pass-jvm` | `MAX_DATAFLOW_PASSES` | other | silent: `return` in `run_dataflow` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
+| `disrobe-pass-jvm` | `MAX_DELEGATION_DEPTH` | recursion | silent: `for` range in `find_candidates` | `usize` | `3` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
 | `disrobe-pass-jvm` | `MAX_BUCKET_TESTS` | other | silent: `for` range in `bucket_chain` | `usize` | `256` | `crates/disrobe-pass-jvm/src/dalvik_string_switch.rs` |
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_HOPS` | work | silent: `for` range in `absorb_trampolines`; `for` range in `skip_trampolines` | `usize` | `4` | `crates/disrobe-pass-jvm/src/dalvik_string_switch.rs` |
 | `disrobe-pass-jvm` | `MAX_BRANCH_INSNS` | other | recorded: `record_bail_kind()` | `usize` | `MAX_METHOD_INSNS` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |
@@ -2604,7 +2610,7 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassi
 
 ## Silent stops
 
-1173 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1177 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3035,6 +3041,8 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassi
 | `disrobe-pass-js-deob` | `REGISTER_RANGE_SCAN_LIMIT` | no action in `prepare_accumulator` | `crates/disrobe-pass-js-deob/src/v8/flat_bytecode_lift.rs` |
 | `disrobe-pass-js-deob` | `MAX_STRING_LEN` | `continue` in `extract_framed_strings` | `crates/disrobe-pass-js-deob/src/v8/serialized_code.rs` |
 | `disrobe-pass-jvm` | `MAX_METHOD_LITERALS` | skipped in `audit_method` | `crates/disrobe-pass-jvm/src/android_audit.rs` |
+| `disrobe-pass-jvm` | `MAX_REFLECTION_TABLE` | skipped in `reflection_table` | `crates/disrobe-pass-jvm/src/android_audit_resolve.rs` |
+| `disrobe-pass-jvm` | `MAX_WRAPPER_HOPS` | `for` range in `resolve` | `crates/disrobe-pass-jvm/src/android_audit_resolve.rs` |
 | `disrobe-pass-jvm` | `MAX_CLASSES_FINGERPRINTED` | `.take()` in `identify_jar`; `.take()` in `minified_class_names` | `crates/disrobe-pass-jvm/src/android_identify.rs` |
 | `disrobe-pass-jvm` | `MAX_MAP_ENTRIES` | `.min()` clamp in `data_item_order` | `crates/disrobe-pass-jvm/src/android_identify.rs` |
 | `disrobe-pass-jvm` | `JAVA_RANDOM_REJECTION_CAP` | `for` range in `next_bounded_int` | `crates/disrobe-pass-jvm/src/bytecode_eval.rs` |
@@ -3060,6 +3068,8 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassi
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_HOPS` | `for` range in `past_trampolines` | `crates/disrobe-pass-jvm/src/dalvik_monitor.rs` |
 | `disrobe-pass-jvm` | `JAVA_RANDOM_REJECTION_CAP` | `for` range in `next_bounded_int` | `crates/disrobe-pass-jvm/src/dalvik_strdec.rs` |
 | `disrobe-pass-jvm` | `MAX_CANDIDATE_PARAMS` | `return` in `signature_weight` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
+| `disrobe-pass-jvm` | `MAX_DATAFLOW_PASSES` | `return` in `run_dataflow` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
+| `disrobe-pass-jvm` | `MAX_DELEGATION_DEPTH` | `for` range in `find_candidates` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
 | `disrobe-pass-jvm` | `MAX_BUCKET_TESTS` | `for` range in `bucket_chain` | `crates/disrobe-pass-jvm/src/dalvik_string_switch.rs` |
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_HOPS` | `for` range in `absorb_trampolines`; `for` range in `skip_trampolines` | `crates/disrobe-pass-jvm/src/dalvik_string_switch.rs` |
 | `disrobe-pass-jvm` | `MAX_TRACKED_NARROW_CONSTANT_REGS` | `return` in `must_narrow_constant_states` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |
