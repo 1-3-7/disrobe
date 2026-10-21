@@ -198,6 +198,7 @@ pub use dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg, build_dalvik_cfg_from_co
 #[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_decompile::{
     DecompiledDex, decompile_dex, decompile_dex_bytes as decompile_dex_from_bytes,
+    merge_rendered_source, write_source_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_dexguard::{

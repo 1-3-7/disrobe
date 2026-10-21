@@ -2151,8 +2151,13 @@ fn decompile_apk_dexes(apk_bytes: &[u8]) -> DecompiledDex {
             continue;
         };
         let part: DecompiledDex = decompile_dex(&dx, &entry.bytes);
+        if !combined.source.is_empty() {
+            combined.source.push('\n');
+        }
         combined.source.push_str(&part.source);
-        combined.sources.extend(part.sources);
+        for (path, text) in part.sources {
+            disrobe_pass_jvm::merge_rendered_source(&mut combined.sources, path, text);
+        }
         combined.class_count += part.class_count;
         combined.method_count += part.method_count;
         combined.fully_lifted_methods += part.fully_lifted_methods;
@@ -2259,6 +2264,12 @@ fn emit_native_dex(
         let path: PathBuf = out_dir.join(format!("{stem}.java"));
         std::fs::write(&path, &native.source)
             .map_err(|e| miette::miette!("DR-CLI-0422: cannot write native dex source: {e}"))?;
+        if !native.sources.is_empty() {
+            disrobe_pass_jvm::write_source_tree(&out_dir.join("sources"), &native.sources)
+                .map_err(|e| {
+                    miette::miette!("DR-CLI-0994: cannot write the per-class source tree: {e}")
+                })?;
+        }
     }
     Ok(want_source)
 }

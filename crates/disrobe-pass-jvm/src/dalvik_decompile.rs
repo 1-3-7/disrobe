@@ -549,16 +549,69 @@ fn append_rendered_source(
         source.push('\n');
     }
     source.push_str(&rendered.text);
-    match sources.entry(rendered.source_path) {
+    merge_rendered_source(sources, rendered.source_path, rendered.text);
+}
+
+pub fn merge_rendered_source(sources: &mut BTreeMap<String, String>, path: String, text: String) {
+    match sources.entry(path) {
         std::collections::btree_map::Entry::Vacant(slot) => {
-            slot.insert(rendered.text);
+            slot.insert(text);
         }
         std::collections::btree_map::Entry::Occupied(mut slot) => {
             let merged: &mut String = slot.get_mut();
             merged.push('\n');
-            merged.push_str(&strip_package_header(&rendered.text));
+            merged.push_str(&strip_package_header(&text));
         }
     }
+}
+
+const MAX_SOURCE_TREE_FILES: usize = 65_536;
+const MAX_SOURCE_PATH_DEPTH: usize = 64;
+
+fn source_path_is_safe(path: &str) -> bool {
+    let Some(stem_path) = path.strip_suffix(".java") else {
+        return false;
+    };
+    let components: Vec<&str> = stem_path.split('/').collect();
+    components.len() <= MAX_SOURCE_PATH_DEPTH
+        && components.iter().all(|component: &&str| {
+            !component.is_empty()
+                && *component != "."
+                && *component != ".."
+                && component
+                    .chars()
+                    .all(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        })
+}
+
+pub fn write_source_tree(
+    root: &std::path::Path,
+    sources: &BTreeMap<String, String>,
+) -> crate::error::Result<Vec<std::path::PathBuf>> {
+    if sources.len() > MAX_SOURCE_TREE_FILES {
+        return Err(crate::error::Error::UnsafeSourcePath {
+            path: format!(
+                "{} files exceed the {MAX_SOURCE_TREE_FILES}-file tree limit",
+                sources.len()
+            ),
+        });
+    }
+    if let Some(bad) = sources
+        .keys()
+        .find(|path: &&String| !source_path_is_safe(path))
+    {
+        return Err(crate::error::Error::UnsafeSourcePath { path: bad.clone() });
+    }
+    let mut written: Vec<std::path::PathBuf> = Vec::with_capacity(sources.len());
+    for (path, text) in sources {
+        let target: std::path::PathBuf = root.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, text)?;
+        written.push(target);
+    }
+    Ok(written)
 }
 
 fn compose_rendered_class(

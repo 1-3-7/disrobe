@@ -132,6 +132,11 @@ pub enum Error {
     #[error("DR-JVM-0101: duplicate class in source recovery input: {0}")]
     DuplicateClass(String),
 
+    #[error(
+        "DR-JVM-0102: a recovered source path escapes the output directory or is not a package path: {path}"
+    )]
+    UnsafeSourcePath { path: String },
+
     #[error("DR-JVM-0092: not an Android App Bundle (missing BundleConfig.pb at zip root)")]
     NotAab,
 
