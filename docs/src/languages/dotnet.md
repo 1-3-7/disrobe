@@ -122,9 +122,12 @@ nothing is reported. The unwind table supplies the body range in both cases; a r
 two identities is dropped. The initializer forms are: byte, word, dword and sign-extended qword
 immediates, 64-bit constants materialized in `rax` by the preceding instruction, and stores the
 compiler coalesced over adjacent fields, split back per field through the FieldAccessMap offsets.
-Each initializer names its field and type when the FieldAccessMap owns that offset. Reference
-initializers (a frozen string loaded with `lea`) and stores inside bodies shared by several method
-records are not reported. The x86-64 forms are graded against a committed .NET 10 NativeAOT build
+Each initializer names its field and type when the FieldAccessMap owns that offset. A pointer
+store fed by a `lea` of a frozen object is reported as a reference store, and when the object lies
+in the image's frozen-object section and points at the String MethodTable (component size two,
+element type class), carries a valid length, UTF-16 code units and the null terminator, its text
+is reported as a frozen string beside it. Stores inside bodies shared by several method records
+are not reported. The x86-64 forms are graded against a committed .NET 10 NativeAOT build
 whose source assigns 51 constants (`corpus/dotnet/aot/BUILD.md`).
 
 ### Obfuscator reversal

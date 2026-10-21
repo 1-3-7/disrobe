@@ -34,10 +34,11 @@ pub use metadata_records::{
     AotType, AotTypeLayout, AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 pub use object_model::{
-    AotObjectConstant, AotObjectFieldInitializer, AotObjectFieldStore, AotObjectHelperCall,
-    AotObjectHelperEvidence, AotObjectHelperKind, AotObjectMethodEvidence, AotObjectModel,
-    AotObjectModelRefusal, AotObjectModelStatus, AotObjectStoreWidth, AotObjectTypeReference,
-    constructor_evidence, recover_object_model,
+    AotObjectConstant, AotObjectFieldInitializer, AotObjectFieldStore, AotObjectFrozenString,
+    AotObjectHelperCall, AotObjectHelperEvidence, AotObjectHelperKind, AotObjectMethodEvidence,
+    AotObjectModel, AotObjectModelRefusal, AotObjectModelStatus, AotObjectReferenceStore,
+    AotObjectStoreWidth, AotObjectTypeReference, constructor_evidence, recover_object_model,
+    resolve_frozen_strings,
 };
 pub use resources::{
     AotManifestResource, AotResourceIndex, AotResourceRefusal, AotResourceStatus,
@@ -1182,6 +1183,8 @@ const AOT_NEEDLES: &[(&[u8], &str)] = &[
 
 const EAGER_CCTOR_SCAN_CAP: u32 = 512;
 
+const FROZEN_OBJECT_REGION_SECTION_ID: i32 = 206;
+
 #[must_use]
 pub fn detect(image: &[u8]) -> AotReport {
     let mut symbols: BTreeMap<String, u32> = BTreeMap::new();
@@ -1268,13 +1271,26 @@ pub fn detect(image: &[u8]) -> AotReport {
         });
     let constructor_evidence: Vec<AotObjectMethodEvidence> =
         object_model::constructor_evidence(image, &metadata_attribution, &stack_trace_map);
-    let object_model: AotObjectModel = recover_object_model(
+    let mut object_model: AotObjectModel = recover_object_model(
         image,
         &metadata_attribution,
         object_type_layouts,
         &constructor_evidence,
         &[],
     );
+    if let Some(region) = ready_to_run
+        .as_ref()
+        .and_then(|header: &ReadyToRunHeader| header.section(FROZEN_OBJECT_REGION_SECTION_ID))
+    {
+        object_model.frozen_strings = resolve_frozen_strings(
+            image,
+            AotCodeRange {
+                start_rva: region.start_rva,
+                end_rva: region.end_rva,
+            },
+            &object_model.reference_stores,
+        );
+    }
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")

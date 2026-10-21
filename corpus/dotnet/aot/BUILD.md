@@ -89,7 +89,22 @@ Observed with llvm-objdump 19.1.7 on the committed image (`Berth..ctor` at RVA 0
 - Immediate stores through `rcx`: `c6 41|81 disp imm8`, `66 c7 41|81 disp imm16`, `c7 41|81 disp imm32` and `48 c7 41|81 disp imm32` (sign-extended to 64 bits), with an 8-bit displacement below 0x80 and a 32-bit one above.
 - Constants that do not fit a sign-extended 32-bit immediate (`0x1122334455667788`, `0x100000000`, the double 51.4779) are loaded with `48 b8 imm64` into `rax` and stored by the next instruction `48 89 41|81 disp`.
 - Adjacent fields are coalesced: `_lit = true; _lane = 200` becomes one `mov word ptr [rcx+0xd6], 0xc801`, `_light0`/`_light1` one word store, and each pair of consecutive `int` fields one `movabs rax, imm64; mov qword ptr [rcx+disp], rax`. The reader splits such a store across the FieldAccessMap offsets it covers.
-- The float 182.5 is stored as the dword immediate `0x43368000`; the string `"north pier"` is a `lea rax, [rip+disp]` of a frozen string object followed by a pointer store, which the initializer reader does not resolve (listed by name as the one reference field in the test).
+- The float 182.5 is stored as the dword immediate `0x43368000`; the string `"north pier"` is a `lea rax, [rip+disp]` of a frozen string object followed by a pointer store. The reader records that pair as a reference store and resolves the object as a frozen string.
+
+## Frozen string layout the reader relies on
+
+These points come from the dotnet/runtime sources at tag `v10.0.0` (MIT licence); each file's sha256 is listed below.
+
+- `FrozenStringNode.cs` emits a frozen string as a pointer relocation to the constructed `System.String` MethodTable, a 4-byte UTF-16 code-unit count, the code units, and a two-byte null terminator; nothing precedes the MethodTable pointer at the symbol.
+- `ModuleHeaders.cs` numbers the NativeAOT ReadyToRun section that holds frozen objects `FrozenObjectRegion = 206`; the reader accepts an object only inside that section's bounds.
+- `MethodTable.h` and `MethodTable.Constants.cs` define the flags word at the start of a MethodTable: `HasComponentSizeFlag = 0x80000000` with the component size in the low 16 bits (`sizeof(char)` for `String`), the element type in bits 26 to 30 (`Class = 0x14`) and the kind in bits 16 and 17 (`CanonicalEEType = 0`). The reader requires all three on the MethodTable the object points at, and refuses the whole set when validated objects point at more than one MethodTable.
+
+| Runtime source (`src/coreclr/...` at `v10.0.0`) | sha256 |
+| --- | --- |
+| `tools/aot/ILCompiler.Compiler/Compiler/DependencyAnalysis/FrozenStringNode.cs` | `40d622f9194a8e908ac759961ac1125253ccf5e0d217ba20efb65f7859e0fb3d` |
+| `tools/Common/Internal/Runtime/ModuleHeaders.cs` | `1ddcb09ab04210002627171fe01072181fdb38428a3b3c9335e1ce00d036da21` |
+| `nativeaot/Runtime/inc/MethodTable.h` | `b2ee1699166ef67b25fb4f992adbd5d80794a8a9043158064cb73372b7a6e851` |
+| `tools/Common/Internal/Runtime/MethodTable.Constants.cs` | `7cda109c57a7b98b6ccb78d19b92ed08256e7ad7ca2cc9b16355cd29078e75aa` |
 
 ## Toolchain and build
 

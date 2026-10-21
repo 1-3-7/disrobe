@@ -6,8 +6,9 @@ use std::io::Read as _;
 use std::sync::OnceLock;
 
 use disrobe_pass_dotnet::aot::{
-    AotMetadataStatus, AotObjectConstant, AotObjectFieldInitializer, AotObjectMethodEvidence,
-    AotObjectModel, AotObjectModelStatus, AotReport, detect, recover_object_model,
+    AotCodeRange, AotMetadataStatus, AotObjectConstant, AotObjectFieldInitializer,
+    AotObjectFrozenString, AotObjectMethodEvidence, AotObjectModel, AotObjectModelStatus,
+    AotObjectReferenceStore, AotReport, detect, recover_object_model, resolve_frozen_strings,
 };
 
 const FIXTURE: &str = "corpus/dotnet/aot/aot_ctor_net10_x86_64";
@@ -524,5 +525,105 @@ fn a_register_materialized_constant_needs_its_adjacent_load() {
     assert_eq!(
         model.field_initializers.len(),
         baseline.field_initializers.len() - 1
+    );
+}
+
+fn source_string_literal(name: &str) -> String {
+    let source: Vec<u8> = fixture("Program.cs");
+    let text: &str = std::str::from_utf8(&source).expect("Program.cs is UTF-8");
+    let needle: String = format!("{name} = \"");
+    let start: usize = text
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{name} is assigned a string literal"))
+        + needle.len();
+    let end: usize = text[start..].find("\";").expect("string literal closes") + start;
+    text[start..end].to_owned()
+}
+
+fn frozen_region() -> AotCodeRange {
+    let section = report()
+        .ready_to_run
+        .as_ref()
+        .and_then(|header| header.section(206))
+        .expect("fixture carries a FrozenObjectRegion section");
+    AotCodeRange {
+        start_rva: section.start_rva,
+        end_rva: section.end_rva,
+    }
+}
+
+fn frozen_name(model: &AotObjectModel, strings: &[AotObjectFrozenString]) -> Option<String> {
+    let store: &AotObjectReferenceStore = model
+        .reference_stores
+        .iter()
+        .find(|store| store.field_name.as_deref() == Some("_name"))?;
+    strings
+        .iter()
+        .find(|frozen| frozen.store_rva == store.store_rva)
+        .map(|frozen| frozen.value.clone())
+}
+
+#[test]
+fn the_frozen_string_initializer_equals_the_source_literal_on_both_paths() {
+    let expected: String = source_string_literal("_name");
+    assert_eq!(expected, "north pier");
+    let report: &AotReport = report();
+    assert_eq!(
+        frozen_name(&report.object_model, &report.object_model.frozen_strings).as_deref(),
+        Some(expected.as_str()),
+        "detect resolves the frozen string from the image alone"
+    );
+    let model: AotObjectModel = recover(image());
+    let strings: Vec<AotObjectFrozenString> =
+        resolve_frozen_strings(image(), frozen_region(), &model.reference_stores);
+    assert_eq!(
+        frozen_name(&model, &strings).as_deref(),
+        Some(expected.as_str())
+    );
+    let frozen: &AotObjectFrozenString = strings
+        .iter()
+        .find(|frozen| frozen.field_name.as_deref() == Some("_name"))
+        .expect("_name frozen string");
+    assert!(
+        frozen.object_rva >= frozen_region().start_rva
+            && frozen.object_rva < frozen_region().end_rva
+    );
+    assert_eq!(
+        strings.len(),
+        1,
+        "the fixture constructors store one reference"
+    );
+}
+
+#[test]
+fn a_frozen_string_with_a_mutated_method_table_or_terminator_is_not_reported() {
+    let model: AotObjectModel = recover(image());
+    let store: &AotObjectReferenceStore = model
+        .reference_stores
+        .iter()
+        .find(|store| store.field_name.as_deref() == Some("_name"))
+        .expect("_name reference store");
+    let baseline: Vec<AotObjectFrozenString> =
+        resolve_frozen_strings(image(), frozen_region(), &model.reference_stores);
+    assert_eq!(baseline.len(), 1);
+    let method_table_rva: u32 = baseline[0].method_table_rva;
+    let mut wrong_component: Vec<u8> = image().to_vec();
+    let flags_at: usize = file_offset(method_table_rva);
+    assert_eq!(
+        wrong_component[flags_at], 2,
+        "String component size is two bytes per char"
+    );
+    wrong_component[flags_at] = 4;
+    assert!(
+        resolve_frozen_strings(&wrong_component, frozen_region(), &model.reference_stores)
+            .is_empty()
+    );
+    let mut no_terminator: Vec<u8> = image().to_vec();
+    let length: usize = baseline[0].value.encode_utf16().count();
+    let terminator_at: usize = file_offset(store.object_rva) + 12 + length * 2;
+    assert_eq!(&no_terminator[terminator_at..terminator_at + 2], &[0, 0]);
+    no_terminator[terminator_at] = 0x41;
+    assert!(
+        resolve_frozen_strings(&no_terminator, frozen_region(), &model.reference_stores).is_empty()
     );
 }

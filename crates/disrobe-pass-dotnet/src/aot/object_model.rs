@@ -20,6 +20,16 @@ const MAX_TYPE_REFERENCES: usize = 16_384;
 const MAX_RUNTIME_FIELD_LAYOUTS: usize = 1_048_576;
 const MAX_FIELD_INITIALIZERS: usize = 16_384;
 const MAX_FIELD_OFFSET: u32 = 0x00FF_FFFF;
+const MAX_REFERENCE_STORES: usize = 16_384;
+const MAX_FROZEN_STRING_CHARS: u32 = 65_536;
+const METHOD_TABLE_HAS_COMPONENT_SIZE: u32 = 0x8000_0000;
+const METHOD_TABLE_ELEMENT_TYPE_MASK: u32 = 0x7C00_0000;
+const METHOD_TABLE_ELEMENT_TYPE_SHIFT: u32 = 26;
+const METHOD_TABLE_KIND_MASK: u32 = 0x0003_0000;
+const METHOD_TABLE_ELEMENT_TYPE_CLASS: u32 = 0x14;
+const STRING_COMPONENT_SIZE: u32 = 2;
+const FROZEN_STRING_LENGTH_OFFSET: u32 = 8;
+const FROZEN_STRING_CHARS_OFFSET: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +76,34 @@ pub struct AotObjectModel {
     pub type_references: Vec<AotObjectTypeReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub field_initializers: Vec<AotObjectFieldInitializer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_stores: Vec<AotObjectReferenceStore>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen_strings: Vec<AotObjectFrozenString>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotObjectReferenceStore {
+    pub type_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_record_offset: Option<u32>,
+    pub store_rva: u32,
+    pub field_offset: u32,
+    pub object_rva: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_type: Option<AotTypeSignature>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotObjectFrozenString {
+    pub type_record_offset: u32,
+    pub store_rva: u32,
+    pub field_offset: u32,
+    pub object_rva: u32,
+    pub method_table_rva: u32,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_name: Option<String>,
 }
 impl Default for AotObjectModel {
     fn default() -> Self {
@@ -76,6 +114,8 @@ impl Default for AotObjectModel {
             helper_calls: Vec::new(),
             type_references: Vec::new(),
             field_initializers: Vec::new(),
+            reference_stores: Vec::new(),
+            frozen_strings: Vec::new(),
         }
     }
 }
@@ -205,6 +245,8 @@ const fn refused(
         helper_calls: Vec::new(),
         type_references: Vec::new(),
         field_initializers: Vec::new(),
+        reference_stores: Vec::new(),
+        frozen_strings: Vec::new(),
     }
 }
 struct ThisOperand {
@@ -634,6 +676,7 @@ pub fn recover_object_model(
     let mut calls = Vec::new();
     let mut type_references = Vec::new();
     let mut field_initializers = Vec::new();
+    let mut reference_stores = Vec::new();
     for evidence in method_evidence {
         let range = AotCodeRange {
             start_rva: evidence.start_rva,
@@ -669,10 +712,10 @@ pub fn recover_object_model(
                 Err(_) => return refused(AotObjectModelRefusal::DisassemblyFailed, type_layouts),
             };
         for (index, instruction) in instructions.iter().enumerate() {
-            let prior: Option<&[u8]> = index
+            let previous: Option<&DisasmInsn> = index
                 .checked_sub(1)
-                .and_then(|previous| instructions.get(previous))
-                .map(|previous| previous.bytes.as_slice());
+                .and_then(|previous| instructions.get(previous));
+            let prior: Option<&[u8]> = previous.map(|previous| previous.bytes.as_slice());
             let Ok(rva): Result<u32, std::num::TryFromIntError> =
                 u32::try_from(instruction.address)
             else {
@@ -738,6 +781,25 @@ pub fn recover_object_model(
                     });
                 }
             }
+            if evidence.constructor
+                && instruction.mnemonic == "mov"
+                && let Some((field_offset, object_rva)) =
+                    reference_store(&instruction.bytes, previous)
+            {
+                if reference_stores.len() == MAX_REFERENCE_STORES {
+                    return refused(AotObjectModelRefusal::FieldStoreLimitExceeded, type_layouts);
+                }
+                let field = fields_by_offset.get(&(evidence.type_record_offset, field_offset));
+                reference_stores.push(AotObjectReferenceStore {
+                    type_record_offset: evidence.type_record_offset,
+                    method_record_offset: evidence.method_record_offset,
+                    store_rva: rva,
+                    field_offset,
+                    object_rva,
+                    field_name: field.map(|(_record_offset, name, _field_type)| name.clone()),
+                    field_type: field.map(|(_record_offset, _name, field_type)| *field_type),
+                });
+            }
             let Some((width, source_register, field_offset)) = field_store(&instruction.bytes, 0)
             else {
                 continue;
@@ -765,5 +827,127 @@ pub fn recover_object_model(
         helper_calls: calls,
         type_references,
         field_initializers,
+        reference_stores,
+        frozen_strings: Vec::new(),
     }
+}
+fn reference_store(bytes: &[u8], previous: Option<&DisasmInsn>) -> Option<(u32, u32)> {
+    let [0x48, 0x89, ..] = bytes else {
+        return None;
+    };
+    let operand: ThisOperand = this_operand(bytes, 2)?;
+    if operand.end != bytes.len() || operand.register != 0 {
+        return None;
+    }
+    let previous: &DisasmInsn = previous?;
+    let [0x48, 0x8d, 0x05, a, b, c, d] = previous.bytes.as_slice() else {
+        return None;
+    };
+    let lea_rva: u32 = u32::try_from(previous.address).ok()?;
+    let target: i64 = i64::from(lea_rva.checked_add(7)?)
+        .checked_add(i64::from(i32::from_le_bytes([*a, *b, *c, *d])))?;
+    Some((operand.offset, u32::try_from(target).ok()?))
+}
+fn read_u32_rva(image: &[u8], pe: &crate::pe::PeImage, rva: u32) -> Option<u32> {
+    let bytes: [u8; 4] = pe
+        .slice_exact_file_backed_rva(image, rva, 4)?
+        .try_into()
+        .ok()?;
+    Some(u32::from_le_bytes(bytes))
+}
+fn read_u64_rva(image: &[u8], pe: &crate::pe::PeImage, rva: u32) -> Option<u64> {
+    let bytes: [u8; 8] = pe
+        .slice_exact_file_backed_rva(image, rva, 8)?
+        .try_into()
+        .ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+fn string_method_table(image: &[u8], pe: &crate::pe::PeImage, method_table_rva: u32) -> bool {
+    let Some(flags): Option<u32> = read_u32_rva(image, pe, method_table_rva) else {
+        return false;
+    };
+    flags & METHOD_TABLE_HAS_COMPONENT_SIZE != 0
+        && flags & 0xFFFF == STRING_COMPONENT_SIZE
+        && (flags & METHOD_TABLE_ELEMENT_TYPE_MASK) >> METHOD_TABLE_ELEMENT_TYPE_SHIFT
+            == METHOD_TABLE_ELEMENT_TYPE_CLASS
+        && flags & METHOD_TABLE_KIND_MASK == 0
+}
+fn frozen_string(
+    image: &[u8],
+    pe: &crate::pe::PeImage,
+    region: AotCodeRange,
+    object_rva: u32,
+) -> Option<(u32, String)> {
+    if object_rva < region.start_rva || object_rva >= region.end_rva {
+        return None;
+    }
+    let method_table_va: u64 = read_u64_rva(image, pe, object_rva)?;
+    let method_table_rva: u32 = u32::try_from(method_table_va.checked_sub(pe.image_base)?).ok()?;
+    if !string_method_table(image, pe, method_table_rva) {
+        return None;
+    }
+    let length: u32 = read_u32_rva(
+        image,
+        pe,
+        object_rva.checked_add(FROZEN_STRING_LENGTH_OFFSET)?,
+    )?;
+    if length > MAX_FROZEN_STRING_CHARS {
+        return None;
+    }
+    let chars_rva: u32 = object_rva.checked_add(FROZEN_STRING_CHARS_OFFSET)?;
+    let byte_length: u32 = length.checked_mul(2)?.checked_add(2)?;
+    if chars_rva.checked_add(byte_length)? > region.end_rva {
+        return None;
+    }
+    let bytes: &[u8] =
+        pe.slice_exact_file_backed_rva(image, chars_rva, usize::try_from(byte_length).ok()?)?;
+    let (units, terminator): (&[u8], &[u8]) = bytes.split_at(bytes.len().checked_sub(2)?);
+    if terminator != [0, 0] {
+        return None;
+    }
+    let decoded: Vec<u16> = units
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect();
+    let value: String = char::decode_utf16(decoded)
+        .collect::<Result<String, _>>()
+        .ok()?;
+    Some((method_table_rva, value))
+}
+pub fn resolve_frozen_strings(
+    image: &[u8],
+    region: AotCodeRange,
+    stores: &[AotObjectReferenceStore],
+) -> Vec<AotObjectFrozenString> {
+    if !image.starts_with(b"MZ") || region.start_rva >= region.end_rva {
+        return Vec::new();
+    }
+    let Ok(pe) = crate::pe::parse(image) else {
+        return Vec::new();
+    };
+    if pe.bitness != PeBitness::Pe32Plus || pe.machine != AMD64_MACHINE {
+        return Vec::new();
+    }
+    let mut resolved: Vec<AotObjectFrozenString> = Vec::new();
+    let mut method_tables: BTreeSet<u32> = BTreeSet::new();
+    for store in stores {
+        let Some((method_table_rva, value)) = frozen_string(image, &pe, region, store.object_rva)
+        else {
+            continue;
+        };
+        method_tables.insert(method_table_rva);
+        resolved.push(AotObjectFrozenString {
+            type_record_offset: store.type_record_offset,
+            store_rva: store.store_rva,
+            field_offset: store.field_offset,
+            object_rva: store.object_rva,
+            method_table_rva,
+            value,
+            field_name: store.field_name.clone(),
+        });
+    }
+    if method_tables.len() > 1 {
+        return Vec::new();
+    }
+    resolved
 }
