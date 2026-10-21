@@ -177,12 +177,8 @@ namespace Tidewater.Moorings
             foreach (ConstructorInfo constructor in typeof(Berth).GetConstructors(
                 BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             {
-                total += constructor.ToString()!.Length;
-            }
-            foreach (ConstructorInfo constructor in typeof(Buoy).GetConstructors(
-                BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly))
-            {
-                total += constructor.ToString()!.Length;
+                object built = constructor.Invoke(null);
+                total += built is Berth other ? other.Checksum() : 0;
             }
             Console.WriteLine(total.ToString(CultureInfo.InvariantCulture));
             return total == 0 ? 1 : 0;

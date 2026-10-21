@@ -79,12 +79,12 @@ The program is shaped so that the compiler produces every store form a constant-
 
 - `Berth` declares 49 instance fields of every primitive width (bool, byte, sbyte, short, ushort, char, int, uint, long, ulong, float, double, an int enum and a string) and its parameterless constructor assigns each one a literal. The runtime lays the fields out by size, not declaration order, so the object spans 0xd0 bytes and the 1- and 2-byte fields sit past offset 0x80, which forces 32-bit displacements.
 - `Buoy` declares three fields inside the 8-bit displacement range.
-- `Main` names both types in `typeof(T).GetFields` with `BindingFlags.NonPublic | BindingFlags.Instance` and reads each field through `GetValue`, so ILCompiler keeps the field metadata and emits a FieldAccessMap entry for every field, and enumerates both constructors through `GetConstructors`, so each `.ctor` keeps its invoke-map entry and entrypoint; without those calls the names, offsets and constructor records are trimmed.
+- `Main` names both types in `typeof(T).GetFields` with `BindingFlags.NonPublic | BindingFlags.Instance` and reads each field through `GetValue`, so ILCompiler keeps the field metadata and emits a FieldAccessMap entry for every field, and reflection-invokes the `Berth` constructor (`GetConstructors` plus `ConstructorInfo.Invoke`), so that `.ctor` keeps an invoke-map entry with an entrypoint. The `Buoy` constructor is never reflected over, so it is absent from the invoke map and the stack-trace map names its body instead. Together the two constructors exercise both ways an image binds a constructor body to its type; a constructor that is merely enumerated without `Invoke` gets an invoke-map entry with no entrypoint and is left out of the stack-trace map, so nothing binds it.
 - Both constructors carry `MethodImplOptions.NoInlining`, so each keeps a body the linker map bounds.
 
 ## Compiler output the tests rely on
 
-Observed with llvm-objdump 19.1.7 on the committed image (`Berth..ctor` at RVA 0x661e0, `Buoy..ctor` at RVA 0x66530):
+Observed with llvm-objdump 19.1.7 on the committed image (`Berth..ctor` at RVA 0x81cc0, `Buoy..ctor` at RVA 0x82010):
 
 - Immediate stores through `rcx`: `c6 41|81 disp imm8`, `66 c7 41|81 disp imm16`, `c7 41|81 disp imm32` and `48 c7 41|81 disp imm32` (sign-extended to 64 bits), with an 8-bit displacement below 0x80 and a 32-bit one above.
 - Constants that do not fit a sign-extended 32-bit immediate (`0x1122334455667788`, `0x100000000`, the double 51.4779) are loaded with `48 b8 imm64` into `rax` and stored by the next instruction `48 89 41|81 disp`.
@@ -99,12 +99,12 @@ Same SDK, ILCompiler packages and MSVC linker as `aot_maps_net10_x86_64` above (
 dotnet publish aot_ctor_net10_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish --disable-build-servers -p:UseSharedCompilation=false -nodeReuse:false
 ```
 
-`publish/aot_ctor_net10_x86_64.exe` is the committed executable; the image carries zero occurrences of `C:\` in ASCII and in UTF-16LE. The managed excerpt of `obj/Release/net10.0/win-x64/native/aot_ctor_net10_x86_64.link.map` is produced with the same `awk` and `gzip -9 -n` commands as above (object name `aot_ctor_net10_x86_64.obj`) and has 3,308 lines. The full map is 2,602,843 bytes with sha256 `921e7c6a088678ffa6e1d6b8b85f98cf3687c1670ad69912c4da0b7979ed29f1`; the ILCompiler map (`aot_ctor_net10_x86_64.map.xml`, not committed) has sha256 `95c216eacf5b0437bd186aa89c8bfdf56b46cab6ff5181bce6680ac76d8d1ddd`.
+`publish/aot_ctor_net10_x86_64.exe` is the committed executable; the image carries zero occurrences of `C:\` in ASCII and in UTF-16LE. The managed excerpt of `obj/Release/net10.0/win-x64/native/aot_ctor_net10_x86_64.link.map` is produced with the same `awk` and `gzip -9 -n` commands as above (object name `aot_ctor_net10_x86_64.obj`) and has 4,401 lines. The full map is 3,181,129 bytes with sha256 `fd28551f2bbb24aa716cc7146a22ac42176f760d2d04b7383b28982e62679a21`; the ILCompiler map (`aot_ctor_net10_x86_64.map.xml`, not committed) has sha256 `730fdaa2f3607848f74b9083e1c2469fb494581e014b74965b38800f9f541341`.
 
 | File | Bytes | sha256 |
 | --- | --- | --- |
-| `Program.cs` | 6,740 | `baebfa30f539429c58d8d45e04fb6c01b21187cc61fbfbb5ad4136bb6503d333` |
+| `Program.cs` | 6,550 | `3dc92f481cd3d8b9f119c0feb51bb03ef3fff63f787ebdb7a1261b7b9f2b4351` |
 | `aot_ctor_net10_x86_64.csproj.txt` | 785 | `38e0db2e9d9218aadbb6751d68be1e0c3a4e76a92363c7bf90ea8ab885fc6e82` |
-| `aot_ctor_net10_x86_64.exe` | 1,575,424 | `fd1da3fe33adfc9bc680202b6eab4601cb4ab272ae4453f5769d5fd5a90389a1` |
-| `aot_ctor_net10_x86_64.link-map-managed.txt` (decompressed) | | `c91b2d6aa4926bd3da2564cbfb196b1de899719945bf17df2a3f823439483253` |
-| `aot_ctor_net10_x86_64.link-map-managed.txt.gz` | 50,980 | `d83e1e7e9216d7dfc25f6952c85898223eb202294d2baec703e09d9a2ae6d4a2` |
+| `aot_ctor_net10_x86_64.exe` | 1,832,960 | `f9648c15a3adad32b5f4bb6570156a5717e128cc68c204e47f7e32e1b4564aaf` |
+| `aot_ctor_net10_x86_64.link-map-managed.txt` (decompressed) | | `eeb4d519827c7dddea52617dc0aabd5558a76dfa7d2449637dee8569ec20edcb` |
+| `aot_ctor_net10_x86_64.link-map-managed.txt.gz` | 65,816 | `87b05c7e4d40a6f16487d595f554569886a2cfb2c7f0ef65e3209e5a30a2d9fd` |
