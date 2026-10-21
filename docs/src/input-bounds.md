@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2588 bounds (count 244, other 1226, output 72, recursion 252, size 592, work 202).
+2589 bounds (count 244, other 1227, output 72, recursion 252, size 592, work 202).
 
-Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1178, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1179, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1202,6 +1202,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1178, unclassi
 | `disrobe-pass-jvm` | `MAX_TAIL_INSTRUCTIONS` | other | silent: `return` in `duplicable_tail` | `usize` | `64` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_DIMENSIONS` | other | silent: `return` in `parse_one`; `return` in `type_descriptor_end` | `u8` | `255` | `crates/disrobe-pass-jvm/src/descriptor.rs` |
 | `disrobe-pass-jvm` | `MAX_DEBUG_LOCALS` | other | silent: skipped in `parse_debug_info` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dex.rs` |
+| `disrobe-pass-jvm` | `MAX_DEBUG_POSITIONS` | other | silent: skipped in `parse_debug_info` | `usize` | `1 << 20` | `crates/disrobe-pass-jvm/src/dex.rs` |
 | `disrobe-pass-jvm` | `MAX_SYSTEM_ANNOTATION_DEPTH` | recursion | error: `SignatureSyntaxError`; `system_metadata_error()` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dex.rs` |
 | `disrobe-pass-jvm` | `MAX_SYSTEM_ANNOTATION_VALUES` | other | error: `Error::BadBytecode` (DR-JVM-0025) | `usize` | `1_048_576` | `crates/disrobe-pass-jvm/src/dex.rs` |
 | `disrobe-pass-jvm` | `MAX_SYSTEM_METADATA_BYTES` | size | error: `Error::BadBytecode` (DR-JVM-0025) | `usize` | `64 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/dex.rs` |
@@ -2612,7 +2613,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1178, unclassi
 
 ## Silent stops
 
-1178 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1179 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3092,6 +3093,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1178, unclassi
 | `disrobe-pass-jvm` | `MAX_TAIL_INSTRUCTIONS` | `return` in `duplicable_tail` | `crates/disrobe-pass-jvm/src/decompile_struct.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_DIMENSIONS` | `return` in `parse_one`; `return` in `type_descriptor_end` | `crates/disrobe-pass-jvm/src/descriptor.rs` |
 | `disrobe-pass-jvm` | `MAX_DEBUG_LOCALS` | skipped in `parse_debug_info` | `crates/disrobe-pass-jvm/src/dex.rs` |
+| `disrobe-pass-jvm` | `MAX_DEBUG_POSITIONS` | skipped in `parse_debug_info` | `crates/disrobe-pass-jvm/src/dex.rs` |
 | `disrobe-pass-jvm` | `MAX_SYSTEM_METADATA_NORMALIZATION_ROUNDS` | `for` range in `normalize_system_metadata` | `crates/disrobe-pass-jvm/src/dex.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_DIMS` | `return` in `consume_field_type` | `crates/disrobe-pass-jvm/src/jni.rs` |
 | `disrobe-pass-jvm` | `MAX_JNI_STRING_LEN` | `return` in `is_jni_method_name`; `return` in `read_c_string` | `crates/disrobe-pass-jvm/src/jni.rs` |
