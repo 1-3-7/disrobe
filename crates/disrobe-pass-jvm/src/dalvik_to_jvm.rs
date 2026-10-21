@@ -135,6 +135,7 @@ struct Emitter<'a> {
     virtual_local: BTreeMap<u16, u16>,
     bailed: bool,
     cfg: Option<CfgEmit>,
+    pc_offsets: BTreeMap<u32, usize>,
 }
 
 struct CfgEmit {
@@ -332,6 +333,7 @@ pub(crate) fn emit_method_code(
         virtual_local: BTreeMap::new(),
         bailed: false,
         cfg: None,
+        pc_offsets: BTreeMap::new(),
     };
     emitter.seed_parameter_types(&parsed, is_static);
     for insn in &insns {
@@ -339,6 +341,7 @@ pub(crate) fn emit_method_code(
             record_bail_kind("code-length-limit");
             return None;
         }
+        emitter.pc_offsets.insert(insn.pc, emitter.code.len());
         if emitter.bailed {
             record_bail_kind("emitter-state-bailed");
             return None;
@@ -380,12 +383,13 @@ pub(crate) fn emit_method_code(
         record_bail_kind("max-stack-limit");
         return None;
     };
+    let (attributes, attribute_count): (Vec<u8>, u16) = emitter.debug_attributes(item);
     Some(EmittedCode {
         bytes: emitter.code,
         max_stack,
         max_locals: emitter.max_locals,
-        attributes: Vec::new(),
-        attribute_count: 0,
+        attributes,
+        attribute_count,
         exception_table: Vec::new(),
         exception_count: 0,
     })
@@ -708,6 +712,7 @@ pub(crate) fn emit_branch_method_code(
         max_locals,
         virtual_local,
         bailed: false,
+        pc_offsets: BTreeMap::new(),
         cfg: Some(CfgEmit {
             cur_pc: 0,
             block_leaders,
@@ -784,11 +789,14 @@ pub(crate) fn emit_branch_method_code(
         record_bail_kind("stackmap-table-build");
         return None;
     };
-    let (attributes, attribute_count): (Vec<u8>, u16) = if attr.is_empty() {
+    let (mut attributes, mut attribute_count): (Vec<u8>, u16) = if attr.is_empty() {
         (Vec::new(), 0)
     } else {
         (attr, 1)
     };
+    let (debug_attributes, debug_count): (Vec<u8>, u16) = emitter.debug_attributes(item);
+    attributes.extend_from_slice(&debug_attributes);
+    attribute_count = attribute_count.saturating_add(debug_count);
 
     if emitter.cp.overflowed() {
         record_bail_kind("constant-pool-limit");
@@ -2265,6 +2273,7 @@ impl Emitter<'_> {
             self.discard_pending_result();
         }
         let off: usize = self.code.len();
+        self.pc_offsets.insert(insn.pc, off);
         let Some(cfg): Option<&mut CfgEmit> = self.cfg.as_mut() else {
             return;
         };
@@ -2813,6 +2822,97 @@ impl Emitter<'_> {
             }
         }
         Some(())
+    }
+
+    fn debug_attributes(&mut self, item: &CodeItem) -> (Vec<u8>, u16) {
+        let mut out: Vec<u8> = Vec::new();
+        let mut count: u16 = 0;
+        let code_len: usize = self.code.len();
+        let offset_at_or_after = |pc: u32| -> Option<usize> {
+            if pc == u32::MAX {
+                return Some(code_len);
+            }
+            self.pc_offsets
+                .range(pc..)
+                .next()
+                .map(|(_, &offset): (&u32, &usize)| offset)
+        };
+        let mut lines: Vec<(u16, u16)> = Vec::new();
+        for position in &item.positions {
+            let (Some(&offset), Ok(line)) = (
+                self.pc_offsets.get(&position.pc),
+                u16::try_from(position.line),
+            ) else {
+                continue;
+            };
+            let Ok(offset) = u16::try_from(offset) else {
+                continue;
+            };
+            if lines
+                .last()
+                .is_some_and(|(seen, _): &(u16, u16)| *seen == offset)
+            {
+                continue;
+            }
+            lines.push((offset, line));
+        }
+        if !lines.is_empty() && lines.len() < usize::from(u16::MAX) {
+            let name: u16 = self.cp.utf8("LineNumberTable");
+            let body_len: u32 = 2 + 4 * lines.len() as u32;
+            out.extend_from_slice(&name.to_be_bytes());
+            out.extend_from_slice(&body_len.to_be_bytes());
+            out.extend_from_slice(&(lines.len() as u16).to_be_bytes());
+            for (offset, line) in &lines {
+                out.extend_from_slice(&offset.to_be_bytes());
+                out.extend_from_slice(&line.to_be_bytes());
+            }
+            count += 1;
+        }
+        let mut rows: Vec<(u16, u16, u16, u16, u16)> = Vec::new();
+        for local in &item.locals {
+            if local.descriptor.is_empty() || self.virtual_local.contains_key(&local.register) {
+                continue;
+            }
+            let slot: u16 = if local.register >= self.first_param_reg {
+                local.register - self.first_param_reg
+            } else {
+                self.param_local_slots.saturating_add(local.register)
+            };
+            if slot >= self.max_locals {
+                continue;
+            }
+            let (Some(start), Some(end)) = (
+                offset_at_or_after(local.start_pc),
+                offset_at_or_after(local.end_pc),
+            ) else {
+                continue;
+            };
+            if end <= start {
+                continue;
+            }
+            let (Ok(start), Ok(length)) = (u16::try_from(start), u16::try_from(end - start)) else {
+                continue;
+            };
+            let name: u16 = self.cp.utf8(&local.name);
+            let descriptor: u16 = self.cp.utf8(&local.descriptor);
+            rows.push((start, length, name, descriptor, slot));
+        }
+        if !rows.is_empty() && rows.len() < usize::from(u16::MAX) {
+            let name: u16 = self.cp.utf8("LocalVariableTable");
+            let body_len: u32 = 2 + 10 * rows.len() as u32;
+            out.extend_from_slice(&name.to_be_bytes());
+            out.extend_from_slice(&body_len.to_be_bytes());
+            out.extend_from_slice(&(rows.len() as u16).to_be_bytes());
+            for (start, length, name, descriptor, slot) in &rows {
+                out.extend_from_slice(&start.to_be_bytes());
+                out.extend_from_slice(&length.to_be_bytes());
+                out.extend_from_slice(&name.to_be_bytes());
+                out.extend_from_slice(&descriptor.to_be_bytes());
+                out.extend_from_slice(&slot.to_be_bytes());
+            }
+            count += 1;
+        }
+        (out, count)
     }
 
     fn local_index(&mut self, reg: u16) -> Option<u16> {
@@ -5444,6 +5544,7 @@ mod tests {
             tries: Vec::new(),
             param_names: Vec::new(),
             locals: Vec::new(),
+            positions: Vec::new(),
         }
     }
 

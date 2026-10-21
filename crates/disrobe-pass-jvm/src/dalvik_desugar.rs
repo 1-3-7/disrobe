@@ -2068,6 +2068,7 @@ mod tests {
             tries: Vec::new(),
             param_names: Vec::new(),
             locals: Vec::new(),
+            positions: Vec::new(),
         }
     }
 

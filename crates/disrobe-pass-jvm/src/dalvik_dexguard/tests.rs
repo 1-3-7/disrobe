@@ -145,6 +145,7 @@ fn code_item(insns: Vec<u16>) -> CodeItem {
         tries: Vec::new(),
         param_names: Vec::new(),
         locals: Vec::new(),
+        positions: Vec::new(),
     }
 }
 

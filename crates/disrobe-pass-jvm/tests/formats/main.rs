@@ -9,6 +9,7 @@ mod axml_framework_attrs;
 mod backends_detect;
 mod classfile_parse;
 mod debug_framework;
+mod dex2jar_debug_tables;
 mod dex_tables;
 mod dex_versions;
 mod groovy_decompile;
