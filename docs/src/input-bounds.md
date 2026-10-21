@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2579 bounds (count 244, other 1220, output 72, recursion 251, size 592, work 200).
+2580 bounds (count 244, other 1221, output 72, recursion 251, size 592, work 200).
 
-Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1172, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1173, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1145,6 +1145,7 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1172, unclassi
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | work | silent: `for` range in `canonical` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
 | `disrobe-pass-jvm` | `MAX_DESUGAR_SCAN_INSNS` | other | silent: `return` in `exclusively_constructed`; `return` in `helper_references`; `return` in `scan_references` | `usize` | `1_048_576` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_INLINE_BODY_INSNS` | other | silent: `return` in `inlinable_helper_body` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
+| `disrobe-pass-jvm` | `MAX_OVERLOAD_RENAMES` | other | silent: `return` in `analyze` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_REFERENCE_BODY_INSNS` | other | silent: `return` in `match_reference_body` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_RESOLVE_ROUNDS` | work | silent: `break` in `unflatten_with_graph` | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dalvik_dexguard.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_LEN` | size | error: `SkipReason::OutputTooLarge`; `SkipReason::Unsound` | `usize` | `1 << 20` | `crates/disrobe-pass-jvm/src/dalvik_interp.rs` |
@@ -2603,7 +2604,7 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1172, unclassi
 
 ## Silent stops
 
-1172 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1173 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3049,6 +3050,7 @@ Exceeded: error 1061, recorded 233, panic 0, delegated 54, silent 1172, unclassi
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | `for` range in `canonical` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
 | `disrobe-pass-jvm` | `MAX_DESUGAR_SCAN_INSNS` | `return` in `exclusively_constructed`; `return` in `helper_references`; `return` in `scan_references` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_INLINE_BODY_INSNS` | `return` in `inlinable_helper_body` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
+| `disrobe-pass-jvm` | `MAX_OVERLOAD_RENAMES` | `return` in `analyze` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_REFERENCE_BODY_INSNS` | `return` in `match_reference_body` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
 | `disrobe-pass-jvm` | `MAX_RESOLVE_ROUNDS` | `break` in `unflatten_with_graph` | `crates/disrobe-pass-jvm/src/dalvik_dexguard.rs` |
 | `disrobe-pass-jvm` | `MAX_ARRAY_DATA_ELEMENTS` | `return` in `array_data_elements` | `crates/disrobe-pass-jvm/src/dalvik_lift.rs` |
