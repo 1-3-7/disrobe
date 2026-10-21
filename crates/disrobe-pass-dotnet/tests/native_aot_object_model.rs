@@ -103,9 +103,10 @@ fn method_evidence(
             .unwrap_or_else(|| panic!("{type_name}.{method_name} metadata record is attributed"));
     AotObjectMethodEvidence {
         type_record_offset: owner.record_offset,
-        method_record_offset,
+        method_record_offset: Some(method_record_offset),
         start_rva: *start_rva,
         end_rva: *end_rva,
+        constructor: false,
     }
 }
 
@@ -186,9 +187,31 @@ fn native_aot_station_field_layout_requires_linker_map_ownership_evidence() {
         report.metadata_attribution.status,
         AotMetadataStatus::Recovered
     );
-    assert_eq!(report.object_model.status, AotObjectModelStatus::NotPresent);
-    assert!(report.object_model.field_stores.is_empty());
-    assert!(report.object_model.type_references.is_empty());
+    assert!(
+        matches!(
+            report.object_model.status,
+            AotObjectModelStatus::Recovered | AotObjectModelStatus::NotPresent
+        ),
+        "the image's own constructor bindings never refuse the object model: {:?}",
+        report.object_model.status
+    );
+    let station: AotObjectMethodEvidence = station_swap_evidence(report, STATION_SWAP_SYMBOL);
+    assert!(
+        report
+            .object_model
+            .field_stores
+            .iter()
+            .all(|store| store.store_rva != 0x87DA3
+                && store.method_record_offset != station.method_record_offset),
+        "Swap is not a constructor, so the image alone attributes none of its stores"
+    );
+    assert!(
+        report
+            .object_model
+            .type_references
+            .iter()
+            .all(|reference| reference.method_record_offset != station.method_record_offset)
+    );
     let recovered: AotObjectModel = recover_station(report, image());
     assert_eq!(recovered.status, AotObjectModelStatus::Recovered);
     let store = recovered
@@ -311,18 +334,13 @@ fn native_aot_constructor_recovers_direct_constant_initializer() {
     let report: &AotReport = report();
     let mut evidence: AotObjectMethodEvidence = station_swap_evidence(report, STATION_SWAP_SYMBOL);
     evidence.end_rva = evidence.start_rva + 7;
+    evidence.constructor = true;
     let field_type = AotTypeSignature {
         kind: AotTypeSignatureKind::Definition,
         record_offset: evidence.type_record_offset,
     };
     let field_record_offset: u32 = u32::MAX;
     let mut attribution = report.metadata_attribution.clone();
-    attribution
-        .methods
-        .iter_mut()
-        .find(|method| method.record_offset == evidence.method_record_offset)
-        .unwrap_or_else(|| panic!("Station<T>.Swap method is recovered"))
-        .name = ".ctor".to_owned();
     attribution
         .runtime_field_layouts
         .push(AotRuntimeFieldLayout {

@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{AotCodeRange, AotMetadataAttribution, AotTypeLayout, AotTypeSignature};
+use super::{
+    AotCodeRange, AotMetadataAttribution, AotStackTraceMap, AotTypeLayout, AotTypeSignature,
+};
 use crate::pe::PeBitness;
 use disrobe_pass_native::{Arch, DisasmInsn, disassemble};
 
@@ -81,9 +83,11 @@ impl Default for AotObjectModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotObjectMethodEvidence {
     pub type_record_offset: u32,
-    pub method_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_record_offset: Option<u32>,
     pub start_rva: u32,
     pub end_rva: u32,
+    pub constructor: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,7 +98,8 @@ pub enum AotObjectStoreWidth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotObjectFieldStore {
     pub type_record_offset: u32,
-    pub method_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_record_offset: Option<u32>,
     pub store_rva: u32,
     pub field_offset: u32,
     pub width: AotObjectStoreWidth,
@@ -118,13 +123,15 @@ pub struct AotObjectHelperEvidence {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotObjectHelperCall {
-    pub method_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_record_offset: Option<u32>,
     pub call_rva: u32,
     pub helper: AotObjectHelperEvidence,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotObjectTypeReference {
-    pub method_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_record_offset: Option<u32>,
     pub instruction_rva: u32,
     pub type_record_offset: u32,
     pub method_table_rva: u32,
@@ -176,7 +183,8 @@ impl AotObjectConstant {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotObjectFieldInitializer {
     pub type_record_offset: u32,
-    pub method_record_offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method_record_offset: Option<u32>,
     pub store_rva: u32,
     pub field_offset: u32,
     pub value: AotObjectConstant,
@@ -331,6 +339,145 @@ fn split_initializer(
     }
     parts
 }
+pub fn constructor_evidence(
+    image: &[u8],
+    attribution: &AotMetadataAttribution,
+    stack_trace_map: &AotStackTraceMap,
+) -> Vec<AotObjectMethodEvidence> {
+    if !image.starts_with(b"MZ") {
+        return Vec::new();
+    }
+    let Ok(pe) = crate::pe::parse(image) else {
+        return Vec::new();
+    };
+    if pe.bitness != PeBitness::Pe32Plus || pe.machine != AMD64_MACHINE {
+        return Vec::new();
+    }
+    let Ok(Some(ranges)): crate::error::Result<Option<Vec<AotCodeRange>>> =
+        super::method_boundaries::read_ranges(image, &pe)
+    else {
+        return Vec::new();
+    };
+    let range_at = |entrypoint_rva: u32| -> Option<AotCodeRange> {
+        ranges
+            .binary_search_by_key(&entrypoint_rva, |range: &AotCodeRange| range.start_rva)
+            .ok()
+            .and_then(|index: usize| ranges.get(index).copied())
+            .filter(|range: &AotCodeRange| range.start_rva < range.end_rva)
+    };
+    let constructors: BTreeMap<u32, Option<u32>> = attribution
+        .methods
+        .iter()
+        .filter(|method| method.name == ".ctor")
+        .map(|method| {
+            (
+                method.record_offset,
+                method
+                    .signature
+                    .as_ref()
+                    .map(|signature| signature.record_offset),
+            )
+        })
+        .collect();
+    let mut bound: BTreeMap<(u32, Option<u32>, u32), Option<AotCodeRange>> = BTreeMap::new();
+    let mut bind =
+        |type_record_offset: u32, method_record_offset: Option<u32>, range: AotCodeRange| {
+            let body: u32 = if method_record_offset.is_some() {
+                0
+            } else {
+                range.start_rva
+            };
+            bound
+                .entry((type_record_offset, method_record_offset, body))
+                .and_modify(|existing: &mut Option<AotCodeRange>| {
+                    if *existing != Some(range) {
+                        *existing = None;
+                    }
+                })
+                .or_insert(Some(range));
+        };
+    for entrypoint in &attribution.owned_entrypoints {
+        if constructors.contains_key(&entrypoint.method_record_offset)
+            && let Some(range) = range_at(entrypoint.entrypoint_rva)
+        {
+            bind(
+                entrypoint.type_record_offset,
+                Some(entrypoint.method_record_offset),
+                range,
+            );
+        }
+    }
+    for method in &stack_trace_map.methods {
+        let (Some(range), Some(name)) = (method.code_range, method.name.as_ref()) else {
+            continue;
+        };
+        if name.method_name != ".ctor"
+            || !name.type_arguments.is_empty()
+            || !name.method_generic_arguments.is_empty()
+        {
+            continue;
+        }
+        let Some(type_record_offset) = name.owning_type_record_offset else {
+            continue;
+        };
+        let Some(type_record) = attribution
+            .types
+            .iter()
+            .find(|type_record| type_record.record_offset == type_record_offset)
+        else {
+            continue;
+        };
+        let mut matching =
+            type_record
+                .method_record_offsets
+                .iter()
+                .copied()
+                .filter(|method_record_offset| {
+                    constructors
+                        .get(method_record_offset)
+                        .is_some_and(|signature| *signature == Some(name.signature_record_offset))
+                });
+        let method_record_offset: Option<u32> = match (matching.next(), matching.next()) {
+            (Some(method_record_offset), None) => Some(method_record_offset),
+            (None, None) => None,
+            _ => continue,
+        };
+        bind(type_record_offset, method_record_offset, range);
+    }
+    let mut claims: BTreeMap<AotCodeRange, usize> = BTreeMap::new();
+    for range in bound.values().flatten() {
+        *claims.entry(*range).or_insert(0) += 1;
+    }
+    let mut evidence: Vec<AotObjectMethodEvidence> = bound
+        .iter()
+        .filter_map(
+            |((type_record_offset, method_record_offset, _body), range)| {
+                let range: AotCodeRange = (*range)?;
+                (claims.get(&range) == Some(&1)).then_some(AotObjectMethodEvidence {
+                    type_record_offset: *type_record_offset,
+                    method_record_offset: *method_record_offset,
+                    start_rva: range.start_rva,
+                    end_rva: range.end_rva,
+                    constructor: true,
+                })
+            },
+        )
+        .collect();
+    evidence
+        .sort_unstable_by_key(|entry| (entry.start_rva, entry.end_rva, entry.method_record_offset));
+    let mut keep: Vec<bool> = vec![true; evidence.len()];
+    for index in 1..evidence.len() {
+        if evidence[index - 1].end_rva > evidence[index].start_rva {
+            keep[index - 1] = false;
+            keep[index] = false;
+        }
+    }
+    evidence
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(entry, kept)| kept.then_some(entry))
+        .collect()
+}
 pub fn recover_object_model(
     image: &[u8],
     attribution: &AotMetadataAttribution,
@@ -417,17 +564,20 @@ pub fn recover_object_model(
                 .map(|method| (type_record.record_offset, *method))
         })
         .collect();
-    let constructors: BTreeSet<u32> = attribution
-        .methods
+    let known_types: BTreeSet<u32> = attribution
+        .types
         .iter()
-        .filter(|method| method.name == ".ctor")
-        .map(|method| method.record_offset)
+        .map(|type_record| type_record.record_offset)
         .collect();
     let mut ranges: Vec<(u32, u32)> = Vec::with_capacity(method_evidence.len());
     for evidence in method_evidence {
-        if evidence.start_rva >= evidence.end_rva
-            || !known.contains(&(evidence.type_record_offset, evidence.method_record_offset))
-        {
+        let matches_metadata: bool = evidence.method_record_offset.map_or_else(
+            || known_types.contains(&evidence.type_record_offset),
+            |method_record_offset| {
+                known.contains(&(evidence.type_record_offset, method_record_offset))
+            },
+        );
+        if evidence.start_rva >= evidence.end_rva || !matches_metadata {
             return refused(
                 AotObjectModelRefusal::MethodEvidenceDoesNotMatchMetadata,
                 type_layouts,
@@ -560,7 +710,7 @@ pub fn recover_object_model(
                     method_table_rva: *method_table_rva,
                 });
             }
-            if constructors.contains(&evidence.method_record_offset)
+            if evidence.constructor
                 && instruction.mnemonic == "mov"
                 && let Some((store_offset, value)) = field_initializer(&instruction.bytes, prior)
             {

@@ -50,7 +50,10 @@ fn executable_file_backed_range(
     Ok(())
 }
 
-fn read_ranges(image: &[u8], pe: &PeImage) -> crate::error::Result<Option<Vec<AotCodeRange>>> {
+pub(super) fn read_ranges(
+    image: &[u8],
+    pe: &PeImage,
+) -> crate::error::Result<Option<Vec<AotCodeRange>>> {
     let Some(directory): Option<DataDirectory> =
         pe.data_directories.get(EXCEPTION_DIRECTORY_INDEX).copied()
     else {

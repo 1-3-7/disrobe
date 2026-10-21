@@ -30,14 +30,14 @@ pub use invoke_map::AotInvokeMapRefusal;
 pub use metadata_records::{
     AOT_SIGNATURE_ABSTENTIONS, AotCodeRange, AotFieldLayout, AotMetadataAttribution,
     AotMetadataStatus, AotMethod, AotMethodBody, AotMethodSignature, AotMethodTableReference,
-    AotRuntimeFieldLayout, AotSignatureAbstention, AotSignatureProvenance, AotType, AotTypeLayout,
-    AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
+    AotOwnedEntrypoint, AotRuntimeFieldLayout, AotSignatureAbstention, AotSignatureProvenance,
+    AotType, AotTypeLayout, AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 pub use object_model::{
     AotObjectConstant, AotObjectFieldInitializer, AotObjectFieldStore, AotObjectHelperCall,
     AotObjectHelperEvidence, AotObjectHelperKind, AotObjectMethodEvidence, AotObjectModel,
     AotObjectModelRefusal, AotObjectModelStatus, AotObjectStoreWidth, AotObjectTypeReference,
-    recover_object_model,
+    constructor_evidence, recover_object_model,
 };
 pub use resources::{
     AotManifestResource, AotResourceIndex, AotResourceRefusal, AotResourceStatus,
@@ -1266,8 +1266,15 @@ pub fn detect(image: &[u8]) -> AotReport {
         .map_or_else(AotResourceIndex::default, |header: &ReadyToRunHeader| {
             recover_manifest_resources(image, header)
         });
-    let object_model: AotObjectModel =
-        recover_object_model(image, &metadata_attribution, object_type_layouts, &[], &[]);
+    let constructor_evidence: Vec<AotObjectMethodEvidence> =
+        object_model::constructor_evidence(image, &metadata_attribution, &stack_trace_map);
+    let object_model: AotObjectModel = recover_object_model(
+        image,
+        &metadata_attribution,
+        object_type_layouts,
+        &constructor_evidence,
+        &[],
+    );
     let is_native_aot: bool = ready_to_run.is_some()
         || symbols.contains_key("aot_marker")
         || symbols.contains_key("modules_table")

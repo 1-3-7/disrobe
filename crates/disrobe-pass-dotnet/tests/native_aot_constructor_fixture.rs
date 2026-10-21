@@ -87,23 +87,24 @@ fn constructor_evidence(
             type_record.name == type_name && type_record.namespace.as_deref() == Some(NAMESPACE)
         })
         .unwrap_or_else(|| panic!("{type_name} type is attributed"));
-    let method_record_offset: u32 = owner
-        .method_record_offsets
-        .iter()
-        .copied()
-        .find(|record_offset| {
-            report
-                .metadata_attribution
-                .methods
-                .iter()
-                .any(|method| method.record_offset == *record_offset && method.name == ".ctor")
-        })
-        .unwrap_or_else(|| panic!("{type_name}..ctor metadata record is attributed"));
+    let method_record_offset: Option<u32> =
+        owner
+            .method_record_offsets
+            .iter()
+            .copied()
+            .find(|record_offset| {
+                report
+                    .metadata_attribution
+                    .methods
+                    .iter()
+                    .any(|method| method.record_offset == *record_offset && method.name == ".ctor")
+            });
     AotObjectMethodEvidence {
         type_record_offset: owner.record_offset,
         method_record_offset,
         start_rva,
         end_rva,
+        constructor: true,
     }
 }
 
@@ -349,6 +350,96 @@ fn compiler_built_constructors_recover_every_constant_initializer_from_the_sourc
         mismatches.join("\n")
     );
     assert_eq!(named.len(), expected.len() - REFERENCE_FIELDS.len());
+}
+
+#[test]
+fn detect_reproduces_the_link_map_graded_initializers_from_the_image_alone() {
+    let report: &AotReport = report();
+    let [berth, buoy]: [AotObjectMethodEvidence; 2] = evidence(report);
+    assert!(
+        report
+            .metadata_attribution
+            .owned_entrypoints
+            .iter()
+            .any(|entry| {
+                entry.type_record_offset == berth.type_record_offset
+                    && Some(entry.method_record_offset) == berth.method_record_offset
+                    && entry.entrypoint_rva == berth.start_rva
+            }),
+        "the reflection-invoked Berth constructor is an invoke-map entrypoint owned by Berth: link-map {berth:x?}; owned {:x?}; berth methods {:x?}; refusals {:?}; all owned {}; berth tables {:x?}",
+        report
+            .metadata_attribution
+            .owned_entrypoints
+            .iter()
+            .filter(|entry| entry.type_record_offset == berth.type_record_offset)
+            .collect::<Vec<_>>(),
+        report
+            .metadata_attribution
+            .methods
+            .iter()
+            .filter(|method| method.record_offset == berth.method_record_offset.unwrap_or(u32::MAX))
+            .map(|method| (
+                method.name.clone(),
+                method.entrypoint_rva,
+                method.instantiation_entrypoint_rvas.clone(),
+                method.code_range
+            ))
+            .collect::<Vec<_>>(),
+        report
+            .invoke_map_refusals
+            .iter()
+            .filter(|refusal| refusal.method_record_offset == berth.method_record_offset)
+            .map(|refusal| refusal.reason.clone())
+            .collect::<Vec<_>>(),
+        report.metadata_attribution.owned_entrypoints.len(),
+        report
+            .metadata_attribution
+            .method_table_references
+            .iter()
+            .filter(|reference| reference.type_record_offset == berth.type_record_offset)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        report
+            .metadata_attribution
+            .owned_entrypoints
+            .iter()
+            .all(|entry| entry.type_record_offset != buoy.type_record_offset),
+        "the unreflected Buoy constructor has no invoke-map entrypoint"
+    );
+    assert!(
+        report.stack_trace_map.methods.iter().any(|method| {
+            method
+                .code_range
+                .is_some_and(|range| range.start_rva == buoy.start_rva)
+                && method.name.as_ref().is_some_and(|name| {
+                    name.method_name == ".ctor"
+                        && name.owning_type_record_offset == Some(buoy.type_record_offset)
+                })
+        }),
+        "the stack-trace map names the Buoy constructor body"
+    );
+    assert!(
+        berth.method_record_offset.is_some(),
+        "Berth keeps a .ctor metadata record"
+    );
+    assert!(
+        buoy.method_record_offset.is_none(),
+        "Buoy's .ctor metadata record is trimmed"
+    );
+    assert_eq!(report.object_model.status, AotObjectModelStatus::Recovered);
+    let fixture_types: [u32; 2] = [berth.type_record_offset, buoy.type_record_offset];
+    let mut fixture_only: AotObjectModel = report.object_model.clone();
+    fixture_only
+        .field_initializers
+        .retain(|initializer| fixture_types.contains(&initializer.type_record_offset));
+    let from_image: BTreeMap<String, AotObjectConstant> = named_initializers(&fixture_only);
+    let from_link_map: BTreeMap<String, AotObjectConstant> = named_initializers(&recover(image()));
+    assert_eq!(from_image, from_link_map);
+    assert_eq!(
+        from_image.len(),
+        expectations().len() - REFERENCE_FIELDS.len()
+    );
 }
 
 #[test]

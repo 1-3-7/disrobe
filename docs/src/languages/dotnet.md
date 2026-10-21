@@ -110,8 +110,16 @@ Extraction is limited to 65,536 resources and 256 MiB total. With `--json`, JSON
 stdout output while resources are written.
 
 The report's `object_model` carries the metadata type layouts and, for every constructor whose
-body the image's own invoke map and unwind table bound to exactly one method record, the
-constant initializers that body stores through `this`: byte, word, dword and sign-extended qword
+body the image's own maps bind to exactly one type, the constant initializers that body stores
+through `this`. Two maps bind a constructor: an invoke-map entry with an entrypoint (a
+reflection-invocable constructor; listed as `owned_entrypoints` in the metadata attribution, with
+the declaring MethodTable the FieldAccessMap ties to each type telling apart types that share one
+metadata Method record) or a stack-trace-map entry naming `.ctor` on a metadata type (a
+constructor never reflected over, whose Method record the compiler trimmed; such an initializer
+carries no `method_record_offset`). A constructor that is only enumerated through reflection has
+an invoke-map entry without an entrypoint and no stack-trace entry, so nothing binds it and
+nothing is reported. The unwind table supplies the body range in both cases; a range claimed by
+two identities is dropped. The initializer forms are: byte, word, dword and sign-extended qword
 immediates, 64-bit constants materialized in `rax` by the preceding instruction, and stores the
 compiler coalesced over adjacent fields, split back per field through the FieldAccessMap offsets.
 Each initializer names its field and type when the FieldAccessMap owns that offset. Reference

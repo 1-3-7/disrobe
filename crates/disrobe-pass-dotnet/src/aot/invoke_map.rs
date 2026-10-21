@@ -3,7 +3,10 @@ use object::read::File as ObjFile;
 use object::{Object as _, ObjectSection as _, SectionKind};
 use serde::{Deserialize, Serialize};
 
-use super::metadata_records::{AotMethod, AotMethodSignature, AotMethodTableReference, AotType};
+use super::metadata_records::{
+    AotMethod, AotMethodSignature, AotMethodTableReference, AotOwnedEntrypoint,
+    AotRuntimeFieldLayout, AotType,
+};
 use super::native_hashtable;
 use super::{
     AotContainer, AotSection, ReadyToRunHeader, address_range_is_inside, container_section_bytes,
@@ -485,26 +488,38 @@ fn refusal_record(
     })
 }
 
+pub(super) struct InvokeMapAttachment {
+    pub(super) refusals: Vec<AotInvokeMapRefusal>,
+    pub(super) method_table_references: Vec<AotMethodTableReference>,
+    pub(super) owned_entrypoints: Vec<AotOwnedEntrypoint>,
+}
+
 pub(super) fn attach_invoke_map_entrypoints(
     image: &[u8],
     header: &ReadyToRunHeader,
     types: &[AotType],
+    runtime_field_layouts: &[AotRuntimeFieldLayout],
     methods: &mut [AotMethod],
-) -> crate::error::Result<(Vec<AotInvokeMapRefusal>, Vec<AotMethodTableReference>)> {
-    attach_invoke_map(image, header, Some(types), methods)
+) -> crate::error::Result<InvokeMapAttachment> {
+    attach_invoke_map(image, header, Some(types), runtime_field_layouts, methods)
 }
 
 fn attach_invoke_map(
     image: &[u8],
     header: &ReadyToRunHeader,
     types: Option<&[AotType]>,
+    runtime_field_layouts: &[AotRuntimeFieldLayout],
     methods: &mut [AotMethod],
-) -> crate::error::Result<(Vec<AotInvokeMapRefusal>, Vec<AotMethodTableReference>)> {
+) -> crate::error::Result<InvokeMapAttachment> {
     let layout: InvokeMapLayout = InvokeMapLayout::for_header(header);
     let Some(invoke_section): Option<&AotSection> =
         unique_section(header, INVOKE_MAP_SECTION_ID, invalid)?
     else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(InvokeMapAttachment {
+            refusals: Vec::new(),
+            method_table_references: Vec::new(),
+            owned_entrypoints: Vec::new(),
+        });
     };
     let fixups_section: &AotSection = unique_section(header, COMMON_FIXUPS_SECTION_ID, invalid)?
         .ok_or_else(|| invalid(0, "invoke map has no common-fixups section"))?;
@@ -596,6 +611,23 @@ fn attach_invoke_map(
     method_table_references
         .try_reserve_exact(recovered.len())
         .map_err(|_| invalid(0, "runtime type reference allocation failed"))?;
+    let mut owned_entrypoints: Vec<AotOwnedEntrypoint> = Vec::new();
+    owned_entrypoints
+        .try_reserve_exact(recovered.len())
+        .map_err(|_| invalid(0, "owned entrypoint allocation failed"))?;
+    let mut layout_owners: Vec<(u32, u32)> = Vec::new();
+    layout_owners
+        .try_reserve_exact(runtime_field_layouts.len())
+        .map_err(|_| invalid(0, "field layout owner allocation failed"))?;
+    layout_owners.extend(runtime_field_layouts.iter().filter_map(
+        |layout: &AotRuntimeFieldLayout| {
+            layout
+                .method_table_rva
+                .map(|method_table_rva: u32| (method_table_rva, layout.type_record_offset))
+        },
+    ));
+    layout_owners.sort_unstable();
+    layout_owners.dedup();
     if types.is_some() {
         for mapping in &recovered {
             let method: &AotMethod = methods.get(mapping.method_index).ok_or_else(|| {
@@ -612,41 +644,86 @@ fn attach_invoke_map(
             let owners: &[(u32, u32)] = method_owners
                 .get(owner_start..owner_end)
                 .ok_or_else(|| invalid(mapping.entry_offset, "metadata owner range is invalid"))?;
-            let [(_method_offset, type_record_offset)] = owners else {
-                refusals.push(EntryRefusal {
-                    entry_offset: mapping.entry_offset,
-                    method_index: Some(mapping.method_index),
-                    error: invalid(
-                        mapping.entry_offset,
-                        "invoke-map method does not have exactly one metadata owner",
-                    ),
-                });
-                continue;
-            };
-            match resolve_runtime_type_fixup(
+            let resolved: crate::error::Result<u32> = resolve_runtime_type_fixup(
                 fixups.bytes,
                 fixups.section_start,
                 fixups.address_base,
                 fixups.file,
                 mapping.identity.declaring_type_index,
                 invalid,
-            ) {
-                Ok(method_table_rva) => {
-                    method_table_references.push(AotMethodTableReference {
-                        type_record_offset: *type_record_offset,
-                        method_table_rva,
+            );
+            let owner_refusal = || EntryRefusal {
+                entry_offset: mapping.entry_offset,
+                method_index: Some(mapping.method_index),
+                error: invalid(
+                    mapping.entry_offset,
+                    "invoke-map method does not have exactly one metadata owner",
+                ),
+            };
+            let type_record_offset: u32 = match owners {
+                [(_method_offset, type_record_offset)] => *type_record_offset,
+                [_first, _second, ..] => {
+                    let Ok(method_table_rva): &crate::error::Result<u32> = &resolved else {
+                        refusals.push(owner_refusal());
+                        continue;
+                    };
+                    let tied_start: usize = layout_owners
+                        .partition_point(|(rva, _type_offset): &(u32, u32)| rva < method_table_rva);
+                    let tied_end: usize =
+                        layout_owners.partition_point(|(rva, _type_offset): &(u32, u32)| {
+                            rva <= method_table_rva
+                        });
+                    let tied: &[(u32, u32)] =
+                        layout_owners.get(tied_start..tied_end).ok_or_else(|| {
+                            invalid(mapping.entry_offset, "field layout owner range is invalid")
+                        })?;
+                    let mut candidates = owners.iter().filter(|(_method_offset, type_offset)| {
+                        tied.iter()
+                            .any(|(_rva, tied_type)| tied_type == type_offset)
                     });
+                    let (Some((_method_offset, type_record_offset)), None) =
+                        (candidates.next(), candidates.next())
+                    else {
+                        refusals.push(owner_refusal());
+                        continue;
+                    };
+                    *type_record_offset
                 }
-                Err(error) => refusals.push(EntryRefusal {
-                    entry_offset: mapping.entry_offset,
-                    method_index: Some(mapping.method_index),
-                    error,
-                }),
+                [] => {
+                    refusals.push(owner_refusal());
+                    continue;
+                }
+            };
+            let method_table_rva: u32 = match resolved {
+                Ok(method_table_rva) => method_table_rva,
+                Err(error) => {
+                    refusals.push(EntryRefusal {
+                        entry_offset: mapping.entry_offset,
+                        method_index: Some(mapping.method_index),
+                        error,
+                    });
+                    continue;
+                }
+            };
+            method_table_references.push(AotMethodTableReference {
+                type_record_offset,
+                method_table_rva,
+            });
+            if mapping.identity.generic_context.as_slice() == [0]
+                && let Some(entrypoint_rva) = mapping.entrypoint_rva
+            {
+                owned_entrypoints.push(AotOwnedEntrypoint {
+                    type_record_offset,
+                    method_record_offset: method.record_offset,
+                    entrypoint_rva,
+                });
             }
         }
     }
     method_table_references.sort_unstable();
     method_table_references.dedup();
+    owned_entrypoints.sort_unstable();
+    owned_entrypoints.dedup();
     let mut entrypoints: Vec<(usize, u32)> = Vec::new();
     entrypoints
         .try_reserve_exact(recovered.len())
@@ -707,7 +784,11 @@ fn attach_invoke_map(
         instantiations.extend(group.iter().map(|(_index, rva): &(usize, u32)| *rva));
         method.instantiation_entrypoint_rvas = instantiations;
     }
-    Ok((records, method_table_references))
+    Ok(InvokeMapAttachment {
+        refusals: records,
+        method_table_references,
+        owned_entrypoints,
+    })
 }
 
 #[cfg(test)]
@@ -918,8 +999,8 @@ mod tests {
         section.end_rva = section.start_rva
             + u32::try_from(blob.len())
                 .map_err(|_: std::num::TryFromIntError| invalid(0, "test blob is too large"))?;
-        attach_invoke_map(&image, &test_header, None, methods)
-            .map(|(refusals, _method_tables)| refusals)
+        attach_invoke_map(&image, &test_header, None, &[], methods)
+            .map(|attachment: InvokeMapAttachment| attachment.refusals)
     }
 
     fn assert_invoke_error<T: std::fmt::Debug>(result: crate::error::Result<T>, needle: &str) {
@@ -1311,8 +1392,8 @@ mod tests {
         duplicate.record_offset = u32::MAX;
         duplicate.method_record_offsets = vec![method_offset];
         types.push(duplicate);
-        let (refusals, _method_tables): (Vec<AotInvokeMapRefusal>, Vec<AotMethodTableReference>) =
-            attach_invoke_map(IMAGE, &header, Some(&types), &mut methods)?;
+        let refusals: Vec<AotInvokeMapRefusal> =
+            attach_invoke_map(IMAGE, &header, Some(&types), &[], &mut methods)?.refusals;
         assert!(refusals.iter().any(|refusal: &AotInvokeMapRefusal| {
             refusal.method_record_offset == Some(method_offset)
                 && refusal

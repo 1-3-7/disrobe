@@ -6,6 +6,7 @@ use object::read::File as ObjFile;
 use serde::{Deserialize, Serialize};
 
 use super::field_map::{AotFieldMapRefusal, recover_field_map};
+use super::invoke_map::InvokeMapAttachment;
 use super::invoke_map::{AotInvokeMapRefusal, attach_invoke_map_entrypoints};
 use super::method_bodies::attach_method_bodies;
 use super::method_boundaries::attach_method_boundaries;
@@ -125,6 +126,15 @@ pub struct AotMetadataAttribution {
     pub method_table_references: Vec<AotMethodTableReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_field_layouts: Vec<AotRuntimeFieldLayout>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_entrypoints: Vec<AotOwnedEntrypoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AotOwnedEntrypoint {
+    pub type_record_offset: u32,
+    pub method_record_offset: u32,
+    pub entrypoint_rva: u32,
 }
 
 impl AotMetadataAttribution {
@@ -147,6 +157,7 @@ impl AotMetadataAttribution {
             methods: Vec::new(),
             method_table_references: Vec::new(),
             runtime_field_layouts: Vec::new(),
+            owned_entrypoints: Vec::new(),
         }
     }
 }
@@ -159,6 +170,7 @@ impl Default for AotMetadataAttribution {
             methods: Vec::new(),
             method_table_references: Vec::new(),
             runtime_field_layouts: Vec::new(),
+            owned_entrypoints: Vec::new(),
         }
     }
 }
@@ -2572,6 +2584,7 @@ pub(super) fn recover_metadata_with_invoke_refusals(
                 methods: Vec::new(),
                 method_table_references: Vec::new(),
                 runtime_field_layouts: Vec::new(),
+                owned_entrypoints: Vec::new(),
             },
             type_layouts: Vec::new(),
             invoke_refusals: Vec::new(),
@@ -2581,14 +2594,15 @@ pub(super) fn recover_metadata_with_invoke_refusals(
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
     let (types, mut methods, layouts): (Vec<AotType>, Vec<AotMethod>, Vec<AotTypeLayout>) =
         parse_metadata_records(bytes, profile)?;
-    let (refusals, method_table_references): (
-        Vec<AotInvokeMapRefusal>,
-        Vec<AotMethodTableReference>,
-    ) = attach_invoke_map_entrypoints(image, header, &types, &mut methods)?;
     let (field_refusals, runtime_field_layouts): (
         Vec<AotFieldMapRefusal>,
         Vec<AotRuntimeFieldLayout>,
     ) = recover_field_map(image, header, &layouts);
+    let InvokeMapAttachment {
+        refusals,
+        method_table_references,
+        owned_entrypoints,
+    } = attach_invoke_map_entrypoints(image, header, &types, &runtime_field_layouts, &mut methods)?;
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
         attach_method_bodies(image, &pe, &types, &layouts, &mut methods)?;
     }
@@ -2599,6 +2613,7 @@ pub(super) fn recover_metadata_with_invoke_refusals(
             methods,
             method_table_references,
             runtime_field_layouts,
+            owned_entrypoints,
         },
         type_layouts: layouts,
         invoke_refusals: refusals,

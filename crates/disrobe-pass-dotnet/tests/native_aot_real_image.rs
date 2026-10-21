@@ -379,10 +379,12 @@ fn metadata_attribution_refuses_an_unsupported_ready_to_run_version() {
             methods,
             method_table_references,
             runtime_field_layouts,
+            owned_entrypoints,
         }) if types.is_empty()
             && methods.is_empty()
             && method_table_references.is_empty()
             && runtime_field_layouts.is_empty()
+            && owned_entrypoints.is_empty()
     ));
 }
 

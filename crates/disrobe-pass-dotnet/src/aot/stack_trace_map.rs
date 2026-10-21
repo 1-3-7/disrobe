@@ -76,6 +76,8 @@ pub struct AotStackTraceMethod {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotStackTraceName {
     pub owning_type_token: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owning_type_record_offset: Option<u32>,
     pub namespace: Option<String>,
     pub type_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -564,8 +566,11 @@ impl<'a> NameResolver<'a> {
             .saturating_add(owner.namespace.as_ref().map_or(0, String::len));
         self.claim_output(size, state.name)
             .map_err(|error: crate::error::Error| error.to_string())?;
+        let (owning_kind, owning_offset): (u32, u32) = self.encoding.split_token(state.owning_type);
         Ok(AotStackTraceName {
             owning_type_token: state.owning_type,
+            owning_type_record_offset: (owning_kind == u32::from(HANDLE_TYPE_DEFINITION))
+                .then_some(owning_offset),
             namespace: owner.namespace,
             type_name: owner.type_name,
             type_arguments: owner.type_arguments,
