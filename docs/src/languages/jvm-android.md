@@ -68,6 +68,7 @@ When a DEX keeps its `debug_info_item` local tables (a `d8 --debug` build of `ja
 `disrobe jvm decompile --include GLOB --exclude GLOB` limits the per-class source tree to the units whose binary class name matches: `*` matches within a package segment, `**` across segments, and `.` or `/` may separate packages. Nest members live inside their top-level unit, so a glob names top-level classes; the combined listing is always written in full. `manifest.json` records the globs with the written and skipped unit counts under `class_filter`; `crates/disrobe-cli/tests/jvm_dex_sources.rs` grades both directions on the D8 fixture.
 
 `disrobe jvm callgraph` walks every method body in a DEX or APK and records one edge per caller-to-callee pair, with the number of call sites behind it, and one node per method that has a body or is called; a callee that no class in the DEX defines is marked external. The output is JSON or Graphviz DOT. `tests/dalvik_call_graph.rs` requires the edge set on the plants APK to equal androguard's `cg` output (`corpus/recon/android-audit/reference/plants.androguard-cg.gml`, 77 edges) and the external node count to match its 57.
+`disrobe behavior` walks the same graph for source and sink API pairs reachable from one method (`callgraph` evidence); `crates/disrobe-cli/tests/behavior_android.rs` requires the five flow-fixture methods that reach both, including the one with no data flow between them, and none from the control build.
 
 ### Containers
 

@@ -217,7 +217,10 @@ pub use dalvik_blackobf::{
     java_string_hashcode,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use dalvik_call_graph::{DexCallGraph, DexCallGraphEdge, DexCallGraphNode, dex_call_graph};
+pub use dalvik_call_graph::{
+    ApiPair, ApiPairHit, DexCallGraph, DexCallGraphEdge, DexCallGraphNode, dex_call_graph,
+    reachable_api_pairs,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg, build_dalvik_cfg_from_code_item};
 #[cfg(not(target_arch = "wasm32"))]

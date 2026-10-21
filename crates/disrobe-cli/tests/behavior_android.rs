@@ -119,3 +119,61 @@ fn the_control_apk_carries_only_manifest_evidence() {
         "the control declares the same permissions but its code triggers no rule"
     );
 }
+
+#[test]
+fn call_graph_pairs_name_the_methods_that_reach_a_source_and_a_sink() {
+    let run = run_disrobe(&["behavior", &fixture("audit-flows.apk"), "--json"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let value: serde_json::Value = serde_json::from_str(&run.stdout).expect("behavior json");
+    let signals: Vec<String> = value["categories"]
+        .as_array()
+        .expect("categories")
+        .iter()
+        .flat_map(|c: &serde_json::Value| c["evidence"].as_array().expect("evidence").clone())
+        .filter(|e: &serde_json::Value| e["source"] == "callgraph")
+        .map(|e: serde_json::Value| e["signal"].as_str().expect("signal").to_owned())
+        .collect();
+    let entries: BTreeSet<String> = signals
+        .iter()
+        .map(|s: &String| {
+            s.split(" reaches ")
+                .next()
+                .expect("entry")
+                .rsplit("->")
+                .next()
+                .expect("method")
+                .split('(')
+                .next()
+                .expect("name")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        BTreeSet::from([
+            "clipboardToSms".to_owned(),
+            "imeiToSms".to_owned(),
+            "imsiToLog".to_owned(),
+            "locationToLog".to_owned(),
+            "separateSourceAndSink".to_owned(),
+        ]),
+        "every method that reaches both a source and a sink is named, sourceOnly is not: {signals:?}"
+    );
+    assert!(
+        signals
+            .iter()
+            .any(|s: &String| s.contains("separateSourceAndSink") && s.contains("(depth 1)")),
+        "{signals:?}"
+    );
+}
+
+#[test]
+fn the_control_apk_has_no_call_graph_pairs() {
+    let run = run_disrobe(&["behavior", &fixture("audit-control.apk"), "--json"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        !run.stdout.contains("\"callgraph\""),
+        "no method in the control reaches a source and a sink: {}",
+        run.stdout
+    );
+}

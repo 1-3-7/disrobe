@@ -303,6 +303,36 @@ fn android_behaviors(bytes: &[u8]) -> miette::Result<Vec<disrobe_core::behavior:
             }
         }
     }
+    if let Ok(graph) = disrobe_pass_jvm::dex_call_graph(bytes) {
+        let table: Vec<CallGraphPair> = call_graph_pairs();
+        let pairs: Vec<disrobe_pass_jvm::ApiPair> = table
+            .iter()
+            .map(|row: &CallGraphPair| row.pair.clone())
+            .collect();
+        for hit in disrobe_pass_jvm::reachable_api_pairs(&graph, &pairs) {
+            let Some(row) = table.iter().find(|row: &&CallGraphPair| {
+                hit.source.starts_with(row.pair.source) && hit.sink.starts_with(row.pair.sink)
+            }) else {
+                continue;
+            };
+            let slot: &mut (&'static str, Vec<Evidence>, Vec<&'static str>) = by_category
+                .entry(row.category)
+                .or_insert_with(|| (row.description, Vec::new(), Vec::new()));
+            slot.1.push(Evidence {
+                signal: format!(
+                    "{} reaches {} (depth {}) and {} (depth {})",
+                    hit.entry, hit.source, hit.source_depth, hit.sink, hit.sink_depth
+                ),
+                source: "callgraph",
+                attack_id: row.attack_id,
+            });
+            if let Some(id) = row.attack_id
+                && !slot.2.contains(&id)
+            {
+                slot.2.push(id);
+            }
+        }
+    }
     for finding in &audit.findings {
         let Some((category, description, attack_id)) = android_behavior(&finding.rule_id) else {
             continue;
@@ -338,6 +368,72 @@ fn android_behaviors(bytes: &[u8]) -> miette::Result<Vec<disrobe_core::behavior:
             },
         )
         .collect())
+}
+
+#[cfg(feature = "jvm")]
+struct CallGraphPair {
+    pair: disrobe_pass_jvm::ApiPair,
+    category: disrobe_core::behavior::Category,
+    description: &'static str,
+    attack_id: Option<&'static str>,
+}
+
+#[cfg(feature = "jvm")]
+fn call_graph_pairs() -> Vec<CallGraphPair> {
+    use disrobe_core::behavior::Category;
+    use disrobe_pass_jvm::ApiPair;
+    const IDENTIFIERS: [&str; 4] = [
+        "Landroid/telephony/TelephonyManager;->getDeviceId",
+        "Landroid/telephony/TelephonyManager;->getSubscriberId",
+        "Landroid/telephony/TelephonyManager;->getLine1Number",
+        "Landroid/telephony/TelephonyManager;->getSimSerialNumber",
+    ];
+    const SMS: &str = "Landroid/telephony/SmsManager;->sendTextMessage";
+    const LOG: [&str; 5] = [
+        "Landroid/util/Log;->d",
+        "Landroid/util/Log;->i",
+        "Landroid/util/Log;->v",
+        "Landroid/util/Log;->w",
+        "Landroid/util/Log;->e",
+    ];
+    let mut out: Vec<CallGraphPair> = Vec::new();
+    for source in IDENTIFIERS {
+        out.push(CallGraphPair {
+            pair: ApiPair { source, sink: SMS },
+            category: Category::Privacy,
+            description: "collects device, user or sensor data",
+            attack_id: Some("T1582"),
+        });
+        for sink in LOG {
+            out.push(CallGraphPair {
+                pair: ApiPair { source, sink },
+                category: Category::Privacy,
+                description: "collects device, user or sensor data",
+                attack_id: Some("T1426"),
+            });
+        }
+    }
+    for source in [
+        "Landroid/location/LocationManager;->getLastKnownLocation",
+        "Landroid/content/ClipboardManager;->getText",
+        "Landroid/content/ClipboardManager;->getPrimaryClip",
+    ] {
+        out.push(CallGraphPair {
+            pair: ApiPair { source, sink: SMS },
+            category: Category::Privacy,
+            description: "collects device, user or sensor data",
+            attack_id: Some("T1582"),
+        });
+        for sink in LOG {
+            out.push(CallGraphPair {
+                pair: ApiPair { source, sink },
+                category: Category::Privacy,
+                description: "collects device, user or sensor data",
+                attack_id: Some("T1430"),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(feature = "jvm")]

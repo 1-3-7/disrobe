@@ -149,3 +149,131 @@ pub fn dex_call_graph(bytes: &[u8]) -> Result<DexCallGraph> {
     graph_dex_into(&dex, bytes, &mut graph);
     Ok(graph)
 }
+
+const MAX_PAIR_DEPTH: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiPair {
+    pub source: &'static str,
+    pub sink: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ApiPairHit {
+    pub entry: String,
+    pub source: String,
+    pub sink: String,
+    pub source_depth: usize,
+    pub sink_depth: usize,
+}
+
+fn api_matches(method: &str, api: &str) -> bool {
+    method
+        .split_once('(')
+        .is_some_and(|(head, _): (&str, &str)| head == api)
+}
+
+fn reachable_externals(
+    graph: &DexCallGraph,
+    callees: &BTreeMap<&str, Vec<&str>>,
+    external: &BTreeSet<&str>,
+    entry: &str,
+) -> BTreeMap<String, usize> {
+    let mut depth_of: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut frontier: Vec<(&str, usize)> = vec![(entry, 0)];
+    depth_of.insert(entry, 0);
+    while let Some((method, depth)) = frontier.pop() {
+        if depth >= MAX_PAIR_DEPTH {
+            continue;
+        }
+        for &callee in callees.get(method).map(Vec::as_slice).unwrap_or_default() {
+            if depth_of.contains_key(callee) {
+                continue;
+            }
+            depth_of.insert(callee, depth + 1);
+            if !external.contains(callee) {
+                frontier.push((callee, depth + 1));
+            }
+        }
+    }
+    let _ = graph;
+    depth_of
+        .into_iter()
+        .filter(|(method, _): &(&str, usize)| external.contains(method))
+        .map(|(method, depth): (&str, usize)| (method.to_owned(), depth))
+        .collect()
+}
+
+#[must_use]
+pub fn reachable_api_pairs(graph: &DexCallGraph, pairs: &[ApiPair]) -> Vec<ApiPairHit> {
+    let external: BTreeSet<&str> = graph
+        .nodes
+        .iter()
+        .filter(|node: &&DexCallGraphNode| node.external)
+        .map(|node: &DexCallGraphNode| node.method.as_str())
+        .collect();
+    let mut callees: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for edge in &graph.edges {
+        callees
+            .entry(edge.caller.as_str())
+            .or_default()
+            .push(edge.callee.as_str());
+    }
+    let mut reach: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
+    for node in &graph.nodes {
+        if node.external {
+            continue;
+        }
+        reach.insert(
+            node.method.as_str(),
+            reachable_externals(graph, &callees, &external, &node.method),
+        );
+    }
+    let mut hits: Vec<ApiPairHit> = Vec::new();
+    for (entry, externals) in &reach {
+        for pair in pairs {
+            let sources: Vec<(&String, &usize)> = externals
+                .iter()
+                .filter(|(method, _): &(&String, &usize)| api_matches(method, pair.source))
+                .collect();
+            let sinks: Vec<(&String, &usize)> = externals
+                .iter()
+                .filter(|(method, _): &(&String, &usize)| api_matches(method, pair.sink))
+                .collect();
+            if sources.is_empty() || sinks.is_empty() {
+                continue;
+            }
+            let innermost: bool = callees
+                .get(entry)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter(|callee: &&&str| !external.contains(**callee))
+                .all(|callee: &&str| {
+                    reach
+                        .get(*callee)
+                        .is_none_or(|below: &BTreeMap<String, usize>| {
+                            !(below.keys().any(|m: &String| api_matches(m, pair.source))
+                                && below.keys().any(|m: &String| api_matches(m, pair.sink)))
+                        })
+                });
+            if !innermost {
+                continue;
+            }
+            for (source, source_depth) in &sources {
+                for (sink, sink_depth) in &sinks {
+                    hits.push(ApiPairHit {
+                        entry: (*entry).to_owned(),
+                        source: (*source).clone(),
+                        sink: (*sink).clone(),
+                        source_depth: **source_depth,
+                        sink_depth: **sink_depth,
+                    });
+                }
+            }
+        }
+    }
+    hits.sort();
+    hits.dedup();
+    hits
+}
