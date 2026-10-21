@@ -10,6 +10,9 @@ mod android_audit;
 #[path = "../apk_signature_verify.rs"]
 mod apk_signature_verify;
 
+#[path = "../dex2jar_execution.rs"]
+mod dex2jar_execution;
+
 #[path = "../generated_differential.rs"]
 mod generated_differential;
 

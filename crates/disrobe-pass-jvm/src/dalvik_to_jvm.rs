@@ -391,7 +391,7 @@ pub(crate) fn emit_method_code(
     })
 }
 
-const MAX_BRANCH_INSNS: usize = 2048;
+const MAX_BRANCH_INSNS: usize = MAX_METHOD_INSNS;
 
 #[inline]
 const fn regtype_to_slot(ty: &crate::dalvik_typestate::RegType) -> Slot {
@@ -3847,7 +3847,10 @@ impl Emitter<'_> {
             }
         }
 
-        let idx: u16 = if is_interface {
+        let owner_is_interface: bool = is_interface
+            || self.dex.class_interfaces.contains(&format!("L{owner};"))
+            || crate::jdk_interfaces::is_jdk_public_interface(&owner);
+        let idx: u16 = if owner_is_interface {
             self.cp.interface_methodref(&owner, &name, &descriptor)
         } else {
             self.cp.methodref(&owner, &name, &descriptor)

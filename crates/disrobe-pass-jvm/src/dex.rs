@@ -51,6 +51,8 @@ impl DexVersion {
     }
 }
 
+const ACC_INTERFACE_CLASS: u32 = 0x0200;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DexHeader {
     pub version: DexVersion,
@@ -228,6 +230,7 @@ pub struct DexFile {
     pub type_names: Vec<String>,
     pub class_descriptors: Vec<String>,
     pub class_super_descriptors: BTreeMap<String, String>,
+    pub class_interfaces: BTreeSet<String>,
     pub proto_ids: Vec<ProtoId>,
     pub field_ids: Vec<FieldId>,
     pub method_ids: Vec<MethodId>,
@@ -1919,10 +1922,12 @@ fn parse_inner(bytes: &[u8]) -> Result<DexFile> {
     )?;
     let mut class_descriptors: Vec<String> = Vec::with_capacity(class_count.min(bytes.len()));
     let mut class_super_descriptors: BTreeMap<String, String> = BTreeMap::new();
+    let mut class_interfaces: BTreeSet<String> = BTreeSet::new();
     let class_def_size: usize = 32;
     for i in 0..class_count {
         let cd_off: usize = header.class_defs_off as usize + i * class_def_size;
         let class_idx: u32 = required_u32_at(bytes, cd_off)?;
+        let access_flags: u32 = required_u32_at(bytes, cd_off + 4)?;
         let superclass_idx: u32 = required_u32_at(bytes, cd_off + 8)?;
         let idx: usize = class_idx as usize;
         let class_name: String = type_names.get(idx).cloned().ok_or(Error::BadBytecode {
@@ -1940,6 +1945,9 @@ fn parse_inner(bytes: &[u8]) -> Result<DexFile> {
                     })?;
             class_super_descriptors.insert(class_name.clone(), super_name);
         }
+        if access_flags & ACC_INTERFACE_CLASS != 0 {
+            class_interfaces.insert(class_name.clone());
+        }
         class_descriptors.push(class_name);
     }
     let proto_ids: Vec<ProtoId> = parse_proto_ids(bytes, &header, &strings, &type_names)?;
@@ -1954,6 +1962,7 @@ fn parse_inner(bytes: &[u8]) -> Result<DexFile> {
         type_names,
         class_descriptors,
         class_super_descriptors,
+        class_interfaces,
         proto_ids,
         field_ids,
         method_ids,

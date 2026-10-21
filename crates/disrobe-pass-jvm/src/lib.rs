@@ -97,6 +97,8 @@ pub mod hierarchy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jar;
 #[cfg(not(target_arch = "wasm32"))]
+mod jdk_interfaces;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod jni;
 pub mod jsr_inline;
 pub mod kotlin;
