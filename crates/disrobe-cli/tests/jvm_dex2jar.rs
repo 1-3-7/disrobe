@@ -186,17 +186,16 @@ fn jvm_dex2jar_writes_the_in_house_translation_without_an_external_backend() {
     assert_eq!(format!("{:x}", Sha256::digest(&dex)), EDGE_CASES_DEX_SHA256);
     let direct = translate_dex_bytes(&dex).expect("direct in-house translation");
     assert_eq!(direct.method_total, 370);
-    assert_eq!(direct.bodies_recovered, 354);
-    assert_eq!(direct.stubbed_body_count, 1);
+    assert_eq!(direct.bodies_recovered, 355);
+    assert_eq!(direct.stubbed_body_count, 0);
     let partial_methods: Vec<_> = direct
         .diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.method.is_some())
         .collect();
-    assert_eq!(partial_methods.len(), direct.stubbed_body_count);
-    assert_eq!(
-        partial_methods[0].reason,
-        "DR-JVM-0093: control-flow JVM emitter refusal: instruction-count-limit"
+    assert!(
+        partial_methods.is_empty(),
+        "every method body of the D8 fixture translates: {partial_methods:#?}"
     );
     let direct_jar: Vec<u8> = assemble_jar(&direct).expect("direct in-house jar assembly");
     let scratch: disrobe_core::scratch::ScratchDir = temp_dir("jvm-dex2jar");
@@ -215,13 +214,17 @@ fn jvm_dex2jar_writes_the_in_house_translation_without_an_external_backend() {
         "in-house DEX-to-JAR CLI failed: {}",
         run.stderr
     );
-    assert!(run.stdout.contains("jvm dex2jar: PARTIAL"));
-    assert!(run.stdout.contains("370 total, 354 recovered, 1 stubbed"));
+    assert!(run.stdout.contains("jvm dex2jar: OK"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("370 total, 355 recovered, 0 stubbed"),
+        "{}",
+        run.stdout
+    );
     assert!(
         run.stdout
             .contains("code scan:    complete (0 decode error(s))")
     );
-    assert!(run.stdout.contains("  partial:      "));
+    assert!(!run.stdout.contains("  partial:      "), "{}", run.stdout);
 
     let cli_jar: Vec<u8> = std::fs::read(out.join("classes.jar")).expect("CLI jar output");
     assert_eq!(
