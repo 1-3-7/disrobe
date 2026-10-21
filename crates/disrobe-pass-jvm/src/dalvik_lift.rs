@@ -1501,9 +1501,20 @@ fn invoke(
     let owner: String = descriptor::binary_to_source(owner_descriptor);
     let name: String = recovered_default.map_or_else(
         || {
-            core_projection
-                .as_ref()
-                .map_or_else(|| method.name.clone(), |projection| projection.name.clone())
+            core_projection.as_ref().map_or_else(
+                || {
+                    let descriptor: String = format!(
+                        "({}){}",
+                        method.proto.parameters.join(""),
+                        method.proto.return_type
+                    );
+                    ctx.desugar
+                        .renames
+                        .java_name(&method.class, &method.name, &descriptor)
+                        .to_owned()
+                },
+                |projection| projection.name.clone(),
+            )
         },
         |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| recovered.name.clone(),
     );
@@ -2471,6 +2482,8 @@ mod tests {
         let interfaces: DefaultInterfaceRecovery = DefaultInterfaceRecovery::default();
         let functionals: FunctionalRecovery = FunctionalRecovery::default();
         let core_library: CoreLibraryRecovery = CoreLibraryRecovery::default();
+        let renames: crate::dalvik_desugar::OverloadRenames =
+            crate::dalvik_desugar::OverloadRenames::default();
         let inlined_helpers: InlinedHelpers = InlinedHelpers::default();
         let context: MethodContext<'_> = MethodContext::new(
             &dex,
@@ -2487,6 +2500,7 @@ mod tests {
                 interfaces: &interfaces,
                 functionals: &functionals,
                 core_library: &core_library,
+                renames: &renames,
             },
             &inlined_helpers,
         );

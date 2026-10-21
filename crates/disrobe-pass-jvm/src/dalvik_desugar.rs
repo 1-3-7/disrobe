@@ -682,6 +682,92 @@ pub(crate) struct DesugarView<'a> {
     pub(crate) interfaces: &'a DefaultInterfaceRecovery,
     pub(crate) functionals: &'a FunctionalRecovery,
     pub(crate) core_library: &'a crate::dalvik_core_library::CoreLibraryRecovery,
+    pub(crate) renames: &'a OverloadRenames,
+}
+
+const MAX_OVERLOAD_RENAMES: usize = 65_536;
+const ACC_BRIDGE: u32 = 0x0040;
+
+#[derive(Debug, Default)]
+pub(crate) struct OverloadRenames {
+    names: BTreeMap<(String, String, String), String>,
+}
+
+impl OverloadRenames {
+    pub(crate) fn analyze(code: &CodeItemsReport) -> Self {
+        let mut groups: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+        let mut bridged: BTreeSet<(String, String, String)> = BTreeSet::new();
+        for method in code.methods() {
+            let Some(params) = parameter_part(&method.method_descriptor) else {
+                continue;
+            };
+            if method.access_flags & ACC_BRIDGE != 0 {
+                bridged.insert((
+                    method.class.clone(),
+                    method.method_name.clone(),
+                    params.to_owned(),
+                ));
+                continue;
+            }
+            groups
+                .entry((
+                    method.class.clone(),
+                    method.method_name.clone(),
+                    params.to_owned(),
+                ))
+                .or_default()
+                .insert(method.method_descriptor.clone());
+        }
+        let mut names: BTreeMap<(String, String, String), String> = BTreeMap::new();
+        for ((class, name, params), descriptors) in groups {
+            if descriptors.len() < 2 || bridged.contains(&(class.clone(), name.clone(), params)) {
+                continue;
+            }
+            let mut used: BTreeSet<String> = BTreeSet::new();
+            for descriptor in descriptors {
+                if names.len() >= MAX_OVERLOAD_RENAMES {
+                    return Self { names };
+                }
+                let suffix: String = return_type_suffix(&descriptor);
+                let mut candidate: String = format!("{name}${suffix}");
+                let mut ordinal: usize = 2;
+                while !used.insert(candidate.clone()) {
+                    candidate = format!("{name}${suffix}{ordinal}");
+                    ordinal = ordinal.saturating_add(1);
+                }
+                names.insert((class.clone(), name.clone(), descriptor), candidate);
+            }
+        }
+        Self { names }
+    }
+
+    pub(crate) fn java_name<'a>(&'a self, class: &str, name: &'a str, descriptor: &str) -> &'a str {
+        self.names
+            .get(&(class.to_owned(), name.to_owned(), descriptor.to_owned()))
+            .map_or(name, String::as_str)
+    }
+}
+
+fn parameter_part(descriptor: &str) -> Option<&str> {
+    let open: usize = descriptor.find('(')?;
+    let close: usize = descriptor.find(')')?;
+    (close > open).then(|| &descriptor[open + 1..close])
+}
+
+fn return_type_suffix(descriptor: &str) -> String {
+    let close: usize = descriptor
+        .find(')')
+        .map_or(descriptor.len(), |at: usize| at + 1);
+    let returns: &str = &descriptor[close..];
+    let rendered: String = crate::descriptor::parse_field(returns)
+        .map_or_else(|| "void".to_owned(), |ty: JavaType| ty.render());
+    let generic_free: &str = rendered.split('<').next().unwrap_or(&rendered);
+    let simple: &str = generic_free.rsplit('.').next().unwrap_or(generic_free);
+    simple
+        .chars()
+        .map(|c: char| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .replace("__", "Array")
 }
 
 #[derive(Debug, Default)]

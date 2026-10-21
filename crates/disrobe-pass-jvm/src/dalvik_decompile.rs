@@ -97,10 +97,13 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         crate::dalvik_desugar::FunctionalRecovery::analyze(dex, bytes, &code_report);
     let core_library: crate::dalvik_core_library::CoreLibraryRecovery =
         crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
+    let renames: crate::dalvik_desugar::OverloadRenames =
+        crate::dalvik_desugar::OverloadRenames::analyze(&code_report);
     let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
         interfaces: &interfaces,
         functionals: &functionals,
         core_library: &core_library,
+        renames: &renames,
     };
     let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
     for descriptor_name in &dex.class_descriptors {
@@ -291,10 +294,13 @@ pub(crate) fn translated_default_methods(
         crate::dalvik_desugar::FunctionalRecovery::analyze(dex, bytes, &code_report);
     let core_library: crate::dalvik_core_library::CoreLibraryRecovery =
         crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
+    let renames: crate::dalvik_desugar::OverloadRenames =
+        crate::dalvik_desugar::OverloadRenames::analyze(&code_report);
     let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
         interfaces: &interfaces,
         functionals: &functionals,
         core_library: &core_library,
+        renames: &renames,
     };
     let inlined_helpers: crate::dalvik_desugar::InlinedHelpers =
         crate::dalvik_desugar::InlinedHelpers::default();
@@ -1736,10 +1742,17 @@ fn render_method(
         let ret: String = parsed
             .as_ref()
             .map_or_else(|| "void".to_string(), |md| md.returns.render());
+        let header_name: &str = if recovered_default.is_none() {
+            desugar
+                .renames
+                .java_name(&item.class, method_name, method_descriptor)
+        } else {
+            method_name
+        };
         let _ = write!(
             signature,
             "    {modifier}{ret} {}({params})",
-            crate::descriptor::java_writable_identifier(method_name)
+            crate::descriptor::java_writable_identifier(header_name)
         );
     }
 
@@ -4905,6 +4918,8 @@ mod tests {
             crate::dalvik_core_library::CoreLibraryRecovery::default();
         let helpers: crate::dalvik_desugar::InlinedHelpers =
             crate::dalvik_desugar::InlinedHelpers::default();
+        let renames: crate::dalvik_desugar::OverloadRenames =
+            crate::dalvik_desugar::OverloadRenames::default();
         let names: Vec<String> = (0..ins).map(|index: u16| format!("arg{index}")).collect();
         lift_method(
             &dex,
@@ -4921,6 +4936,7 @@ mod tests {
                 interfaces: &interfaces,
                 functionals: &functionals,
                 core_library: &core_library,
+                renames: &renames,
             },
             &helpers,
             &names,
