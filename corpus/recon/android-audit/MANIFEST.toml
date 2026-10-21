@@ -27,3 +27,11 @@ sha256 = "7ba42f5bd9e0c19010f5db173041a1fae4ebd8dc8a469d5cbd2c1155ed6069a6"
 bytes = 12689
 classes = ["Lcom/planted/audit/Control;", "Lcom/planted/audit/Control$Pinned;", "Lcom/planted/audit/Control$StrictHosts;", "Lcom/planted/audit/Control$FailSslErrors;"]
 note = "no-plant control: zero findings required"
+
+[[fixture]]
+path = "audit-flows.apk"
+sha256 = "edaf18f048639eec168f7b46954f16d7f14719ae06b2a89bb11523264f55f9b5"
+bytes = 8593
+classes = ["Lcom/planted/audit/Flows;"]
+note = "taint fixture built from src/com/planted/audit/Flows.java by `build.sh Flows` (same toolchain): four methods carry a real source-to-sink flow (IMEI to SMS, IMSI to Log, location to Log, clipboard to SMS), separateSourceAndSink calls a source and a sink without passing the value, sourceOnly has no sink; graded by crates/disrobe-cli/tests/taint_android.rs"
+

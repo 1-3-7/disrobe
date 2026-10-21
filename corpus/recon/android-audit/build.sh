@@ -19,7 +19,7 @@ store_pass="$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
 keytool -genkeypair -keystore "$out/fixture.jks" -storepass "$store_pass" -keypass "$store_pass" \
     -alias audit -dname "CN=Disrobe Audit Fixture" -keyalg RSA -keysize 2048 -validity 3650
 
-for class in Plants Control; do
+for class in ${*:-Plants Control Flows}; do
     lower="$(printf '%s' "$class" | tr 'A-Z' 'a-z')"
     work="$out/$lower"
     mkdir -p "$work/classes" "$work/dex"
@@ -44,5 +44,5 @@ for class in Plants Control; do
     java -jar "$ANDROID_BUILD_TOOLS/lib/apksigner.jar" verify "$here/audit-$lower.apk"
 done
 
-sha256sum "$here"/audit-plants.apk "$here"/audit-control.apk
-wc -c "$here"/audit-plants.apk "$here"/audit-control.apk
+sha256sum "$here"/audit-*.apk
+wc -c "$here"/audit-*.apk
