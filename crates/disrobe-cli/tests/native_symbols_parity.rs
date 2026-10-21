@@ -164,3 +164,45 @@ fn the_parity_check_turns_red_on_a_changed_reference_size() {
         "the control changed the size"
     );
 }
+
+fn assert_strings_parity(library: &str, reference: &str) {
+    let expected: BTreeSet<String> = std::fs::read_to_string(fixture(reference))
+        .expect("read llvm-strings reference")
+        .lines()
+        .filter(|line: &&str| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        expected.len() >= 20,
+        "the reference lists the library's strings"
+    );
+    let run = run_disrobe(&[
+        "strings",
+        fixture(library).to_str().expect("utf-8 path"),
+        "--min-len",
+        "6",
+        "--json",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let value: serde_json::Value = serde_json::from_str(&run.stdout).expect("strings json");
+    let ours: BTreeSet<String> = value["strings"]
+        .as_array()
+        .expect("strings")
+        .iter()
+        .map(|s: &serde_json::Value| s["value"].as_str().expect("value").to_owned())
+        .collect();
+    assert_eq!(
+        ours, expected,
+        "{library}: the printable runs of at least six bytes equal `llvm-strings -n 6`"
+    );
+}
+
+#[test]
+fn aarch64_jni_library_strings_match_llvm_strings() {
+    assert_strings_parity("libjnireg_a64.so", "libjnireg_a64.llvm-strings-n6.txt");
+}
+
+#[test]
+fn x86_64_jni_library_strings_match_llvm_strings() {
+    assert_strings_parity("libjnireg_x64.so", "libjnireg_x64.llvm-strings-n6.txt");
+}

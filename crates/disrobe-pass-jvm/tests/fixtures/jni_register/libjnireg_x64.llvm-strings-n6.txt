@@ -1,0 +1,27 @@
+(Ljava/lang/String;)J
+.comment
+.data.rel.ro
+.dynamic
+.dynstr
+.dynsym
+.eh_frame
+.eh_frame_hdr
+.gnu.hash
+.rela.dyn
+.relro_padding
+.rodata
+.shstrtab
+.strtab
+.symtab
+JNI_OnLoad
+Linker: LLD 21.1.6
+_DYNAMIC
+clang version 21.1.6
+ffffff.
+hiddenMul
+jnireg.c
+keep_methods
+methods
+nativeAdd
+nativeLen
+nativeNoop
