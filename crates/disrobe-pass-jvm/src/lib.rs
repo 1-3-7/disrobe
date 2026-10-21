@@ -97,6 +97,7 @@ pub mod jar;
 pub mod jni;
 pub mod jsr_inline;
 pub mod kotlin;
+pub mod manifest_facts;
 pub mod name_disambig;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod oat;
@@ -274,6 +275,7 @@ pub use jni::{
 };
 pub use jsr_inline::{JsrInlineReport, JsrInlined, contains_jsr, inline_jsr_subroutines};
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
+pub use manifest_facts::{ComponentKind, ManifestComponent, ManifestFacts, manifest_facts};
 pub use name_disambig::{
     CollisionReport, NameDisambiguator, classify as classify_name_collisions,
     remap_class_bytes as remap_renamed_class_bytes, rewrite_active, with_rename_scope,

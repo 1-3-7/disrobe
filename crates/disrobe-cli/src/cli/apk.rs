@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_jvm::{
-    AndroidAuditReport, ApkResourceReport, CertificateInfo, JniSurfaceReport, ResolvedNative,
-    ResourceEntrySummary, analyze_apk_resources, audit_android_apk,
+    AndroidAuditReport, ApkResourceReport, CertificateInfo, JniSurfaceReport, ManifestFacts,
+    ResolvedNative, ResourceEntrySummary, analyze_apk_resources, audit_android_apk,
 };
 use serde::Serialize;
 
@@ -163,6 +163,7 @@ fn render_text(path: &std::path::Path, analysis: &ApkAnalysis) {
     render_resources(&report.resources);
     render_certificates(&report.certificates);
     render_manifest(report.manifest_xml.as_deref());
+    render_manifest_facts(report.manifest.as_ref());
     render_jni(report, analysis);
     render_audit(&analysis.audit);
 }
@@ -185,6 +186,80 @@ fn render_audit(audit: &AndroidAuditReport) {
             finding.method,
             finding.pc,
             finding.evidence
+        );
+    }
+}
+
+fn render_manifest_facts(facts: Option<&ManifestFacts>) {
+    let Some(facts): Option<&ManifestFacts> = facts else {
+        return;
+    };
+    println!(
+        "  facts:        version {} ({}), sdk min {} target {}, debuggable {}, backup {}, cleartext {}, network-security-config {}",
+        facts
+            .version_code
+            .map_or_else(|| "(none)".to_owned(), |v: i64| v.to_string()),
+        facts.version_name.as_deref().unwrap_or("(none)"),
+        facts
+            .min_sdk
+            .map_or_else(|| "(none)".to_owned(), |v: i64| v.to_string()),
+        facts
+            .target_sdk
+            .map_or_else(|| "(none)".to_owned(), |v: i64| v.to_string()),
+        facts
+            .debuggable
+            .map_or("(unset)", |b: bool| if b { "true" } else { "false" }),
+        facts
+            .allow_backup
+            .map_or("(unset)", |b: bool| if b { "true" } else { "false" }),
+        facts
+            .uses_cleartext_traffic
+            .map_or("(unset)", |b: bool| if b { "true" } else { "false" }),
+        facts.network_security_config.as_deref().unwrap_or("(none)"),
+    );
+    println!(
+        "  permissions:  {} used, {} declared",
+        facts.uses_permissions.len(),
+        facts.declared_permissions.len()
+    );
+    for permission in &facts.uses_permissions {
+        println!("    {permission}");
+    }
+    println!(
+        "  components:   {} ({} exported, {} launchable{})",
+        facts.components.len(),
+        facts.exported_components,
+        facts.launchable_activities.len(),
+        if facts.components_truncated {
+            ", truncated"
+        } else {
+            ""
+        },
+    );
+    for component in &facts.components {
+        println!(
+            "    {} {} exported={}{} filters={}{}{}",
+            component.kind.label(),
+            component.name,
+            if component.effectively_exported {
+                "true"
+            } else {
+                "false"
+            },
+            match component.exported {
+                Some(_) => "",
+                None => " (default)",
+            },
+            component.intent_filters,
+            if component.launchable {
+                " launchable"
+            } else {
+                ""
+            },
+            component
+                .permission
+                .as_deref()
+                .map_or_else(String::new, |p: &str| format!(" permission={p}")),
         );
     }
 }

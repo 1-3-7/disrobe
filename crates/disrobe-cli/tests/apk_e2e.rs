@@ -195,6 +195,20 @@ fn apk_json_emits_report_with_package_and_cert() {
         "json report package field"
     );
     assert_eq!(
+        doc["manifest"]["package"].as_str(),
+        Some(EXPECT_PACKAGE),
+        "json manifest facts carry the package"
+    );
+    assert_eq!(
+        doc["manifest"]["version_code"].as_i64(),
+        Some(1),
+        "json manifest facts carry the version code"
+    );
+    assert!(
+        doc["manifest"]["components"].is_array(),
+        "json manifest facts list components"
+    );
+    assert_eq!(
         doc.get("resource_table_present")
             .and_then(serde_json::Value::as_bool),
         Some(true),

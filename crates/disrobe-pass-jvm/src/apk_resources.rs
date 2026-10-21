@@ -7,6 +7,7 @@ use crate::dex::{DexFile, parse as parse_dex};
 use crate::error::{Error, Result};
 use crate::jar::{ApkExtract, extract_apk};
 use crate::jni::{JniSurfaceReport, analyze as analyze_jni};
+use crate::manifest_facts::ManifestFacts;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceEntrySummary {
@@ -17,6 +18,7 @@ pub struct ResourceEntrySummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApkResourceReport {
     pub manifest_xml: Option<String>,
+    pub manifest: Option<ManifestFacts>,
     pub package: Option<String>,
     pub resource_table_present: bool,
     pub package_count: usize,
@@ -90,10 +92,12 @@ pub fn analyze_apk(bytes: &[u8]) -> Result<ApkResourceReport> {
     };
 
     let mut manifest_xml: Option<String> = None;
+    let mut manifest_facts: Option<ManifestFacts> = None;
     let mut package: Option<String> = None;
     if let Some(manifest) = extract.manifest_bytes.as_deref() {
         let tree: AxmlTree = parse_axml(manifest)?;
         package = extract_package(&tree);
+        manifest_facts = Some(crate::manifest_facts::manifest_facts(&tree));
         manifest_xml = Some(match table.as_ref() {
             Some(t) => tree.to_xml_with_resolver(Some(t)),
             None => tree.to_xml(),
@@ -145,6 +149,7 @@ pub fn analyze_apk(bytes: &[u8]) -> Result<ApkResourceReport> {
 
     Ok(ApkResourceReport {
         manifest_xml,
+        manifest: manifest_facts,
         package,
         resource_table_present: table.is_some(),
         package_count,
