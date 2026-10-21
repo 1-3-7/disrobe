@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use common::run_disrobe;
@@ -76,13 +77,23 @@ fn the_plant_apk_summarises_into_categories_with_mobile_attack_ids() {
             .any(|s: &String| s.contains("Lcom/planted/audit/Plants;->smsSend")),
         "{signals:?}"
     );
+    let sources: BTreeSet<&str> = privacy["evidence"]
+        .as_array()
+        .expect("evidence")
+        .iter()
+        .map(|e: &serde_json::Value| e["source"].as_str().expect("source"))
+        .collect();
+    assert_eq!(sources, BTreeSet::from(["dex", "manifest"]), "{privacy}");
     assert!(
-        privacy["evidence"]
-            .as_array()
-            .expect("evidence")
+        signals
             .iter()
-            .all(|e: &serde_json::Value| e["source"] == "dex"),
-        "{privacy}"
+            .any(|s: &String| s == "uses-permission android.permission.SEND_SMS"),
+        "the declared SMS permission is manifest evidence: {signals:?}"
+    );
+    assert!(
+        attack_ids.contains(&"T1636.004".to_owned())
+            && attack_ids.contains(&"T1624.001".to_owned()),
+        "READ_SMS and RECEIVE_BOOT_COMPLETED map to their techniques: {attack_ids:?}"
     );
     let text = run_disrobe(&["behavior", &fixture("audit-plants.apk")]);
     assert_eq!(text.code, 0, "{}", text.stderr);
@@ -91,12 +102,20 @@ fn the_plant_apk_summarises_into_categories_with_mobile_attack_ids() {
 }
 
 #[test]
-fn the_control_apk_has_no_notable_behavior() {
-    let run = run_disrobe(&["behavior", &fixture("audit-control.apk")]);
+fn the_control_apk_carries_only_manifest_evidence() {
+    let run = run_disrobe(&["behavior", &fixture("audit-control.apk"), "--json"]);
     assert_eq!(run.code, 0, "{}", run.stderr);
-    assert!(
-        run.stdout.contains("no notable behaviors detected"),
-        "{}",
-        run.stdout
+    let value: serde_json::Value = serde_json::from_str(&run.stdout).expect("behavior json");
+    let sources: BTreeSet<String> = value["categories"]
+        .as_array()
+        .expect("categories")
+        .iter()
+        .flat_map(|c: &serde_json::Value| c["evidence"].as_array().expect("evidence").clone())
+        .map(|e: serde_json::Value| e["source"].as_str().expect("source").to_owned())
+        .collect();
+    assert_eq!(
+        sources,
+        BTreeSet::from(["manifest".to_owned()]),
+        "the control declares the same permissions but its code triggers no rule"
     );
 }

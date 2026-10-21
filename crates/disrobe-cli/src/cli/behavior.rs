@@ -277,6 +277,32 @@ fn android_behaviors(bytes: &[u8]) -> miette::Result<Vec<disrobe_core::behavior:
         .map_err(|e| miette::miette!("DR-BEH-0052: android code-pattern audit: {e}"))?;
     let mut by_category: BTreeMap<Category, (&'static str, Vec<Evidence>, Vec<&'static str>)> =
         BTreeMap::new();
+    if bytes.len() >= 4 && bytes[..4] == [0x50, 0x4B, 0x03, 0x04] {
+        let permissions: Vec<String> = disrobe_pass_jvm::analyze_apk_resources(bytes)
+            .ok()
+            .and_then(|report: disrobe_pass_jvm::ApkResourceReport| report.manifest)
+            .map(|facts: disrobe_pass_jvm::ManifestFacts| facts.uses_permissions)
+            .unwrap_or_default();
+        for permission in &permissions {
+            let Some((category, description, attack_id)) = android_permission_behavior(permission)
+            else {
+                continue;
+            };
+            let slot: &mut (&'static str, Vec<Evidence>, Vec<&'static str>) = by_category
+                .entry(category)
+                .or_insert_with(|| (description, Vec::new(), Vec::new()));
+            slot.1.push(Evidence {
+                signal: format!("uses-permission {permission}"),
+                source: "manifest",
+                attack_id,
+            });
+            if let Some(id) = attack_id
+                && !slot.2.contains(&id)
+            {
+                slot.2.push(id);
+            }
+        }
+    }
     for finding in &audit.findings {
         let Some((category, description, attack_id)) = android_behavior(&finding.rule_id) else {
             continue;
@@ -312,6 +338,97 @@ fn android_behaviors(bytes: &[u8]) -> miette::Result<Vec<disrobe_core::behavior:
             },
         )
         .collect())
+}
+
+#[cfg(feature = "jvm")]
+fn android_permission_behavior(
+    permission: &str,
+) -> Option<(
+    disrobe_core::behavior::Category,
+    &'static str,
+    Option<&'static str>,
+)> {
+    use disrobe_core::behavior::Category;
+    let name: &str = permission.rsplit('.').next().unwrap_or(permission);
+    let hit: (Category, &'static str, Option<&'static str>) = match name {
+        "SEND_SMS" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1582"),
+        ),
+        "READ_SMS" | "RECEIVE_SMS" | "RECEIVE_MMS" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1636.004"),
+        ),
+        "ACCESS_FINE_LOCATION" | "ACCESS_COARSE_LOCATION" | "ACCESS_BACKGROUND_LOCATION" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1430"),
+        ),
+        "CAMERA" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1512"),
+        ),
+        "RECORD_AUDIO" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1429"),
+        ),
+        "READ_PHONE_STATE" | "READ_PHONE_NUMBERS" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1426"),
+        ),
+        "READ_CONTACTS" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1636.003"),
+        ),
+        "READ_CALL_LOG" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1636.002"),
+        ),
+        "READ_CALENDAR" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1636.001"),
+        ),
+        "QUERY_ALL_PACKAGES" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1418"),
+        ),
+        "BIND_ACCESSIBILITY_SERVICE" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1417"),
+        ),
+        "RECEIVE_BOOT_COMPLETED" => (
+            Category::RegistryPersistence,
+            "runs at boot or on system events",
+            Some("T1624.001"),
+        ),
+        "SYSTEM_ALERT_WINDOW" => (
+            Category::Privacy,
+            "collects device, user or sensor data",
+            Some("T1417.002"),
+        ),
+        "REQUEST_INSTALL_PACKAGES" => (
+            Category::DynamicCode,
+            "loads code at run time",
+            Some("T1407"),
+        ),
+        "INTERNET" => (
+            Category::Network,
+            "configures web content and transport security",
+            None,
+        ),
+        _ => return None,
+    };
+    Some(hit)
 }
 
 #[cfg(feature = "jvm")]

@@ -186,6 +186,7 @@ Signals come from four sources, each tagged in the evidence list:
 - `string`: API / symbol names found in the extracted strings (including XOR/base64-recovered ones), so signals survive light obfuscation.
 - `ioc`: network/host/crypto indicators from the [IOC extractor](#ioc-extraction).
 - `dex`: on an APK or DEX, every site the Android code-pattern audit anchors (class, method and evidence), mapped onto the categories with the ATT&CK Mobile techniques it implies (`T1623.001` shell commands, `T1407` code loaded at run time, `T1633.001` analysis-environment checks, `T1426` device identifiers, `T1582` SMS, `T1414` clipboard, `T1429` audio, `T1512` camera, `T1430` location, `T1418` installed packages).
+- `manifest`: on an APK, every `uses-permission` the manifest declares, mapped the same way (`SEND_SMS` to `T1582`, `READ_SMS` to `T1636.004`, location to `T1430`, `CAMERA` to `T1512`, `RECORD_AUDIO` to `T1429`, `READ_PHONE_STATE` to `T1426`, contacts, call log and calendar to `T1636`, `RECEIVE_BOOT_COMPLETED` to `T1624.001`, `SYSTEM_ALERT_WINDOW` and accessibility binding to `T1417`), so a declared capability and its code use sit in the same category with distinct sources.
 - `anti_analysis`: a detected verdict from the anti-analysis scan reported alongside.
 
 An API name matches only its own family: the exact name, plus the `A`, `W`, `Ex`, `ExA` and `ExW` variants for Win32 APIs. `SystemTimeToTzSpecificLocalTime` is not `system`, and `ConnectEx` is not `connect`.
