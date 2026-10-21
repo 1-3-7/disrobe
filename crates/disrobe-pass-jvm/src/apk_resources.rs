@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::apk_sig::{ApkSignatureReport, CertificateInfo};
+use crate::apk_sig::{ApkSignatureReport, CertificateInfo, SignatureScheme};
 use crate::arsc::{ResourceTable, parse_arsc};
 use crate::axml::{AxmlTree, parse as parse_axml};
 use crate::dex::{DexFile, parse as parse_dex};
@@ -8,6 +8,48 @@ use crate::error::{Error, Result};
 use crate::jar::{ApkExtract, extract_apk};
 use crate::jni::{JniSurfaceReport, analyze as analyze_jni};
 use crate::manifest_facts::ManifestFacts;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApkCertificate {
+    pub subject: String,
+    pub issuer: String,
+    pub serial_hex: String,
+    pub sha256_fingerprint: String,
+    pub schemes: Vec<String>,
+}
+
+fn distinct_certificates(signatures: &ApkSignatureReport) -> Vec<ApkCertificate> {
+    let mut out: Vec<ApkCertificate> = Vec::new();
+    let mut carried: Vec<(&str, &CertificateInfo)> = Vec::new();
+    for cert in &signatures.v1_certificates {
+        carried.push((SignatureScheme::V1JarSigning.label(), cert));
+    }
+    for scheme in &signatures.schemes {
+        for cert in &scheme.certificates {
+            carried.push((scheme.scheme.label(), cert));
+        }
+    }
+    for (label, cert) in carried {
+        match out
+            .iter_mut()
+            .find(|known: &&mut ApkCertificate| known.sha256_fingerprint == cert.sha256_fingerprint)
+        {
+            Some(known) => {
+                if !known.schemes.iter().any(|s: &String| s == label) {
+                    known.schemes.push(label.to_owned());
+                }
+            }
+            None => out.push(ApkCertificate {
+                subject: cert.subject.clone(),
+                issuer: cert.issuer.clone(),
+                serial_hex: cert.serial_hex.clone(),
+                sha256_fingerprint: cert.sha256_fingerprint.clone(),
+                schemes: vec![label.to_owned()],
+            }),
+        }
+    }
+    out
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceEntrySummary {
@@ -24,7 +66,7 @@ pub struct ApkResourceReport {
     pub package_count: usize,
     pub resource_entry_count: usize,
     pub resources: Vec<ResourceEntrySummary>,
-    pub certificates: Vec<CertificateInfo>,
+    pub certificates: Vec<ApkCertificate>,
     pub dex_count: usize,
     pub native_lib_count: usize,
     pub jni: JniSurfaceReport,
@@ -97,7 +139,11 @@ pub fn analyze_apk(bytes: &[u8]) -> Result<ApkResourceReport> {
     if let Some(manifest) = extract.manifest_bytes.as_deref() {
         let tree: AxmlTree = parse_axml(manifest)?;
         package = extract_package(&tree);
-        manifest_facts = Some(crate::manifest_facts::manifest_facts(&tree));
+        let mut facts: ManifestFacts = crate::manifest_facts::manifest_facts(&tree);
+        if let Some(t) = table.as_ref() {
+            crate::manifest_facts::resolve_labels(&mut facts, t);
+        }
+        manifest_facts = Some(facts);
         manifest_xml = Some(match table.as_ref() {
             Some(t) => tree.to_xml_with_resolver(Some(t)),
             None => tree.to_xml(),
@@ -106,8 +152,7 @@ pub fn analyze_apk(bytes: &[u8]) -> Result<ApkResourceReport> {
 
     let signatures: ApkSignatureReport =
         crate::apk_sig::verify(bytes).unwrap_or_else(|_| ApkSignatureReport::default());
-    let certificates: Vec<CertificateInfo> =
-        signatures.certificates().into_iter().cloned().collect();
+    let certificates: Vec<ApkCertificate> = distinct_certificates(&signatures);
 
     let parsed_dexes: Vec<(String, DexFile, Vec<u8>)> = extract
         .dex_files

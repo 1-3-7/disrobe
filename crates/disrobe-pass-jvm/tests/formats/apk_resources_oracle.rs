@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use disrobe_pass_jvm::{
-    ApkResourceReport, AxmlTree, CertificateInfo, ResourceTable, analyze_apk_resources,
+    ApkCertificate, ApkResourceReport, AxmlTree, ResourceTable, analyze_apk_resources,
     decode_manifest, parse_arsc, parse_axml,
 };
 
@@ -126,17 +126,17 @@ fn certificate_fingerprint_matches_authored_cert() {
         !report.certificates.is_empty(),
         "at least one certificate parsed"
     );
-    let cert: &CertificateInfo = report
+    let cert: &ApkCertificate = report
         .certificates
         .iter()
-        .find(|c: &&CertificateInfo| c.sha256_fingerprint == ORACLE_CERT_SHA256)
+        .find(|c: &&ApkCertificate| c.sha256_fingerprint == ORACLE_CERT_SHA256)
         .unwrap_or_else(|| {
             panic!(
                 "no cert with the openssl fingerprint; got: {:?}",
                 report
                     .certificates
                     .iter()
-                    .map(|c: &CertificateInfo| c.sha256_fingerprint.clone())
+                    .map(|c: &ApkCertificate| c.sha256_fingerprint.clone())
                     .collect::<Vec<String>>()
             )
         });
@@ -158,10 +158,10 @@ fn certificate_fingerprint_matches_authored_cert() {
 fn v1_only_apk_parses_cert_from_pkcs7() {
     let apk: Vec<u8> = read("fixture-v1-signed.apk");
     let report: ApkResourceReport = analyze_apk_resources(&apk).expect("v1 apk analyzes");
-    let cert: &CertificateInfo = report
+    let cert: &ApkCertificate = report
         .certificates
         .iter()
-        .find(|c: &&CertificateInfo| c.sha256_fingerprint == ORACLE_CERT_SHA256)
+        .find(|c: &&ApkCertificate| c.sha256_fingerprint == ORACLE_CERT_SHA256)
         .expect("v1 .RSA pkcs7 cert parses to the same fixture cert");
     assert_eq!(cert.subject, ORACLE_SUBJECT);
 }

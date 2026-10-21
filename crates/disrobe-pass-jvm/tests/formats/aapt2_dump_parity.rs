@@ -315,6 +315,7 @@ struct Badging {
     permissions: Vec<String>,
     debuggable: bool,
     launchable: Vec<String>,
+    label: String,
 }
 
 fn quoted<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -333,6 +334,7 @@ fn aapt2_badging(dump: &str) -> Badging {
         permissions: Vec::new(),
         debuggable: false,
         launchable: Vec::new(),
+        label: String::new(),
     };
     for line in dump.lines() {
         if let Some(rest) = line.strip_prefix("package: ") {
@@ -357,6 +359,8 @@ fn aapt2_badging(dump: &str) -> Badging {
         } else if let Some(rest) = line.strip_prefix("uses-implied-permission: ") {
             let implied: &str = quoted(rest, "name").expect("implied permission");
             badging.permissions.retain(|p: &String| p != implied);
+        } else if let Some(rest) = line.strip_prefix("application-label:'") {
+            rest.trim_end_matches('\'').clone_into(&mut badging.label);
         } else if line == "application-debuggable" {
             badging.debuggable = true;
         } else if let Some(rest) = line.strip_prefix("launchable-activity: ") {
@@ -379,6 +383,7 @@ fn disrobe_badging(facts: &ManifestFacts) -> Badging {
         permissions: facts.uses_permissions.clone(),
         debuggable: facts.debuggable.unwrap_or(false),
         launchable: facts.launchable_activities.clone(),
+        label: facts.application_label.clone().unwrap_or_default(),
     }
 }
 

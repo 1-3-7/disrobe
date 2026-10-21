@@ -159,7 +159,7 @@ pub use android_identify::{
 pub use android_neutralize::{DexNeutralization, plan_apk_neutralization, plan_dex_neutralization};
 #[cfg(not(target_arch = "wasm32"))]
 pub use apk_resources::{
-    ApkReconstruction, ApkResourceReport, ResourceEntrySummary,
+    ApkCertificate, ApkReconstruction, ApkResourceReport, ResourceEntrySummary,
     analyze_apk as analyze_apk_resources, analyze_manifest_bytes as decode_manifest_bytes,
     decode_manifest,
 };

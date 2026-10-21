@@ -235,3 +235,21 @@ fn native_libraries_are_audited_per_abi_and_the_control_library_is_silent() {
         "the Java side only loads the libraries by name and triggers no rule: {report:#?}"
     );
 }
+
+#[test]
+fn the_application_label_resolves_through_the_resource_table() {
+    let bytes: Vec<u8> = fixture("audit-plants.apk");
+    let report = disrobe_pass_jvm::analyze_apk_resources(&bytes).expect("apk report");
+    let facts = report.manifest.expect("manifest facts");
+    assert_eq!(
+        facts.application_label.as_deref(),
+        Some("audit plants"),
+        "res/values/strings.xml app_name through @0x7f010000"
+    );
+    let activity = facts
+        .components
+        .iter()
+        .find(|c| c.name == "com.planted.audit.Plants")
+        .expect("the Plants activity");
+    assert_eq!(activity.label, None, "the activity declares no label");
+}

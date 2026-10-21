@@ -332,6 +332,30 @@ impl ResourceTable {
     }
 
     #[must_use]
+    pub fn string_value(&self, id: u32) -> Option<String> {
+        let pkg_id: u32 = (id >> 24) & 0xFF;
+        let type_id: u32 = (id >> 16) & 0xFF;
+        let entry_id: u32 = id & 0xFFFF;
+        let pkg: &ResTablePackage = self
+            .packages
+            .iter()
+            .find(|p: &&ResTablePackage| p.id == pkg_id)?;
+        pkg.types
+            .iter()
+            .filter(|ty: &&ResTypeConfig| u32::from(ty.type_id) == type_id)
+            .find_map(|ty: &ResTypeConfig| {
+                let entry: &ResEntry = ty
+                    .entries
+                    .iter()
+                    .find(|e: &&ResEntry| e.entry_id == entry_id)?;
+                match &entry.value {
+                    ResEntryValue::Simple(value) => self.resolve_string_value(value),
+                    ResEntryValue::Bag { .. } => None,
+                }
+            })
+    }
+
+    #[must_use]
     pub fn entry_count(&self) -> usize {
         self.packages
             .iter()

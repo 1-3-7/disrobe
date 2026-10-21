@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::arsc::ResourceTable;
 use crate::axml::{
     AxmlAttribute, AxmlNode, AxmlTree, TYPE_DYNAMIC_REFERENCE, TYPE_INT_BOOLEAN, TYPE_INT_DEC,
     TYPE_INT_HEX, TYPE_REFERENCE,
@@ -55,6 +56,8 @@ pub struct ManifestComponent {
     pub launchable: bool,
     pub permission: Option<String>,
     pub authorities: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +74,8 @@ pub struct ManifestFacts {
     pub allow_backup: Option<bool>,
     pub uses_cleartext_traffic: Option<bool>,
     pub network_security_config: Option<String>,
+    #[serde(default)]
+    pub application_label: Option<String>,
     pub components: Vec<ManifestComponent>,
     pub exported_components: usize,
     pub launchable_activities: Vec<String>,
@@ -187,6 +192,8 @@ pub fn manifest_facts(tree: &AxmlTree) -> ManifestFacts {
                             android_attr(attributes, "usesCleartextTraffic").and_then(bool_of);
                         facts.network_security_config =
                             android_attr(attributes, "networkSecurityConfig").and_then(string_of);
+                        facts.application_label =
+                            android_attr(attributes, "label").and_then(string_of);
                     }
                     "intent-filter" => {
                         if let Some(current) = open.as_mut() {
@@ -232,6 +239,7 @@ pub fn manifest_facts(tree: &AxmlTree) -> ManifestFacts {
                                         .and_then(string_of),
                                     authorities: android_attr(attributes, "authorities")
                                         .and_then(string_of),
+                                    label: android_attr(attributes, "label").and_then(string_of),
                                 },
                                 has_main_action: false,
                                 has_launcher_category: false,
@@ -291,4 +299,26 @@ pub fn manifest_facts(tree: &AxmlTree) -> ManifestFacts {
         .map(|c: &ManifestComponent| c.name.clone())
         .collect();
     facts
+}
+
+fn resolve_reference(value: &mut Option<String>, table: &ResourceTable) {
+    let Some(text) = value.as_deref() else {
+        return;
+    };
+    let Some(id) = text
+        .strip_prefix("@0x")
+        .and_then(|hex: &str| u32::from_str_radix(hex, 16).ok())
+    else {
+        return;
+    };
+    if let Some(resolved) = table.string_value(id) {
+        *value = Some(resolved);
+    }
+}
+
+pub fn resolve_labels(facts: &mut ManifestFacts, table: &ResourceTable) {
+    resolve_reference(&mut facts.application_label, table);
+    for component in &mut facts.components {
+        resolve_reference(&mut component.label, table);
+    }
 }

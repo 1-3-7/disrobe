@@ -5,7 +5,7 @@ use disrobe_core::neutralize::{
     Applied, NeutralizationPlan, NeutralizationReport, Selection, apply, neutralized_path,
 };
 use disrobe_pass_jvm::{
-    AndroidAuditReport, ApkResourceReport, CertificateInfo, DexNeutralization, JniSurfaceReport,
+    AndroidAuditReport, ApkCertificate, ApkResourceReport, DexNeutralization, JniSurfaceReport,
     ManifestFacts, ResolvedNative, ResourceEntrySummary, analyze_apk_resources, audit_android_apk,
     plan_apk_neutralization,
 };
@@ -477,9 +477,9 @@ fn render_resources(resources: &[ResourceEntrySummary]) {
     }
 }
 
-fn render_certificates(certificates: &[CertificateInfo]) {
+fn render_certificates(certificates: &[ApkCertificate]) {
     println!(
-        "  certificates: {} signer cert{}",
+        "  certificates: {} distinct signer cert{}",
         certificates.len(),
         plural(certificates.len(), "", "s"),
     );
@@ -488,6 +488,7 @@ fn render_certificates(certificates: &[CertificateInfo]) {
         println!("    issuer:     {}", cert.issuer);
         println!("    serial:     {}", cert.serial_hex);
         println!("    sha256:     {}", cert.sha256_fingerprint);
+        println!("    schemes:    {}", cert.schemes.join(", "));
     }
 }
 
