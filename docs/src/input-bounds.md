@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2586 bounds (count 244, other 1224, output 72, recursion 252, size 592, work 202).
+2587 bounds (count 244, other 1225, output 72, recursion 252, size 592, work 202).
 
-Exceeded: error 1063, recorded 233, panic 0, delegated 54, silent 1177, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1177, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1129,6 +1129,7 @@ Exceeded: error 1063, recorded 233, panic 0, delegated 54, silent 1177, unclassi
 | `disrobe-pass-jvm` | `MAX_MAJOR` | other | error: `Error::UnknownConstantTag` (DR-JVM-0005); `Error::UnsupportedClassVersion` (DR-JVM-0004) | `u16` | `69` | `crates/disrobe-pass-jvm/src/classfile.rs` |
 | `disrobe-pass-jvm` | `MAX_DATAFLOW_VISITS_PER_INSTRUCTION` | other | silent: `return` in `local_constants_at_block_entries` | `usize` | `16` | `crates/disrobe-pass-jvm/src/const_fold.rs` |
 | `disrobe-pass-jvm` | `MAX_MASK_SEARCH_PAIRS` | other | silent: `return` in `recover_dispatch_mask` | `usize` | `4096` | `crates/disrobe-pass-jvm/src/dalvik_blackobf.rs` |
+| `disrobe-pass-jvm` | `MAX_CALL_GRAPH_EDGES` | other | recorded: flag `truncated` | `usize` | `1 << 20` | `crates/disrobe-pass-jvm/src/dalvik_call_graph.rs` |
 | `disrobe-pass-jvm` | `MAX_DALVIK_BLOCKS` | other | error: `StructureError::TooManyBlocks` | `usize` | `16_384` | `crates/disrobe-pass-jvm/src/dalvik_cfg.rs` |
 | `disrobe-pass-jvm` | `MAX_FLOW_WORDS` | other | silent: `return` in `analyze` | `usize` | `1 << 22` | `crates/disrobe-pass-jvm/src/dalvik_cfg.rs` |
 | `disrobe-pass-jvm` | `MAX_DIAGNOSTICS` | other | silent: no action in `analyze` | `usize` | `256` | `crates/disrobe-pass-jvm/src/dalvik_core_library.rs` |
