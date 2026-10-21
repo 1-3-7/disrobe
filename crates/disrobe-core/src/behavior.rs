@@ -19,6 +19,7 @@ pub enum Category {
     Crypto,
     AntiAnalysis,
     DynamicCode,
+    Privacy,
 }
 
 impl Category {
@@ -33,6 +34,7 @@ impl Category {
             Self::Crypto => "crypto",
             Self::AntiAnalysis => "anti_analysis",
             Self::DynamicCode => "dynamic_code",
+            Self::Privacy => "privacy",
         }
     }
 
@@ -47,6 +49,7 @@ impl Category {
             Self::Crypto => "cryptographic operations",
             Self::AntiAnalysis => "anti-analysis / anti-debug",
             Self::DynamicCode => "dynamic code / loader",
+            Self::Privacy => "privacy / data collection",
         }
     }
 }
@@ -183,6 +186,13 @@ static API_RULES: &[ApiRule] = &[
     api("mprotect", NameFamily::Exact, Category::DynamicCode),
     api("dlopen", NameFamily::Exact, Category::DynamicCode),
     api("dlsym", NameFamily::Exact, Category::DynamicCode),
+    api("getclipboarddata", NameFamily::Exact, Category::Privacy),
+    api("getusername", NameFamily::Win32, Category::Privacy),
+    api("getcomputername", NameFamily::Win32, Category::Privacy),
+    api("getadaptersinfo", NameFamily::Exact, Category::Privacy),
+    api("getadaptersaddresses", NameFamily::Exact, Category::Privacy),
+    api("getlogin", NameFamily::Exact, Category::Privacy),
+    api("getpwuid", NameFamily::Exact, Category::Privacy),
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -443,6 +453,44 @@ fn is_word_bounded(haystack: &str, needle: &str) -> bool {
 #[inline]
 const fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+pub fn merge_categories(report: &mut BehaviorReport, extra: Vec<CategoryFinding>) {
+    for finding in extra {
+        if finding.evidence.is_empty() {
+            continue;
+        }
+        match report
+            .categories
+            .iter_mut()
+            .find(|existing: &&mut CategoryFinding| existing.category == finding.category)
+        {
+            Some(existing) => {
+                for evidence in finding.evidence {
+                    if !existing.evidence.contains(&evidence) {
+                        existing.evidence.push(evidence);
+                    }
+                }
+                for id in finding.attack_ids {
+                    if !existing.attack_ids.contains(&id) {
+                        existing.attack_ids.push(id);
+                    }
+                }
+            }
+            None => report.categories.push(finding),
+        }
+    }
+    report
+        .categories
+        .sort_by_key(|finding: &CategoryFinding| finding.category);
+    let mut attack_ids: Vec<&'static str> = report
+        .categories
+        .iter()
+        .flat_map(|finding: &CategoryFinding| finding.attack_ids.iter().copied())
+        .collect();
+    attack_ids.sort_unstable();
+    attack_ids.dedup();
+    report.attack_ids = attack_ids;
 }
 
 #[must_use]

@@ -147,6 +147,7 @@ const fn category_icon(cat: Category) -> &'static str {
         Category::Crypto => ICON_LOCK,
         Category::AntiAnalysis => ICON_EYE_OFF,
         Category::DynamicCode => ICON_CODE,
+        Category::Privacy => ICON_TARGET,
     }
 }
 

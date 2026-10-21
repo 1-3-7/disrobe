@@ -167,7 +167,7 @@ disrobe behavior sample.exe
 disrobe behavior sample.exe --json
 ```
 
-`disrobe behavior` answers "what does this binary do?" by classifying it across seven categories:
+`disrobe behavior` answers "what does this binary do?" by classifying it across eight categories:
 
 | Category | Covers |
 |---|---|
@@ -178,12 +178,14 @@ disrobe behavior sample.exe --json
 | `crypto` | CryptoAPI / BCrypt / embedded crypto constants. |
 | `anti_analysis` | Debugger checks, timing checks, sandbox evasion. |
 | `dynamic_code` | `LoadLibrary`/`GetProcAddress`, `VirtualProtect`, `dlopen`, RWX memory. |
+| `privacy` | Clipboard reads, user and machine names, adapter enumeration; on Android the device identifiers, SMS sending, clipboard, microphone, camera, location and installed-package reads the code-pattern audit anchors. |
 
 Signals come from four sources, each tagged in the evidence list:
 
 - `import`: the native import table (PE/ELF/Mach-O), parsed when the input is a binary.
 - `string`: API / symbol names found in the extracted strings (including XOR/base64-recovered ones), so signals survive light obfuscation.
 - `ioc`: network/host/crypto indicators from the [IOC extractor](#ioc-extraction).
+- `dex`: on an APK or DEX, every site the Android code-pattern audit anchors (class, method and evidence), mapped onto the categories with the ATT&CK Mobile techniques it implies (`T1623.001` shell commands, `T1407` code loaded at run time, `T1633.001` analysis-environment checks, `T1426` device identifiers, `T1582` SMS, `T1414` clipboard, `T1429` audio, `T1512` camera, `T1430` location, `T1418` installed packages).
 - `anti_analysis`: a detected verdict from the anti-analysis scan reported alongside.
 
 An API name matches only its own family: the exact name, plus the `A`, `W`, `Ex`, `ExA` and `ExW` variants for Win32 APIs. `SystemTimeToTzSpecificLocalTime` is not `system`, and `ConnectEx` is not `connect`.

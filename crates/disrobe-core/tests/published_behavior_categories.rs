@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use disrobe_core::{BehaviorCategory, BehaviorReport, CategoryFinding, analyze_behavior};
 
-const PUBLISHED_COUNT: usize = 7;
+const PUBLISHED_COUNT: usize = 8;
 
 const DEPTH_DOC: &str = "docs/src/cli/analysis-depth.md";
 const REFERENCE_DOC: &str = "docs/src/cli/reference.md";
 const DEPTH_SECTION: &str = "## Behavior summary";
-const DEPTH_COUNT_PHRASE: &str = "classifying it across seven categories";
-const REFERENCE_COUNT_PHRASE: &str = "across 7 categories";
+const DEPTH_COUNT_PHRASE: &str = "classifying it across eight categories";
+const REFERENCE_COUNT_PHRASE: &str = "across 8 categories";
 
 #[derive(Debug, Clone, Copy)]
 struct PublishedCategory {
@@ -73,6 +73,13 @@ const PUBLISHED: [PublishedCategory; PUBLISHED_COUNT] = [
         import_signal: "GetProcAddress",
         attack_id: None,
     },
+    PublishedCategory {
+        category: BehaviorCategory::Privacy,
+        label: "privacy",
+        describe: "privacy / data collection",
+        import_signal: "GetClipboardData",
+        attack_id: None,
+    },
 ];
 
 const fn published_label(category: BehaviorCategory) -> &'static str {
@@ -84,6 +91,7 @@ const fn published_label(category: BehaviorCategory) -> &'static str {
         BehaviorCategory::Crypto => "crypto",
         BehaviorCategory::AntiAnalysis => "anti_analysis",
         BehaviorCategory::DynamicCode => "dynamic_code",
+        BehaviorCategory::Privacy => "privacy",
     }
 }
 
