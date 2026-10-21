@@ -3459,10 +3459,10 @@
 - `DR-PYDEC-0014`: `crates/disrobe-pass-py-decompile/src/error.rs:59`
 - `DR-PYDEC-0015`: `crates/disrobe-pass-py-decompile/src/error.rs:39`
 - `DR-PYDEC-0016`: `crates/disrobe-pass-py-decompile/src/error.rs:66`
-- `DR-PYDEC-0902`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:104`
-- `DR-PYDEC-0908`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:118`
-- `DR-PYDEC-0911`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:110`
-- `DR-PYDEC-0912`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:114`
+- `DR-PYDEC-0902`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:103`
+- `DR-PYDEC-0908`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:117`
+- `DR-PYDEC-0911`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:109`
+- `DR-PYDEC-0912`: `crates/disrobe-pass-py-decompile/src/chain_detector.rs:113`
 - `DR-PYDEC-0913`: `crates/disrobe-pass-py-decompile/src/engine.rs:46`
 - `DR-PYDEOB-0010`: `crates/disrobe-pass-py-deob/src/error.rs:37`
 - `DR-PYDEOB-0011`: `crates/disrobe-pass-py-deob/src/error.rs:40`
