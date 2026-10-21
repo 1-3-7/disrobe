@@ -300,7 +300,14 @@ fn canonical_register(name: &str) -> String {
 }
 
 fn is_known_register(name: &str) -> bool {
-    canonical_x86(&name.trim().to_ascii_lowercase()).is_some()
+    let lower: String = name.trim().to_ascii_lowercase();
+    canonical_x86(&lower).is_some() || is_dalvik_register(&lower)
+}
+
+fn is_dalvik_register(name: &str) -> bool {
+    name.strip_prefix('v').is_some_and(|digits: &str| {
+        !digits.is_empty() && digits.bytes().all(|b: u8| b.is_ascii_digit())
+    })
 }
 
 fn canonical_x86(name: &str) -> Option<&'static str> {

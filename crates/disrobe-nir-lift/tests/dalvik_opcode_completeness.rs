@@ -329,7 +329,7 @@ fn committed_dex_surfaces_unmodeled_without_silent_nop() {
 }
 
 #[test]
-fn move_wide_and_quick_forms_surface_as_unmodeled_not_nop() {
+fn moves_lift_to_register_copies_and_quick_forms_surface_as_unmodeled() {
     let mut saw_move: bool = false;
     let mut saw_range_invoke: bool = false;
     for (_, bytes) in FIXTURES {
@@ -341,9 +341,11 @@ fn move_wide_and_quick_forms_surface_as_unmodeled_not_nop() {
                 {
                     saw_move = true;
                     assert!(
-                        instr.op.is_unmodeled(),
-                        "a register move must never collapse to a silent Nop: {}",
-                        instr.mnemonic
+                        matches!(instr.op, NirOp::Copy { .. })
+                            || (instr.mnemonic == "move-exception" && instr.op.is_unmodeled()),
+                        "a register move lifts to a Copy between named registers, never to a silent Nop: {} {:?}",
+                        instr.mnemonic,
+                        instr.op
                     );
                 }
                 if instr.mnemonic.starts_with("invoke") && instr.mnemonic.ends_with("/range") {

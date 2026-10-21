@@ -228,10 +228,46 @@ fn classify(
     imports: &mut ImportTable,
 ) -> (NirOp, Vec<String>) {
     if is_invoke(insn.op) {
-        return classify_invoke(insn, dex, internal_by_key, imports);
+        let (op, mut operands): (NirOp, Vec<String>) =
+            classify_invoke(insn, dex, internal_by_key, imports);
+        operands.extend(insn.regs.iter().map(|r: &u16| register_name(*r)));
+        return (op, operands);
     }
     if insn.is_return() {
-        return (NirOp::Return, Vec::new());
+        return (
+            NirOp::Return,
+            insn.regs
+                .first()
+                .map(|r: &u16| register_name(*r))
+                .into_iter()
+                .collect(),
+        );
+    }
+    if matches!(insn.op, OP_MOVE_RESULT..=OP_MOVE_RESULT_OBJECT)
+        && let Some(&destination) = insn.regs.first()
+    {
+        return (
+            NirOp::Copy {
+                src: RETURN_VALUE.to_owned(),
+                size: if insn.op == OP_MOVE_RESULT_WIDE { 8 } else { 4 },
+            },
+            vec![register_name(destination)],
+        );
+    }
+    if matches!(insn.op, OP_MOVE..=OP_MOVE_OBJECT_16)
+        && let (Some(&destination), Some(&source)) = (insn.regs.first(), insn.regs.get(1))
+    {
+        return (
+            NirOp::Copy {
+                src: register_name(source),
+                size: if matches!(insn.op, OP_MOVE_WIDE..=OP_MOVE_WIDE_16) {
+                    8
+                } else {
+                    4
+                },
+            },
+            vec![register_name(destination)],
+        );
     }
     if insn.is_throw() {
         return (NirOp::Interrupt, Vec::new());
@@ -249,7 +285,11 @@ fn classify(
         return (NirOp::CondBranch { target }, Vec::new());
     }
     if let Some(binary_op) = binary_op(insn.op) {
-        return (NirOp::BinOp { op: binary_op }, Vec::new());
+        let mut operands: Vec<String> = insn.regs.iter().map(|r: &u16| register_name(*r)).collect();
+        if let Some(literal) = insn.literal {
+            operands.push(literal.to_string());
+        }
+        return (NirOp::BinOp { op: binary_op }, operands);
     }
     if is_array_get(insn.op) || is_field_get(insn.op) {
         return (NirOp::Load, memory_operands(insn.op));
@@ -258,7 +298,14 @@ fn classify(
         return (NirOp::Store, memory_operands(insn.op));
     }
     if is_const(insn.op) {
-        return (NirOp::Const, const_operand(insn, dex));
+        let mut operands: Vec<String> = insn
+            .regs
+            .first()
+            .map(|r: &u16| register_name(*r))
+            .into_iter()
+            .collect();
+        operands.extend(const_operand(insn, dex));
+        return (NirOp::Const, operands);
     }
     if insn.op == OP_NOP {
         return (NirOp::Nop, Vec::new());
@@ -392,6 +439,19 @@ fn memory_operands(op: u8) -> Vec<String> {
 
 const HIGH16_INT_SHIFT: u32 = 16;
 const HIGH16_WIDE_SHIFT: u32 = 48;
+
+const OP_MOVE: u8 = 0x01;
+const OP_MOVE_WIDE: u8 = 0x04;
+const OP_MOVE_WIDE_16: u8 = 0x06;
+const OP_MOVE_OBJECT_16: u8 = 0x09;
+const OP_MOVE_RESULT: u8 = 0x0A;
+const OP_MOVE_RESULT_WIDE: u8 = 0x0B;
+const OP_MOVE_RESULT_OBJECT: u8 = 0x0C;
+const RETURN_VALUE: &str = "rax";
+
+fn register_name(register: u16) -> String {
+    format!("v{register}")
+}
 
 fn const_operand(insn: &DalvikInsn, dex: &DexFile) -> Vec<String> {
     match insn.op {

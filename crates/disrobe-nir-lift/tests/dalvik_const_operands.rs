@@ -71,7 +71,15 @@ fn lifted_const_operands(bytes: &[u8]) -> BTreeMap<u64, Vec<String>> {
     for function in &module.functions {
         for instr in &function.instructions {
             if instr.op == NirOp::Const {
-                out.insert(instr.address, instr.operands.clone());
+                out.insert(
+                    instr.address,
+                    instr
+                        .operands
+                        .iter()
+                        .skip(1)
+                        .cloned()
+                        .collect::<Vec<String>>(),
+                );
             }
         }
     }
