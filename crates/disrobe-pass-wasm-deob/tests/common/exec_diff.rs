@@ -66,7 +66,7 @@ pub struct Export {
     pub arity: usize,
 }
 
-pub const GRADED_WASMTIME_VERSION: &str = "48.0.6";
+pub const GRADED_WASMTIME_VERSION: &str = "48.0.7";
 
 pub fn workspace_lock_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
