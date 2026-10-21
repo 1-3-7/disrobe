@@ -525,3 +525,6 @@ mod yara_loader;
 
 #[path = "../apk_audit.rs"]
 mod apk_audit;
+
+#[path = "../identify_android.rs"]
+mod identify_android;

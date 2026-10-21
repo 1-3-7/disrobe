@@ -16,6 +16,11 @@ struct IdentifyWithCoverage<'a> {
 pub(crate) fn run(path: PathBuf, fmt: OutputFormat, coverage: bool) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&path)
         .map_err(|e| miette::miette!("DR-IDENTIFY-0050: cannot read target: {e}"))?;
+    #[cfg(feature = "jvm")]
+    if let Some(identity) = disrobe_pass_jvm::identify_android(&bytes, path.to_str()) {
+        let identity: disrobe_pass_jvm::AndroidIdentity = with_apk_packers(&bytes, identity);
+        return output::emit(fmt, &identity, || render_android(&identity));
+    }
     let report: FileIdReport = identify_file(&bytes, super::util::now_secs()?);
     if !coverage {
         return output::emit(fmt, &report, || render_text(&report));
@@ -79,6 +84,66 @@ fn unclaimed_regions(coverage: &ByteCoverage) -> Vec<&CoverageRegion> {
         .iter()
         .filter(|region: &&CoverageRegion| region.class == RegionClass::Unclaimed)
         .collect()
+}
+
+#[cfg(feature = "jvm")]
+fn with_apk_packers(
+    bytes: &[u8],
+    mut identity: disrobe_pass_jvm::AndroidIdentity,
+) -> disrobe_pass_jvm::AndroidIdentity {
+    #[cfg(feature = "mobile")]
+    if identity.format == "apk"
+        && let Ok(packers) = disrobe_pass_mobile::detect_packers(bytes)
+    {
+        for finding in packers {
+            let anchors: Vec<String> = finding
+                .anchors
+                .iter()
+                .map(|a: &disrobe_pass_mobile::PackerAnchor| a.value.clone())
+                .collect();
+            identity.hits.push(disrobe_pass_jvm::AndroidIdentityHit {
+                kind: disrobe_pass_jvm::AndroidIdentityKind::Packer,
+                name: finding.label,
+                detail: format!("anchors {}; {}", anchors.join(", "), finding.note),
+                confidence: 90,
+            });
+        }
+        identity.hits.sort();
+        identity.hits.dedup();
+    }
+    #[cfg(not(feature = "mobile"))]
+    let _: &[u8] = bytes;
+    identity
+}
+
+#[cfg(feature = "jvm")]
+fn render_android(identity: &disrobe_pass_jvm::AndroidIdentity) {
+    println!(
+        "format: {} ({} dex file{}, {} class file{})",
+        identity.format,
+        identity.dex_files,
+        if identity.dex_files == 1 { "" } else { "s" },
+        identity.class_files,
+        if identity.class_files == 1 { "" } else { "s" },
+    );
+    if identity.hits.is_empty() {
+        println!(
+            "no writer, obfuscator, protector, packer, signature or anti-analysis signatures matched"
+        );
+        return;
+    }
+    for hit in &identity.hits {
+        println!(
+            "{:<13} {}  ({}%)",
+            hit.kind.label(),
+            hit.name,
+            hit.confidence
+        );
+        println!("             - {}", hit.detail);
+    }
+    if identity.truncated {
+        println!("             (hit list truncated)");
+    }
 }
 
 fn render_text(report: &FileIdReport) {
