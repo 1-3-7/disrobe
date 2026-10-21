@@ -360,6 +360,23 @@ enum Value {
     Field(String),
 }
 
+pub fn audit_android_bytes(bytes: &[u8]) -> Result<AndroidAuditReport> {
+    if bytes.len() >= 8 && &bytes[..4] == b"dex\n" && bytes[7] == 0 {
+        let dex: DexFile = parse_dex(bytes)?;
+        let mut report: AndroidAuditReport = AndroidAuditReport {
+            dex_files: 1,
+            ..AndroidAuditReport::default()
+        };
+        audit_dex_into(&dex, bytes, &mut report);
+        finish(&mut report);
+        return Ok(report);
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x50, 0x4B, 0x03, 0x04] {
+        return audit_apk(bytes);
+    }
+    Ok(AndroidAuditReport::default())
+}
+
 pub fn audit_apk(bytes: &[u8]) -> Result<AndroidAuditReport> {
     let extract: ApkExtract = extract_apk(bytes)?;
     let mut report: AndroidAuditReport = AndroidAuditReport::default();
