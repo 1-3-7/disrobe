@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2589 bounds (count 244, other 1227, output 72, recursion 252, size 592, work 202).
+2590 bounds (count 244, other 1227, output 72, recursion 253, size 592, work 202).
 
-Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1179, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1180, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1130,6 +1130,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1179, unclassi
 | `disrobe-pass-jvm` | `MAX_DATAFLOW_VISITS_PER_INSTRUCTION` | other | silent: `return` in `local_constants_at_block_entries` | `usize` | `16` | `crates/disrobe-pass-jvm/src/const_fold.rs` |
 | `disrobe-pass-jvm` | `MAX_MASK_SEARCH_PAIRS` | other | silent: `return` in `recover_dispatch_mask` | `usize` | `4096` | `crates/disrobe-pass-jvm/src/dalvik_blackobf.rs` |
 | `disrobe-pass-jvm` | `MAX_CALL_GRAPH_EDGES` | other | recorded: flag `truncated` | `usize` | `1 << 20` | `crates/disrobe-pass-jvm/src/dalvik_call_graph.rs` |
+| `disrobe-pass-jvm` | `MAX_PAIR_DEPTH` | recursion | silent: `continue` in `reachable_externals` | `usize` | `8` | `crates/disrobe-pass-jvm/src/dalvik_call_graph.rs` |
 | `disrobe-pass-jvm` | `MAX_DALVIK_BLOCKS` | other | error: `StructureError::TooManyBlocks` | `usize` | `16_384` | `crates/disrobe-pass-jvm/src/dalvik_cfg.rs` |
 | `disrobe-pass-jvm` | `MAX_FLOW_WORDS` | other | silent: `return` in `analyze` | `usize` | `1 << 22` | `crates/disrobe-pass-jvm/src/dalvik_cfg.rs` |
 | `disrobe-pass-jvm` | `MAX_DIAGNOSTICS` | other | silent: no action in `analyze` | `usize` | `256` | `crates/disrobe-pass-jvm/src/dalvik_core_library.rs` |
@@ -2613,7 +2614,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1179, unclassi
 
 ## Silent stops
 
-1179 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1180 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3051,6 +3052,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1179, unclassi
 | `disrobe-pass-jvm` | `JAVA_RANDOM_REJECTION_CAP` | `for` range in `next_bounded_int` | `crates/disrobe-pass-jvm/src/bytecode_eval.rs` |
 | `disrobe-pass-jvm` | `MAX_DATAFLOW_VISITS_PER_INSTRUCTION` | `return` in `local_constants_at_block_entries` | `crates/disrobe-pass-jvm/src/const_fold.rs` |
 | `disrobe-pass-jvm` | `MAX_MASK_SEARCH_PAIRS` | `return` in `recover_dispatch_mask` | `crates/disrobe-pass-jvm/src/dalvik_blackobf.rs` |
+| `disrobe-pass-jvm` | `MAX_PAIR_DEPTH` | `continue` in `reachable_externals` | `crates/disrobe-pass-jvm/src/dalvik_call_graph.rs` |
 | `disrobe-pass-jvm` | `MAX_FLOW_WORDS` | `return` in `analyze` | `crates/disrobe-pass-jvm/src/dalvik_cfg.rs` |
 | `disrobe-pass-jvm` | `MAX_DIAGNOSTICS` | no action in `analyze` | `crates/disrobe-pass-jvm/src/dalvik_core_library.rs` |
 | `disrobe-pass-jvm` | `MAX_MARKER_BYTES` | `return` in `parse_marker` | `crates/disrobe-pass-jvm/src/dalvik_core_library.rs` |
