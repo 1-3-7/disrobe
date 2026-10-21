@@ -122,6 +122,8 @@ The tests below run in `cargo xtask prepush` when `disrobe-pass-jvm` or `disrobe
 | Unresolved natives | `jvm_jni_link.rs`, `jni_native_surface.rs` | Named in the text and JSON output with a count | synthetic DEX |
 | A `d8`-built DEX against a `clang`-built `.so` | `jvm_jni_link.rs` | At least one native resolved | real `javac`, `d8`, and host `clang` output; the test prints `UNGRADED` and passes when `d8` is not on `PATH`, which is the case in CI |
 
+`disrobe native symbols` on the two JNI libraries lists every dynamic symbol `llvm-nm -D -S` reports with the same address, size and kind, lists a symbol present in both `.symtab` and `.dynsym` once, and omits ARM mapping symbols (`$x`, `$d`) and section and file symbols (`crates/disrobe-cli/tests/native_symbols_parity.rs`, references beside the fixtures).
+
 Not graded by any test: AAB input, a Windows `.dll` or macOS `.dylib` passed with `--native`, the JNI table that `disrobe apk` prints, ambiguous symbols, a real `dex2oat` `.oat`, and an NDK-built library or the NDK's `jni.h`.
 
 Only two things are absent from the static artifact and therefore unrecoverable: a `fnPtr` computed at runtime rather than stored as a relocatable pointer, and a `FindClass` target name built dynamically rather than passed as a string literal. The native function body at a recovered address is not this surface's job; it goes to the native pseudo-C decompiler.
