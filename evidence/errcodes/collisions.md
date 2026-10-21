@@ -565,12 +565,12 @@
 
 ### `DR-CLI-0408`
 
-- `"--backend {} decompiles DEX and APK input, not class or jar files"`: `crates/disrobe-cli/src/cli/jvm.rs:1930`
-- `"--backend {} decompiles class and jar files, not DEX or APK input"`: `crates/disrobe-cli/src/cli/jvm.rs:1958`
+- `"--backend {} decompiles DEX and APK input, not class or jar files"`: `crates/disrobe-cli/src/cli/jvm.rs:1969`
+- `"--backend {} decompiles class and jar files, not DEX or APK input"`: `crates/disrobe-cli/src/cli/jvm.rs:1997`
 
 ### `DR-CLI-0410`
 
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1745`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1784`
 - `` "unknown category in --metadata-exclude `{}`: {}" ``: `crates/disrobe-cli/src/cli/llm.rs:256`
 - `` "unknown category in --metadata-include `{}`: {}" ``: `crates/disrobe-cli/src/cli/llm.rs:242`
 
@@ -597,64 +597,64 @@
 ### `DR-CLI-0420`
 
 - `"--decryption-keys requires --i-have-authorization"`: `crates/disrobe-cli/src/cli/llm.rs:274`
-- `"backend {} failed: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1885`
-- `"cannot read mapping file: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:636`
-- `"cannot write native source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2363`
+- `"backend {} failed: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1924`
+- `"cannot read mapping file: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:654`
+- `"cannot write native source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2490`
 
 ### `DR-CLI-0421`
 
-- `"android backend {} failed: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1913`
-- `"cannot write native disasm: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2368`
-- `"proguard mapping parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:638`
+- `"android backend {} failed: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1952`
+- `"cannot write native disasm: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2495`
+- `"proguard mapping parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:656`
 
 ### `DR-CLI-0422`
 
-- `"cannot write native dex source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2337`
-- `"name-restoration serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1197`
+- `"cannot write native dex source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2446`
+- `"name-restoration serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1215`
 
 ### `DR-CLI-0423`
 
-- `"cannot create class out dir: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2410`
-- `"cannot write name-restoration.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1199`
+- `"cannot create class out dir: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2537`
+- `"cannot write name-restoration.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1217`
 
 ### `DR-CLI-0429`
 
-- `"cannot create recovered dir: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1265`
-- `"cannot write recovered source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1268`
-- `"cannot write source-recovery.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1287`
-- `"source-recovery serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1285`
+- `"cannot create recovered dir: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1283`
+- `"cannot write recovered source: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1286`
+- `"cannot write source-recovery.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1305`
+- `"source-recovery serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1303`
 
 ### `DR-CLI-0430`
 
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:676`
-- `"cannot read library jar: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1356`
+- `"cannot read library jar: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1374`
 - `"write LLM bundle failed: {}"`: `crates/disrobe-cli/src/cli/llm.rs:376`
 
 ### `DR-CLI-0431`
 
 - `"--metadata-out {} exists; pass --force to overwrite"`: `crates/disrobe-cli/src/cli/llm.rs:340`
 - `"dotnet analyze: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:706`
-- `"library classfile parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1359`
+- `"library classfile parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1377`
 
 ### `DR-CLI-0432`
 
 - `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:708`
-- `"library jar extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1364`
+- `"library jar extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1382`
 - `"write LLM briefs failed: {}"`: `crates/disrobe-cli/src/cli/llm.rs:386`
 
 ### `DR-CLI-0434`
 
-- `"cannot write library-fingerprint.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1415`
+- `"cannot write library-fingerprint.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1433`
 - `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:755`
 
 ### `DR-CLI-0435`
 
-- `"--format requires a standalone DEX input because class, JAR, and APK identifiers use different source keys"`: `crates/disrobe-cli/src/cli/jvm.rs:1449`
+- `"--format requires a standalone DEX input because class, JAR, and APK identifiers use different source keys"`: `crates/disrobe-cli/src/cli/jvm.rs:1470`
 - `"cannot write native decompilation: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1352`
 
 ### `DR-CLI-0436`
 
-- `"Dalvik symbol export: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2063`, `crates/disrobe-cli/src/cli/jvm.rs:2065`, `crates/disrobe-cli/src/cli/jvm.rs:2067`
+- `"Dalvik symbol export: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:2102`, `crates/disrobe-cli/src/cli/jvm.rs:2104`, `crates/disrobe-cli/src/cli/jvm.rs:2106`
 - `"serialize manifest: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:753`
 
 ### `DR-CLI-0438`
@@ -669,14 +669,14 @@
 - `"build LLM bundle failed: {}"`: `crates/disrobe-cli/src/cli/llm.rs:365`
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1358`
 - `"cannot write Dalvik symbol export {}: {}"`: `crates/disrobe-cli/src/cli/backend_export.rs:123`
-- `"protector-peel serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1673`
+- `"protector-peel serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1712`
 - `"serialize LLM bundle failed: {}"`: `crates/disrobe-cli/src/cli/llm.rs:371`
 - `"{}: {}"`: `crates/disrobe-cli/src/cli/sqlite.rs:41`
 
 ### `DR-CLI-0441`
 
 - `"cannot read {} {}: {}"`: `crates/disrobe-cli/src/cli/sqlite.rs:48`, `crates/disrobe-cli/src/cli/sqlite.rs:57`
-- `"cannot write protector-peel.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1675`
+- `"cannot write protector-peel.json: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1714`
 - `"dotnet analyze: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1360`
 - `` "this binary was built without the `jvm` and `flutter` features, so it cannot emit a requested symbol export" ``: `crates/disrobe-cli/src/cli/auto.rs:50`
 - `` "this binary was built without the `jvm` feature, so it cannot emit a requested Dalvik symbol export" ``: `crates/disrobe-cli/src/cli/chain_v1.rs:656`
@@ -686,13 +686,13 @@
 
 - `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1370`
 - `"cannot read {}: {}"`: `crates/disrobe-cli/src/cli/capture.rs:15`, `crates/disrobe-cli/src/cli/capture.rs:24`
-- `"peel-summary serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1699`
+- `"peel-summary serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1738`
 - `` "requested Dalvik symbol export requires a successful direct root `jvm.classify` android-dex node for the original input" ``: `crates/disrobe-cli/src/cli/chain_v1.rs:639`
 - `"{} is {} bytes, above the {}-byte limit"`: `crates/disrobe-cli/src/cli/capture.rs:19`
 
 ### `DR-CLI-0443`
 
-- `"cannot write peel-summary: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1701`
+- `"cannot write peel-summary: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1740`
 - `"requested Dalvik symbol export cannot parse the classified root DEX: {}"`: `crates/disrobe-cli/src/cli/chain_v1.rs:643`
 - `"serialize: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1373`
 - `"{}: {}"`: `crates/disrobe-cli/src/cli/capture.rs:30`
@@ -741,42 +741,42 @@
 
 ### `DR-CLI-0459`
 
-- `"cannot read native library {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:717`
+- `"cannot read native library {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:735`
 - `"cannot write recovered CIL: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1276`
 
 ### `DR-CLI-0460`
 
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:223`
-- `"dex parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:859`
+- `"dex parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:877`
 - `"dotnet decompile --recover-iterators needs an input file"`: `crates/disrobe-cli/src/cli/dotnet.rs:1007`
 
 ### `DR-CLI-0461`
 
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1011`
 - `"hermes parse: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:225`
-- `"native method scan: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:861`
+- `"native method scan: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:879`
 
 ### `DR-CLI-0462`
 
 - `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:240`
-- `"classfile parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:871`
+- `"classfile parse: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:889`
 - `"dotnet decompile: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1013`
 
 ### `DR-CLI-0463`
 
 - `"iterator serialize: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1039`
-- `"jar extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:881`
+- `"jar extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:899`
 - `"serialize: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:243`
 
 ### `DR-CLI-0464`
 
-- `"apk extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:896`
+- `"apk extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:914`
 - `"cannot create output parent: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:363`
 - `"cannot write output: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:245`
 
 ### `DR-CLI-0465`
 
-- `"aab extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:912`
+- `"aab extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:930`
 - `"bundle stage has no file name"`: `crates/disrobe-cli/src/cli/dotnet.rs:374`
 - `"cannot allocate bundle stage: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:369`
 - `"cannot create bundle stage: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:384`
@@ -784,43 +784,43 @@
 ### `DR-CLI-0466`
 
 - `"bundle output must name a directory"`: `crates/disrobe-cli/src/cli/dotnet.rs:377`
-- `"input does not look like a .class/.jar/.dex/.apk/.aab/.aar/.apks/.oat file"`: `crates/disrobe-cli/src/cli/jvm.rs:975`
+- `"input does not look like a .class/.jar/.dex/.apk/.aab/.aar/.apks/.oat file"`: `crates/disrobe-cli/src/cli/jvm.rs:993`
 
 ### `DR-CLI-0467`
 
 - `"cannot inspect bundle output: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:396`
-- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1069`
+- `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1087`
 
 ### `DR-CLI-0468`
 
 - `"bundle output directory is not empty: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:400`
-- `"jni link serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1096`
+- `"jni link serialize: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:1114`
 
 ### `DR-CLI-0469`
 
-- `"aar extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:929`
+- `"aar extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:947`
 - `"cannot replace empty bundle output: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:405`
 
 ### `DR-CLI-0470`
 
-- `"apks extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:945`
+- `"apks extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:963`
 - `"cannot publish bundle output atomically: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:409`
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:376`
 
 ### `DR-CLI-0471`
 
 - `"hermes parse: {}"`: `crates/disrobe-cli/src/cli/hermes.rs:378`
-- `"oat dex extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:961`
+- `"oat dex extract: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:979`
 - `"parse .NET bundle: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:837`
 
 ### `DR-CLI-0472`
 
-- `"--native apk extract for {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:730`
+- `"--native apk extract for {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:748`
 - `"extract .NET bundle: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:860`
 
 ### `DR-CLI-0473`
 
-- `"--native apks extract for {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:741`
+- `"--native apks extract for {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:759`
 - `".NET bundle extraction failed integrity checks: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:864`
 
 ### `DR-CLI-0479`
@@ -830,32 +830,32 @@
 
 ### `DR-CLI-0480`
 
-- `"cannot read DEX input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:298`, `crates/disrobe-cli/src/cli/jvm.rs:304`
+- `"cannot read DEX input: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:316`, `crates/disrobe-cli/src/cli/jvm.rs:322`
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:496`
 - `"invalid .NET bundle member path: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:873`
 
 ### `DR-CLI-0481`
 
 - `` ".NET bundle member paths collide after sanitization: `{}`" ``: `crates/disrobe-cli/src/cli/dotnet.rs:881`
-- `"DEX input size overflow"`: `crates/disrobe-cli/src/cli/jvm.rs:311`
+- `"DEX input size overflow"`: `crates/disrobe-cli/src/cli/jvm.rs:329`
 - `"macho analyze: {}"`: `crates/disrobe-cli/src/cli/macho.rs:498`
 
 ### `DR-CLI-0482`
 
-- `"DEX input exceeds the {}-byte input limit"`: `crates/disrobe-cli/src/cli/jvm.rs:314`
+- `"DEX input exceeds the {}-byte input limit"`: `crates/disrobe-cli/src/cli/jvm.rs:332`
 - `"cannot create dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:508`
 - `` "extracted .NET bundle member is absent from the manifest: `{}`" ``: `crates/disrobe-cli/src/cli/dotnet.rs:890`
 
 ### `DR-CLI-0483`
 
 - `` "declared managed assembly `{}` is invalid or unsupported: {}" ``: `crates/disrobe-cli/src/cli/dotnet.rs:919`
-- `"dex2jar requires a standalone DEX input"`: `crates/disrobe-cli/src/cli/jvm.rs:411`
+- `"dex2jar requires a standalone DEX input"`: `crates/disrobe-cli/src/cli/jvm.rs:429`
 - `"serialize: {}"`: `crates/disrobe-cli/src/cli/macho.rs:511`
 
 ### `DR-CLI-0484`
 
-- `"DEX-to-JAR output directory already exists: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:428`
-- `"DEX-to-JAR output directory appeared before finalization: {}; staging directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:393`
+- `"DEX-to-JAR output directory already exists: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:446`
+- `"DEX-to-JAR output directory appeared before finalization: {}; staging directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:411`
 - `"cannot open input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1516`
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1530`
 - `"cannot stat input: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1519`
@@ -865,7 +865,7 @@
 
 ### `DR-CLI-0486`
 
-- `"in-house class path validation: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:441`
+- `"in-house class path validation: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:459`
 - `"serialize: {}"`: `crates/disrobe-cli/src/cli/dotnet.rs:1542`, `crates/disrobe-cli/src/cli/dotnet.rs:1558`
 
 ### `DR-CLI-0488`
@@ -891,30 +891,30 @@
 ### `DR-CLI-0490`
 
 - `"cannot read input: {}"`: `crates/disrobe-cli/src/cli/macho.rs:535`
-- `"in-house JAR assembly: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:443`
+- `"in-house JAR assembly: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:461`
 
 ### `DR-CLI-0491`
 
 - `"cannot create out dir: {}"`: `crates/disrobe-cli/src/cli/macho.rs:550`
-- `"in-house JAR output reached {} bytes, exceeding the {}-byte output limit"`: `crates/disrobe-cli/src/cli/jvm.rs:446`
+- `"in-house JAR output reached {} bytes, exceeding the {}-byte output limit"`: `crates/disrobe-cli/src/cli/jvm.rs:464`
 
 ### `DR-CLI-0492`
 
-- `"cannot allocate a DEX-to-JAR staging directory"`: `crates/disrobe-cli/src/cli/jvm.rs:351`
-- `"cannot create DEX-to-JAR output parent {} before staging: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:329`
-- `"cannot create DEX-to-JAR staging directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:345`
+- `"cannot allocate a DEX-to-JAR staging directory"`: `crates/disrobe-cli/src/cli/jvm.rs:369`
+- `"cannot create DEX-to-JAR output parent {} before staging: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:347`
+- `"cannot create DEX-to-JAR staging directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:363`
 - `"cannot write objc dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:563`
 
 ### `DR-CLI-0493`
 
-- `"cannot create class output directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:457`
+- `"cannot create class output directory: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:475`
 - `"cannot write swift dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:567`
 
 ### `DR-CLI-0494`
 
-- `"cannot exclusively create staged DEX-to-JAR file {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:371`
+- `"cannot exclusively create staged DEX-to-JAR file {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:389`
 - `"cannot write manifest: {}"`: `crates/disrobe-cli/src/cli/macho.rs:599`
-- `"cannot write staged DEX-to-JAR file {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:377`
+- `"cannot write staged DEX-to-JAR file {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:395`
 
 ### `DR-CLI-0495`
 
@@ -923,16 +923,16 @@
 
 ### `DR-CLI-0496`
 
-- `"cannot check DEX-to-JAR destination {} before finalizing staging directory {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:386`
-- `"cannot finalize DEX-to-JAR output: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:478`
-- `"cannot finalize DEX-to-JAR output: {}; {}"`: `crates/disrobe-cli/src/cli/jvm.rs:474`
-- `"cannot finalize DEX-to-JAR staging directory {} as {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:400`
+- `"cannot check DEX-to-JAR destination {} before finalizing staging directory {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:404`
+- `"cannot finalize DEX-to-JAR output: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:496`
+- `"cannot finalize DEX-to-JAR output: {}; {}"`: `crates/disrobe-cli/src/cli/jvm.rs:492`
+- `"cannot finalize DEX-to-JAR staging directory {} as {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:418`
 - `"input is not a dyld shared cache (missing dyld_v1 magic)"`: `crates/disrobe-cli/src/cli/macho.rs:406`
 - `"serialize swift dump: {}"`: `crates/disrobe-cli/src/cli/macho.rs:565`
 
 ### `DR-CLI-0497`
 
-- `"cannot remove DEX-to-JAR staging directory {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:358`
+- `"cannot remove DEX-to-JAR staging directory {}: {}"`: `crates/disrobe-cli/src/cli/jvm.rs:376`
 - `"dyld cache parse: {}"`: `crates/disrobe-cli/src/cli/macho.rs:410`
 - `"serialize manifest: {}"`: `crates/disrobe-cli/src/cli/macho.rs:597`
 
@@ -2154,50 +2154,50 @@
 - `DR-CLI-0364`: `crates/disrobe-cli/src/cli/chain_v1.rs:1540`
 - `DR-CLI-0365`: `crates/disrobe-cli/src/cli/chain_v1.rs:1554`
 - `DR-CLI-0366`: `crates/disrobe-cli/src/cli/chain_v1.rs:1274`
-- `DR-CLI-0400`: `crates/disrobe-cli/src/cli/jvm.rs:1438`
-- `DR-CLI-0401`: `crates/disrobe-cli/src/cli/jvm.rs:1462`
-- `DR-CLI-0402`: `crates/disrobe-cli/src/cli/jvm.rs:1473`
-- `DR-CLI-0403`: `crates/disrobe-cli/src/cli/jvm.rs:1492`
-- `DR-CLI-0404`: `crates/disrobe-cli/src/cli/jvm.rs:1518`
-- `DR-CLI-0405`: `crates/disrobe-cli/src/cli/jvm.rs:1551`
-- `DR-CLI-0406`: `crates/disrobe-cli/src/cli/jvm.rs:1557`
-- `DR-CLI-0407`: `crates/disrobe-cli/src/cli/jvm.rs:1559`
-- `DR-CLI-0408`: `crates/disrobe-cli/src/cli/jvm.rs:1930`, `crates/disrobe-cli/src/cli/jvm.rs:1958`
-- `DR-CLI-0409`: `crates/disrobe-cli/src/cli/dotnet.rs:1726`, `crates/disrobe-cli/src/cli/jvm.rs:1938`, `crates/disrobe-cli/src/cli/jvm.rs:1966`
-- `DR-CLI-0410`: `crates/disrobe-cli/src/cli/jvm.rs:1745`, `crates/disrobe-cli/src/cli/llm.rs:242`, `crates/disrobe-cli/src/cli/llm.rs:256`
-- `DR-CLI-0411`: `crates/disrobe-cli/src/cli/jvm.rs:1761`
-- `DR-CLI-0412`: `crates/disrobe-cli/src/cli/jvm.rs:1763`
-- `DR-CLI-0413`: `crates/disrobe-cli/src/cli/jvm.rs:1768`
-- `DR-CLI-0414`: `crates/disrobe-cli/src/cli/jvm.rs:1774`
-- `DR-CLI-0415`: `crates/disrobe-cli/src/cli/jvm.rs:1787`
-- `DR-CLI-0416`: `crates/disrobe-cli/src/cli/jvm.rs:1785`
+- `DR-CLI-0400`: `crates/disrobe-cli/src/cli/jvm.rs:1459`
+- `DR-CLI-0401`: `crates/disrobe-cli/src/cli/jvm.rs:1483`
+- `DR-CLI-0402`: `crates/disrobe-cli/src/cli/jvm.rs:1495`
+- `DR-CLI-0403`: `crates/disrobe-cli/src/cli/jvm.rs:1514`
+- `DR-CLI-0404`: `crates/disrobe-cli/src/cli/jvm.rs:1542`
+- `DR-CLI-0405`: `crates/disrobe-cli/src/cli/jvm.rs:1580`
+- `DR-CLI-0406`: `crates/disrobe-cli/src/cli/jvm.rs:1596`
+- `DR-CLI-0407`: `crates/disrobe-cli/src/cli/jvm.rs:1598`
+- `DR-CLI-0408`: `crates/disrobe-cli/src/cli/jvm.rs:1969`, `crates/disrobe-cli/src/cli/jvm.rs:1997`
+- `DR-CLI-0409`: `crates/disrobe-cli/src/cli/dotnet.rs:1726`, `crates/disrobe-cli/src/cli/jvm.rs:1977`, `crates/disrobe-cli/src/cli/jvm.rs:2005`
+- `DR-CLI-0410`: `crates/disrobe-cli/src/cli/jvm.rs:1784`, `crates/disrobe-cli/src/cli/llm.rs:242`, `crates/disrobe-cli/src/cli/llm.rs:256`
+- `DR-CLI-0411`: `crates/disrobe-cli/src/cli/jvm.rs:1800`
+- `DR-CLI-0412`: `crates/disrobe-cli/src/cli/jvm.rs:1802`
+- `DR-CLI-0413`: `crates/disrobe-cli/src/cli/jvm.rs:1807`
+- `DR-CLI-0414`: `crates/disrobe-cli/src/cli/jvm.rs:1813`
+- `DR-CLI-0415`: `crates/disrobe-cli/src/cli/jvm.rs:1826`
+- `DR-CLI-0416`: `crates/disrobe-cli/src/cli/jvm.rs:1824`
 - `DR-CLI-0417`: `crates/disrobe-cli/src/cli/electron.rs:34`, `crates/disrobe-cli/src/cli/electron.rs:38`, `crates/disrobe-cli/src/cli/electron.rs:43`
 - `DR-CLI-0418`: `crates/disrobe-cli/src/cli/electron.rs:130`, `crates/disrobe-cli/src/cli/resources.rs:36`, `crates/disrobe-cli/src/cli/resources.rs:40`, `crates/disrobe-cli/src/cli/resources.rs:45`, `crates/disrobe-cli/src/cli/resources.rs:47`, `crates/disrobe-cli/src/cli/resources.rs:57`, `crates/disrobe-cli/src/cli/resources.rs:74`
 - `DR-CLI-0419`: `crates/disrobe-cli/src/cli/macho.rs:288`, `crates/disrobe-cli/src/cli/macho.rs:292`, `crates/disrobe-cli/src/cli/macho.rs:297`, `crates/disrobe-cli/src/cli/macho.rs:299`, `crates/disrobe-cli/src/cli/macho.rs:302`
-- `DR-CLI-0420`: `crates/disrobe-cli/src/cli/jvm.rs:636`, `crates/disrobe-cli/src/cli/jvm.rs:1885`, `crates/disrobe-cli/src/cli/jvm.rs:2363`, `crates/disrobe-cli/src/cli/llm.rs:274`
-- `DR-CLI-0421`: `crates/disrobe-cli/src/cli/jvm.rs:638`, `crates/disrobe-cli/src/cli/jvm.rs:1913`, `crates/disrobe-cli/src/cli/jvm.rs:2368`
-- `DR-CLI-0422`: `crates/disrobe-cli/src/cli/jvm.rs:1197`, `crates/disrobe-cli/src/cli/jvm.rs:2337`
-- `DR-CLI-0423`: `crates/disrobe-cli/src/cli/jvm.rs:1199`, `crates/disrobe-cli/src/cli/jvm.rs:2410`
-- `DR-CLI-0424`: `crates/disrobe-cli/src/cli/jvm.rs:2414`
-- `DR-CLI-0425`: `crates/disrobe-cli/src/cli/jvm.rs:611`
-- `DR-CLI-0426`: `crates/disrobe-cli/src/cli/jvm.rs:1229`
-- `DR-CLI-0427`: `crates/disrobe-cli/src/cli/jvm.rs:1234`
-- `DR-CLI-0428`: `crates/disrobe-cli/src/cli/jvm.rs:1253`
-- `DR-CLI-0429`: `crates/disrobe-cli/src/cli/jvm.rs:1265`, `crates/disrobe-cli/src/cli/jvm.rs:1268`, `crates/disrobe-cli/src/cli/jvm.rs:1285`, `crates/disrobe-cli/src/cli/jvm.rs:1287`
-- `DR-CLI-0430`: `crates/disrobe-cli/src/cli/dotnet.rs:676`, `crates/disrobe-cli/src/cli/jvm.rs:1356`, `crates/disrobe-cli/src/cli/llm.rs:376`
-- `DR-CLI-0431`: `crates/disrobe-cli/src/cli/dotnet.rs:706`, `crates/disrobe-cli/src/cli/jvm.rs:1359`, `crates/disrobe-cli/src/cli/llm.rs:340`
-- `DR-CLI-0432`: `crates/disrobe-cli/src/cli/dotnet.rs:708`, `crates/disrobe-cli/src/cli/jvm.rs:1364`, `crates/disrobe-cli/src/cli/llm.rs:386`
-- `DR-CLI-0433`: `crates/disrobe-cli/src/cli/jvm.rs:1413`
-- `DR-CLI-0434`: `crates/disrobe-cli/src/cli/dotnet.rs:755`, `crates/disrobe-cli/src/cli/jvm.rs:1415`
-- `DR-CLI-0435`: `crates/disrobe-cli/src/cli/dotnet.rs:1352`, `crates/disrobe-cli/src/cli/jvm.rs:1449`
-- `DR-CLI-0436`: `crates/disrobe-cli/src/cli/dotnet.rs:753`, `crates/disrobe-cli/src/cli/jvm.rs:2063`, `crates/disrobe-cli/src/cli/jvm.rs:2065`, `crates/disrobe-cli/src/cli/jvm.rs:2067`
+- `DR-CLI-0420`: `crates/disrobe-cli/src/cli/jvm.rs:654`, `crates/disrobe-cli/src/cli/jvm.rs:1924`, `crates/disrobe-cli/src/cli/jvm.rs:2490`, `crates/disrobe-cli/src/cli/llm.rs:274`
+- `DR-CLI-0421`: `crates/disrobe-cli/src/cli/jvm.rs:656`, `crates/disrobe-cli/src/cli/jvm.rs:1952`, `crates/disrobe-cli/src/cli/jvm.rs:2495`
+- `DR-CLI-0422`: `crates/disrobe-cli/src/cli/jvm.rs:1215`, `crates/disrobe-cli/src/cli/jvm.rs:2446`
+- `DR-CLI-0423`: `crates/disrobe-cli/src/cli/jvm.rs:1217`, `crates/disrobe-cli/src/cli/jvm.rs:2537`
+- `DR-CLI-0424`: `crates/disrobe-cli/src/cli/jvm.rs:2541`
+- `DR-CLI-0425`: `crates/disrobe-cli/src/cli/jvm.rs:629`
+- `DR-CLI-0426`: `crates/disrobe-cli/src/cli/jvm.rs:1247`
+- `DR-CLI-0427`: `crates/disrobe-cli/src/cli/jvm.rs:1252`
+- `DR-CLI-0428`: `crates/disrobe-cli/src/cli/jvm.rs:1271`
+- `DR-CLI-0429`: `crates/disrobe-cli/src/cli/jvm.rs:1283`, `crates/disrobe-cli/src/cli/jvm.rs:1286`, `crates/disrobe-cli/src/cli/jvm.rs:1303`, `crates/disrobe-cli/src/cli/jvm.rs:1305`
+- `DR-CLI-0430`: `crates/disrobe-cli/src/cli/dotnet.rs:676`, `crates/disrobe-cli/src/cli/jvm.rs:1374`, `crates/disrobe-cli/src/cli/llm.rs:376`
+- `DR-CLI-0431`: `crates/disrobe-cli/src/cli/dotnet.rs:706`, `crates/disrobe-cli/src/cli/jvm.rs:1377`, `crates/disrobe-cli/src/cli/llm.rs:340`
+- `DR-CLI-0432`: `crates/disrobe-cli/src/cli/dotnet.rs:708`, `crates/disrobe-cli/src/cli/jvm.rs:1382`, `crates/disrobe-cli/src/cli/llm.rs:386`
+- `DR-CLI-0433`: `crates/disrobe-cli/src/cli/jvm.rs:1431`
+- `DR-CLI-0434`: `crates/disrobe-cli/src/cli/dotnet.rs:755`, `crates/disrobe-cli/src/cli/jvm.rs:1433`
+- `DR-CLI-0435`: `crates/disrobe-cli/src/cli/dotnet.rs:1352`, `crates/disrobe-cli/src/cli/jvm.rs:1470`
+- `DR-CLI-0436`: `crates/disrobe-cli/src/cli/dotnet.rs:753`, `crates/disrobe-cli/src/cli/jvm.rs:2102`, `crates/disrobe-cli/src/cli/jvm.rs:2104`, `crates/disrobe-cli/src/cli/jvm.rs:2106`
 - `DR-CLI-0437`: `crates/disrobe-cli/src/cli/dotnet.rs:1334`
 - `DR-CLI-0438`: `crates/disrobe-cli/src/cli/backend_export.rs:89`, `crates/disrobe-cli/src/cli/backend_export.rs:97`, `crates/disrobe-cli/src/cli/backend_export.rs:111`
 - `DR-CLI-0439`: `crates/disrobe-cli/src/cli/backend_export.rs:117`
-- `DR-CLI-0440`: `crates/disrobe-cli/src/cli/backend_export.rs:123`, `crates/disrobe-cli/src/cli/dotnet.rs:1358`, `crates/disrobe-cli/src/cli/jvm.rs:1673`, `crates/disrobe-cli/src/cli/llm.rs:308`, `crates/disrobe-cli/src/cli/llm.rs:365`, `crates/disrobe-cli/src/cli/llm.rs:371`, `crates/disrobe-cli/src/cli/sqlite.rs:41`
-- `DR-CLI-0441`: `crates/disrobe-cli/src/cli/auto.rs:50`, `crates/disrobe-cli/src/cli/chain_v1.rs:656`, `crates/disrobe-cli/src/cli/dotnet.rs:1360`, `crates/disrobe-cli/src/cli/jvm.rs:1675`, `crates/disrobe-cli/src/cli/sqlite.rs:48`, `crates/disrobe-cli/src/cli/sqlite.rs:52`, `crates/disrobe-cli/src/cli/sqlite.rs:57`
-- `DR-CLI-0442`: `crates/disrobe-cli/src/cli/capture.rs:15`, `crates/disrobe-cli/src/cli/capture.rs:19`, `crates/disrobe-cli/src/cli/capture.rs:24`, `crates/disrobe-cli/src/cli/chain_v1.rs:639`, `crates/disrobe-cli/src/cli/dotnet.rs:1370`, `crates/disrobe-cli/src/cli/jvm.rs:1699`
-- `DR-CLI-0443`: `crates/disrobe-cli/src/cli/capture.rs:30`, `crates/disrobe-cli/src/cli/chain_v1.rs:643`, `crates/disrobe-cli/src/cli/dotnet.rs:1373`, `crates/disrobe-cli/src/cli/jvm.rs:1701`
+- `DR-CLI-0440`: `crates/disrobe-cli/src/cli/backend_export.rs:123`, `crates/disrobe-cli/src/cli/dotnet.rs:1358`, `crates/disrobe-cli/src/cli/jvm.rs:1712`, `crates/disrobe-cli/src/cli/llm.rs:308`, `crates/disrobe-cli/src/cli/llm.rs:365`, `crates/disrobe-cli/src/cli/llm.rs:371`, `crates/disrobe-cli/src/cli/sqlite.rs:41`
+- `DR-CLI-0441`: `crates/disrobe-cli/src/cli/auto.rs:50`, `crates/disrobe-cli/src/cli/chain_v1.rs:656`, `crates/disrobe-cli/src/cli/dotnet.rs:1360`, `crates/disrobe-cli/src/cli/jvm.rs:1714`, `crates/disrobe-cli/src/cli/sqlite.rs:48`, `crates/disrobe-cli/src/cli/sqlite.rs:52`, `crates/disrobe-cli/src/cli/sqlite.rs:57`
+- `DR-CLI-0442`: `crates/disrobe-cli/src/cli/capture.rs:15`, `crates/disrobe-cli/src/cli/capture.rs:19`, `crates/disrobe-cli/src/cli/capture.rs:24`, `crates/disrobe-cli/src/cli/chain_v1.rs:639`, `crates/disrobe-cli/src/cli/dotnet.rs:1370`, `crates/disrobe-cli/src/cli/jvm.rs:1738`
+- `DR-CLI-0443`: `crates/disrobe-cli/src/cli/capture.rs:30`, `crates/disrobe-cli/src/cli/chain_v1.rs:643`, `crates/disrobe-cli/src/cli/dotnet.rs:1373`, `crates/disrobe-cli/src/cli/jvm.rs:1740`
 - `DR-CLI-0444`: `crates/disrobe-cli/src/cli/batch.rs:125`, `crates/disrobe-cli/src/cli/capture.rs:40`, `crates/disrobe-cli/src/cli/capture.rs:57`, `crates/disrobe-cli/src/cli/dotnet.rs:1375`
 - `DR-CLI-0445`: `crates/disrobe-cli/src/cli/chain_v1.rs:598`
 - `DR-CLI-0446`: `crates/disrobe-cli/src/cli/auto.rs:66`, `crates/disrobe-cli/src/cli/chain_v1.rs:589`
@@ -2213,45 +2213,45 @@
 - `DR-CLI-0456`: `crates/disrobe-cli/src/cli/dotnet.rs:1210`
 - `DR-CLI-0457`: `crates/disrobe-cli/src/cli/dotnet.rs:1212`
 - `DR-CLI-0458`: `crates/disrobe-cli/src/cli/dotnet.rs:1254`
-- `DR-CLI-0459`: `crates/disrobe-cli/src/cli/dotnet.rs:1276`, `crates/disrobe-cli/src/cli/jvm.rs:717`
-- `DR-CLI-0460`: `crates/disrobe-cli/src/cli/dotnet.rs:1007`, `crates/disrobe-cli/src/cli/hermes.rs:223`, `crates/disrobe-cli/src/cli/jvm.rs:859`
-- `DR-CLI-0461`: `crates/disrobe-cli/src/cli/dotnet.rs:1011`, `crates/disrobe-cli/src/cli/hermes.rs:225`, `crates/disrobe-cli/src/cli/jvm.rs:861`
-- `DR-CLI-0462`: `crates/disrobe-cli/src/cli/dotnet.rs:1013`, `crates/disrobe-cli/src/cli/hermes.rs:240`, `crates/disrobe-cli/src/cli/jvm.rs:871`
-- `DR-CLI-0463`: `crates/disrobe-cli/src/cli/dotnet.rs:1039`, `crates/disrobe-cli/src/cli/hermes.rs:243`, `crates/disrobe-cli/src/cli/jvm.rs:881`
-- `DR-CLI-0464`: `crates/disrobe-cli/src/cli/dotnet.rs:363`, `crates/disrobe-cli/src/cli/hermes.rs:245`, `crates/disrobe-cli/src/cli/jvm.rs:896`
-- `DR-CLI-0465`: `crates/disrobe-cli/src/cli/dotnet.rs:369`, `crates/disrobe-cli/src/cli/dotnet.rs:374`, `crates/disrobe-cli/src/cli/dotnet.rs:384`, `crates/disrobe-cli/src/cli/jvm.rs:912`
-- `DR-CLI-0466`: `crates/disrobe-cli/src/cli/dotnet.rs:377`, `crates/disrobe-cli/src/cli/jvm.rs:975`
-- `DR-CLI-0467`: `crates/disrobe-cli/src/cli/dotnet.rs:396`, `crates/disrobe-cli/src/cli/jvm.rs:1069`
-- `DR-CLI-0468`: `crates/disrobe-cli/src/cli/dotnet.rs:400`, `crates/disrobe-cli/src/cli/jvm.rs:1096`
-- `DR-CLI-0469`: `crates/disrobe-cli/src/cli/dotnet.rs:405`, `crates/disrobe-cli/src/cli/jvm.rs:929`
-- `DR-CLI-0470`: `crates/disrobe-cli/src/cli/dotnet.rs:409`, `crates/disrobe-cli/src/cli/hermes.rs:376`, `crates/disrobe-cli/src/cli/jvm.rs:945`
-- `DR-CLI-0471`: `crates/disrobe-cli/src/cli/dotnet.rs:837`, `crates/disrobe-cli/src/cli/hermes.rs:378`, `crates/disrobe-cli/src/cli/jvm.rs:961`
-- `DR-CLI-0472`: `crates/disrobe-cli/src/cli/dotnet.rs:860`, `crates/disrobe-cli/src/cli/jvm.rs:730`
-- `DR-CLI-0473`: `crates/disrobe-cli/src/cli/dotnet.rs:864`, `crates/disrobe-cli/src/cli/jvm.rs:741`
+- `DR-CLI-0459`: `crates/disrobe-cli/src/cli/dotnet.rs:1276`, `crates/disrobe-cli/src/cli/jvm.rs:735`
+- `DR-CLI-0460`: `crates/disrobe-cli/src/cli/dotnet.rs:1007`, `crates/disrobe-cli/src/cli/hermes.rs:223`, `crates/disrobe-cli/src/cli/jvm.rs:877`
+- `DR-CLI-0461`: `crates/disrobe-cli/src/cli/dotnet.rs:1011`, `crates/disrobe-cli/src/cli/hermes.rs:225`, `crates/disrobe-cli/src/cli/jvm.rs:879`
+- `DR-CLI-0462`: `crates/disrobe-cli/src/cli/dotnet.rs:1013`, `crates/disrobe-cli/src/cli/hermes.rs:240`, `crates/disrobe-cli/src/cli/jvm.rs:889`
+- `DR-CLI-0463`: `crates/disrobe-cli/src/cli/dotnet.rs:1039`, `crates/disrobe-cli/src/cli/hermes.rs:243`, `crates/disrobe-cli/src/cli/jvm.rs:899`
+- `DR-CLI-0464`: `crates/disrobe-cli/src/cli/dotnet.rs:363`, `crates/disrobe-cli/src/cli/hermes.rs:245`, `crates/disrobe-cli/src/cli/jvm.rs:914`
+- `DR-CLI-0465`: `crates/disrobe-cli/src/cli/dotnet.rs:369`, `crates/disrobe-cli/src/cli/dotnet.rs:374`, `crates/disrobe-cli/src/cli/dotnet.rs:384`, `crates/disrobe-cli/src/cli/jvm.rs:930`
+- `DR-CLI-0466`: `crates/disrobe-cli/src/cli/dotnet.rs:377`, `crates/disrobe-cli/src/cli/jvm.rs:993`
+- `DR-CLI-0467`: `crates/disrobe-cli/src/cli/dotnet.rs:396`, `crates/disrobe-cli/src/cli/jvm.rs:1087`
+- `DR-CLI-0468`: `crates/disrobe-cli/src/cli/dotnet.rs:400`, `crates/disrobe-cli/src/cli/jvm.rs:1114`
+- `DR-CLI-0469`: `crates/disrobe-cli/src/cli/dotnet.rs:405`, `crates/disrobe-cli/src/cli/jvm.rs:947`
+- `DR-CLI-0470`: `crates/disrobe-cli/src/cli/dotnet.rs:409`, `crates/disrobe-cli/src/cli/hermes.rs:376`, `crates/disrobe-cli/src/cli/jvm.rs:963`
+- `DR-CLI-0471`: `crates/disrobe-cli/src/cli/dotnet.rs:837`, `crates/disrobe-cli/src/cli/hermes.rs:378`, `crates/disrobe-cli/src/cli/jvm.rs:979`
+- `DR-CLI-0472`: `crates/disrobe-cli/src/cli/dotnet.rs:860`, `crates/disrobe-cli/src/cli/jvm.rs:748`
+- `DR-CLI-0473`: `crates/disrobe-cli/src/cli/dotnet.rs:864`, `crates/disrobe-cli/src/cli/jvm.rs:759`
 - `DR-CLI-0474`: `crates/disrobe-cli/src/cli/dotnet.rs:912`
 - `DR-CLI-0475`: `crates/disrobe-cli/src/cli/dotnet.rs:930`
 - `DR-CLI-0476`: `crates/disrobe-cli/src/cli/dotnet.rs:987`
 - `DR-CLI-0477`: `crates/disrobe-cli/src/cli/dotnet.rs:964`
 - `DR-CLI-0478`: `crates/disrobe-cli/src/cli/dotnet.rs:967`
 - `DR-CLI-0479`: `crates/disrobe-cli/src/cli/dotnet.rs:1298`, `crates/disrobe-cli/src/cli/dotnet.rs:1303`
-- `DR-CLI-0480`: `crates/disrobe-cli/src/cli/dotnet.rs:873`, `crates/disrobe-cli/src/cli/jvm.rs:298`, `crates/disrobe-cli/src/cli/jvm.rs:304`, `crates/disrobe-cli/src/cli/macho.rs:496`
-- `DR-CLI-0481`: `crates/disrobe-cli/src/cli/dotnet.rs:881`, `crates/disrobe-cli/src/cli/jvm.rs:311`, `crates/disrobe-cli/src/cli/macho.rs:498`
-- `DR-CLI-0482`: `crates/disrobe-cli/src/cli/dotnet.rs:890`, `crates/disrobe-cli/src/cli/jvm.rs:314`, `crates/disrobe-cli/src/cli/macho.rs:508`
-- `DR-CLI-0483`: `crates/disrobe-cli/src/cli/dotnet.rs:919`, `crates/disrobe-cli/src/cli/jvm.rs:411`, `crates/disrobe-cli/src/cli/macho.rs:511`
-- `DR-CLI-0484`: `crates/disrobe-cli/src/cli/dotnet.rs:1516`, `crates/disrobe-cli/src/cli/dotnet.rs:1519`, `crates/disrobe-cli/src/cli/dotnet.rs:1522`, `crates/disrobe-cli/src/cli/dotnet.rs:1530`, `crates/disrobe-cli/src/cli/dotnet.rs:1533`, `crates/disrobe-cli/src/cli/jvm.rs:393`, `crates/disrobe-cli/src/cli/jvm.rs:428`, `crates/disrobe-cli/src/cli/macho.rs:513`
+- `DR-CLI-0480`: `crates/disrobe-cli/src/cli/dotnet.rs:873`, `crates/disrobe-cli/src/cli/jvm.rs:316`, `crates/disrobe-cli/src/cli/jvm.rs:322`, `crates/disrobe-cli/src/cli/macho.rs:496`
+- `DR-CLI-0481`: `crates/disrobe-cli/src/cli/dotnet.rs:881`, `crates/disrobe-cli/src/cli/jvm.rs:329`, `crates/disrobe-cli/src/cli/macho.rs:498`
+- `DR-CLI-0482`: `crates/disrobe-cli/src/cli/dotnet.rs:890`, `crates/disrobe-cli/src/cli/jvm.rs:332`, `crates/disrobe-cli/src/cli/macho.rs:508`
+- `DR-CLI-0483`: `crates/disrobe-cli/src/cli/dotnet.rs:919`, `crates/disrobe-cli/src/cli/jvm.rs:429`, `crates/disrobe-cli/src/cli/macho.rs:511`
+- `DR-CLI-0484`: `crates/disrobe-cli/src/cli/dotnet.rs:1516`, `crates/disrobe-cli/src/cli/dotnet.rs:1519`, `crates/disrobe-cli/src/cli/dotnet.rs:1522`, `crates/disrobe-cli/src/cli/dotnet.rs:1530`, `crates/disrobe-cli/src/cli/dotnet.rs:1533`, `crates/disrobe-cli/src/cli/jvm.rs:411`, `crates/disrobe-cli/src/cli/jvm.rs:446`, `crates/disrobe-cli/src/cli/macho.rs:513`
 - `DR-CLI-0485`: `crates/disrobe-cli/src/cli/dotnet.rs:1555`
-- `DR-CLI-0486`: `crates/disrobe-cli/src/cli/dotnet.rs:1542`, `crates/disrobe-cli/src/cli/dotnet.rs:1558`, `crates/disrobe-cli/src/cli/jvm.rs:441`
+- `DR-CLI-0486`: `crates/disrobe-cli/src/cli/dotnet.rs:1542`, `crates/disrobe-cli/src/cli/dotnet.rs:1558`, `crates/disrobe-cli/src/cli/jvm.rs:459`
 - `DR-CLI-0487`: `crates/disrobe-cli/src/cli/dotnet.rs:1560`
 - `DR-CLI-0488`: `crates/disrobe-cli/src/cli/dotnet.rs:224`, `crates/disrobe-cli/src/cli/dotnet.rs:1611`, `crates/disrobe-cli/src/cli/dotnet.rs:1620`, `crates/disrobe-cli/src/cli/dotnet.rs:1625`, `crates/disrobe-cli/src/cli/dotnet.rs:1632`, `crates/disrobe-cli/src/cli/dotnet.rs:1637`, `crates/disrobe-cli/src/cli/dotnet.rs:1642`, `crates/disrobe-cli/src/cli/dotnet.rs:1651`, `crates/disrobe-cli/src/cli/dotnet.rs:1654`, `crates/disrobe-cli/src/cli/dotnet.rs:1658`, `crates/disrobe-cli/src/cli/dotnet.rs:1662`, `crates/disrobe-cli/src/cli/dotnet.rs:1666`, `crates/disrobe-cli/src/cli/dotnet.rs:1675`, `crates/disrobe-cli/src/cli/dotnet.rs:1682`, `crates/disrobe-cli/src/cli/dotnet.rs:1686`, `crates/disrobe-cli/src/cli/dotnet.rs:1692`, `crates/disrobe-cli/src/cli/dotnet.rs:1694`
-- `DR-CLI-0489`: `crates/disrobe-cli/src/cli/jvm.rs:439`
-- `DR-CLI-0490`: `crates/disrobe-cli/src/cli/jvm.rs:443`, `crates/disrobe-cli/src/cli/macho.rs:535`
-- `DR-CLI-0491`: `crates/disrobe-cli/src/cli/jvm.rs:446`, `crates/disrobe-cli/src/cli/macho.rs:550`
-- `DR-CLI-0492`: `crates/disrobe-cli/src/cli/jvm.rs:329`, `crates/disrobe-cli/src/cli/jvm.rs:345`, `crates/disrobe-cli/src/cli/jvm.rs:351`, `crates/disrobe-cli/src/cli/macho.rs:563`
-- `DR-CLI-0493`: `crates/disrobe-cli/src/cli/jvm.rs:457`, `crates/disrobe-cli/src/cli/macho.rs:567`
-- `DR-CLI-0494`: `crates/disrobe-cli/src/cli/jvm.rs:371`, `crates/disrobe-cli/src/cli/jvm.rs:377`, `crates/disrobe-cli/src/cli/macho.rs:599`
+- `DR-CLI-0489`: `crates/disrobe-cli/src/cli/jvm.rs:457`
+- `DR-CLI-0490`: `crates/disrobe-cli/src/cli/jvm.rs:461`, `crates/disrobe-cli/src/cli/macho.rs:535`
+- `DR-CLI-0491`: `crates/disrobe-cli/src/cli/jvm.rs:464`, `crates/disrobe-cli/src/cli/macho.rs:550`
+- `DR-CLI-0492`: `crates/disrobe-cli/src/cli/jvm.rs:347`, `crates/disrobe-cli/src/cli/jvm.rs:363`, `crates/disrobe-cli/src/cli/jvm.rs:369`, `crates/disrobe-cli/src/cli/macho.rs:563`
+- `DR-CLI-0493`: `crates/disrobe-cli/src/cli/jvm.rs:475`, `crates/disrobe-cli/src/cli/macho.rs:567`
+- `DR-CLI-0494`: `crates/disrobe-cli/src/cli/jvm.rs:389`, `crates/disrobe-cli/src/cli/jvm.rs:395`, `crates/disrobe-cli/src/cli/macho.rs:599`
 - `DR-CLI-0495`: `crates/disrobe-cli/src/cli/macho.rs:403`, `crates/disrobe-cli/src/cli/macho.rs:561`
-- `DR-CLI-0496`: `crates/disrobe-cli/src/cli/jvm.rs:386`, `crates/disrobe-cli/src/cli/jvm.rs:400`, `crates/disrobe-cli/src/cli/jvm.rs:474`, `crates/disrobe-cli/src/cli/jvm.rs:478`, `crates/disrobe-cli/src/cli/macho.rs:406`, `crates/disrobe-cli/src/cli/macho.rs:565`
-- `DR-CLI-0497`: `crates/disrobe-cli/src/cli/jvm.rs:358`, `crates/disrobe-cli/src/cli/macho.rs:410`, `crates/disrobe-cli/src/cli/macho.rs:597`
+- `DR-CLI-0496`: `crates/disrobe-cli/src/cli/jvm.rs:404`, `crates/disrobe-cli/src/cli/jvm.rs:418`, `crates/disrobe-cli/src/cli/jvm.rs:492`, `crates/disrobe-cli/src/cli/jvm.rs:496`, `crates/disrobe-cli/src/cli/macho.rs:406`, `crates/disrobe-cli/src/cli/macho.rs:565`
+- `DR-CLI-0497`: `crates/disrobe-cli/src/cli/jvm.rs:376`, `crates/disrobe-cli/src/cli/macho.rs:410`, `crates/disrobe-cli/src/cli/macho.rs:597`
 - `DR-CLI-0498`: `crates/disrobe-cli/src/cli/macho.rs:431`, `crates/disrobe-cli/src/cli/macho.rs:573`
 - `DR-CLI-0499`: `crates/disrobe-cli/src/cli/macho.rs:440`, `crates/disrobe-cli/src/cli/macho.rs:580`
 - `DR-CLI-0500`: `crates/disrobe-cli/src/cli/macho.rs:447`, `crates/disrobe-cli/src/cli/macho.rs:624`
@@ -2265,10 +2265,10 @@
 - `DR-CLI-0511`: `crates/disrobe-cli/src/cli/macho.rs:662`
 - `DR-CLI-0512`: `crates/disrobe-cli/src/cli/macho.rs:672`
 - `DR-CLI-0513`: `crates/disrobe-cli/src/cli/macho.rs:687`
-- `DR-CLI-0514`: `crates/disrobe-cli/src/cli/jvm.rs:248`
-- `DR-CLI-0515`: `crates/disrobe-cli/src/cli/jvm.rs:262`
-- `DR-CLI-0516`: `crates/disrobe-cli/src/cli/jvm.rs:267`
-- `DR-CLI-0517`: `crates/disrobe-cli/src/cli/jvm.rs:270`
+- `DR-CLI-0514`: `crates/disrobe-cli/src/cli/jvm.rs:266`
+- `DR-CLI-0515`: `crates/disrobe-cli/src/cli/jvm.rs:280`
+- `DR-CLI-0516`: `crates/disrobe-cli/src/cli/jvm.rs:285`
+- `DR-CLI-0517`: `crates/disrobe-cli/src/cli/jvm.rs:288`
 - `DR-CLI-0520`: `crates/disrobe-cli/src/cli/lua.rs:155`
 - `DR-CLI-0522`: `crates/disrobe-cli/src/cli/lua.rs:164`, `crates/disrobe-cli/src/cli/lua.rs:166`, `crates/disrobe-cli/src/cli/lua.rs:168`, `crates/disrobe-cli/src/cli/lua.rs:170`, `crates/disrobe-cli/src/cli/lua.rs:173`, `crates/disrobe-cli/src/cli/lua.rs:176`
 - `DR-CLI-0524`: `crates/disrobe-cli/src/cli/lua.rs:158`
@@ -2541,7 +2541,7 @@
 - `DR-CLI-0991`: `crates/disrobe-cli/src/cli/evm.rs:122`, `crates/disrobe-cli/src/cli/evm.rs:131`, `crates/disrobe-cli/src/cli/evm.rs:137`, `crates/disrobe-cli/src/cli/evm.rs:143`
 - `DR-CLI-0992`: `crates/disrobe-cli/src/cli/evm.rs:146`
 - `DR-CLI-0993`: `crates/disrobe-cli/src/cli/macho.rs:138`, `crates/disrobe-cli/src/cli/macho.rs:142`, `crates/disrobe-cli/src/cli/macho.rs:147`, `crates/disrobe-cli/src/cli/macho.rs:149`, `crates/disrobe-cli/src/cli/macho.rs:152`, `crates/disrobe-cli/src/cli/macho.rs:157`, `crates/disrobe-cli/src/cli/macho.rs:161`, `crates/disrobe-cli/src/cli/macho.rs:168`
-- `DR-CLI-0994`: `crates/disrobe-cli/src/cli/jvm.rs:2341`
+- `DR-CLI-0994`: `crates/disrobe-cli/src/cli/jvm.rs:2464`
 - `DR-CLI-0995`: `crates/disrobe-cli/src/cli/apk.rs:209`
 - `DR-CLI-0996`: `crates/disrobe-cli/src/cli/apk.rs:82`
 - `DR-CLI-0997`: `crates/disrobe-cli/src/cli/apk.rs:87`
