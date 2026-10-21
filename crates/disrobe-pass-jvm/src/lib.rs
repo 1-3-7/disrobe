@@ -23,6 +23,8 @@ pub mod android_backend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_identify;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod android_neutralize;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod apk_resources;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apk_sig;
@@ -151,6 +153,8 @@ pub use android_backend::{
 pub use android_identify::{
     AndroidIdentity, AndroidIdentityHit, AndroidIdentityKind, identify_android,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use android_neutralize::{DexNeutralization, plan_apk_neutralization, plan_dex_neutralization};
 #[cfg(not(target_arch = "wasm32"))]
 pub use apk_resources::{
     ApkReconstruction, ApkResourceReport, ResourceEntrySummary,

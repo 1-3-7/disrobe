@@ -4,6 +4,9 @@ mod common;
 #[path = "../android_identify.rs"]
 mod android_identify;
 
+#[path = "../android_neutralize.rs"]
+mod android_neutralize;
+
 #[path = "../android_audit.rs"]
 mod android_audit;
 
