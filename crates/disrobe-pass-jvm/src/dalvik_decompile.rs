@@ -46,6 +46,7 @@ pub(crate) struct TranslatedDefaultMethod {
     pub(crate) definition: String,
 }
 
+mod enums;
 mod nested_blocks;
 mod region_check;
 mod simplify;
@@ -1199,17 +1200,34 @@ fn render_class(
     );
     let supertypes: String =
         supertype_clause(class_descriptor, members.declaration, is_interface, desugar);
-    let _: std::fmt::Result = writeln!(text, "{class_declaration} {simple}{supertypes} {{");
-
-    if let Some(rec) = recovery {
-        text.push_str(&recovered_strings_annotation(rec));
-    }
-    text.push_str(&field_declarations(
+    let enum_constants: Vec<String> = members
+        .fields
+        .iter()
+        .filter(|field: &&crate::dex::DexFieldDecl| {
+            field.class == class_descriptor
+                && field.is_static
+                && field.access_flags & enums::ACC_ENUM != 0
+                && field.type_name == class_descriptor
+        })
+        .map(|field: &crate::dex::DexFieldDecl| field.name.clone())
+        .collect();
+    let is_enum: bool = declared_flags & enums::ACC_ENUM != 0
+        && members.declaration.is_some_and(
+            |declaration: &crate::dalvik_desugar::ClassDeclaration| {
+                declaration.superclass.as_deref() == Some("Ljava/lang/Enum;")
+            },
+        )
+        && !enum_constants.is_empty();
+    let annotation_text: String = recovery
+        .map(recovered_strings_annotation)
+        .unwrap_or_default();
+    let fields_text: String = field_declarations(
         dex,
         members.fields,
         class_descriptor,
         &members.static_values,
-    ));
+    );
+    let mut member_texts: Vec<String> = Vec::new();
 
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
@@ -1319,7 +1337,7 @@ fn render_class(
             continue;
         }
         if let Some(member) = java_static_block(&rendered.text) {
-            let _ = writeln!(text, "{member}");
+            member_texts.push(member.into_owned());
         }
         method_count += 1;
         if rendered.fully_lifted {
@@ -1367,12 +1385,47 @@ fn render_class(
                 )
             },
         );
-        let _ = writeln!(text, "{}", rendered.text);
+        member_texts.push(rendered.text.clone());
         method_count += 1;
         if rendered.fully_lifted {
             fully_lifted += 1;
         } else if rendered.has_body || rendered.refused {
             fallback += 1;
+        }
+    }
+
+    let qualified: String =
+        descriptor::binary_to_source(&desugar.core_library.project_type(class_descriptor));
+    let enum_body: Option<String> = if is_enum {
+        enums::enum_body(
+            &enums::EnumShape {
+                simple,
+                qualified: &qualified,
+                constants: &enum_constants,
+            },
+            &fields_text,
+            &member_texts,
+        )
+    } else {
+        None
+    };
+    match enum_body {
+        Some(body) => {
+            let keyword: String = class_declaration
+                .replace("abstract ", "")
+                .replace("final ", "")
+                .replace("class", "enum");
+            let _ = writeln!(text, "{keyword} {simple}{supertypes} {{");
+            text.push_str(&annotation_text);
+            text.push_str(&body);
+        }
+        None => {
+            let _ = writeln!(text, "{class_declaration} {simple}{supertypes} {{");
+            text.push_str(&annotation_text);
+            text.push_str(&fields_text);
+            for member in &member_texts {
+                let _ = writeln!(text, "{member}");
+            }
         }
     }
 

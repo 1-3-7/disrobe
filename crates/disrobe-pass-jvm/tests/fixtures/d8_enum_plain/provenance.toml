@@ -1,0 +1,25 @@
+schema = "disrobe.jvm.d8-enum-fixture/v1"
+source = "EnumProbe.java"
+source_sha256 = "4e985774d45df4dc4b730be65c23658b4c82ff56cef6d07553c66f48f2a1bf75"
+expected_stdout = "LOW=low/l:1/MEDIUM;MEDIUM=medium/m:5/HIGH;HIGH=high/h:9/LOW;1;1;OFF
+"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4.1"
+command = "javac -Xlint:-options --release 8 -d classes EnumProbe.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/*.class"
+note = "no --lib: d8 warns that java.lang.Enum was not found for interface-method desugaring, which this program does not use"
+output = "EnumProbe-min21.dex"
+output_sha256 = "ece7a9851917bbc855320089649e4e8e04f4eff5ccf8c7830b83196ca576d733"
+output_bytes = 3856
+
+[shapes]
+enums = ["EnumProbe$Level", "EnumProbe$Flag"]
+constants_with_arguments = 3
+switch_over_enum = true
