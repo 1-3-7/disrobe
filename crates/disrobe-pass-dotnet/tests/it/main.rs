@@ -141,6 +141,8 @@ mod methodimpl_shapes;
 mod movenext_recompile_oracle;
 #[path = "../native_aot_chain.rs"]
 mod native_aot_chain;
+#[path = "../native_aot_constructor_fixture.rs"]
+mod native_aot_constructor_fixture;
 #[path = "../native_aot_invoke_map.rs"]
 mod native_aot_invoke_map;
 #[path = "../native_aot_managed_abi.rs"]

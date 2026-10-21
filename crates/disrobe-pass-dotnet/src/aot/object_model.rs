@@ -17,6 +17,7 @@ const MAX_METHOD_TABLES: usize = 65_536;
 const MAX_TYPE_REFERENCES: usize = 16_384;
 const MAX_RUNTIME_FIELD_LAYOUTS: usize = 1_048_576;
 const MAX_FIELD_INITIALIZERS: usize = 16_384;
+const MAX_FIELD_OFFSET: u32 = 0x00FF_FFFF;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,7 +96,7 @@ pub struct AotObjectFieldStore {
     pub type_record_offset: u32,
     pub method_record_offset: u32,
     pub store_rva: u32,
-    pub field_offset: u8,
+    pub field_offset: u32,
     pub width: AotObjectStoreWidth,
     pub source_register: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,15 +133,52 @@ pub struct AotObjectTypeReference {
 #[serde(rename_all = "snake_case")]
 pub enum AotObjectConstant {
     Byte(u8),
+    Word(u16),
     Dword(u32),
     Qword(u64),
+}
+impl AotObjectConstant {
+    const fn width(self) -> u32 {
+        match self {
+            Self::Byte(_) => 1,
+            Self::Word(_) => 2,
+            Self::Dword(_) => 4,
+            Self::Qword(_) => 8,
+        }
+    }
+    const fn to_le_bytes(self) -> [u8; 8] {
+        match self {
+            Self::Byte(value) => (value as u64).to_le_bytes(),
+            Self::Word(value) => (value as u64).to_le_bytes(),
+            Self::Dword(value) => (value as u64).to_le_bytes(),
+            Self::Qword(value) => value.to_le_bytes(),
+        }
+    }
+    fn slice(self, start: u32, width: u32) -> Option<Self> {
+        let bytes: [u8; 8] = self.to_le_bytes();
+        let start: usize = usize::try_from(start).ok()?;
+        let end: usize = start.checked_add(usize::try_from(width).ok()?)?;
+        if end > usize::try_from(self.width()).ok()? {
+            return None;
+        }
+        Self::from_le_slice(bytes.get(start..end)?)
+    }
+    fn from_le_slice(part: &[u8]) -> Option<Self> {
+        match part.len() {
+            1 => Some(Self::Byte(*part.first()?)),
+            2 => Some(Self::Word(u16::from_le_bytes(part.try_into().ok()?))),
+            4 => Some(Self::Dword(u32::from_le_bytes(part.try_into().ok()?))),
+            8 => Some(Self::Qword(u64::from_le_bytes(part.try_into().ok()?))),
+            _ => None,
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotObjectFieldInitializer {
     pub type_record_offset: u32,
     pub method_record_offset: u32,
     pub store_rva: u32,
-    pub field_offset: u8,
+    pub field_offset: u32,
     pub value: AotObjectConstant,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_name: Option<String>,
@@ -161,24 +199,47 @@ const fn refused(
         field_initializers: Vec::new(),
     }
 }
-fn field_store(bytes: &[u8], at: usize) -> Option<(AotObjectStoreWidth, u8, u8)> {
+struct ThisOperand {
+    register: u8,
+    offset: u32,
+    end: usize,
+}
+fn this_operand(bytes: &[u8], at: usize) -> Option<ThisOperand> {
+    let modrm: u8 = *bytes.get(at)?;
+    let register: u8 = (modrm >> 3) & 7;
+    match modrm & 0b1100_0111 {
+        0b0100_0001 => {
+            let offset: u32 = u32::from(*bytes.get(at.checked_add(1)?)?);
+            (offset != 0).then_some(ThisOperand {
+                register,
+                offset,
+                end: at.checked_add(2)?,
+            })
+        }
+        0b1000_0001 => {
+            let end: usize = at.checked_add(5)?;
+            let displacement: [u8; 4] = bytes.get(at.checked_add(1)?..end)?.try_into().ok()?;
+            let offset: u32 = u32::from_le_bytes(displacement);
+            (offset != 0 && offset <= MAX_FIELD_OFFSET).then_some(ThisOperand {
+                register,
+                offset,
+                end,
+            })
+        }
+        _ => None,
+    }
+}
+fn field_store(bytes: &[u8], at: usize) -> Option<(AotObjectStoreWidth, u8, u32)> {
     let first = *bytes.get(at)?;
-    let (width, modrm_at, offset_at) = match first {
-        0x48 if bytes.get(at.checked_add(1)?) == Some(&0x89) => (
-            AotObjectStoreWidth::Pointer,
-            at.checked_add(2)?,
-            at.checked_add(3)?,
-        ),
-        0x89 => (
-            AotObjectStoreWidth::Dword,
-            at.checked_add(1)?,
-            at.checked_add(2)?,
-        ),
+    let (width, modrm_at) = match first {
+        0x48 if bytes.get(at.checked_add(1)?) == Some(&0x89) => {
+            (AotObjectStoreWidth::Pointer, at.checked_add(2)?)
+        }
+        0x89 => (AotObjectStoreWidth::Dword, at.checked_add(1)?),
         _ => return None,
     };
-    let modrm = *bytes.get(modrm_at)?;
-    let offset = *bytes.get(offset_at)?;
-    (modrm & 0b1100_0111 == 0b0100_0001 && offset != 0).then_some((width, (modrm >> 3) & 7, offset))
+    let operand: ThisOperand = this_operand(bytes, modrm_at)?;
+    (operand.end == bytes.len()).then_some((width, operand.register, operand.offset))
 }
 fn call_target(rva: u32, bytes: &[u8], at: usize) -> Option<u32> {
     let displacement: [u8; 4] = bytes
@@ -198,21 +259,77 @@ fn method_table_target(rva: u32, bytes: &[u8]) -> Option<u32> {
         i64::from(rva.checked_add(7)?).checked_add(i64::from(i32::from_le_bytes(displacement)))?;
     u32::try_from(target).ok()
 }
-fn field_initializer(bytes: &[u8]) -> Option<(u8, AotObjectConstant)> {
+fn immediate_initializer(
+    bytes: &[u8],
+    modrm_at: usize,
+    width: u32,
+) -> Option<(u32, AotObjectConstant)> {
+    let operand: ThisOperand = this_operand(bytes, modrm_at)?;
+    let immediate: &[u8] = bytes.get(operand.end..)?;
+    let value: AotObjectConstant = if width == 8 {
+        let displacement: [u8; 4] = immediate.try_into().ok()?;
+        AotObjectConstant::Qword(i64::from(i32::from_le_bytes(displacement)) as u64)
+    } else {
+        let value: AotObjectConstant = AotObjectConstant::from_le_slice(immediate)?;
+        if value.width() != width {
+            return None;
+        }
+        value
+    };
+    Some((operand.offset, value))
+}
+fn register_initializer(
+    bytes: &[u8],
+    modrm_at: usize,
+    prior: Option<&[u8]>,
+) -> Option<(u32, AotObjectConstant)> {
+    let operand: ThisOperand = this_operand(bytes, modrm_at)?;
+    if operand.end != bytes.len() || operand.register != 0 {
+        return None;
+    }
+    let (width, immediate): (u32, &[u8]) = match (modrm_at, prior?) {
+        (1, [0xb8, immediate @ ..]) => (4, immediate),
+        (2, [0x48, 0xb8, immediate @ ..]) => (8, immediate),
+        _ => return None,
+    };
+    let value: AotObjectConstant = AotObjectConstant::from_le_slice(immediate)?;
+    (value.width() == width).then_some((operand.offset, value))
+}
+fn field_initializer(bytes: &[u8], prior: Option<&[u8]>) -> Option<(u32, AotObjectConstant)> {
     match bytes {
-        [0xc6, 0x41, offset, value, ..] if *offset != 0 => {
-            Some((*offset, AotObjectConstant::Byte(*value)))
-        }
-        [0xc7, 0x41, offset, a, b, c, d, ..] if *offset != 0 => Some((
-            *offset,
-            AotObjectConstant::Dword(u32::from_le_bytes([*a, *b, *c, *d])),
-        )),
-        [0x48, 0xc7, 0x41, offset, a, b, c, d, ..] if *offset != 0 => {
-            let value: i64 = i64::from(i32::from_le_bytes([*a, *b, *c, *d]));
-            Some((*offset, AotObjectConstant::Qword(value as u64)))
-        }
+        [0xc6, ..] => immediate_initializer(bytes, 1, 1),
+        [0x66, 0xc7, ..] => immediate_initializer(bytes, 2, 2),
+        [0xc7, ..] => immediate_initializer(bytes, 1, 4),
+        [0x48, 0xc7, ..] => immediate_initializer(bytes, 2, 8),
+        [0x89, ..] => register_initializer(bytes, 1, prior),
+        [0x48, 0x89, ..] => register_initializer(bytes, 2, prior),
         _ => None,
     }
+}
+fn split_initializer(
+    field_offsets: Option<&BTreeSet<u32>>,
+    store_offset: u32,
+    value: AotObjectConstant,
+) -> Vec<(u32, AotObjectConstant)> {
+    let store_end: u32 = store_offset.saturating_add(value.width());
+    let covered: Vec<u32> = field_offsets.map_or_else(Vec::new, |offsets| {
+        offsets.range(store_offset..store_end).copied().collect()
+    });
+    if covered.first() != Some(&store_offset) {
+        return vec![(store_offset, value)];
+    }
+    let mut parts: Vec<(u32, AotObjectConstant)> = Vec::with_capacity(covered.len());
+    for (index, field_offset) in covered.iter().enumerate() {
+        let next: u32 = covered
+            .get(index.saturating_add(1))
+            .copied()
+            .unwrap_or(store_end);
+        let Some(part) = value.slice(field_offset - store_offset, next - field_offset) else {
+            return vec![(store_offset, value)];
+        };
+        parts.push((*field_offset, part));
+    }
+    parts
 }
 pub fn recover_object_model(
     image: &[u8],
@@ -282,6 +399,13 @@ pub fn recover_object_model(
                 type_layouts,
             );
         }
+    }
+    let mut offsets_by_type: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for (type_record_offset, field_offset) in fields_by_offset.keys() {
+        offsets_by_type
+            .entry(*type_record_offset)
+            .or_default()
+            .insert(*field_offset);
     }
     let known: BTreeSet<(u32, u32)> = attribution
         .types
@@ -394,7 +518,11 @@ pub fn recover_object_model(
                 Ok(instructions) => instructions,
                 Err(_) => return refused(AotObjectModelRefusal::DisassemblyFailed, type_layouts),
             };
-        for instruction in instructions {
+        for (index, instruction) in instructions.iter().enumerate() {
+            let prior: Option<&[u8]> = index
+                .checked_sub(1)
+                .and_then(|previous| instructions.get(previous))
+                .map(|previous| previous.bytes.as_slice());
             let Ok(rva): Result<u32, std::num::TryFromIntError> =
                 u32::try_from(instruction.address)
             else {
@@ -434,25 +562,31 @@ pub fn recover_object_model(
             }
             if constructors.contains(&evidence.method_record_offset)
                 && instruction.mnemonic == "mov"
-                && let Some((field_offset, value)) = field_initializer(&instruction.bytes)
+                && let Some((store_offset, value)) = field_initializer(&instruction.bytes, prior)
             {
-                if field_initializers.len() == MAX_FIELD_INITIALIZERS {
-                    return refused(
-                        AotObjectModelRefusal::FieldInitializerLimitExceeded,
-                        type_layouts,
-                    );
-                }
-                let field =
-                    fields_by_offset.get(&(evidence.type_record_offset, u32::from(field_offset)));
-                field_initializers.push(AotObjectFieldInitializer {
-                    type_record_offset: evidence.type_record_offset,
-                    method_record_offset: evidence.method_record_offset,
-                    store_rva: rva,
-                    field_offset,
+                let parts: Vec<(u32, AotObjectConstant)> = split_initializer(
+                    offsets_by_type.get(&evidence.type_record_offset),
+                    store_offset,
                     value,
-                    field_name: field.map(|(_record_offset, name, _field_type)| name.clone()),
-                    field_type: field.map(|(_record_offset, _name, field_type)| *field_type),
-                });
+                );
+                for (field_offset, value) in parts {
+                    if field_initializers.len() == MAX_FIELD_INITIALIZERS {
+                        return refused(
+                            AotObjectModelRefusal::FieldInitializerLimitExceeded,
+                            type_layouts,
+                        );
+                    }
+                    let field = fields_by_offset.get(&(evidence.type_record_offset, field_offset));
+                    field_initializers.push(AotObjectFieldInitializer {
+                        type_record_offset: evidence.type_record_offset,
+                        method_record_offset: evidence.method_record_offset,
+                        store_rva: rva,
+                        field_offset,
+                        value,
+                        field_name: field.map(|(_record_offset, name, _field_type)| name.clone()),
+                        field_type: field.map(|(_record_offset, _name, field_type)| *field_type),
+                    });
+                }
             }
             let Some((width, source_register, field_offset)) = field_store(&instruction.bytes, 0)
             else {
@@ -461,8 +595,7 @@ pub fn recover_object_model(
             if stores.len() == MAX_FIELD_STORES {
                 return refused(AotObjectModelRefusal::FieldStoreLimitExceeded, type_layouts);
             }
-            let field =
-                fields_by_offset.get(&(evidence.type_record_offset, u32::from(field_offset)));
+            let field = fields_by_offset.get(&(evidence.type_record_offset, field_offset));
             stores.push(AotObjectFieldStore {
                 type_record_offset: evidence.type_record_offset,
                 method_record_offset: evidence.method_record_offset,

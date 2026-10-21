@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2556 bounds (count 242, other 1208, output 72, recursion 250, size 587, work 197).
+2557 bounds (count 242, other 1209, output 72, recursion 250, size 587, work 197).
 
-Exceeded: error 1059, recorded 228, panic 0, delegated 53, silent 1157, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1059, recorded 228, panic 0, delegated 53, silent 1158, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -704,6 +704,7 @@ Exceeded: error 1059, recorded 228, panic 0, delegated 53, silent 1157, unclassi
 | `disrobe-pass-dotnet` | `MAX_RUNTIME_FUNCTIONS` | other | error: `invalid()` | `usize` | `1_048_576` | `crates/disrobe-pass-dotnet/src/aot/method_boundaries.rs` |
 | `disrobe-pass-dotnet` | `MAX_HASHTABLE_BUCKETS` | other | error: `invalid()` | `usize` | `65_536` | `crates/disrobe-pass-dotnet/src/aot/native_hashtable.rs` |
 | `disrobe-pass-dotnet` | `MAX_FIELD_INITIALIZERS` | other | recorded: `AotObjectModelRefusal::FieldInitializerLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_OFFSET` | other | silent: `continue` in `recover_object_model`; `return` in `register_initializer`; slice in `immediate_initializer` | `u32` | `0x00FF_FFFF` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_FIELD_STORES` | other | recorded: `AotObjectModelRefusal::FieldStoreLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_HELPERS` | other | recorded: `AotObjectModelRefusal::HelperEvidenceAmbiguous`; `refused()` | `usize` | `4_096` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_HELPER_CALLS` | other | recorded: `AotObjectModelRefusal::HelperCallLimitExceeded`; `refused()` | `usize` | `16_384` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
@@ -2580,7 +2581,7 @@ Exceeded: error 1059, recorded 228, panic 0, delegated 53, silent 1157, unclassi
 
 ## Silent stops
 
-1157 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1158 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -2822,6 +2823,7 @@ Exceeded: error 1059, recorded 228, panic 0, delegated 53, silent 1157, unclassi
 | `disrobe-pass-dotnet` | `MAX_PROFILE_MAJOR` | `continue` in `declared_profile` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_READY_TO_RUN_SECTIONS` | `return` in `read_ready_to_run_header` | `crates/disrobe-pass-dotnet/src/aot.rs` |
 | `disrobe-pass-dotnet` | `MAX_RECOVERED_NAMES` | `break` in `recover_names_at_threshold`; `while` condition in `recover_names_at_threshold` | `crates/disrobe-pass-dotnet/src/aot.rs` |
+| `disrobe-pass-dotnet` | `MAX_FIELD_OFFSET` | `continue` in `recover_object_model`; `return` in `register_initializer`; slice in `immediate_initializer` | `crates/disrobe-pass-dotnet/src/aot/object_model.rs` |
 | `disrobe-pass-dotnet` | `MAX_FILE_STEM` | `.take()` in `file_name`; fallback value in `file_name` | `crates/disrobe-pass-dotnet/src/csharp_project.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_DEPTH` | `return` in `append_output_expression`; `return` in `binary`; `return` in `expression_contains_stack_input` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |
 | `disrobe-pass-dotnet` | `MAX_CIL_EXPRESSION_NODES` | `return` in `binary` | `crates/disrobe-pass-dotnet/src/devirt/cil_handler.rs` |

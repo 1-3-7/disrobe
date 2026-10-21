@@ -109,6 +109,16 @@ An index with refused entries cannot be extracted; inspect its recovery report w
 Extraction is limited to 65,536 resources and 256 MiB total. With `--json`, JSON remains the only
 stdout output while resources are written.
 
+The report's `object_model` carries the metadata type layouts and, for every constructor whose
+body the image's own invoke map and unwind table bound to exactly one method record, the
+constant initializers that body stores through `this`: byte, word, dword and sign-extended qword
+immediates, 64-bit constants materialized in `rax` by the preceding instruction, and stores the
+compiler coalesced over adjacent fields, split back per field through the FieldAccessMap offsets.
+Each initializer names its field and type when the FieldAccessMap owns that offset. Reference
+initializers (a frozen string loaded with `lea`) and stores inside bodies shared by several method
+records are not reported. The x86-64 forms are graded against a committed .NET 10 NativeAOT build
+whose source assigns 51 constants (`corpus/dotnet/aot/BUILD.md`).
+
 ### Obfuscator reversal
 
 `disrobe` registers detection rules for <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The per-family evidence below states what artifact is graded, what data is recovered, and where static recovery stops.
