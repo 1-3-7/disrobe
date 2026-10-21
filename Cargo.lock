@@ -2323,6 +2323,9 @@ dependencies = [
 name = "disrobe-pass-jvm"
 version = "0.10.6"
 dependencies = [
+ "aes",
+ "cbc",
+ "des",
  "disrobe-binfmt",
  "disrobe-bytes",
  "disrobe-cfg",
@@ -2330,10 +2333,13 @@ dependencies = [
  "disrobe-testkit",
  "disrobe-tool-process",
  "encoding_rs",
+ "md5",
  "miette",
  "object 0.37.3",
+ "pbkdf2",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "thiserror 2.0.18",
  "zip",

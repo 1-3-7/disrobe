@@ -431,6 +431,26 @@ pub(crate) fn audit_dex_into(dex: &DexFile, bytes: &[u8], report: &mut AndroidAu
     let code = parse_code_items(dex, bytes);
     let items: Vec<&CodeItem> = code.decoded().iter().collect();
     let resolver: CallResolver = CallResolver::analyze(dex, &items);
+    let recovered: BTreeMap<(String, String, String, u32), String> =
+        crate::dalvik_strdec_generic::recover(dex, bytes)
+            .call_sites
+            .into_iter()
+            .filter_map(|site: crate::dalvik_strdec_generic::CallSiteRecovery| {
+                let crate::dalvik_strdec_generic::CallSiteOutcome::Recovered(text) = site.outcome
+                else {
+                    return None;
+                };
+                Some((
+                    (
+                        site.caller_class,
+                        site.caller_method,
+                        site.caller_descriptor,
+                        site.pc,
+                    ),
+                    text,
+                ))
+            })
+            .collect();
     for item in items {
         report.methods_scanned = report.methods_scanned.saturating_add(1);
         if resolver.is_wrapper(item) {
@@ -441,7 +461,7 @@ pub(crate) fn audit_dex_into(dex: &DexFile, bytes: &[u8], report: &mut AndroidAu
             findings: &mut report.findings,
             truncated: &mut report.truncated,
         };
-        audit_method(dex, item, &resolver, &mut sink);
+        audit_method(dex, item, &resolver, &recovered, &mut sink);
     }
 }
 
@@ -508,7 +528,13 @@ const fn writes_first_register(op: u8) -> bool {
     )
 }
 
-fn audit_method(dex: &DexFile, item: &CodeItem, resolver: &CallResolver, sink: &mut Sink<'_>) {
+fn audit_method(
+    dex: &DexFile,
+    item: &CodeItem,
+    resolver: &CallResolver,
+    recovered: &BTreeMap<(String, String, String, u32), String>,
+    sink: &mut Sink<'_>,
+) {
     let insns: Vec<DalvikInsn> = decode_method(&item.insns);
     let order: Vec<&DalvikInsn> = trace_order(&insns);
     if let Some((shape, evidence)) = method_shape_rule(item, &order) {
@@ -526,6 +552,19 @@ fn audit_method(dex: &DexFile, item: &CodeItem, resolver: &CallResolver, sink: &
     for insn in order {
         if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
             pending = None;
+            if let Some(text) = recovered.get(&(
+                item.class.clone(),
+                item.method_name.clone(),
+                item.method_descriptor.clone(),
+                insn.pc,
+            )) {
+                string_rules(text, reads_build, insn.pc, sink);
+                if literals.len() < MAX_METHOD_LITERALS {
+                    literals.push(text.clone());
+                }
+                pending = Some(Value::Str(text.clone()));
+                continue;
+            }
             let literal = |r: u16| match regs.get(&r) {
                 Some(Value::Lit(value)) => Some(*value),
                 _ => None,

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ const BODY_WEIGHT_TERMINAL: u32 = 15;
 const BODY_WEIGHT_TIGHT_LOOP: u32 = 25;
 const CONFIDENCE_THRESHOLD: u32 = 50;
 const MAX_CANDIDATE_PARAMS: usize = 2;
+const MAX_DELEGATION_DEPTH: usize = 3;
+const MAX_DATAFLOW_PASSES: usize = 65_536;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipReason {
@@ -222,7 +224,76 @@ fn find_candidates(
             out.push(CandidateInfo { code_index: i });
         }
     }
+    for _ in 0..MAX_DELEGATION_DEPTH {
+        let known: BTreeSet<(String, String, String)> = out
+            .iter()
+            .map(|c: &CandidateInfo| {
+                let code: &CodeItem = &code_items[c.code_index];
+                (
+                    code.class.clone(),
+                    code.method_name.clone(),
+                    code.method_descriptor.clone(),
+                )
+            })
+            .collect();
+        let before: usize = out.len();
+        for (i, code) in code_items.iter().enumerate() {
+            let key: (String, String, String) = (
+                code.class.clone(),
+                code.method_name.clone(),
+                code.method_descriptor.clone(),
+            );
+            if known.contains(&key)
+                || code.method_name == "<clinit>"
+                || code.method_name == "<init>"
+            {
+                continue;
+            }
+            let Some(method): Option<&&MethodId> = method_by_sig.get(&key) else {
+                continue;
+            };
+            if signature_weight(&method.proto.return_type, &method.proto.parameters).is_none() {
+                continue;
+            }
+            let insns: Vec<DalvikInsn> = dalvik::decode_method(&code.insns);
+            if delegates_to_candidate(dex, &insns, &known) {
+                out.push(CandidateInfo { code_index: i });
+            }
+        }
+        if out.len() == before {
+            break;
+        }
+    }
     out
+}
+
+fn delegates_to_candidate(
+    dex: &DexFile,
+    insns: &[DalvikInsn],
+    known: &BTreeSet<(String, String, String)>,
+) -> bool {
+    let mut forwards: bool = false;
+    for ins in insns {
+        if !matches!(ins.op, 0x6E..=0x72 | 0x74..=0x78) {
+            continue;
+        }
+        let Some(m): Option<&MethodId> =
+            ins.index.and_then(|i: u32| dex.method_ids.get(i as usize))
+        else {
+            return false;
+        };
+        let key: (String, String, String) = (
+            m.class.clone(),
+            m.name.clone(),
+            dalvik_interp::method_descriptor(m),
+        );
+        if known.contains(&key) {
+            forwards = true;
+        } else if m.name != "printStackTrace" {
+            return false;
+        }
+    }
+    forwards
 }
 
 fn signature_weight(return_type: &str, params: &[String]) -> Option<u32> {
@@ -366,6 +437,7 @@ fn has_string_ctor_or_base64(dex: &DexFile, insns: &[DalvikInsn]) -> bool {
                 .first()
                 .is_some_and(|p: &String| p == "[B"))
             || (m.class == "Landroid/util/Base64;" && m.name == "decode")
+            || (m.class == "Ljavax/crypto/Cipher;" && m.name == "doFinal")
     })
 }
 
@@ -405,28 +477,6 @@ fn tight_backward_loop_signal(insns: &[DalvikInsn]) -> bool {
     false
 }
 
-fn compute_join_points(code: &CodeItem, insns: &[DalvikInsn]) -> BTreeSet<u32> {
-    let mut out: BTreeSet<u32> = BTreeSet::new();
-    for ins in insns {
-        if let Some(t) = ins.branch_target_pc() {
-            out.insert(t);
-        }
-        if matches!(ins.op, 0x2B | 0x2C)
-            && let Some(payload_off) = ins.payload_off
-        {
-            let switch: Option<dalvik::SwitchPayload> = if ins.op == 0x2B {
-                dalvik::parse_packed_switch(&code.insns, ins.pc, payload_off)
-            } else {
-                dalvik::parse_sparse_switch(&code.insns, ins.pc, payload_off)
-            };
-            if let Some(sw) = switch {
-                out.extend(sw.targets);
-            }
-        }
-    }
-    out
-}
-
 #[allow(clippy::too_many_arguments)]
 fn scan_caller<'a>(
     dex: &'a DexFile,
@@ -438,184 +488,333 @@ fn scan_caller<'a>(
     out: &mut Vec<CallSiteRecovery>,
 ) {
     let insns: Vec<DalvikInsn> = dalvik::decode_method(&caller_code.insns);
-    let joins: BTreeSet<u32> = compute_join_points(caller_code, &insns);
-    let mut regs: BTreeMap<u16, ConstVal> = BTreeMap::new();
-    let mut pending: Option<ConstVal> = None;
-
-    for ins in &insns {
-        if joins.contains(&ins.pc) {
-            regs.clear();
-        }
-        match ins.op {
-            0x01..=0x09 => {
-                if let (Some(&dst), Some(&src)) = (ins.regs.first(), ins.regs.get(1)) {
-                    match regs.get(&src).cloned() {
-                        Some(v) => {
-                            regs.insert(dst, v);
-                        }
-                        None => {
-                            regs.remove(&dst);
+    let blocks: Blocks = basic_blocks(caller_code, &insns);
+    let mut sites: BTreeMap<u32, CallSiteRecovery> = BTreeMap::new();
+    let mut step =
+        |ins: &DalvikInsn, regs: &mut BTreeMap<u16, ConstVal>, pending: &mut Option<ConstVal>| {
+            match ins.op {
+                0x01..=0x09 => {
+                    if let (Some(&dst), Some(&src)) = (ins.regs.first(), ins.regs.get(1)) {
+                        match regs.get(&src).cloned() {
+                            Some(v) => {
+                                regs.insert(dst, v);
+                            }
+                            None => {
+                                regs.remove(&dst);
+                            }
                         }
                     }
                 }
-            }
-            0x0A | 0x0C => {
-                if let Some(&dst) = ins.regs.first() {
-                    match pending.take() {
-                        Some(v) => {
-                            regs.insert(dst, v);
-                        }
-                        None => {
-                            regs.remove(&dst);
-                        }
-                    }
-                }
-            }
-            0x0B => {
-                if let Some(&dst) = ins.regs.first() {
-                    regs.remove(&dst);
-                }
-                pending = None;
-            }
-            0x12..=0x15 => {
-                if let (Some(&dst), Some(lit)) = (ins.regs.first(), ins.literal) {
-                    let v: i64 = if ins.op == 0x15 { lit << 16 } else { lit };
-                    regs.insert(dst, ConstVal::Int(v));
-                }
-            }
-            0x16..=0x19 => {
-                if let (Some(&dst), Some(lit)) = (ins.regs.first(), ins.literal) {
-                    let v: i64 = if ins.op == 0x19 { lit << 48 } else { lit };
-                    regs.insert(dst, ConstVal::Int(v));
-                }
-            }
-            0x1A | 0x1B => {
-                if let (Some(&dst), Some(idx)) = (ins.regs.first(), ins.index) {
-                    match dex.strings.get(idx as usize) {
-                        Some(s) => {
-                            regs.insert(dst, ConstVal::Str(s.clone()));
-                        }
-                        None => {
-                            regs.remove(&dst);
+                0x0A | 0x0C => {
+                    if let Some(&dst) = ins.regs.first() {
+                        match pending.take() {
+                            Some(v) => {
+                                regs.insert(dst, v);
+                            }
+                            None => {
+                                regs.remove(&dst);
+                            }
                         }
                     }
                 }
-            }
-            0x23 => {
-                if let (Some(&dst), Some(&size_reg), Some(type_idx)) =
-                    (ins.regs.first(), ins.regs.get(1), ins.index)
-                {
-                    let descriptor: Option<&str> =
-                        dex.type_names.get(type_idx as usize).map(String::as_str);
-                    let len: Option<usize> = match regs.get(&size_reg) {
-                        Some(ConstVal::Int(n)) => usize::try_from(*n).ok(),
-                        _ => None,
-                    };
-                    match (descriptor, len) {
-                        (Some("[B"), Some(n)) if n <= dalvik_interp::MAX_ARRAY_LEN => {
-                            regs.insert(dst, ConstVal::Bytes(vec![0u8; n]));
-                        }
-                        (Some("[C"), Some(n)) if n <= dalvik_interp::MAX_ARRAY_LEN => {
-                            regs.insert(dst, ConstVal::Chars(vec![0u16; n]));
-                        }
-                        (Some("[I"), Some(n)) if n <= dalvik_interp::MAX_ARRAY_LEN => {
-                            regs.insert(dst, ConstVal::Ints(vec![0i32; n]));
-                        }
-                        _ => {
-                            regs.remove(&dst);
+                0x0B => {
+                    if let Some(&dst) = ins.regs.first() {
+                        regs.remove(&dst);
+                    }
+                    *pending = None;
+                }
+                0x12..=0x15 => {
+                    if let (Some(&dst), Some(lit)) = (ins.regs.first(), ins.literal) {
+                        let v: i64 = if ins.op == 0x15 { lit << 16 } else { lit };
+                        regs.insert(dst, ConstVal::Int(v));
+                    }
+                }
+                0x16..=0x19 => {
+                    if let (Some(&dst), Some(lit)) = (ins.regs.first(), ins.literal) {
+                        let v: i64 = if ins.op == 0x19 { lit << 48 } else { lit };
+                        regs.insert(dst, ConstVal::Int(v));
+                    }
+                }
+                0x1A | 0x1B => {
+                    if let (Some(&dst), Some(idx)) = (ins.regs.first(), ins.index) {
+                        match dex.strings.get(idx as usize) {
+                            Some(s) => {
+                                regs.insert(dst, ConstVal::Str(s.clone()));
+                            }
+                            None => {
+                                regs.remove(&dst);
+                            }
                         }
                     }
                 }
-            }
-            0x24 | 0x25 => {
-                pending = ins.index.and_then(|type_idx: u32| {
-                    let descriptor: &str = dex.type_names.get(type_idx as usize)?.as_str();
-                    let vals: Vec<i64> = ins
-                        .regs
-                        .iter()
-                        .map(|r: &u16| match regs.get(r) {
-                            Some(ConstVal::Int(n)) => Some(*n),
+                0x23 => {
+                    if let (Some(&dst), Some(&size_reg), Some(type_idx)) =
+                        (ins.regs.first(), ins.regs.get(1), ins.index)
+                    {
+                        let descriptor: Option<&str> =
+                            dex.type_names.get(type_idx as usize).map(String::as_str);
+                        let len: Option<usize> = match regs.get(&size_reg) {
+                            Some(ConstVal::Int(n)) => usize::try_from(*n).ok(),
                             _ => None,
-                        })
-                        .collect::<Option<Vec<i64>>>()?;
-                    match descriptor {
-                        "[B" => Some(ConstVal::Bytes(
-                            vals.iter().map(|&v: &i64| v as u8).collect(),
-                        )),
-                        "[C" => Some(ConstVal::Chars(
-                            vals.iter().map(|&v: &i64| v as u16).collect(),
-                        )),
-                        "[I" => Some(ConstVal::Ints(
-                            vals.iter().map(|&v: &i64| v as i32).collect(),
-                        )),
-                        _ => None,
+                        };
+                        match (descriptor, len) {
+                            (Some("[B"), Some(n)) if n <= dalvik_interp::MAX_ARRAY_LEN => {
+                                regs.insert(dst, ConstVal::Bytes(vec![0u8; n]));
+                            }
+                            (Some("[C"), Some(n)) if n <= dalvik_interp::MAX_ARRAY_LEN => {
+                                regs.insert(dst, ConstVal::Chars(vec![0u16; n]));
+                            }
+                            (Some("[I"), Some(n)) if n <= dalvik_interp::MAX_ARRAY_LEN => {
+                                regs.insert(dst, ConstVal::Ints(vec![0i32; n]));
+                            }
+                            _ => {
+                                regs.remove(&dst);
+                            }
+                        }
                     }
-                });
-            }
-            0x26 => {
-                if let (Some(&dst), Some(payload_off)) = (ins.regs.first(), ins.payload_off) {
-                    apply_fill_array_data(&mut regs, &caller_code.insns, dst, payload_off);
                 }
+                0x24 | 0x25 => {
+                    *pending = ins.index.and_then(|type_idx: u32| {
+                        let descriptor: &str = dex.type_names.get(type_idx as usize)?.as_str();
+                        let vals: Vec<i64> = ins
+                            .regs
+                            .iter()
+                            .map(|r: &u16| match regs.get(r) {
+                                Some(ConstVal::Int(n)) => Some(*n),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<i64>>>()?;
+                        match descriptor {
+                            "[B" => Some(ConstVal::Bytes(
+                                vals.iter().map(|&v: &i64| v as u8).collect(),
+                            )),
+                            "[C" => Some(ConstVal::Chars(
+                                vals.iter().map(|&v: &i64| v as u16).collect(),
+                            )),
+                            "[I" => Some(ConstVal::Ints(
+                                vals.iter().map(|&v: &i64| v as i32).collect(),
+                            )),
+                            _ => None,
+                        }
+                    });
+                }
+                0x26 => {
+                    if let (Some(&dst), Some(payload_off)) = (ins.regs.first(), ins.payload_off) {
+                        apply_fill_array_data(regs, &caller_code.insns, dst, payload_off);
+                    }
+                }
+                0x4B => update_array_put(regs, ins, ArrayKind::Ints),
+                0x4F => update_array_put(regs, ins, ArrayKind::Bytes),
+                0x50 => update_array_put(regs, ins, ArrayKind::Chars),
+                0x6E..=0x72 | 0x74..=0x78 => {
+                    *pending = None;
+                    let Some(method_idx): Option<u32> = ins.index else {
+                        return;
+                    };
+                    let Some(method): Option<&MethodId> = dex.method_ids.get(method_idx as usize)
+                    else {
+                        return;
+                    };
+                    let key: (String, String, String) = (
+                        method.class.clone(),
+                        method.name.clone(),
+                        dalvik_interp::method_descriptor(method),
+                    );
+                    let Some(&code_index): Option<&usize> = candidates_by_key.get(&key) else {
+                        return;
+                    };
+                    let Some(args): Option<Vec<ConstVal>> =
+                        collect_args(regs, &ins.regs, &method.proto.parameters)
+                    else {
+                        return;
+                    };
+                    let candidate_code: &CodeItem = &code_items[code_index];
+                    let method_id: String = format!("{}->{}{}", key.0, key.1, key.2);
+                    let cache_key: (String, String) = (method_id, canonical_key(&args));
+                    let outcome: Result<String, dalvik_interp::SkipReason> = result_cache
+                        .entry(cache_key)
+                        .or_insert_with(|| {
+                            evaluate_candidate(
+                                dex,
+                                code_items,
+                                class_interps,
+                                candidate_code,
+                                &method.proto.parameters,
+                                &args,
+                            )
+                        })
+                        .clone();
+                    sites.insert(
+                        ins.pc,
+                        CallSiteRecovery {
+                            caller_class: caller_code.class.clone(),
+                            caller_method: caller_code.method_name.clone(),
+                            caller_descriptor: caller_code.method_descriptor.clone(),
+                            pc: ins.pc,
+                            decrypt_class: method.class.clone(),
+                            decrypt_method: method.name.clone(),
+                            decrypt_descriptor: dalvik_interp::method_descriptor(method),
+                            outcome: match &outcome {
+                                Ok(plain) => CallSiteOutcome::Recovered(plain.clone()),
+                                Err(e) => CallSiteOutcome::Skipped(e.clone().into()),
+                            },
+                        },
+                    );
+                    if let Ok(plain) = outcome {
+                        *pending = Some(ConstVal::Str(plain));
+                    }
+                }
+                _ => {}
             }
-            0x4B => update_array_put(&mut regs, ins, ArrayKind::Ints),
-            0x4F => update_array_put(&mut regs, ins, ArrayKind::Bytes),
-            0x50 => update_array_put(&mut regs, ins, ArrayKind::Chars),
-            0x6E..=0x72 | 0x74..=0x78 => {
-                pending = None;
-                let Some(method_idx): Option<u32> = ins.index else {
-                    continue;
-                };
-                let Some(method): Option<&MethodId> = dex.method_ids.get(method_idx as usize)
-                else {
-                    continue;
-                };
-                let key: (String, String, String) = (
-                    method.class.clone(),
-                    method.name.clone(),
-                    dalvik_interp::method_descriptor(method),
+        };
+    run_dataflow(&blocks, &insns, &mut step);
+    out.extend(sites.into_values());
+}
+
+struct Blocks {
+    starts: Vec<usize>,
+    succs: Vec<Vec<usize>>,
+}
+
+fn switch_targets(code: &CodeItem, ins: &DalvikInsn) -> Vec<u32> {
+    let Some(payload_off) = ins.payload_off else {
+        return Vec::new();
+    };
+    let switch: Option<dalvik::SwitchPayload> = if ins.op == 0x2B {
+        dalvik::parse_packed_switch(&code.insns, ins.pc, payload_off)
+    } else {
+        dalvik::parse_sparse_switch(&code.insns, ins.pc, payload_off)
+    };
+    switch
+        .map(|sw: dalvik::SwitchPayload| sw.targets)
+        .unwrap_or_default()
+}
+
+fn basic_blocks(code: &CodeItem, insns: &[DalvikInsn]) -> Blocks {
+    let count: usize = insns.len();
+    let pc_to_idx: BTreeMap<u32, usize> = insns
+        .iter()
+        .enumerate()
+        .map(|(i, ins): (usize, &DalvikInsn)| (ins.pc, i))
+        .collect();
+    let mut succ_of: Vec<Vec<usize>> = Vec::with_capacity(count);
+    for (i, ins) in insns.iter().enumerate() {
+        let next: Option<usize> = (i + 1 < count).then_some(i + 1);
+        let target: Option<usize> = ins
+            .branch_target_pc()
+            .and_then(|pc: u32| pc_to_idx.get(&pc).copied());
+        let mut succ: Vec<usize> = Vec::new();
+        match ins.op {
+            0x28..=0x2A => succ.extend(target),
+            0x32..=0x3D => {
+                succ.extend(next);
+                succ.extend(target);
+            }
+            0x2B | 0x2C => {
+                succ.extend(next);
+                succ.extend(
+                    switch_targets(code, ins)
+                        .iter()
+                        .filter_map(|pc: &u32| pc_to_idx.get(pc).copied()),
                 );
-                let Some(&code_index): Option<&usize> = candidates_by_key.get(&key) else {
-                    continue;
+            }
+            0x0E..=0x11 | 0x27 => {}
+            _ => succ.extend(next),
+        }
+        succ_of.push(succ);
+    }
+    let mut leader: Vec<bool> = vec![false; count];
+    if count > 0 {
+        leader[0] = true;
+    }
+    for (i, succ) in succ_of.iter().enumerate() {
+        if succ.len() == 1 && succ[0] == i + 1 {
+            continue;
+        }
+        if i + 1 < count {
+            leader[i + 1] = true;
+        }
+        for &target in succ {
+            leader[target] = true;
+        }
+    }
+    let starts: Vec<usize> = (0..count).filter(|&i: &usize| leader[i]).collect();
+    let mut block_of: Vec<usize> = vec![0; count];
+    for (b, window) in starts.windows(2).enumerate() {
+        for slot in &mut block_of[window[0]..window[1]] {
+            *slot = b;
+        }
+    }
+    if let Some(&last) = starts.last() {
+        for slot in &mut block_of[last..] {
+            *slot = starts.len() - 1;
+        }
+    }
+    let succs: Vec<Vec<usize>> = starts
+        .iter()
+        .enumerate()
+        .map(|(b, &start): (usize, &usize)| {
+            let end: usize = starts.get(b + 1).copied().unwrap_or(count);
+            let mut out: Vec<usize> = succ_of[end.max(start + 1) - 1]
+                .iter()
+                .map(|&t: &usize| block_of[t])
+                .collect();
+            out.sort_unstable();
+            out.dedup();
+            out
+        })
+        .collect();
+    Blocks { starts, succs }
+}
+
+fn intersect(
+    left: &BTreeMap<u16, ConstVal>,
+    right: &BTreeMap<u16, ConstVal>,
+) -> BTreeMap<u16, ConstVal> {
+    left.iter()
+        .filter(|(reg, value): &(&u16, &ConstVal)| right.get(reg) == Some(value))
+        .map(|(reg, value): (&u16, &ConstVal)| (*reg, value.clone()))
+        .collect()
+}
+
+fn run_dataflow<F>(blocks: &Blocks, insns: &[DalvikInsn], step: &mut F)
+where
+    F: FnMut(&DalvikInsn, &mut BTreeMap<u16, ConstVal>, &mut Option<ConstVal>),
+{
+    let count: usize = blocks.starts.len();
+    let mut state_in: Vec<Option<BTreeMap<u16, ConstVal>>> = vec![None; count];
+    let mut visited: Vec<bool> = vec![false; count];
+    let mut passes: usize = 0;
+    for seed in 0..count {
+        if visited[seed] {
+            continue;
+        }
+        if state_in[seed].is_none() {
+            state_in[seed] = Some(BTreeMap::new());
+        }
+        let mut work: VecDeque<usize> = VecDeque::from([seed]);
+        while let Some(block) = work.pop_front() {
+            if passes >= MAX_DATAFLOW_PASSES {
+                return;
+            }
+            passes += 1;
+            visited[block] = true;
+            let mut regs: BTreeMap<u16, ConstVal> = state_in[block].clone().unwrap_or_default();
+            let mut pending: Option<ConstVal> = None;
+            let end: usize = blocks.starts.get(block + 1).copied().unwrap_or(insns.len());
+            for ins in &insns[blocks.starts[block]..end] {
+                step(ins, &mut regs, &mut pending);
+            }
+            for &succ in &blocks.succs[block] {
+                let merged: BTreeMap<u16, ConstVal> = match &state_in[succ] {
+                    None => regs.clone(),
+                    Some(previous) => intersect(previous, &regs),
                 };
-                let Some(args): Option<Vec<ConstVal>> =
-                    collect_args(&regs, &ins.regs, &method.proto.parameters)
-                else {
-                    continue;
-                };
-                let candidate_code: &CodeItem = &code_items[code_index];
-                let method_id: String = format!("{}->{}{}", key.0, key.1, key.2);
-                let cache_key: (String, String) = (method_id, canonical_key(&args));
-                let outcome: Result<String, dalvik_interp::SkipReason> = result_cache
-                    .entry(cache_key)
-                    .or_insert_with(|| {
-                        evaluate_candidate(
-                            dex,
-                            code_items,
-                            class_interps,
-                            candidate_code,
-                            &method.proto.parameters,
-                            &args,
-                        )
-                    })
-                    .clone();
-                out.push(CallSiteRecovery {
-                    caller_class: caller_code.class.clone(),
-                    caller_method: caller_code.method_name.clone(),
-                    caller_descriptor: caller_code.method_descriptor.clone(),
-                    pc: ins.pc,
-                    decrypt_class: method.class.clone(),
-                    decrypt_method: method.name.clone(),
-                    decrypt_descriptor: dalvik_interp::method_descriptor(method),
-                    outcome: match &outcome {
-                        Ok(plain) => CallSiteOutcome::Recovered(plain.clone()),
-                        Err(e) => CallSiteOutcome::Skipped(e.clone().into()),
-                    },
-                });
-                if let Ok(plain) = outcome {
-                    pending = Some(ConstVal::Str(plain));
+                if state_in[succ].as_ref() != Some(&merged) {
+                    state_in[succ] = Some(merged);
+                    work.push_back(succ);
                 }
             }
-            _ => {}
         }
     }
 }

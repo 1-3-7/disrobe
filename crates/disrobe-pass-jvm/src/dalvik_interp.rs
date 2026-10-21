@@ -54,15 +54,45 @@ enum HeapObj {
     IntArray(Vec<i32>),
     Builder(Vec<u16>),
     ClassRef(String),
+    BoxedInt(i32),
+    Unconstructed(String),
+    KeyFactory(String),
+    PbeSpec {
+        password: Vec<u16>,
+        salt: Vec<u8>,
+        iterations: i32,
+        key_bits: i32,
+    },
+    SecretKey(Vec<u8>),
+    IvSpec(Vec<u8>),
+    Cipher {
+        transformation: String,
+        mode: i32,
+        key: Vec<u8>,
+        iv: Vec<u8>,
+    },
+    Digest {
+        algorithm: String,
+        buffer: Vec<u8>,
+    },
 }
 
 impl HeapObj {
     const fn byte_len(&self) -> usize {
         match self {
             Self::Text(v) | Self::CharArray(v) | Self::Builder(v) => v.len() * 2,
-            Self::ByteArray(v) => v.len(),
+            Self::ByteArray(v) | Self::SecretKey(v) | Self::IvSpec(v) => v.len(),
             Self::IntArray(v) => v.len() * 4,
-            Self::ClassRef(_) => 0,
+            Self::ClassRef(s) | Self::Unconstructed(s) | Self::KeyFactory(s) => s.len(),
+            Self::BoxedInt(_) => 4,
+            Self::PbeSpec { password, salt, .. } => password.len() * 2 + salt.len(),
+            Self::Cipher {
+                transformation,
+                key,
+                iv,
+                ..
+            } => transformation.len() + key.len() + iv.len(),
+            Self::Digest { algorithm, buffer } => algorithm.len() + buffer.len(),
         }
     }
 
@@ -71,7 +101,7 @@ impl HeapObj {
             Self::Text(v) | Self::CharArray(v) | Self::Builder(v) => Some(v.len()),
             Self::ByteArray(v) => Some(v.len()),
             Self::IntArray(v) => Some(v.len()),
-            Self::ClassRef(_) => None,
+            _ => None,
         }
     }
 }
@@ -378,6 +408,11 @@ impl<'a> Interp<'a> {
                         "Ljava/lang/String;" => HeapObj::Text(Vec::new()),
                         "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;" => {
                             HeapObj::Builder(Vec::new())
+                        }
+                        "Ljavax/crypto/spec/PBEKeySpec;"
+                        | "Ljavax/crypto/spec/SecretKeySpec;"
+                        | "Ljavax/crypto/spec/IvParameterSpec;" => {
+                            HeapObj::Unconstructed(descriptor.clone())
                         }
                         _ => {
                             return Err(SkipReason::UnsupportedCall(format!(
@@ -854,16 +889,11 @@ impl<'a> Interp<'a> {
             return Ok(outcome);
         }
 
-        if owner == self.class {
-            let target_desc: String = format!("({}){return_type}", params.join(""));
-            let target: Option<&CodeItem> = self.code_items.iter().find(|c: &&CodeItem| {
-                c.class == owner && c.method_name == name && c.method_descriptor == target_desc
-            });
-            let Some(target_code): Option<&CodeItem> = target else {
-                return Err(SkipReason::UnsupportedCall(format!(
-                    "{owner}->{name}{target_desc}"
-                )));
-            };
+        let target_desc: String = format!("({}){return_type}", params.join(""));
+        let target: Option<&CodeItem> = self.code_items.iter().find(|c: &&CodeItem| {
+            c.class == owner && c.method_name == name && c.method_descriptor == target_desc
+        });
+        if let Some(target_code) = target {
             let mut callee_regs: Vec<RegSlot> = vec![
                 RegSlot::Undefined;
                 usize::from(target_code.registers_size)
@@ -1100,10 +1130,267 @@ impl<'a> Interp<'a> {
                 let r: HeapId = self.alloc(HeapObj::Text(units))?;
                 Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
             }
+            ("Ljava/lang/Integer;", "parseInt", p) if p == ["Ljava/lang/String;", "I"] => {
+                let text: String = self.text_string(recv_ref(0)?)?;
+                let value: i32 = parse_radix(&text, recv_i32(1)?)?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::I32(value as u32))))
+            }
+            ("Ljava/lang/Integer;", "valueOf", p) if p == ["Ljava/lang/String;", "I"] => {
+                let text: String = self.text_string(recv_ref(0)?)?;
+                let value: i32 = parse_radix(&text, recv_i32(1)?)?;
+                let r: HeapId = self.alloc(HeapObj::BoxedInt(value))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljava/lang/Integer;", "valueOf", p) if p == ["Ljava/lang/String;"] => {
+                let text: String = self.text_string(recv_ref(0)?)?;
+                let value: i32 = parse_radix(&text, 10)?;
+                let r: HeapId = self.alloc(HeapObj::BoxedInt(value))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljava/lang/Integer;", "valueOf", p) if p == ["I"] => {
+                let r: HeapId = self.alloc(HeapObj::BoxedInt(recv_i32(0)?))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljava/lang/Integer;", "intValue" | "byteValue" | "shortValue", []) => {
+                let boxed: i32 = match self.heap.get(recv_ref(0)?) {
+                    Some(HeapObj::BoxedInt(v)) => *v,
+                    _ => return Err(SkipReason::Unsound),
+                };
+                let value: i32 = match name {
+                    "byteValue" => i32::from(boxed as i8),
+                    "shortValue" => i32::from(boxed as i16),
+                    _ => boxed,
+                };
+                Ok(JdkOutcome::Handled(Some(RegSlot::I32(value as u32))))
+            }
+            ("Ljavax/crypto/SecretKeyFactory;", "getInstance", p)
+                if p == ["Ljava/lang/String;"] =>
+            {
+                let algorithm: String = self.text_string(recv_ref(0)?)?;
+                let r: HeapId = self.alloc(HeapObj::KeyFactory(algorithm))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljavax/crypto/spec/PBEKeySpec;", "<init>", p) if p == ["[C", "[B", "I", "I"] => {
+                let this: HeapId = recv_ref(0)?;
+                let password: Vec<u16> = self.char_units(recv_ref(1)?)?;
+                let salt: Vec<u8> = self.byte_array_contents(recv_ref(2)?)?;
+                let iterations: i32 = recv_i32(3)?;
+                let key_bits: i32 = recv_i32(4)?;
+                self.set_heap(
+                    this,
+                    HeapObj::PbeSpec {
+                        password,
+                        salt,
+                        iterations,
+                        key_bits,
+                    },
+                )?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljavax/crypto/SecretKeyFactory;", "generateSecret", _) => {
+                let algorithm: String = match self.heap.get(recv_ref(0)?) {
+                    Some(HeapObj::KeyFactory(algorithm)) => algorithm.clone(),
+                    _ => return Err(SkipReason::Unsound),
+                };
+                let key: Vec<u8> = match self.heap.get(recv_ref(1)?) {
+                    Some(HeapObj::PbeSpec {
+                        password,
+                        salt,
+                        iterations,
+                        key_bits,
+                    }) => {
+                        crypto::derive_pbkdf2(&algorithm, password, salt, *iterations, *key_bits)?
+                    }
+                    _ => return Err(SkipReason::Unsound),
+                };
+                let r: HeapId = self.alloc(HeapObj::SecretKey(key))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            (
+                "Ljavax/crypto/SecretKey;"
+                | "Ljava/security/Key;"
+                | "Ljavax/crypto/spec/SecretKeySpec;",
+                "getEncoded",
+                [],
+            ) => {
+                let key: Vec<u8> = self.secret_key(recv_ref(0)?)?;
+                let r: HeapId = self.alloc(HeapObj::ByteArray(key))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljavax/crypto/spec/SecretKeySpec;", "<init>", p)
+                if p == ["[B", "Ljava/lang/String;"] =>
+            {
+                let this: HeapId = recv_ref(0)?;
+                let key: Vec<u8> = self.byte_array_contents(recv_ref(1)?)?;
+                self.set_heap(this, HeapObj::SecretKey(key))?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljavax/crypto/spec/SecretKeySpec;", "<init>", p)
+                if p == ["[B", "I", "I", "Ljava/lang/String;"] =>
+            {
+                let this: HeapId = recv_ref(0)?;
+                let src: HeapId = recv_ref(1)?;
+                let off: i32 = recv_i32(2)?;
+                let len: i32 = recv_i32(3)?;
+                let key: Vec<u8> = self.byte_array_slice(src, off, len)?;
+                self.set_heap(this, HeapObj::SecretKey(key))?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljavax/crypto/spec/IvParameterSpec;", "<init>", p) if p == ["[B"] => {
+                let this: HeapId = recv_ref(0)?;
+                let iv: Vec<u8> = self.byte_array_contents(recv_ref(1)?)?;
+                self.set_heap(this, HeapObj::IvSpec(iv))?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljavax/crypto/Cipher;", "getInstance", p) if p == ["Ljava/lang/String;"] => {
+                let transformation: String = self.text_string(recv_ref(0)?)?;
+                let r: HeapId = self.alloc(HeapObj::Cipher {
+                    transformation,
+                    mode: 0,
+                    key: Vec::new(),
+                    iv: Vec::new(),
+                })?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljavax/crypto/Cipher;", "init", p) if p == ["I", "Ljava/security/Key;"] => {
+                let this: HeapId = recv_ref(0)?;
+                let mode: i32 = recv_i32(1)?;
+                let key: Vec<u8> = self.secret_key(recv_ref(2)?)?;
+                self.cipher_init(this, mode, key, Vec::new())?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljavax/crypto/Cipher;", "init", p)
+                if p == [
+                    "I",
+                    "Ljava/security/Key;",
+                    "Ljava/security/spec/AlgorithmParameterSpec;",
+                ] =>
+            {
+                let this: HeapId = recv_ref(0)?;
+                let mode: i32 = recv_i32(1)?;
+                let key: Vec<u8> = self.secret_key(recv_ref(2)?)?;
+                let iv: Vec<u8> = match self.heap.get(recv_ref(3)?) {
+                    Some(HeapObj::IvSpec(iv)) => iv.clone(),
+                    _ => return Err(SkipReason::Unsound),
+                };
+                self.cipher_init(this, mode, key, iv)?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljavax/crypto/Cipher;", "doFinal", p) if p == ["[B"] => {
+                let this: HeapId = recv_ref(0)?;
+                let input: Vec<u8> = self.byte_array_contents(recv_ref(1)?)?;
+                let out: Vec<u8> = self.cipher_final(this, &input)?;
+                let r: HeapId = self.alloc(HeapObj::ByteArray(out))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljavax/crypto/Cipher;", "doFinal", p) if p == ["[B", "I", "I"] => {
+                let this: HeapId = recv_ref(0)?;
+                let src: HeapId = recv_ref(1)?;
+                let off: i32 = recv_i32(2)?;
+                let len: i32 = recv_i32(3)?;
+                let input: Vec<u8> = self.byte_array_slice(src, off, len)?;
+                let out: Vec<u8> = self.cipher_final(this, &input)?;
+                let r: HeapId = self.alloc(HeapObj::ByteArray(out))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljava/security/MessageDigest;", "getInstance", p) if p == ["Ljava/lang/String;"] => {
+                let algorithm: String = self.text_string(recv_ref(0)?)?;
+                let r: HeapId = self.alloc(HeapObj::Digest {
+                    algorithm,
+                    buffer: Vec::new(),
+                })?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljava/security/MessageDigest;", "update", p) if p == ["[B"] => {
+                let this: HeapId = recv_ref(0)?;
+                let data: Vec<u8> = self.byte_array_contents(recv_ref(1)?)?;
+                self.digest_update(this, &data)?;
+                Ok(JdkOutcome::Handled(None))
+            }
+            ("Ljava/security/MessageDigest;", "digest", p) if p == ["[B"] => {
+                let this: HeapId = recv_ref(0)?;
+                let data: Vec<u8> = self.byte_array_contents(recv_ref(1)?)?;
+                self.digest_update(this, &data)?;
+                let out: Vec<u8> = self.digest_final(this)?;
+                let r: HeapId = self.alloc(HeapObj::ByteArray(out))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
+            ("Ljava/security/MessageDigest;", "digest", []) => {
+                let this: HeapId = recv_ref(0)?;
+                let out: Vec<u8> = self.digest_final(this)?;
+                let r: HeapId = self.alloc(HeapObj::ByteArray(out))?;
+                Ok(JdkOutcome::Handled(Some(RegSlot::Ref(r))))
+            }
             _ if return_type == "V" && owner.starts_with("Ljava/lang/") => {
                 Ok(JdkOutcome::NotHandled)
             }
             _ => Ok(JdkOutcome::NotHandled),
+        }
+    }
+
+    fn secret_key(&self, r: HeapId) -> Result<Vec<u8>, SkipReason> {
+        match self.heap.get(r) {
+            Some(HeapObj::SecretKey(key)) => Ok(key.clone()),
+            _ => Err(SkipReason::Unsound),
+        }
+    }
+
+    fn cipher_init(
+        &mut self,
+        r: HeapId,
+        mode: i32,
+        key: Vec<u8>,
+        iv: Vec<u8>,
+    ) -> Result<(), SkipReason> {
+        let transformation: String = match self.heap.get(r) {
+            Some(HeapObj::Cipher { transformation, .. }) => transformation.clone(),
+            _ => return Err(SkipReason::Unsound),
+        };
+        self.set_heap(
+            r,
+            HeapObj::Cipher {
+                transformation,
+                mode,
+                key,
+                iv,
+            },
+        )
+    }
+
+    fn cipher_final(&self, r: HeapId, input: &[u8]) -> Result<Vec<u8>, SkipReason> {
+        match self.heap.get(r) {
+            Some(HeapObj::Cipher {
+                transformation,
+                mode,
+                key,
+                iv,
+            }) => {
+                self.grow_check(input.len())?;
+                crypto::run_cipher(transformation, *mode, key, iv, input)
+            }
+            _ => Err(SkipReason::Unsound),
+        }
+    }
+
+    fn digest_update(&mut self, r: HeapId, data: &[u8]) -> Result<(), SkipReason> {
+        self.grow_check(data.len())?;
+        match self.heap.get_mut(r) {
+            Some(HeapObj::Digest { buffer, .. }) => {
+                if buffer.len() + data.len() > crypto::MAX_CIPHER_INPUT {
+                    return Err(SkipReason::OutputTooLarge);
+                }
+                buffer.extend_from_slice(data);
+                self.heap_bytes += data.len();
+                Ok(())
+            }
+            _ => Err(SkipReason::Unsound),
+        }
+    }
+
+    fn digest_final(&self, r: HeapId) -> Result<Vec<u8>, SkipReason> {
+        match self.heap.get(r) {
+            Some(HeapObj::Digest { algorithm, buffer }) => crypto::digest(algorithm, buffer),
+            _ => Err(SkipReason::Unsound),
         }
     }
 
@@ -1237,6 +1524,14 @@ impl<'a> Interp<'a> {
             _ => Err(SkipReason::Unsound),
         }
     }
+}
+
+fn parse_radix(text: &str, radix: i32) -> Result<i32, SkipReason> {
+    let radix: u32 = u32::try_from(radix)
+        .ok()
+        .filter(|r: &u32| (2..=36).contains(r))
+        .ok_or(SkipReason::Unsound)?;
+    i32::from_str_radix(text.trim(), radix).map_err(|_| SkipReason::Unsound)
 }
 
 fn android_base64_decode(input: &[u8], flags: i32) -> Result<Vec<u8>, SkipReason> {
@@ -1506,6 +1801,8 @@ pub(crate) fn method_descriptor(method: &MethodId) -> String {
         method.proto.return_type
     )
 }
+
+mod crypto;
 
 #[cfg(test)]
 mod tests;
