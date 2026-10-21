@@ -33,8 +33,9 @@ for class in ${*:-Plants Control Flows}; do
     java -cp "$ANDROID_BUILD_TOOLS/lib/d8.jar" com.android.tools.r8.D8 \
         --release --min-api 21 --output "$work/dex" $(find "$work/classes" -name '*.class')
 
+    "$ANDROID_BUILD_TOOLS/aapt2" compile -o "$work/res.zip" --dir "$here/res"
     "$ANDROID_BUILD_TOOLS/aapt2" link -o "$work/base.apk" -I "$ANDROID_PLATFORM_JAR" \
-        --manifest "$here/AndroidManifest.xml"
+        --manifest "$here/AndroidManifest.xml" "$work/res.zip"
 
     (cd "$work/dex" && jar --update --no-manifest --file "$work/base.apk" classes.dex)
     "$ANDROID_BUILD_TOOLS/zipalign" -f 4 "$work/base.apk" "$work/aligned.apk"
