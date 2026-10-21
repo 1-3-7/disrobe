@@ -3,8 +3,7 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_const_for_fn,
-    clippy::items_after_statements,
-    clippy::too_many_lines
+    clippy::items_after_statements
 )]
 
 use disrobe_pass_py_decompile::ast::{Arg, Arguments, AstModule, ConstValue, Expr, ExprCtx, Stmt};

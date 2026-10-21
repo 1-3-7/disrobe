@@ -5,9 +5,7 @@
 #![allow(clippy::unnecessary_wraps)]
 #![allow(clippy::unused_self)]
 #![allow(clippy::use_self)]
-#![allow(clippy::missing_errors_doc)]
 #![allow(clippy::module_inception)]
-#![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::needless_lifetimes)]
 #![allow(clippy::trivially_copy_pass_by_ref)]
 pub mod alt_lift;

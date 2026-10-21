@@ -585,7 +585,7 @@ fn declared_parameter_name(func: &MpyFunction, slot: usize) -> Option<&str> {
     (is_simple_identifier(candidate) && !PYTHON_KEYWORDS.contains(&candidate)).then_some(candidate)
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn lift_instructions(
     func: &MpyFunction,
     module: &MpyBytecodeModule,
@@ -1043,11 +1043,7 @@ const fn rel_target(arg: &MpyArg) -> Option<usize> {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::match_same_arms
-)]
+#[allow(clippy::too_many_arguments, clippy::match_same_arms)]
 fn lift_one(
     insn: &MpyDecodedInsn,
     module: &MpyBytecodeModule,

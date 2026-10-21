@@ -1,8 +1,4 @@
-#![allow(
-    clippy::match_same_arms,
-    clippy::too_many_lines,
-    clippy::option_if_let_else
-)]
+#![allow(clippy::match_same_arms, clippy::option_if_let_else)]
 
 use crate::ast::node::{ExceptHandler, Expr, MatchCase, Pattern, Stmt};
 use crate::bytecode::version::PyVersion;

@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::print_stdout, clippy::print_stderr)]
+#![allow(clippy::expect_used)]
 use std::fs;
 
 use disrobe_pass_py_decompile::decompile_pyc;

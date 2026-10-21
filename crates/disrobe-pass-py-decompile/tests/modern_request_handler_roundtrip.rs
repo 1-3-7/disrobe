@@ -2,9 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::too_many_lines,
     clippy::items_after_statements,
     clippy::format_push_string
 )]

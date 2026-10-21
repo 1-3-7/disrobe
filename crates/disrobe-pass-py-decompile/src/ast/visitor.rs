@@ -38,7 +38,6 @@ pub fn walk_module<V: Visitor + ?Sized>(v: &mut V, module: &AstModule) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn walk_stmt<V: Visitor + ?Sized>(v: &mut V, stmt: &Stmt) {
     match stmt {
         Stmt::FunctionDef {
@@ -213,7 +212,6 @@ pub fn walk_stmt<V: Visitor + ?Sized>(v: &mut V, stmt: &Stmt) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn walk_expr<V: Visitor + ?Sized>(v: &mut V, expr: &Expr) {
     match expr {
         Expr::Constant { .. }
@@ -471,7 +469,6 @@ pub fn walk_module_mut<V: VisitorMut + ?Sized>(v: &mut V, module: &mut AstModule
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn walk_stmt_mut<V: VisitorMut + ?Sized>(v: &mut V, stmt: &mut Stmt) {
     match stmt {
         Stmt::FunctionDef {
@@ -644,7 +641,6 @@ pub fn walk_stmt_mut<V: VisitorMut + ?Sized>(v: &mut V, stmt: &mut Stmt) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn walk_expr_mut<V: VisitorMut + ?Sized>(v: &mut V, expr: &mut Expr) {
     match expr {
         Expr::Constant { .. }

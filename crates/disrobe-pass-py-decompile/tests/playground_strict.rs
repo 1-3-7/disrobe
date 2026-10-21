@@ -4,7 +4,6 @@
     clippy::panic,
     clippy::missing_const_for_fn,
     clippy::items_after_statements,
-    clippy::too_many_lines,
     clippy::default_trait_access,
     clippy::doc_markdown
 )]

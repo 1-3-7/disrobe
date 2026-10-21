@@ -3,8 +3,6 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::missing_const_for_fn,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::many_single_char_names
 )]
 

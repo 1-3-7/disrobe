@@ -846,12 +846,7 @@ pub(super) fn name_at_either(code: &CodeObject, idx: u32) -> Result<String> {
     name_at(&code.localsplusnames, idx, 0, "localsplus")
 }
 
-#[allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::similar_names,
-    clippy::match_same_arms
-)]
+#[allow(clippy::match_same_arms)]
 pub(super) fn resolve_jump_target(
     stream: &DecodedStream,
     idx: usize,

@@ -1,8 +1,4 @@
-#![allow(
-    clippy::too_many_lines,
-    clippy::option_if_let_else,
-    clippy::cognitive_complexity
-)]
+#![allow(clippy::option_if_let_else)]
 
 use crate::ast::node::{Alias, Arguments, Expr, Stmt, TypeParam, WithItem};
 use crate::bytecode::version::PyVersion;

@@ -1,4 +1,4 @@
-#![allow(clippy::panic, clippy::print_stderr, clippy::print_stdout)]
+#![allow(clippy::panic)]
 
 mod common;
 

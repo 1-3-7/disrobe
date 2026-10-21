@@ -3,7 +3,6 @@ use crate::bytecode::opcode::{BinOp, CmpOp, UnaryOp};
 use crate::bytecode::version::PyVersion;
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn render_expr(expr: &Expr, version: &PyVersion) -> String {
     match expr {
         Expr::Constant { value, .. } => render_const(value),

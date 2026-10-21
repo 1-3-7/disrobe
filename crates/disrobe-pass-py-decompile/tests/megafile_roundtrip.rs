@@ -4,15 +4,11 @@
     clippy::panic,
     clippy::missing_const_for_fn,
     clippy::items_after_statements,
-    clippy::too_many_lines,
     clippy::default_trait_access,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::match_same_arms,
     clippy::map_unwrap_or,
     clippy::format_push_string,
-    clippy::or_fun_call,
-    clippy::cast_precision_loss
+    clippy::or_fun_call
 )]
 
 use std::collections::BTreeMap;

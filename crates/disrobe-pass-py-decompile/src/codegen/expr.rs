@@ -1,11 +1,9 @@
 #![allow(
     clippy::match_same_arms,
-    clippy::too_many_lines,
     clippy::if_same_then_else,
     clippy::option_if_let_else,
     clippy::format_push_string,
-    clippy::redundant_else,
-    clippy::cognitive_complexity
+    clippy::redundant_else
 )]
 
 use crate::ast::node::{Arg, Arguments, BoolOpKind, ConstValue, Expr, ExprCtx, Keyword, TypeParam};

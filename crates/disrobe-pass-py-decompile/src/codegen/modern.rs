@@ -14,7 +14,6 @@ use crate::codegen::type_params_emit::{
 use crate::codegen::walrus_emit::emit_walrus;
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn emit_modern_stmt(stmt: &Stmt, indent: u32, version: &PyVersion) -> Option<String> {
     match stmt {
         Stmt::Match { subject, cases, .. } => Some(emit_match(subject, cases, indent, version)),

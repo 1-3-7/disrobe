@@ -2,9 +2,6 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::too_many_lines,
     clippy::doc_markdown
 )]
 
@@ -273,10 +270,8 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from py_arbitrary_measure import sibling_group_charges
 
-
 def objs(n):
     return [compile("x = 1", "<constructed>", "exec") for _ in range(n)]
-
 
 cases = [(1, 0), (1, 1), (1, 2), (1, 5), (2, 0), (2, 1), (2, 3), (5, 1), (0, 0)]
 out = []

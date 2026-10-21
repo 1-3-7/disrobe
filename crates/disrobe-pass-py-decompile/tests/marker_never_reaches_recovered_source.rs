@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::too_many_lines)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

@@ -1,4 +1,3 @@
-#![allow(clippy::module_name_repetitions)]
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{

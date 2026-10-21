@@ -452,11 +452,7 @@ pub fn shared_decode(version: &PyVersion, raw: u8, arg: u32) -> CanonicalOp {
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    clippy::match_same_arms
-)]
+#[allow(clippy::match_same_arms)]
 fn decode_by_name(
     name: &'static str,
     raw: u8,

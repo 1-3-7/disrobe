@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::print_stderr,
-    clippy::print_stdout
-)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 mod common;
 

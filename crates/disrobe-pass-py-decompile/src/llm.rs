@@ -2,11 +2,7 @@
 #![allow(
     clippy::doc_markdown,
     clippy::too_long_first_doc_paragraph,
-    clippy::vec_init_then_push,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::needless_pass_by_value
+    clippy::vec_init_then_push
 )]
 
 use std::collections::BTreeMap;

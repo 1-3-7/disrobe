@@ -2,10 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
     clippy::missing_const_for_fn,
-    clippy::too_many_lines,
     dead_code
 )]
 

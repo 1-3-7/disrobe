@@ -1,11 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::too_many_lines
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 mod common;
 
@@ -29,15 +22,12 @@ import math
 
 PRECISION = 3
 
-
 def area(r):
     return round(math.pi * r * r, PRECISION)
-
 
 def broken(obj, value):
     obj.field = value
     return obj
-
 
 class Shape:
     def __init__(self, sides):
@@ -50,14 +40,12 @@ class Shape:
     def describe(self):
         return str(self.sides) + ' sides'
 
-
 def total(xs):
     acc = 0
     for x in xs:
         if x > 0:
             acc += x
     return acc
-
 
 settings.mode = 'fast'
 ";

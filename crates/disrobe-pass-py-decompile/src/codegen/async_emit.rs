@@ -93,7 +93,6 @@ fn render_with_item(item: &WithItem, version: &PyVersion) -> String {
 }
 
 #[must_use]
-#[allow(clippy::too_many_lines)]
 pub fn render_arguments(args: &Arguments, version: &PyVersion) -> String {
     let mut parts: Vec<String> = Vec::new();
     let pos_offset: usize = args.posonly.len();
