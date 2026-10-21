@@ -26,10 +26,12 @@ for class in ${*:-Plants Control Flows}; do
 
     javac --release 8 -Xlint:-options -nowarn \
         -cp "$ANDROID_FRAMEWORK_JAR$sep$ANDROID_PLATFORM_JAR" \
-        -d "$work/classes" "$here/src/com/planted/audit/$class.java"
+        -d "$work/classes" "$here/src/com/planted/audit/$class.java" \
+        "$here/src/com/google/android/play/core/integrity/IntegrityManager.java" \
+        "$here/src/com/google/android/gms/safetynet/SafetyNetClient.java"
 
     java -cp "$ANDROID_BUILD_TOOLS/lib/d8.jar" com.android.tools.r8.D8 \
-        --release --min-api 21 --output "$work/dex" "$work/classes"/com/planted/audit/*.class
+        --release --min-api 21 --output "$work/dex" $(find "$work/classes" -name '*.class')
 
     "$ANDROID_BUILD_TOOLS/aapt2" link -o "$work/base.apk" -I "$ANDROID_PLATFORM_JAR" \
         --manifest "$here/AndroidManifest.xml"

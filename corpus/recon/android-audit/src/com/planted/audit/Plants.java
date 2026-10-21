@@ -4,6 +4,8 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import com.google.android.gms.safetynet.SafetyNetClient;
+import com.google.android.play.core.integrity.IntegrityManager;
 import android.database.sqlite.SQLiteDatabase;
 import android.hardware.Camera;
 import android.location.Location;
@@ -247,5 +249,23 @@ public final class Plants {
 
     public static List<PackageInfo> installedApps(PackageManager packages) {
         return packages.getInstalledPackages(0);
+    }
+
+    public static PackageInfo signatureCheck(Context ctx)
+            throws PackageManager.NameNotFoundException {
+        return ctx.getPackageManager()
+                .getPackageInfo(ctx.getPackageName(), PackageManager.GET_SIGNATURES);
+    }
+
+    public static boolean fridaCheck() {
+        return new File("/data/local/tmp/re.frida.server").exists();
+    }
+
+    public static Object playIntegrity(IntegrityManager integrity, Object request) {
+        return integrity.requestIntegrityToken(request);
+    }
+
+    public static Object safetyNetAttest(SafetyNetClient client, byte[] nonce) {
+        return client.attest(nonce, "api-key-placeholder");
     }
 }

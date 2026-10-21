@@ -16,10 +16,10 @@ oracle = "The source itself: each Plants method is one planted site and names it
 
 [[fixture]]
 path = "audit-plants.apk"
-sha256 = "7ffabbf582baf09b7fda29988502d9d62c916643c8de5a8a61cc3528801edfed"
+sha256 = "45e5454d10191e11bdc385247b886a2d53fcf5c2f806535292702fc716ca4d5a"
 bytes = 12689
-classes = ["Lcom/planted/audit/Plants;", "Lcom/planted/audit/Plants$TrustAll;", "Lcom/planted/audit/Plants$AllowAllHosts;", "Lcom/planted/audit/Plants$IgnoreSslErrors;"]
-note = "47 planted sites (42 Plants methods, 3 TrustAll methods, AllowAllHosts.verify, IgnoreSslErrors.onReceivedSslError); graded by tests/android_audit.rs"
+classes = ["Lcom/planted/audit/Plants;", "Lcom/planted/audit/Plants$TrustAll;", "Lcom/planted/audit/Plants$AllowAllHosts;", "Lcom/planted/audit/Plants$IgnoreSslErrors;", "Lcom/google/android/play/core/integrity/IntegrityManager;", "Lcom/google/android/gms/safetynet/SafetyNetClient;"]
+note = "51 planted sites (46 Plants methods, 3 TrustAll methods, AllowAllHosts.verify, IgnoreSslErrors.onReceivedSslError); the two com.google interfaces are authored stand-ins for the Play Integrity and SafetyNet client classes so the attestation plants compile without the Play libraries; graded by tests/android_audit.rs"
 
 [[fixture]]
 path = "audit-control.apk"
