@@ -1062,6 +1062,15 @@ impl Module {
         candidate_indices: &BTreeSet<usize>,
         summaries: &[FunctionSummary],
     ) -> CallOutcome {
+        if let Some(symbol) = self.symbol_ref(target)
+            && symbol.kind == SymbolKind::Import
+        {
+            return CallOutcome::Symbol {
+                name: Arc::from(symbol.name.as_str()),
+                address: target,
+                symbol_kind: symbol.kind,
+            };
+        }
         let mut candidates: Vec<FunctionIdentity> = candidate_indices
             .iter()
             .filter_map(|index: &usize| summaries.get(*index))

@@ -540,3 +540,6 @@ mod taint_android;
 
 #[path = "../native_symbols_parity.rs"]
 mod native_symbols_parity;
+
+#[path = "../native_calledges_parity.rs"]
+mod native_calledges_parity;

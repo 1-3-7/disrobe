@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::code_asm::{CodeAssembler, qword_ptr, rax};
 
@@ -371,5 +371,68 @@ fn indirect_register_jump_is_not_a_resolvable_plt_slot() {
     assert!(
         super::indirect_jmp_slot(&insn).is_none(),
         "a register-indirect jmp has no statically resolvable slot"
+    );
+}
+
+fn aarch64_stub(stub_address: u64, slot: u64) -> Vec<u8> {
+    let page_delta: i64 = ((slot & !0xFFF) as i64 - (stub_address & !0xFFF) as i64) >> 12;
+    let imm: u32 = (page_delta as u32) & 0x1F_FFFF;
+    let adrp: u32 = 0x9000_0000 | ((imm & 0x3) << 29) | (((imm >> 2) & 0x7_FFFF) << 5) | 16;
+    let offset: u32 = ((slot & 0xFFF) / 8) as u32;
+    let ldr: u32 = 0xF940_0211 | (offset << 10);
+    let add: u32 = 0x9100_0210 | (((slot & 0xFFF) as u32) << 10);
+    let br: u32 = 0xD61F_0220;
+    [adrp, ldr, add, br]
+        .iter()
+        .flat_map(|word: &u32| word.to_le_bytes())
+        .collect()
+}
+
+#[test]
+fn aarch64_plt_stubs_resolve_to_their_got_slots() {
+    let section_addr: u64 = 0x1d10;
+    let slots: [(u64, &str); 3] = [(0x2eb8, "ptrace"), (0x2ec0, "open"), (0x2ec8, "read")];
+    let mut data: Vec<u8> = Vec::new();
+    for (i, (slot, _)) in slots.iter().enumerate() {
+        data.extend(aarch64_stub(section_addr + (i as u64) * 16, *slot));
+    }
+    let slot_to_name: BTreeMap<u64, String> = slots
+        .iter()
+        .map(|(slot, name): &(u64, &str)| (*slot, (*name).to_owned()))
+        .collect();
+    let mut out: Vec<ImportStub> = Vec::new();
+    decode_aarch64_plt_section(section_addr, &data, &slot_to_name, &mut out);
+    let resolved: Vec<(u64, u64, &str)> = out
+        .iter()
+        .map(|stub: &ImportStub| (stub.stub_address, stub.slot_address, stub.name.as_str()))
+        .collect();
+    assert_eq!(
+        resolved,
+        vec![
+            (0x1d10, 0x2eb8, "ptrace"),
+            (0x1d20, 0x2ec0, "open"),
+            (0x1d30, 0x2ec8, "read"),
+        ]
+    );
+}
+
+#[test]
+fn aarch64_stub_without_the_final_branch_is_not_an_import() {
+    let mut data: Vec<u8> = aarch64_stub(0x1000, 0x2008);
+    data.truncate(12);
+    data.extend(0xD503_201Fu32.to_le_bytes());
+    let slot_to_name: BTreeMap<u64, String> = BTreeMap::from([(0x2008, "open".to_owned())]);
+    let mut out: Vec<ImportStub> = Vec::new();
+    decode_aarch64_plt_section(0x1000, &data, &slot_to_name, &mut out);
+    assert!(out.is_empty(), "{out:?}");
+}
+
+#[test]
+fn aarch64_adrp_with_a_negative_page_delta_decodes() {
+    let page: Option<u64> = aarch64_adrp_page(0x5000, 0x90FF_FFF0, 16);
+    assert_eq!(
+        page,
+        Some(0x1000),
+        "immhi all ones and immlo zero is minus four pages"
     );
 }

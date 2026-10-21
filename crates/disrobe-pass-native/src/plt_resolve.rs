@@ -61,6 +61,7 @@ pub fn resolve_elf_plt_imports(bytes: &[u8]) -> Vec<ImportStub> {
         return Vec::new();
     };
     let bits: u32 = if file.is_64() { 64 } else { 32 };
+    let aarch64: bool = file.architecture() == object::Architecture::Aarch64;
 
     let mut out: Vec<ImportStub> = Vec::new();
     for section in file.sections() {
@@ -73,7 +74,11 @@ pub fn resolve_elf_plt_imports(bytes: &[u8]) -> Vec<ImportStub> {
         let Ok(data): Result<&[u8], object::Error> = section.data() else {
             continue;
         };
-        decode_plt_section(bits, section.address(), data, &slot_to_name, &mut out);
+        if aarch64 {
+            decode_aarch64_plt_section(section.address(), data, &slot_to_name, &mut out);
+        } else {
+            decode_plt_section(bits, section.address(), data, &slot_to_name, &mut out);
+        }
     }
 
     out.sort_by_key(|a: &ImportStub| a.stub_address);
@@ -116,6 +121,68 @@ fn decode_plt_section(
             pending_stub = None;
         }
     }
+}
+
+const AARCH64_BR_X17: u32 = 0xD61F_0220;
+
+fn decode_aarch64_plt_section(
+    section_addr: u64,
+    data: &[u8],
+    slot_to_name: &BTreeMap<u64, String>,
+    out: &mut Vec<ImportStub>,
+) {
+    let words: Vec<(u64, u32)> = data
+        .chunks_exact(4)
+        .enumerate()
+        .map(|(i, chunk): (usize, &[u8])| {
+            (
+                section_addr + (i as u64) * 4,
+                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]),
+            )
+        })
+        .collect();
+    for window in words.windows(4) {
+        let (stub_address, adrp) = window[0];
+        let (_, ldr) = window[1];
+        let (_, branch) = window[3];
+        if branch != AARCH64_BR_X17 {
+            continue;
+        }
+        let Some(page) = aarch64_adrp_page(stub_address, adrp, 16) else {
+            continue;
+        };
+        let Some(offset) = aarch64_ldr_x17_from_x16(ldr) else {
+            continue;
+        };
+        let slot: u64 = page.wrapping_add(offset);
+        if let Some(name) = slot_to_name.get(&slot) {
+            out.push(ImportStub {
+                stub_address,
+                slot_address: slot,
+                name: name.clone(),
+            });
+        }
+    }
+}
+
+fn aarch64_adrp_page(address: u64, insn: u32, register: u32) -> Option<u64> {
+    if insn & 0x9F00_001F != 0x9000_0000 | register {
+        return None;
+    }
+    let immlo: u64 = u64::from((insn >> 29) & 0x3);
+    let immhi: u64 = u64::from((insn >> 5) & 0x7_FFFF);
+    let imm: u64 = (immhi << 2) | immlo;
+    let signed: i64 = ((imm << 43) as i64) >> 43;
+    let page_base: u64 = address & !0xFFF;
+    Some(page_base.wrapping_add((signed << 12) as u64))
+}
+
+fn aarch64_ldr_x17_from_x16(insn: u32) -> Option<u64> {
+    if insn & 0xFFC0_03FF != 0xF940_0211 {
+        return None;
+    }
+    let imm12: u64 = u64::from((insn >> 10) & 0xFFF);
+    Some(imm12 * 8)
 }
 
 pub(crate) fn indirect_jmp_slot(insn: &Instruction) -> Option<u64> {

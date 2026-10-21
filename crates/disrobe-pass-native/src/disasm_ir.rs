@@ -2260,8 +2260,10 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
         });
     }
 
-    if matches!(native.arch, BinArch::X86 | BinArch::X86_64)
-        && matches!(native.format, NativeFormat::Elf32 | NativeFormat::Elf64)
+    if matches!(
+        native.arch,
+        BinArch::X86 | BinArch::X86_64 | BinArch::Aarch64
+    ) && matches!(native.format, NativeFormat::Elf32 | NativeFormat::Elf64)
     {
         for import in resolve_elf_plt_imports(bytes) {
             if seen.insert((import.stub_address, import.name.clone())) {

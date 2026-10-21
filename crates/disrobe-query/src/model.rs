@@ -19,29 +19,53 @@ struct FunctionSymbol<'a> {
 }
 
 fn disasm_symbols_by_addr(symbol_table: &[DisasmSymbol]) -> IndexMap<u64, SymbolRef> {
-    symbol_table
-        .iter()
-        .map(|s: &DisasmSymbol| {
-            (
-                s.address,
-                SymbolRef {
-                    name: s.name.clone(),
-                    kind: SymbolKind::from_disasm(s.kind),
-                },
-            )
-        })
-        .collect()
+    let mut out: IndexMap<u64, SymbolRef> = IndexMap::new();
+    for s in symbol_table {
+        let candidate: SymbolRef = SymbolRef {
+            name: s.name.clone(),
+            kind: SymbolKind::from_disasm(s.kind),
+        };
+        match out.get(&s.address) {
+            Some(existing) if symbol_rank(existing) >= symbol_rank(&candidate) => {}
+            _ => {
+                out.insert(s.address, candidate);
+            }
+        }
+    }
+    out
+}
+
+fn symbol_rank(symbol: &SymbolRef) -> u8 {
+    let synthetic: bool = symbol.name.starts_with("sub_") || symbol.name.starts_with("loc_");
+    match (symbol.kind, synthetic) {
+        (_, true) => 0,
+        (SymbolKind::Label | SymbolKind::Data, false) => 1,
+        (SymbolKind::Function, false) => 2,
+        (SymbolKind::Import, false) => 3,
+        (SymbolKind::Export, false) => 4,
+    }
 }
 
 fn disasm_function_symbols(symbol_table: &[DisasmSymbol]) -> Vec<FunctionSymbol<'_>> {
+    let imports: BTreeMap<u64, &str> = symbol_table
+        .iter()
+        .filter(|s: &&DisasmSymbol| s.kind == DisasmSymbolKind::Import)
+        .map(|s: &DisasmSymbol| (s.address, s.name.as_str()))
+        .collect();
     let mut symbols: Vec<FunctionSymbol<'_>> = symbol_table
         .iter()
         .filter_map(|s: &DisasmSymbol| match s.kind {
-            DisasmSymbolKind::Function | DisasmSymbolKind::Export => Some(FunctionSymbol {
-                address: s.address,
-                name: s.name.as_str(),
-                is_export: matches!(s.kind, DisasmSymbolKind::Export),
-            }),
+            DisasmSymbolKind::Function | DisasmSymbolKind::Export => {
+                let name: &str = match imports.get(&s.address) {
+                    Some(import) if s.name.starts_with("sub_") => import,
+                    _ => s.name.as_str(),
+                };
+                Some(FunctionSymbol {
+                    address: s.address,
+                    name,
+                    is_export: matches!(s.kind, DisasmSymbolKind::Export),
+                })
+            }
             DisasmSymbolKind::Data | DisasmSymbolKind::Label | DisasmSymbolKind::Import => None,
         })
         .collect();
