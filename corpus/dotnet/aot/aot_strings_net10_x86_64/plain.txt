@@ -1,0 +1,8 @@
+north pier
+ebb tide
+slack water
+harbour master
+spring flood
+neap
+beacon 7
+fog signal

@@ -123,3 +123,34 @@ dotnet publish aot_ctor_net10_x86_64.csproj -c Release -r win-x64 --self-contain
 | `aot_ctor_net10_x86_64.exe` | 1,832,960 | `f9648c15a3adad32b5f4bb6570156a5717e128cc68c204e47f7e32e1b4564aaf` |
 | `aot_ctor_net10_x86_64.link-map-managed.txt` (decompressed) | | `eeb4d519827c7dddea52617dc0aabd5558a76dfa7d2449637dee8569ec20edcb` |
 | `aot_ctor_net10_x86_64.link-map-managed.txt.gz` | 65,816 | `87b05c7e4d40a6f16487d595f554569886a2cfb2c7f0ef65e3209e5a30a2d9fd` |
+
+# NativeAOT string-table accessor
+
+`aot_strings_net10_x86_64/` holds a third C# program written for this repository, the .NET 10 NativeAOT executable published from it and the managed excerpt of its linker map. It reproduces the string-hiding shape observed on a shipped .NET 10 image (TASKS.md NAOT-5): every literal is fetched through one accessor, `Lexicon.Get(int)`, whose call sites pass an immediate index; the accessor reads an offset table and a byte blob held as preinitialized frozen arrays and rebuilds the text from them. The executable is never run.
+
+- `plain.txt` is the independent reference: the eight plaintexts, one per line.
+- `generate_table.py` turns `plain.txt` into the `Offsets` and `Blob` literals inside `Program.cs` (`python -I generate_table.py <this directory>`); the committed `Program.cs` is its output, and the `Get` body in `Program.cs` is the only place the image describes the mapping back.
+- `Main` calls `Get` for indexes 0, 3, 7, 5, 1 and 6; indexes 2 and 4 have no call site, so a reader that annotates call sites reports six literals and a reader that walks the whole table reports eight.
+- The published image carries none of the plaintexts in UTF-8 or UTF-16 (checked at build time), so only the accessor's mapping yields them.
+
+Observed with llvm-objdump 19.1.7 on the committed image: `Program.Main` (RVA 0x3f1b0) loads each index with `mov ecx, imm32` (`xor ecx, ecx` for 0) immediately before `call` to `Lexicon.Get` (RVA 0x3f0c0) and reads the result's `Length` at `[rax+8]`. `Get` bounds-checks the index against the table length held as an immediate, reaches both frozen arrays through `lea rax, [rip+disp]` with element data at `+0x10`, allocates the output through a helper called with a MethodTable `lea` in `rcx` and the length in `rdx`, fills it in a loop, then checks a static base's class-constructor flag before calling the UTF-8 decoder on the buffer.
+
+## Toolchain and build
+
+Same SDK, ILCompiler packages and MSVC linker as `aot_maps_net10_x86_64` above. Copy `Program.cs` and the project file into an empty directory, rename `aot_strings_net10_x86_64.csproj.txt` to `aot_strings_net10_x86_64.csproj`, and run:
+
+```sh
+dotnet publish aot_strings_net10_x86_64.csproj -c Release -r win-x64 --self-contained true -o publish --disable-build-servers -p:UseSharedCompilation=false -nodeReuse:false
+```
+
+`publish/aot_strings_net10_x86_64.exe` is the committed executable; the image carries zero occurrences of `C:\` in ASCII and in UTF-16LE. The managed excerpt of the linker map is produced with the same `awk` and `gzip -9 -n` commands as above (object name `aot_strings_net10_x86_64.obj`) and has 2,042 lines. The full map is 1,629,283 bytes with sha256 `90db751ff1aa5151ef7f7be5785396a839cea147c8bb813f2c734b8168bbb04b`; the ILCompiler map (not committed) has sha256 `8d5e8a7ce585b7f3b9dc73a5989248217bf5d8a7194a84e9cd255fadbab3336c`.
+
+| File | Bytes | sha256 |
+| --- | --- | --- |
+| `Program.cs` | 2,307 | `9b418b1dbce4346d395937f5dda1083047ec5b6d0ea4498a972de406f37f44f4` |
+| `plain.txt` | 85 | `646b9cb8cc35258c74fd0c802f90aa82442ed8612261bf66793838786fee464b` |
+| `generate_table.py` | 1,877 | `8dd814d96f1260f9d7c3c5a3195e235cba5737946d99a859a394012f252b989c` |
+| `aot_strings_net10_x86_64.csproj.txt` | 793 | `4f2fa172b5a842ef297b2a0b751fe9040182a13f15fe2a40b6e2ff2c9c09d42c` |
+| `aot_strings_net10_x86_64.exe` | 1,109,504 | `b8a78e37374cdd9049103f01d70ae3a529c400699e96c6dd2b486bc1d795d6d4` |
+| `aot_strings_net10_x86_64.link-map-managed.txt` (decompressed) | | `c726693ddfe67a350b0ab465f94fcf9538b809e4184c3de069483f3e9aa10bd9` |
+| `aot_strings_net10_x86_64.link-map-managed.txt.gz` | 31,958 | `43efb12c0543d1cbf87d36705bb6db60a5e3273aa91d38cfde9b0e10bcba5329` |
