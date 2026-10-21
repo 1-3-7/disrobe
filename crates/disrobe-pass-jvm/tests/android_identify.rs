@@ -149,3 +149,39 @@ fn a_zip_without_dex_manifest_or_classes_is_not_an_android_artifact() {
     assert!(identify_android(zip.get_ref(), Some("plain.zip")).is_none());
     assert!(identify_android(b"not an archive at all", None).is_none());
 }
+
+#[test]
+fn obfuscapk_builds_name_the_smali_writer_and_the_obfuscator_helpers() {
+    let plain: AndroidIdentity = identify("recon/android-audit/audit-plants.apk");
+    assert_eq!(
+        names(&plain, AndroidIdentityKind::Compiler),
+        BTreeSet::from(["d8/r8".to_owned()])
+    );
+    assert!(
+        !names(&plain, AndroidIdentityKind::Obfuscator).contains("Obfuscapk"),
+        "{:#?}",
+        plain.hits
+    );
+    for (variant, obfuscator) in [
+        ("goto", false),
+        ("reorder", false),
+        ("callind", false),
+        ("strings", true),
+        ("advreflection", true),
+        ("full", true),
+    ] {
+        let identity: AndroidIdentity =
+            identify(&format!("recon/android-audit/obfuscapk/{variant}.apk"));
+        assert_eq!(
+            names(&identity, AndroidIdentityKind::Compiler),
+            BTreeSet::from(["dexlib 2.x".to_owned()]),
+            "{variant} was rebuilt by apktool's dexlib writer"
+        );
+        assert_eq!(
+            names(&identity, AndroidIdentityKind::Obfuscator).contains("Obfuscapk"),
+            obfuscator,
+            "{variant}: Obfuscapk is named exactly when one of its helper classes is present: {:#?}",
+            identity.hits
+        );
+    }
+}

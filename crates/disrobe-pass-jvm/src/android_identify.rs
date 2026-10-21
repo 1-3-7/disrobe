@@ -22,6 +22,14 @@ const MINIFIED_NAME_RATIO_PERCENT: u64 = 50;
 const MINIFIED_MIN_CLASSES: usize = 2;
 const D8_DATA_ORDER: [u16; 4] = [0x2001, 0x2003, 0x1001, 0x2002];
 const MAP_LIST_ITEM: u16 = 0x1000;
+const DEXLIB_DATA_ORDER: [u16; 2] = [0x2002, 0x1001];
+const CODE_ITEM: u16 = 0x2001;
+const CLASS_DATA_ITEM: u16 = 0x2000;
+const OBFUSCAPK_HELPERS: [&str; 3] = [
+    "Lcom/decryptstringmanager/DecryptString;",
+    "Lcom/apireflectionmanager/ApiReflection;",
+    "Lcom/apireflectionmanager/AdvancedApiReflection;",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AndroidIdentityKind {
@@ -170,6 +178,21 @@ fn identify_dex(bytes: &[u8], name: &str, identity: &mut AndroidIdentity) {
                 85,
             );
         }
+        Some(order)
+            if order.starts_with(&DEXLIB_DATA_ORDER)
+                && order.last() == Some(&MAP_LIST_ITEM)
+                && order.iter().position(|item: &u16| *item == CODE_ITEM)
+                    < order.iter().position(|item: &u16| *item == CLASS_DATA_ITEM) =>
+        {
+            identity.push(
+                AndroidIdentityKind::Compiler,
+                "dexlib 2.x".to_owned(),
+                format!(
+                    "{name}: data section written string data and type lists first, code items before class data and the map list last, the layout the smali and apktool writer produces"
+                ),
+                80,
+            );
+        }
         Some(order) => {
             identity.push(
                 AndroidIdentityKind::Compiler,
@@ -196,6 +219,22 @@ fn identify_dex(bytes: &[u8], name: &str, identity: &mut AndroidIdentity) {
             "ProGuard/R8 renaming".to_owned(),
             format!("{name}: {minified} of {total} classes carry names of at most two characters"),
             70,
+        );
+    }
+    let helpers: Vec<&str> = OBFUSCAPK_HELPERS
+        .iter()
+        .copied()
+        .filter(|helper: &&str| dex.class_descriptors.iter().any(|c: &String| c == helper))
+        .collect();
+    if !helpers.is_empty() {
+        identity.push(
+            AndroidIdentityKind::Obfuscator,
+            "Obfuscapk".to_owned(),
+            format!(
+                "{name}: the Obfuscapk helper classes {} are defined in this dex",
+                helpers.join(", ")
+            ),
+            95,
         );
     }
     let mut audit: AndroidAuditReport = AndroidAuditReport::default();
