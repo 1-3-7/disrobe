@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,8 @@ pub struct AuditFinding {
 pub struct AndroidAuditReport {
     pub dex_files: usize,
     pub methods_scanned: usize,
+    #[serde(default)]
+    pub native_libs: usize,
     pub findings: Vec<AuditFinding>,
     pub truncated: bool,
 }
@@ -251,6 +253,37 @@ const FRIDA_CHECK: Rule = rule(
     AuditCategory::AntiAnalysis,
     AuditSeverity::Info,
 );
+const NATIVE_PTRACE: Rule = rule(
+    "DR-APK-NATIVE-PTRACE",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const NATIVE_TRACER_PID: Rule = rule(
+    "DR-APK-NATIVE-TRACER-PID",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const NATIVE_FRIDA_CHECK: Rule = rule(
+    "DR-APK-NATIVE-FRIDA-CHECK",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const NATIVE_MEMORY_WATCH: Rule = rule(
+    "DR-APK-NATIVE-MEMORY-WATCH",
+    AuditCategory::AntiAnalysis,
+    AuditSeverity::Info,
+);
+const NATIVE_FRIDA_LITERALS: [&str; 7] = [
+    "frida-agent",
+    "frida-gadget",
+    "frida-server",
+    "re.frida.server",
+    "gum-js-loop",
+    "linjector",
+    "27042",
+];
+const NATIVE_TRACER_LITERALS: [&str; 2] = ["TracerPid", "/proc/self/status"];
+const NATIVE_MEMORY_LITERALS: [&str; 2] = ["/proc/self/mem", "/proc/self/maps"];
 const PLAY_INTEGRITY: Rule = rule(
     "DR-APK-PLAY-INTEGRITY",
     AuditCategory::AntiAnalysis,
@@ -418,8 +451,78 @@ pub fn audit_apk(bytes: &[u8]) -> Result<AndroidAuditReport> {
         report.dex_files = report.dex_files.saturating_add(1);
         audit_dex_into(&dex, raw, &mut report);
     }
+    for (path, raw) in &extract.native_libs {
+        audit_native_lib(path, raw, &mut report);
+    }
     finish(&mut report);
     Ok(report)
+}
+
+fn audit_native_lib(path: &str, bytes: &[u8], report: &mut AndroidAuditReport) {
+    let Ok(parsed) = disrobe_binfmt::parse_native(bytes) else {
+        return;
+    };
+    report.native_libs = report.native_libs.saturating_add(1);
+    let imports: BTreeSet<&str> = parsed
+        .imports
+        .iter()
+        .map(|import: &disrobe_binfmt::ImportInfo| import.name.as_str())
+        .collect();
+    let present = |literals: &'static [&'static str]| -> Vec<&'static str> {
+        literals
+            .iter()
+            .copied()
+            .filter(|needle: &&str| contains_bytes(bytes, needle.as_bytes()))
+            .collect()
+    };
+    let mut hits: Vec<(Rule, String)> = Vec::new();
+    if imports.contains("ptrace") {
+        hits.push((NATIVE_PTRACE, "imports ptrace".to_owned()));
+    }
+    let tracer: Vec<&str> = present(&NATIVE_TRACER_LITERALS);
+    if tracer.contains(&"TracerPid") {
+        hits.push((
+            NATIVE_TRACER_PID,
+            format!("reads the tracer pid: {}", tracer.join(", ")),
+        ));
+    }
+    let frida: Vec<&str> = present(&NATIVE_FRIDA_LITERALS);
+    if !frida.is_empty() {
+        hits.push((
+            NATIVE_FRIDA_CHECK,
+            format!("frida indicator literals: {}", frida.join(", ")),
+        ));
+    }
+    let memory: Vec<&str> = present(&NATIVE_MEMORY_LITERALS);
+    if imports.contains("inotify_add_watch") && !memory.is_empty() {
+        hits.push((
+            NATIVE_MEMORY_WATCH,
+            format!("imports inotify_add_watch and names {}", memory.join(", ")),
+        ));
+    }
+    for (rule, evidence) in hits {
+        if report.findings.len() >= MAX_AUDIT_FINDINGS {
+            report.truncated = true;
+            return;
+        }
+        report.findings.push(AuditFinding {
+            class: path.to_owned(),
+            method: String::new(),
+            descriptor: String::new(),
+            pc: 0,
+            rule_id: rule.id.to_owned(),
+            category: rule.category,
+            severity: rule.severity,
+            evidence,
+        });
+    }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window: &[u8]| window == needle)
 }
 
 fn finish(report: &mut AndroidAuditReport) {

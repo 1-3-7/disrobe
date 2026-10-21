@@ -295,7 +295,24 @@ fn render_audit(audit: &AndroidAuditReport) {
         plural(audit.methods_scanned, "", "s"),
         if audit.truncated { " (truncated)" } else { "" },
     );
+    if audit.native_libs > 0 {
+        println!(
+            "                and {} native librar{}",
+            audit.native_libs,
+            plural(audit.native_libs, "y", "ies")
+        );
+    }
     for finding in &audit.findings {
+        if finding.method.is_empty() {
+            println!(
+                "    {} [{}] {}: {}",
+                finding.rule_id,
+                finding.severity.label(),
+                finding.class,
+                finding.evidence
+            );
+            continue;
+        }
         println!(
             "    {} [{}] {}->{} @{:#x}: {}",
             finding.rule_id,

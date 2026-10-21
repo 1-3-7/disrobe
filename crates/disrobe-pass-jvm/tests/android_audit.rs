@@ -199,3 +199,39 @@ fn a_dex_without_android_api_calls_is_silent() {
     assert!(report.methods_scanned > 0);
     assert!(report.findings.is_empty(), "{:#?}", report.findings);
 }
+
+#[test]
+fn native_libraries_are_audited_per_abi_and_the_control_library_is_silent() {
+    let report: AndroidAuditReport =
+        audit_android_apk(&fixture("audit-native.apk")).expect("audit the native fixture");
+    assert_eq!(report.native_libs, 4, "{report:#?}");
+    let mut by_lib: BTreeSet<(String, String)> = BTreeSet::new();
+    for finding in &report.findings {
+        if finding.class.starts_with("lib/") {
+            assert!(finding.method.is_empty() && finding.pc == 0, "{finding:?}");
+            by_lib.insert((finding.class.clone(), finding.rule_id.clone()));
+        }
+    }
+    let mut expected: BTreeSet<(String, String)> = BTreeSet::new();
+    for abi in ["arm64-v8a", "x86_64"] {
+        for rule in [
+            "DR-APK-NATIVE-PTRACE",
+            "DR-APK-NATIVE-TRACER-PID",
+            "DR-APK-NATIVE-FRIDA-CHECK",
+            "DR-APK-NATIVE-MEMORY-WATCH",
+        ] {
+            expected.insert((format!("lib/{abi}/libantidebug.so"), rule.to_owned()));
+        }
+    }
+    assert_eq!(by_lib, expected, "{report:#?}");
+    let dex_rules: BTreeSet<String> = report
+        .findings
+        .iter()
+        .filter(|f: &&AuditFinding| !f.class.starts_with("lib/"))
+        .map(|f: &AuditFinding| f.rule_id.clone())
+        .collect();
+    assert!(
+        dex_rules.is_empty(),
+        "the Java side only loads the libraries by name and triggers no rule: {report:#?}"
+    );
+}
