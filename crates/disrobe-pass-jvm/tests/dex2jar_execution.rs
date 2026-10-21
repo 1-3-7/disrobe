@@ -4,6 +4,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::common;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::dex::parse as parse_dex;
 use disrobe_pass_jvm::{Dex2JarResult, translate_dex_bytes};
@@ -49,8 +50,21 @@ fn compile_stub(scratch: &Path) -> PathBuf {
 }
 
 fn run_verified(jar: &Path, stub: &Path, main: &str) -> (bool, String, String) {
+    run_verified_with(jar, stub, &[], main)
+}
+
+fn run_verified_with(
+    jar: &Path,
+    stub: &Path,
+    runtime: &[PathBuf],
+    main: &str,
+) -> (bool, String, String) {
     let separator: &str = if cfg!(windows) { ";" } else { ":" };
-    let classpath: String = format!("{}{separator}{}", jar.display(), stub.display());
+    let mut classpath: String = format!("{}{separator}{}", jar.display(), stub.display());
+    for entry in runtime {
+        classpath.push_str(separator);
+        classpath.push_str(&entry.display().to_string());
+    }
     let run: Output = Command::new("java")
         .arg("-Xverify:all")
         .arg("-cp")
@@ -63,6 +77,17 @@ fn run_verified(jar: &Path, stub: &Path, main: &str) -> (bool, String, String) {
         String::from_utf8_lossy(&run.stdout).into_owned(),
         String::from_utf8_lossy(&run.stderr).into_owned(),
     )
+}
+
+fn without_wall_clock(output: &str) -> String {
+    output
+        .lines()
+        .map(|line: &str| {
+            line.find(" took=")
+                .map_or_else(|| line.to_owned(), |at: usize| line[..at].to_owned())
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 fn with_sorted_map_entries(output: &str) -> String {
@@ -159,4 +184,61 @@ fn a_dex_without_static_interface_calls_still_translates_and_runs() {
     let (ok, out, err) = run_verified(&jar, &stub, &main);
     assert!(ok, "{err}");
     assert!(!out.is_empty(), "the program prints something");
+}
+
+#[test]
+fn the_translated_kotlin_dex_runs_equal_to_the_kotlinc_baseline_under_the_verifier() {
+    let dex_bytes: Vec<u8> = std::fs::read(corpus("jvm/dex/EdgeCasesKt.dex")).expect("read dex");
+    let result: Dex2JarResult = translate_dex_bytes(&dex_bytes).expect("translate dex");
+    assert!(result.code_scan_complete, "{:#?}", result.diagnostics);
+    assert_eq!(
+        result.stubbed_body_count, 0,
+        "every method body translated: {:#?}",
+        result.diagnostics
+    );
+    let golden: &disrobe_pass_jvm::TranslatedField = result
+        .classes
+        .iter()
+        .find(|c: &&disrobe_pass_jvm::TranslatedClass| c.internal_name == "EdgeCasesKt")
+        .and_then(|c: &disrobe_pass_jvm::TranslatedClass| {
+            c.fields
+                .iter()
+                .find(|f: &&disrobe_pass_jvm::TranslatedField| f.name == "GOLDEN_KT")
+        })
+        .expect("the GOLDEN_KT static field");
+    assert_eq!(
+        golden.constant,
+        Some(disrobe_pass_jvm::FieldConstant::DoubleBits(
+            1.618_033_988_749_895_f64.to_bits()
+        )),
+        "the static value from the DEX encoded array becomes a ConstantValue"
+    );
+    let scratch: ScratchDir = ScratchDir::create("dex2jar-execution-kt").expect("scratch dir");
+    let jar: PathBuf = scratch.path().join("translated.jar");
+    write_jar(&jar, &result.jar_entries);
+    let stub: PathBuf = compile_stub(scratch.path());
+    let mut runtime: Vec<PathBuf> = common::kotlin_runtime();
+    runtime.push(common::kotlin_coroutines_runtime());
+    let (baseline_ok, baseline_out, baseline_err) = run_verified_with(
+        &corpus("jvm/megafile/EdgeCasesKt.jar"),
+        &stub,
+        &runtime,
+        "EdgeCasesKt",
+    );
+    assert!(baseline_ok, "the kotlinc baseline runs: {baseline_err}");
+    assert!(
+        baseline_out.lines().count() > 60,
+        "the baseline prints its sections"
+    );
+    let (translated_ok, translated_out, translated_err) =
+        run_verified_with(&jar, &stub, &runtime, "EdgeCasesKt");
+    assert!(
+        translated_ok,
+        "the translated jar runs under -Xverify:all: {translated_err}"
+    );
+    assert_eq!(
+        without_wall_clock(&translated_out),
+        without_wall_clock(&baseline_out),
+        "the translated program prints what the kotlinc baseline prints (the one elapsed-time figure stripped)"
+    );
 }

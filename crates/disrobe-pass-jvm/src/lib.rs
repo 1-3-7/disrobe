@@ -262,8 +262,8 @@ pub use dex::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use dex2jar::{
-    Dex2JarDiagnostic, Dex2JarLimits, Dex2JarResult, TranslatedClass, TranslatedField,
-    TranslatedMethod, assemble_jar, assemble_jar_with_limit, build_class_model,
+    Dex2JarDiagnostic, Dex2JarLimits, Dex2JarResult, FieldConstant, TranslatedClass,
+    TranslatedField, TranslatedMethod, assemble_jar, assemble_jar_with_limit, build_class_model,
     translate as translate_dex_to_jar, translate_dex_bytes, translate_dex_bytes_with_limits,
     translate_with_limits, validate_dex2jar_entries,
 };

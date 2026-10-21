@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Seek, SeekFrom, Write};
 use std::mem::size_of;
 
+use crate::dalvik_decompile::{StaticValue, class_static_values};
 use crate::dalvik_to_jvm::{
     EmittedCode, diag_has_width_conflict, emit_branch_method_code, emit_method_code, reset_bail_op,
     take_bail_kind, take_bail_op,
@@ -40,6 +41,36 @@ pub struct TranslatedField {
     pub access_flags: u16,
     #[serde(default)]
     pub signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constant: Option<FieldConstant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FieldConstant {
+    Int(i32),
+    Long(i64),
+    FloatBits(u32),
+    DoubleBits(u64),
+    String(String),
+}
+
+const ACC_STATIC_FIELD: u16 = 0x0008;
+
+fn field_constant(value: &StaticValue, descriptor: &str, dex: &DexFile) -> Option<FieldConstant> {
+    match (value, descriptor) {
+        (StaticValue::Integral { value, .. }, "J") => Some(FieldConstant::Long(*value)),
+        (StaticValue::Integral { value, .. }, "I" | "S" | "B" | "C" | "Z") => {
+            i32::try_from(*value).ok().map(FieldConstant::Int)
+        }
+        (StaticValue::Boolean(flag), "Z") => Some(FieldConstant::Int(i32::from(*flag))),
+        (StaticValue::Float(bits), "F") => Some(FieldConstant::FloatBits(*bits)),
+        (StaticValue::Double(bits), "D") => Some(FieldConstant::DoubleBits(*bits)),
+        (StaticValue::String(index), "Ljava/lang/String;") => dex
+            .strings
+            .get(usize::try_from(*index).ok()?)
+            .map(|text: &String| FieldConstant::String(text.clone())),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1116,6 +1147,13 @@ fn parse_class_data(
         metadata,
         budget,
     )?;
+    if let Ok(values) = class_static_values(dex, bytes, &format!("L{class};"), fields.len()) {
+        for (field, value) in fields.iter_mut().zip(values.iter()) {
+            if field.access_flags & ACC_STATIC_FIELD != 0 {
+                field.constant = field_constant(value, &field.descriptor, dex);
+            }
+        }
+    }
     cursor = read_encoded_fields(
         dex,
         bytes,
@@ -1186,6 +1224,7 @@ fn read_encoded_fields(
                 .get(&field_idx)
                 .map(|value: &String| budget.string(value))
                 .transpose()?,
+            constant: None,
         });
         o = n2;
     }
@@ -1975,11 +2014,34 @@ fn write_class_file(
             &cp.utf8(&field.descriptor).to_be_bytes(),
             max_class_bytes,
         )?;
+        let attribute_count: u16 =
+            u16::from(field.signature.is_some()) + u16::from(field.constant.is_some());
         append_class_bytes(
             &mut field_section,
-            &u16::from(field.signature.is_some()).to_be_bytes(),
+            &attribute_count.to_be_bytes(),
             max_class_bytes,
         )?;
+        if let Some(constant) = &field.constant {
+            let attribute_name: u16 = cp.utf8("ConstantValue");
+            let value_index: u16 = match constant {
+                FieldConstant::Int(value) => cp.integer(*value),
+                FieldConstant::Long(value) => cp.long(*value),
+                FieldConstant::FloatBits(bits) => cp.float_bits(*bits),
+                FieldConstant::DoubleBits(bits) => cp.double_bits(*bits),
+                FieldConstant::String(text) => cp.string(text),
+            };
+            append_class_bytes(
+                &mut field_section,
+                &attribute_name.to_be_bytes(),
+                max_class_bytes,
+            )?;
+            append_class_bytes(&mut field_section, &2u32.to_be_bytes(), max_class_bytes)?;
+            append_class_bytes(
+                &mut field_section,
+                &value_index.to_be_bytes(),
+                max_class_bytes,
+            )?;
+        }
         if let Some(signature) = &field.signature {
             let attribute_name: u16 = cp.utf8("Signature");
             let signature_index: u16 = cp.utf8(signature);
@@ -3325,6 +3387,7 @@ mod tests {
                 descriptor: "I".to_owned(),
                 access_flags: 0x0001,
                 signature: None,
+                constant: None,
             }],
             methods: Vec::new(),
             inner_classes: Vec::new(),
@@ -3352,6 +3415,7 @@ mod tests {
                 descriptor: format!("Lx/T{index};"),
                 access_flags: 0x0001,
                 signature: None,
+                constant: None,
             })
             .collect();
         let class: TranslatedClass = TranslatedClass {

@@ -407,6 +407,8 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
 
 const KOTLIN_STDLIB_SHA256: &str =
     "4ec0293bc3751423b203f1d8493251c57c42e73eb6377a6b8560d0974ff0a6df";
+const KOTLINX_COROUTINES_SHA256: &str =
+    "9860906a1937490bf5f3b06d2f0e10ef451e65b95b269f22daf68a3d1f5065c5";
 const JETBRAINS_ANNOTATIONS_SHA256: &str =
     "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478";
 
@@ -441,6 +443,14 @@ fn kotlin_library(variable: &str, file_name: &str, sha256: &str) -> PathBuf {
         path.display()
     );
     path
+}
+
+pub fn kotlin_coroutines_runtime() -> PathBuf {
+    kotlin_library(
+        "DISROBE_KOTLIN_COROUTINES_JAR",
+        "kotlinx-coroutines-core-jvm.jar",
+        KOTLINX_COROUTINES_SHA256,
+    )
 }
 
 pub fn kotlin_runtime() -> Vec<PathBuf> {

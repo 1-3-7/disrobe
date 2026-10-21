@@ -817,7 +817,7 @@ fn continuation_impl_ancestor(dex: &DexFile, class_descriptor: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StaticValue {
+pub(crate) enum StaticValue {
     Integral { value_type: u8, value: i64 },
     Float(u32),
     Double(u64),
@@ -827,7 +827,7 @@ enum StaticValue {
     Unrendered(&'static str),
 }
 
-type StaticValues = Result<Vec<StaticValue>, &'static str>;
+pub(crate) type StaticValues = Result<Vec<StaticValue>, &'static str>;
 
 const VALUE_BYTE: u8 = 0x00;
 const VALUE_SHORT: u8 = 0x02;
@@ -907,7 +907,7 @@ fn encoded_static_value(bytes: &[u8], cursor: &mut usize) -> Result<StaticValue,
     Ok(value)
 }
 
-fn class_static_values(
+pub(crate) fn class_static_values(
     dex: &DexFile,
     bytes: &[u8],
     class_descriptor: &str,

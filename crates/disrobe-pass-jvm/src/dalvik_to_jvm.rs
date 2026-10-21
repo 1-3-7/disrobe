@@ -3858,6 +3858,7 @@ impl Emitter<'_> {
         let invoke_op: u8 = match op {
             0x71 | 0x77 => 0xB8,
             0x72 | 0x78 => 0xB9,
+            0x6F | 0x75 => 0xB7,
             _ if is_special => 0xB7,
             _ => 0xB6,
         };
