@@ -1636,6 +1636,10 @@ fn argument_value(
 ) -> Expr {
     let value: Expr = file.read(ctx, register);
     match param {
+        _ if param.starts_with('L') || param.starts_with('[') => match &value {
+            Expr::Const(constant) if constant == "0" => Expr::Const("null".to_owned()),
+            _ => value,
+        },
         "Z" => match &value {
             Expr::Const(constant) if constant == "0" => Expr::Const("false".to_owned()),
             Expr::Const(constant) if constant == "1" => Expr::Const("true".to_owned()),

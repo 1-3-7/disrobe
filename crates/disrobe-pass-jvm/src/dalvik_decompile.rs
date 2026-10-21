@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -127,7 +127,37 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         (String, String),
         Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>,
     > = BTreeMap::new();
+    let proven_decryptors: BTreeSet<(&str, &str, &str)> = generic_recovery
+        .call_sites
+        .iter()
+        .filter(|site: &&crate::dalvik_strdec_generic::CallSiteRecovery| {
+            matches!(
+                site.outcome,
+                crate::dalvik_strdec_generic::CallSiteOutcome::Recovered(_)
+            )
+        })
+        .map(|site: &crate::dalvik_strdec_generic::CallSiteRecovery| {
+            (
+                site.decrypt_class.as_str(),
+                site.decrypt_method.as_str(),
+                site.decrypt_descriptor.as_str(),
+            )
+        })
+        .collect();
     for site in &generic_recovery.call_sites {
+        let skipped: bool = matches!(
+            site.outcome,
+            crate::dalvik_strdec_generic::CallSiteOutcome::Skipped(_)
+        );
+        if skipped
+            && !proven_decryptors.contains(&(
+                site.decrypt_class.as_str(),
+                site.decrypt_method.as_str(),
+                site.decrypt_descriptor.as_str(),
+            ))
+        {
+            continue;
+        }
         generic_by_method
             .entry((site.caller_class.clone(), site.caller_method.clone()))
             .or_default()
