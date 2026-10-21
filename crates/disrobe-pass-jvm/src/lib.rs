@@ -18,6 +18,7 @@
 pub mod android_attrs;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_audit;
+mod android_audit_resolve;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_backend;
 #[cfg(not(target_arch = "wasm32"))]

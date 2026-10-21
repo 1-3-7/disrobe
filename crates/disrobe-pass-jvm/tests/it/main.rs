@@ -10,6 +10,9 @@ mod android_neutralize;
 #[path = "../android_audit.rs"]
 mod android_audit;
 
+#[path = "../android_audit_obfuscated.rs"]
+mod android_audit_obfuscated;
+
 #[path = "../apk_signature_verify.rs"]
 mod apk_signature_verify;
 

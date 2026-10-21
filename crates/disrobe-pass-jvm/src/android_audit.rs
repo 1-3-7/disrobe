@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::android_audit_resolve::{CallResolver, ResolvedCall, trace_order};
 use crate::dalvik::{DalvikInsn, decode_method};
 use crate::dex::{CodeItem, DexFile, FieldId, MethodId, parse as parse_dex, parse_code_items};
 use crate::error::Result;
@@ -428,14 +429,19 @@ fn finish(report: &mut AndroidAuditReport) {
 
 pub(crate) fn audit_dex_into(dex: &DexFile, bytes: &[u8], report: &mut AndroidAuditReport) {
     let code = parse_code_items(dex, bytes);
-    for item in code.decoded() {
+    let items: Vec<&CodeItem> = code.decoded().iter().collect();
+    let resolver: CallResolver = CallResolver::analyze(dex, &items);
+    for item in items {
         report.methods_scanned = report.methods_scanned.saturating_add(1);
+        if resolver.is_wrapper(item) {
+            continue;
+        }
         let mut sink: Sink<'_> = Sink {
             item,
             findings: &mut report.findings,
             truncated: &mut report.truncated,
         };
-        audit_method(dex, item, &mut sink);
+        audit_method(dex, item, &resolver, &mut sink);
     }
 }
 
@@ -502,9 +508,10 @@ const fn writes_first_register(op: u8) -> bool {
     )
 }
 
-fn audit_method(dex: &DexFile, item: &CodeItem, sink: &mut Sink<'_>) {
+fn audit_method(dex: &DexFile, item: &CodeItem, resolver: &CallResolver, sink: &mut Sink<'_>) {
     let insns: Vec<DalvikInsn> = decode_method(&item.insns);
-    if let Some((shape, evidence)) = method_shape_rule(item, &insns) {
+    let order: Vec<&DalvikInsn> = trace_order(&insns);
+    if let Some((shape, evidence)) = method_shape_rule(item, &order) {
         sink.push(0, shape, evidence);
     }
     let touches_crypto: bool = insns.iter().any(|insn: &DalvikInsn| {
@@ -516,25 +523,24 @@ fn audit_method(dex: &DexFile, item: &CodeItem, sink: &mut Sink<'_>) {
     let mut regs: BTreeMap<u16, Value> = BTreeMap::new();
     let mut pending: Option<Value> = None;
     let mut literals: Vec<String> = Vec::new();
-    for insn in &insns {
+    for insn in order {
         if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
             pending = None;
-            if let Some(method) = callee(dex, insn) {
-                let is_static: bool = matches!(insn.op, 0x71 | 0x77);
-                let skip: usize = usize::from(!is_static);
-                let receiver: Option<&Value> = if is_static {
-                    None
-                } else {
-                    insn.regs.first().and_then(|r: &u16| regs.get(r))
-                };
-                let params: Vec<Option<&Value>> = insn
-                    .regs
-                    .iter()
-                    .skip(skip)
-                    .map(|r: &u16| regs.get(r))
-                    .collect();
-                call_rules(method, &params, touches_crypto, &literals, insn.pc, sink);
-                pending = derived_result(method, receiver);
+            let literal = |r: u16| match regs.get(&r) {
+                Some(Value::Lit(value)) => Some(*value),
+                _ => None,
+            };
+            if let Some(call) = resolver.resolve(dex, insn, literal) {
+                let ResolvedCall {
+                    method,
+                    receiver,
+                    params,
+                } = call;
+                let receiver: Option<&Value> = receiver.and_then(|r: u16| regs.get(&r));
+                let params: Vec<Option<&Value>> =
+                    params.iter().map(|r: &u16| regs.get(r)).collect();
+                call_rules(&method, &params, touches_crypto, &literals, insn.pc, sink);
+                pending = derived_result(&method, receiver);
             }
             continue;
         }
@@ -614,15 +620,7 @@ fn derived_result(method: &MethodId, receiver: Option<&Value>) -> Option<Value> 
     }
 }
 
-fn effective(insns: &[DalvikInsn]) -> Vec<&DalvikInsn> {
-    insns
-        .iter()
-        .filter(|insn: &&DalvikInsn| insn.op != 0x00)
-        .collect()
-}
-
-fn method_shape_rule(item: &CodeItem, insns: &[DalvikInsn]) -> Option<(Rule, String)> {
-    let body: Vec<&DalvikInsn> = effective(insns);
+fn method_shape_rule(item: &CodeItem, body: &[&DalvikInsn]) -> Option<(Rule, String)> {
     let name: &str = item.method_name.as_str();
     let descriptor: &str = item.method_descriptor.as_str();
     match (name, descriptor) {
