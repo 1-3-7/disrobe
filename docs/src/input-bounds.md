@@ -1167,7 +1167,7 @@ Exceeded: error 1060, recorded 233, panic 0, delegated 54, silent 1172, unclassi
 | `disrobe-pass-jvm` | `MAX_CANDIDATE_PARAMS` | other | silent: `return` in `signature_weight` | `usize` | `2` | `crates/disrobe-pass-jvm/src/dalvik_strdec_generic.rs` |
 | `disrobe-pass-jvm` | `MAX_BUCKET_TESTS` | other | silent: `for` range in `bucket_chain` | `usize` | `256` | `crates/disrobe-pass-jvm/src/dalvik_string_switch.rs` |
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_HOPS` | work | silent: `for` range in `absorb_trampolines`; `for` range in `skip_trampolines` | `usize` | `4` | `crates/disrobe-pass-jvm/src/dalvik_string_switch.rs` |
-| `disrobe-pass-jvm` | `MAX_BRANCH_INSNS` | other | recorded: `record_bail_kind()` | `usize` | `2048` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |
+| `disrobe-pass-jvm` | `MAX_BRANCH_INSNS` | other | recorded: `record_bail_kind()` | `usize` | `MAX_METHOD_INSNS` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |
 | `disrobe-pass-jvm` | `MAX_CODE_BYTES` | size | recorded: `record_bail_kind()` | `usize` | `60_000` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |
 | `disrobe-pass-jvm` | `MAX_METHOD_INSNS` | other | recorded: `record_bail_kind()` | `usize` | `8192` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |
 | `disrobe-pass-jvm` | `MAX_TRACKED_NARROW_CONSTANT_REGS` | other | silent: `return` in `must_narrow_constant_states` | `usize` | `128` | `crates/disrobe-pass-jvm/src/dalvik_to_jvm.rs` |

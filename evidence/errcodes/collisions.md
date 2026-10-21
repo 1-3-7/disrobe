@@ -4,7 +4,7 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2125 |
+| Scanned source files | 2126 |
 | Emission sites | 2754 |
 | Sites carrying a message | 2654 |
 | Distinct emitted codes | 2015 |
