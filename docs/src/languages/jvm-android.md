@@ -31,6 +31,7 @@ disrobe jvm jni app.apk                       # link native methods against the 
 disrobe jvm jni App.class --native libnative.so --json
 disrobe jvm jni module.aar                    # nested classes.jar against jni/<abi>/*.so
 disrobe jvm jni base.apk --native split.apk    # cross-split link against an APK Set member
+disrobe jvm callgraph app.apk --emit dot      # DEX call graph, one edge per caller-to-callee pair
 disrobe apk app.apk                           # resources, certificates, the JNI link table and the code-pattern audit
 disrobe auto app.apk --out recovered/         # recursively process recognized payloads
 disrobe auto classes.dex --format json --out recovered/
@@ -59,6 +60,8 @@ The in-house Dalvik decompiler, the default for `disrobe jvm decompile` on `.dex
 The same source path reverses core-library desugaring emitted by D8 9.1.31 with `desugar_jdk_libs_configuration` 2.1.5. It restores marker-confirmed public API types in the `j$/time`, `j$/util`, and `j$/nio` namespaces, receiver-first `$-EL` calls, `$-CC` interface static calls, and exact supported `Desugar*` retarget helpers. The committed minimum-API-21 DEX covers time, streams, functions, `Optional`, concurrent, and NIO APIs. A minimum-API-34 DEX built from the same Java source provides the original call-shape reference. The test recompiles every recovered compilation unit with Java 11, then executes every recovered API probe method through an independent harness. Unknown configuration identifiers, application-owned `j$/` classes, wrapper conversions, API flips, unknown helpers, and malformed receiver shapes remain unreversed instead of being renamed by prefix.
 
 D8's backport synthetics hold several `m` methods whose parameter lists are equal and whose return types differ, which the DEX allows and Java source cannot express. When a class declares two such methods, the decompiler names each after its return type (`m$int`, `m$Comparator`, `m$List`) in both the declaration and every call site, so the emitted tree declares each overload once; the names are deterministic and carry a numeric suffix only when two return types render to the same word. A group that contains a bridge method keeps its name, because Java derives covariant bridges from the declared return type. The whole-tree `javac` pin in `crates/disrobe-cli/tests/jvm_dex_sources.rs` records the remaining error count for the D8 fixture and only ratchets down.
+
+`disrobe jvm callgraph` walks every method body in a DEX or APK and records one edge per caller-to-callee pair, with the number of call sites behind it, and one node per method that has a body or is called; a callee that no class in the DEX defines is marked external. The output is JSON or Graphviz DOT. `tests/dalvik_call_graph.rs` requires the edge set on the plants APK to equal androguard's `cg` output (`corpus/recon/android-audit/reference/plants.androguard-cg.gml`, 77 edges) and the external node count to match its 57.
 
 ### Containers
 

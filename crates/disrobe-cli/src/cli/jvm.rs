@@ -148,6 +148,29 @@ pub(crate) enum JvmCmd {
         #[arg(long, help = "emit the JNI link table as machine-clean JSON to stdout")]
         json: bool,
     },
+    Callgraph {
+        #[arg(help = "input .dex or .apk file")]
+        input: PathBuf,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = CallgraphEmit::Json,
+            help = "output kind: json or dot"
+        )]
+        emit: CallgraphEmit,
+        #[arg(
+            short,
+            long,
+            help = "output path (default: ./out/<stem>.callgraph.<emit>)"
+        )]
+        out: Option<PathBuf>,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CallgraphEmit {
+    Json,
+    Dot,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,7 +238,55 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             native,
             json,
         } => jni_link(input, native, json),
+        JvmCmd::Callgraph { input, emit, out } => dex_callgraph(input, emit, out),
     }
+}
+
+fn dex_callgraph(input: PathBuf, emit: CallgraphEmit, out: Option<PathBuf>) -> miette::Result<()> {
+    let bytes: Vec<u8> = read_in_house_dex_input(&input)?;
+    let graph: disrobe_pass_jvm::DexCallGraph = disrobe_pass_jvm::dex_call_graph(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0514: dex call graph: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dex")
+        .to_owned();
+    let extension: &str = match emit {
+        CallgraphEmit::Json => "json",
+        CallgraphEmit::Dot => "dot",
+    };
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.callgraph.{extension}")));
+    let body: String = match emit {
+        CallgraphEmit::Json => serde_json::to_string_pretty(&graph)
+            .map_err(|e| miette::miette!("DR-CLI-0515: serialize call graph: {e}"))?,
+        CallgraphEmit::Dot => graph.to_dot(),
+    };
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0516: cannot create out dir: {e}"))?;
+    }
+    std::fs::write(&out_path, body.as_bytes())
+        .map_err(|e| miette::miette!("DR-CLI-0517: cannot write call graph: {e}"))?;
+    let external: usize = graph
+        .nodes
+        .iter()
+        .filter(|n: &&disrobe_pass_jvm::DexCallGraphNode| n.external)
+        .count();
+    println!("jvm callgraph: OK");
+    println!("  input:        {}", input.display());
+    println!("  dex files:    {}", graph.dex_files);
+    println!(
+        "  nodes:        {} ({external} external)",
+        graph.nodes.len()
+    );
+    println!(
+        "  edges:        {}{}",
+        graph.edges.len(),
+        if graph.truncated { " (truncated)" } else { "" }
+    );
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
 }
 
 const MAX_IN_HOUSE_DEX_CLASSES: usize = 65_536;

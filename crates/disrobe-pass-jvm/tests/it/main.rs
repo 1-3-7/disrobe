@@ -13,6 +13,9 @@ mod android_audit;
 #[path = "../android_audit_obfuscated.rs"]
 mod android_audit_obfuscated;
 
+#[path = "../dalvik_call_graph.rs"]
+mod dalvik_call_graph;
+
 #[path = "../apk_signature_verify.rs"]
 mod apk_signature_verify;
 

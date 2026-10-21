@@ -48,6 +48,7 @@ pub mod dalvik;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_blackobf;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod dalvik_call_graph;
 pub mod dalvik_cfg;
 #[cfg(not(target_arch = "wasm32"))]
 mod dalvik_core_library;
@@ -216,6 +217,8 @@ pub use dalvik_blackobf::{
     java_string_hashcode,
 };
 #[cfg(not(target_arch = "wasm32"))]
+pub use dalvik_call_graph::{DexCallGraph, DexCallGraphEdge, DexCallGraphNode, dex_call_graph};
+#[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg, build_dalvik_cfg_from_code_item};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_decompile::{
@@ -242,7 +245,6 @@ pub use dalvik_strdec::{
     recover_with_native_keys as recover_dex_reflection_strings_with_native_keys,
     recover_with_native_keys_report as recover_dex_reflection_report_with_native_keys,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_strdec_generic::{
     CallSiteOutcome, CallSiteRecovery, GenericStringRecovery, SkipReason as DexInterpSkipReason,
     recover as recover_dex_strings_generic,

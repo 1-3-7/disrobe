@@ -4,7 +4,7 @@
 mod common;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use common::{run_disrobe, temp_dir};
 
@@ -53,7 +53,7 @@ fn objdump_edges(text: &str) -> BTreeSet<(String, String)> {
     edges
 }
 
-fn disrobe_edges(library: &PathBuf) -> BTreeSet<(String, String)> {
+fn disrobe_edges(library: &Path) -> BTreeSet<(String, String)> {
     let scratch = temp_dir("calledges");
     let out: PathBuf = scratch.path().join("callgraph.json");
     let run = run_disrobe(&[

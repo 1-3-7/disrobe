@@ -337,6 +337,9 @@ mod jvm_dex2jar;
 #[path = "../jvm_dex_sources.rs"]
 mod jvm_dex_sources;
 
+#[path = "../jvm_callgraph.rs"]
+mod jvm_callgraph;
+
 #[path = "../jvm_jar_native_decompile.rs"]
 mod jvm_jar_native_decompile;
 

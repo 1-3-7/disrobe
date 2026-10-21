@@ -101,3 +101,8 @@ bytes = 6048
 path = "native/lib/x86_64/libclean.so"
 sha256 = "dcc3ce4e637dcec7c302e42f34899d41870b9236f1a3dee7380eb733905f1680"
 bytes = 3064
+
+[[fixture]]
+path = "reference/plants.androguard-cg.gml"
+bytes = 38002
+note = "androguard 4.1.4 `androguard cg -o plants.cg.gml audit-plants.apk` (Apache-2.0): 114 nodes (57 external) and 77 caller-to-callee edges; the reference for tests/dalvik_call_graph.rs, which requires Disrobe's DEX call graph to carry the same edge set"
