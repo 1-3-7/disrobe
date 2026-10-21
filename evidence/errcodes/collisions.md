@@ -5,12 +5,12 @@
 | Measure | Count |
 | --- | ---: |
 | Scanned source files | 2127 |
-| Emission sites | 2760 |
-| Sites carrying a message | 2660 |
-| Distinct emitted codes | 2021 |
+| Emission sites | 2761 |
+| Sites carrying a message | 2661 |
+| Distinct emitted codes | 2022 |
 | Registered codes | 177 |
 | Codes with two or more distinct messages | 312 |
-| Emitted codes missing from the registry | 1844 |
+| Emitted codes missing from the registry | 1845 |
 | Registered codes no source emits | 0 |
 
 ## Codes with two or more distinct messages (312)
@@ -1825,7 +1825,7 @@
 - `"{}"`: `crates/disrobe-cli/src/cli/wasm.rs:173`
 - no message: `crates/disrobe-python/src/wasm.rs:55`
 
-## Emitted codes missing from the registry (1844)
+## Emitted codes missing from the registry (1845)
 
 - `DR-AS3-0001`: `crates/disrobe-pass-as3/src/error.rs:8`
 - `DR-AS3-0002`: `crates/disrobe-pass-as3/src/error.rs:11`
@@ -1887,7 +1887,8 @@
 - `DR-BEAM-0908`: `crates/disrobe-pass-beam/src/chain_detector.rs:172`
 - `DR-BEAM-0909`: `crates/disrobe-pass-beam/src/chain_detector.rs:176`
 - `DR-BEH-0050`: `crates/disrobe-cli/src/cli/behavior.rs:230`
-- `DR-BEH-0051`: `crates/disrobe-cli/src/cli/behavior.rs:249`
+- `DR-BEH-0051`: `crates/disrobe-cli/src/cli/behavior.rs:257`
+- `DR-BEH-0052`: `crates/disrobe-cli/src/cli/behavior.rs:277`
 - `DR-BINFMT-0001`: `crates/disrobe-binfmt/src/error.rs:79`
 - `DR-BINFMT-0002`: `crates/disrobe-binfmt/src/error.rs:82`
 - `DR-BINFMT-0003`: `crates/disrobe-binfmt/src/error.rs:85`
