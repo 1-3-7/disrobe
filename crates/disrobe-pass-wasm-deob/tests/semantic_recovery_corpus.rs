@@ -1,17 +1,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-#[path = "common/published.rs"]
-mod published;
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
 
+use crate::published::{published_bar, published_group};
+use crate::wat_corpus::{callees, defined_bodies, verified_wat_files, verified_wat_text};
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body,
 };
-use published::{published_bar, published_group};
 use std::collections::BTreeMap;
 use wasmparser::FunctionBody;
-use wat_corpus::{callees, defined_bodies, verified_wat_files, verified_wat_text};
 
 const CORPUS_MODULES: usize = 38;
 const CORPUS_FUNCTIONS: usize = 133;

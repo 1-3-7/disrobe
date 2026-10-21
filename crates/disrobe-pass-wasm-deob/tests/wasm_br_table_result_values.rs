@@ -303,8 +303,8 @@ fn wasm_br_table_result_values_refuses_to_report_success_without_the_sandbox_fea
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_br_table_result_values`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_br_table_result_values::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

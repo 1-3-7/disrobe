@@ -12,10 +12,6 @@ use wasmparser::{FunctionBody, Parser, Payload, ValType};
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 #[cfg(feature = "sandbox")]
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
-#[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 2_000_000;
 #[cfg(feature = "sandbox")]
 const STORE_MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
@@ -162,7 +158,7 @@ const fn numeric(ty: ValType) -> bool {
 #[cfg(feature = "sandbox")]
 fn check(path: &Path) {
     let eng: Engine = Engine::new(&rich()).expect("eng");
-    let text: String = wat_corpus::verified_wat_text(path);
+    let text: String = crate::wat_corpus::verified_wat_text(path);
     let original: Vec<u8> = wat::parse_str(&text).expect("wat");
     let sigs: ModuleSignatures = extract_signatures(&original).expect("sigs");
     let defined: &[FunctionSig] = sigs.defined();
@@ -230,8 +226,8 @@ fn wasm_gc_wholemodule_differential_refuses_to_report_success_without_the_sandbo
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_gc_wholemodule_differential`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_gc_wholemodule_differential::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

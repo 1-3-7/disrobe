@@ -1,15 +1,13 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-#[path = "common/published.rs"]
-mod published;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::published::{published_bar, published_count};
 use disrobe_pass_wasm_deob::{
     WasmDetection, WasmFamilySupport, WasmObfuscator, WasmPipelineSupport, WasmTransformSupport,
     detect,
 };
-use published::{published_bar, published_count};
 
 const PUBLISHED_HEADING: &str = "Obfuscator and bundler family coverage";
 const PUBLISHED_BAR: &str = "WASM families reversed on the wasm deob path";

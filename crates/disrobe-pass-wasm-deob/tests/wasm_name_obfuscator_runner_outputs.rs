@@ -1,8 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "common/build_records.rs"]
-mod build_records;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
@@ -13,7 +10,7 @@ use disrobe_pass_wasm_deob::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use build_records::{RecordSet, recorded_text};
+use crate::build_records::{RecordSet, recorded_text};
 
 const RECORDS_SCHEMA: &str = "disrobe.real-tool-outputs/v1";
 const RUNNER_OUTPUTS: usize = 30;

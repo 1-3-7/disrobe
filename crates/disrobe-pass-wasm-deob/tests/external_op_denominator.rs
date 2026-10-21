@@ -1,24 +1,21 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-#[path = "common/published.rs"]
-mod published;
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::published::published_bar;
+use crate::wat_corpus::{
+    callees, corpus_key, defined_bodies, verified_wat_files, verified_wat_text,
+};
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body,
 };
-use published::published_bar;
 use serde::{Deserialize, Serialize};
-use wat_corpus::{callees, corpus_key, defined_bodies, verified_wat_files, verified_wat_text};
 
 const EXTERNAL_TOOL: &str = "wasm-tools";
 const EXTERNAL_TOOL_VERSION: &str = "wasm-tools 1.250.0";
@@ -355,7 +352,7 @@ fn op_coverage_is_divided_by_the_external_instruction_inventory() {
         corpus_keys, inventory_keys,
         "the corpus and the pinned inventory describe different module sets, so the denominator \
          no longer covers what runs; regenerate with `cargo test -p disrobe-pass-wasm-deob --test \
-         external_op_denominator -- --ignored regenerate_external_inventory`"
+         it -- --ignored external_op_denominator::regenerate_external_inventory`"
     );
 
     let mut external_total: usize = 0;

@@ -1,10 +1,4 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-#[cfg(feature = "sandbox")]
-#[path = "common/published.rs"]
-mod published;
-#[cfg(feature = "sandbox")]
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use std::collections::BTreeMap;
@@ -20,13 +14,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[cfg(feature = "sandbox")]
+use crate::published::{published_bar, published_group};
+#[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body, lift_module_faithful_wat, recover_gc_types, scan_function_refs,
     scan_module_eh, scan_stack_switching,
 };
-#[cfg(feature = "sandbox")]
-use published::{published_bar, published_group};
 #[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
 #[cfg(feature = "sandbox")]
@@ -695,7 +689,7 @@ struct Candidate {
 
 #[cfg(feature = "sandbox")]
 fn collect_candidates(wat_path: &Path, tally: &mut DiffTally) -> Option<(Vec<u8>, Vec<Candidate>)> {
-    let text: String = wat_corpus::verified_wat_text(wat_path);
+    let text: String = crate::wat_corpus::verified_wat_text(wat_path);
     let original: Vec<u8> = wat::parse_str(&text).ok()?;
     let sigs: ModuleSignatures = extract_signatures(&original).ok()?;
     let defined: &[FunctionSig] = sigs.defined();
@@ -786,7 +780,7 @@ fn expose_memory(wat_text: &str) -> String {
 
 #[cfg(feature = "sandbox")]
 fn lifted_single_module(wat_path: &Path, target_export: &str) -> Option<Vec<u8>> {
-    let text: String = wat_corpus::verified_wat_text(wat_path);
+    let text: String = crate::wat_corpus::verified_wat_text(wat_path);
     let original: Vec<u8> = wat::parse_str(&text).ok()?;
     let sigs: ModuleSignatures = extract_signatures(&original).ok()?;
     let defined: &[FunctionSig] = sigs.defined();
@@ -807,7 +801,7 @@ fn lifted_single_module(wat_path: &Path, target_export: &str) -> Option<Vec<u8>>
 
 #[cfg(feature = "sandbox")]
 fn whole_module_gc_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
-    let text: String = wat_corpus::verified_wat_text(wat_path);
+    let text: String = crate::wat_corpus::verified_wat_text(wat_path);
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
         return;
     };
@@ -931,7 +925,7 @@ fn per_function_eligible(body: &FunctionBody<'_>, sig: &FunctionSig, nonzero_dat
 
 #[cfg(feature = "sandbox")]
 fn whole_module_plain_phase(wat_path: &Path, tally: &mut DiffTally, eng: &Engine) {
-    let text: String = wat_corpus::verified_wat_text(wat_path);
+    let text: String = crate::wat_corpus::verified_wat_text(wat_path);
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
         return;
     };
@@ -1075,7 +1069,7 @@ fn file_label(wat_path: &Path) -> String {
 
 #[cfg(feature = "sandbox")]
 fn flag_unsupported_construct(wat_path: &Path, tally: &mut DiffTally, construct: ModuleConstruct) {
-    let text: String = wat_corpus::verified_wat_text(wat_path);
+    let text: String = crate::wat_corpus::verified_wat_text(wat_path);
     let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
         return;
     };
@@ -1332,8 +1326,8 @@ fn differential_execution_equivalence_under_wasmtime() {
     let mut tally: DiffTally = DiffTally::default();
     let eng: Engine = engine();
 
-    for wat_path in wat_corpus::verified_wat_files() {
-        let text: String = wat_corpus::verified_wat_text(&wat_path);
+    for wat_path in crate::wat_corpus::verified_wat_files() {
+        let text: String = crate::wat_corpus::verified_wat_text(&wat_path);
         let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };
@@ -1716,8 +1710,8 @@ fn semantic_differential_refuses_to_report_success_without_the_sandbox_feature()
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "semantic_differential`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "semantic_differential::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

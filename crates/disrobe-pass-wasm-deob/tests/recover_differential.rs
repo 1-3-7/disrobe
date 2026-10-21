@@ -1,16 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[cfg(feature = "sandbox")]
-#[path = "common/bounded_wasmtime.rs"]
-mod bounded_wasmtime;
-#[path = "common/build_records.rs"]
-mod build_records;
-
+use crate::bounded_wasmtime::{Bounded, fuel_engine};
 #[cfg(feature = "sandbox")]
-use bounded_wasmtime::{Bounded, fuel_engine};
-#[cfg(feature = "sandbox")]
-use build_records::recorded_wat;
-use build_records::{RecordSet, assert_recorded};
+use crate::build_records::recorded_wat;
+use crate::build_records::{RecordSet, assert_recorded};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     RecoveredModule, RecoveryReport, WasmFamilySupport, WasmObfuscator, WasmPipelineSupport,
@@ -385,8 +379,8 @@ fn recover_differential_refuses_to_report_success_without_the_sandbox_feature() 
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "recover_differential`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "recover_differential::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

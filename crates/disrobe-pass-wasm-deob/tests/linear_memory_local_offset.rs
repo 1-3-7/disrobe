@@ -1,13 +1,7 @@
-#![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::panic)]
 
-#[path = "common/bounded_wasmtime.rs"]
-mod bounded_wasmtime;
-#[path = "common/build_records.rs"]
-mod build_records;
-
-use bounded_wasmtime::{Bounded, fuel_engine};
-use build_records::{RecordSet, recorded_text};
+use crate::bounded_wasmtime::{Bounded, fuel_engine};
+use crate::build_records::{RecordSet, recorded_text};
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS;

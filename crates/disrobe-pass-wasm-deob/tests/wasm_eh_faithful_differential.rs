@@ -5,9 +5,6 @@ use std::path::Path;
 use disrobe_pass_wasm_deob::{EhModuleSummary, lift_module_faithful_wat, scan_module_eh};
 use wasmparser::{Validator, WasmFeatures};
 
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
 fn validate(bytes: &[u8]) -> Result<(), String> {
     Validator::new_with_features(WasmFeatures::all())
         .validate_all(bytes)
@@ -20,7 +17,7 @@ fn corpus(name: &str) -> std::path::PathBuf {
 }
 
 fn lift(name: &str) -> (Vec<u8>, Vec<u8>, String) {
-    let text: String = wat_corpus::verified_wat_text(&corpus(name));
+    let text: String = crate::wat_corpus::verified_wat_text(&corpus(name));
     let original: Vec<u8> = wat::parse_str(&text).expect("source wat must assemble");
     let lifted_wat: String =
         lift_module_faithful_wat(&original).expect("faithful lift must produce output");
@@ -138,16 +135,12 @@ fn faithful_lift_preserves_modern_eh_syntax() {
 }
 
 #[cfg(feature = "sandbox")]
-#[path = "common/eh_exec.rs"]
-mod eh_exec;
-
-#[cfg(feature = "sandbox")]
 mod execution {
-    use super::eh_exec::{
+    use super::lift;
+    use crate::eh_exec::{
         Differential, Outcome, differential, drop_first_catch_clause, eh_engine, modern_projection,
         run,
     };
-    use super::lift;
     use wasmtime::Engine;
 
     #[test]
@@ -160,7 +153,7 @@ mod execution {
         let module: wasmtime::Module =
             wasmtime::Module::new(&engine, &oversized).expect("oversized module compiles");
         assert!(
-            super::eh_exec::run_module(&engine, &module, "value", &[], 1).is_err(),
+            crate::eh_exec::run_module(&engine, &module, "value", &[], 1).is_err(),
             "the Wasmtime store memory limit must reject oversized modules"
         );
     }

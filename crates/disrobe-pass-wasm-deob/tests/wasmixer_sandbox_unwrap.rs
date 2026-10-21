@@ -1,11 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 #[cfg(feature = "sandbox")]
-#[path = "common/build_records.rs"]
-mod build_records;
-
-#[cfg(feature = "sandbox")]
-use build_records::{RecordSet, recorded_wat};
+use crate::build_records::{RecordSet, recorded_wat};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{StubInfo, UnwrapReport, detect_decrypt_stubs, unwrap_decryption};
 
@@ -71,8 +67,8 @@ fn wasmixer_sandbox_unwrap_refuses_to_report_success_without_the_sandbox_feature
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasmixer_sandbox_unwrap`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasmixer_sandbox_unwrap::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

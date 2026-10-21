@@ -1,14 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[cfg(feature = "sandbox")]
-#[path = "common/exec_diff.rs"]
-mod exec_diff;
-#[cfg(feature = "sandbox")]
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
-#[cfg(feature = "sandbox")]
-use exec_diff::{ALL_LANGS, BATTERY, Spec, grade};
+use crate::exec_diff::{ALL_LANGS, BATTERY, Spec, grade};
 #[cfg(feature = "sandbox")]
 use wasmtime::Config;
 
@@ -19,7 +12,7 @@ const SIMD_LANES_DIFF: &str = include_str!("fixtures/simd_lanes_diff.wat");
 
 #[cfg(feature = "sandbox")]
 fn verified_fixture<'a>(name: &str, embedded: &'a str) -> &'a str {
-    wat_corpus::verify_execution_fixture(name, embedded);
+    crate::wat_corpus::verify_execution_fixture(name, embedded);
     embedded
 }
 
@@ -64,8 +57,8 @@ fn wasm_simd_differential_refuses_to_report_success_without_the_sandbox_feature(
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_simd_differential`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_simd_differential::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

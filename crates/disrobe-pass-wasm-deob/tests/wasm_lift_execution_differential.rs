@@ -4,14 +4,7 @@
 use std::collections::BTreeMap;
 
 #[cfg(feature = "sandbox")]
-#[path = "common/exec_diff.rs"]
-mod exec_diff;
-#[cfg(feature = "sandbox")]
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
-#[cfg(feature = "sandbox")]
-use exec_diff::{
+use crate::exec_diff::{
     ALL_LANGS, BATTERY, NON_TRAPPING_BATTERY, ReferenceSpec, Spec, grade, grade_against_reference,
     grade_traps,
 };
@@ -55,7 +48,7 @@ const DIVREM_TRUNC_DIFF: &str = include_str!("fixtures/divrem_trunc_diff.wat");
 
 #[cfg(feature = "sandbox")]
 fn verified_fixture<'a>(name: &str, embedded: &'a str) -> &'a str {
-    wat_corpus::verify_execution_fixture(name, embedded);
+    crate::wat_corpus::verify_execution_fixture(name, embedded);
     embedded
 }
 
@@ -344,7 +337,7 @@ fn lifted_targets_trap_memory64_uint64_max_offset_like_wasmtime() {
 #[test]
 fn trap_contract_rejects_the_wrong_atomic_trap_kind() {
     let expected_marker: &str = "DR-WASMDEOB-TRAP/1:atomic-unaligned";
-    exec_diff::validate_trap_contract(
+    crate::exec_diff::validate_trap_contract(
         false,
         b"",
         format!("{expected_marker}\n").as_bytes(),
@@ -353,7 +346,7 @@ fn trap_contract_rejects_the_wrong_atomic_trap_kind() {
     .expect("the exact trap marker satisfies the contract");
     let wrong_marker: &str = "DR-WASMDEOB-TRAP/1:atomic-oob";
     assert!(
-        exec_diff::validate_trap_contract(
+        crate::exec_diff::validate_trap_contract(
             false,
             b"",
             format!("{wrong_marker}\n").as_bytes(),
@@ -371,7 +364,8 @@ fn output_comparator_rejects_corrupted_and_unexpected_values() {
     let mut actual: BTreeMap<String, i32> = BTreeMap::new();
     actual.insert("value 1".to_owned(), 8);
     actual.insert("unexpected 1".to_owned(), 7);
-    let divergences: Vec<String> = exec_diff::output_divergences(&expected, &actual, "wasmtime");
+    let divergences: Vec<String> =
+        crate::exec_diff::output_divergences(&expected, &actual, "wasmtime");
     assert_eq!(
         divergences.len(),
         2,
@@ -479,7 +473,7 @@ version = "1.250.0"
 #[test]
 fn the_version_reader_picks_wasmtime_and_not_a_prefix_sibling() {
     assert_eq!(
-        exec_diff::wasmtime_version_from_lock(PREFIX_SIBLING_LOCK).as_deref(),
+        crate::exec_diff::wasmtime_version_from_lock(PREFIX_SIBLING_LOCK).as_deref(),
         Some("36.0.13"),
         "the reader must match the package named exactly `wasmtime`. Sixteen packages in the real \
          lock share that prefix, and today they happen to resolve to the same version, so a \
@@ -491,7 +485,9 @@ fn the_version_reader_picks_wasmtime_and_not_a_prefix_sibling() {
 #[test]
 fn the_version_reader_reports_absence_rather_than_guessing() {
     assert_eq!(
-        exec_diff::wasmtime_version_from_lock("[[package]]\nname = \"wat\"\nversion = \"1.0.0\"\n"),
+        crate::exec_diff::wasmtime_version_from_lock(
+            "[[package]]\nname = \"wat\"\nversion = \"1.0.0\"\n"
+        ),
         None,
         "a lock with no wasmtime entry must report absence so the caller can fail naming it, \
          never fall back to a default version"
@@ -501,16 +497,16 @@ fn the_version_reader_reports_absence_rather_than_guessing() {
 #[cfg(feature = "sandbox")]
 #[test]
 fn the_wasmtime_that_graded_this_battery_is_the_recorded_one() {
-    let resolved: String = exec_diff::resolved_wasmtime_version();
+    let resolved: String = crate::exec_diff::resolved_wasmtime_version();
     println!("execution differentials graded against wasmtime {resolved}");
     assert_eq!(
         resolved,
-        exec_diff::GRADED_WASMTIME_VERSION,
+        crate::exec_diff::GRADED_WASMTIME_VERSION,
         "the battery graded against wasmtime {resolved}, but the version recorded beside it is {}. \
          The workspace manifest pins a caret range, so a minor bump resolves silently and \
          re-grades every execution verdict against an engine nobody reviewed. Confirm the new \
          version preserves the graded behaviour, then record it here",
-        exec_diff::GRADED_WASMTIME_VERSION
+        crate::exec_diff::GRADED_WASMTIME_VERSION
     );
 }
 
@@ -520,8 +516,8 @@ fn the_execution_differential_refuses_to_report_success_without_the_sandbox_feat
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades lifted output against wasmtime. ",
         "The missing prerequisite is the crate feature `sandbox`. Re-run it as ",
-        "`cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_lift_execution_differential`. Without that feature every graded test ",
+        "`cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_lift_execution_differential::`. Without that feature every graded test ",
         "in this target is compiled out and its `ok` result line grades nothing."
     ));
 }

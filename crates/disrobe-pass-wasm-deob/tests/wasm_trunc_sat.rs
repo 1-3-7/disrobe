@@ -1,16 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[cfg(feature = "sandbox")]
-#[path = "common/bounded_wasmtime.rs"]
-mod bounded_wasmtime;
+use crate::bounded_wasmtime::{Bounded, fuel_engine};
 #[cfg(feature = "sandbox")]
-#[path = "common/build_records.rs"]
-mod build_records;
-
-#[cfg(feature = "sandbox")]
-use bounded_wasmtime::{Bounded, fuel_engine};
-#[cfg(feature = "sandbox")]
-use build_records::{RecordSet, recorded_text};
+use crate::build_records::{RecordSet, recorded_text};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
@@ -216,8 +209,8 @@ fn wasm_trunc_sat_refuses_to_report_success_without_the_sandbox_feature() {
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_trunc_sat`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_trunc_sat::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

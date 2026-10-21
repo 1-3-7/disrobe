@@ -9,19 +9,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(feature = "sandbox")]
-#[path = "common/div_cases.rs"]
-mod div_cases;
-#[cfg(feature = "sandbox")]
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
+use crate::div_cases::{DIV_REM_MODULE, I32Case, I64Case, i32_cases, i64_cases};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
     lift_function_body, rust_runtime_prelude,
 };
-#[cfg(feature = "sandbox")]
-use div_cases::{DIV_REM_MODULE, I32Case, I64Case, i32_cases, i64_cases};
 #[cfg(feature = "sandbox")]
 use wasmparser::{FunctionBody, Operator, Parser, Payload, ValType};
 #[cfg(feature = "sandbox")]
@@ -396,8 +389,8 @@ fn recovered_rust_executes_identically_to_original_under_wasmtime() {
     let mut total_labeled_loops: usize = 0;
     let mut nested_loop_functions: usize = 0;
 
-    for wat_path in wat_corpus::verified_wat_files() {
-        let text: String = wat_corpus::verified_wat_text(&wat_path);
+    for wat_path in crate::wat_corpus::verified_wat_files() {
+        let text: String = crate::wat_corpus::verified_wat_text(&wat_path);
         let Ok(bytes): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };
@@ -786,8 +779,8 @@ fn rust_execution_differential_refuses_to_report_success_without_the_sandbox_fea
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "rust_execution_differential`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "rust_execution_differential::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

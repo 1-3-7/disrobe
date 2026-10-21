@@ -8,9 +8,6 @@ use disrobe_pass_wasm_deob::{
 };
 use wasmparser::{FunctionBody, Parser, Payload, Validator, WasmFeatures};
 
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
 fn bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     let mut out: Vec<FunctionBody<'_>> = Vec::new();
     for p in Parser::new(0).parse_all(bytes) {
@@ -22,7 +19,7 @@ fn bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
 }
 
 fn lift(path: &Path) -> (Vec<u8>, Vec<u8>, String) {
-    let text: String = wat_corpus::verified_wat_text(path);
+    let text: String = crate::wat_corpus::verified_wat_text(path);
     let original: Vec<u8> = wat::parse_str(&text).expect("source wat must assemble");
     let sigs: ModuleSignatures = extract_signatures(&original).expect("sigs");
     let defined: &[FunctionSig] = sigs.defined();
@@ -112,13 +109,9 @@ fn recovered_eh_constructs_match_the_original_structure() {
 }
 
 #[cfg(feature = "sandbox")]
-#[path = "common/eh_exec.rs"]
-mod eh_exec;
-
-#[cfg(feature = "sandbox")]
 mod execution {
-    use super::eh_exec::{Differential, differential, drop_first_catch_clause};
     use super::lift;
+    use crate::eh_exec::{Differential, differential, drop_first_catch_clause};
     use std::path::{Path, PathBuf};
 
     fn corpus() -> PathBuf {

@@ -7,9 +7,6 @@ use wasmparser::{
     CompositeInnerType, Operator, Parser, Payload, StorageType, Validator, WasmFeatures,
 };
 
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
 fn validate(bytes: &[u8]) -> Result<(), String> {
     Validator::new_with_features(WasmFeatures::all())
         .validate_all(bytes)
@@ -22,7 +19,7 @@ fn corpus(name: &str) -> std::path::PathBuf {
 }
 
 fn lift(name: &str) -> (Vec<u8>, Vec<u8>, String) {
-    let text: String = wat_corpus::verified_wat_text(&corpus(name));
+    let text: String = crate::wat_corpus::verified_wat_text(&corpus(name));
     let original: Vec<u8> = wat::parse_str(&text).expect("source wat must assemble");
     let lifted_wat: String =
         lift_module_faithful_wat(&original).expect("faithful lift must produce output");

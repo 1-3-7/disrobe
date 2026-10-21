@@ -1,5 +1,6 @@
 [package]
 name = "disrobe-pass-wasm-deob"
+autotests = false
 description = "WebAssembly deobfuscator + decompiler for the disrobe suite. Targets the WASM Component Model + wasm-gc, recovers name sections, restructures control flow, and lifts to idiomatic Rust / TypeScript pseudo-source."
 version.workspace = true
 readme.workspace = true
@@ -52,6 +53,10 @@ object = { workspace = true }
 [[bench]]
 name = "ssa_build"
 harness = false
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
 
 [package.metadata.disrobe]
 level = 8

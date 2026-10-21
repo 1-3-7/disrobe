@@ -1,18 +1,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[cfg(feature = "sandbox")]
-#[path = "common/bounded_wasmtime.rs"]
-mod bounded_wasmtime;
-#[path = "common/build_records.rs"]
-mod build_records;
-
-#[cfg(feature = "sandbox")]
 use std::collections::BTreeMap;
 
 #[cfg(feature = "sandbox")]
-use bounded_wasmtime::{Bounded, fuel_engine};
+use crate::bounded_wasmtime::{Bounded, fuel_engine};
 #[cfg(feature = "sandbox")]
-use build_records::{RecordSet, recorded_bytes, recorded_wat};
+use crate::build_records::{RecordSet, recorded_bytes, recorded_wat};
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{
     MAX_DECRYPT_OUTPUT, MAX_DECRYPT_SPAN, MAX_STUBS_PER_MODULE, RecoveredModule, StubInfo,
@@ -181,7 +175,7 @@ fn a_dispatcher_switch_above_the_case_cap_is_walled_without_panicking() {
 
 #[cfg(feature = "sandbox")]
 fn host_script(swap: bool) -> String {
-    let path: std::path::PathBuf = build_records::RecordSet::Corpus
+    let path: std::path::PathBuf = crate::build_records::RecordSet::Corpus
         .root()
         .join("src/wobfuscator_hosttable.js");
     let text: String = std::fs::read_to_string(&path).expect("host script");
@@ -374,7 +368,7 @@ fn decrypt_stub_spans_and_counts_are_bounded() {
 fn wasm_family_recovery_refuses_to_report_success_without_the_sandbox_feature() {
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered modules by wasmtime execution. ",
-        "Re-run it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_family_recovery`."
+        "Re-run it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_family_recovery::`."
     ));
 }

@@ -16,16 +16,9 @@ use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
 use wasmtime::{Engine, Val};
 
 #[cfg(feature = "sandbox")]
-#[path = "common/bounded_wasmtime.rs"]
-mod bounded_wasmtime;
+use crate::bounded_wasmtime::{Bounded, fuel_engine};
 #[cfg(feature = "sandbox")]
-#[path = "common/build_records.rs"]
-mod build_records;
-
-#[cfg(feature = "sandbox")]
-use bounded_wasmtime::{Bounded, fuel_engine};
-#[cfg(feature = "sandbox")]
-use build_records::{RecordSet, recorded_bytes, recorded_text, recorded_wat};
+use crate::build_records::{RecordSet, recorded_bytes, recorded_text, recorded_wat};
 
 #[cfg(feature = "sandbox")]
 const FUEL_BUDGET: u64 = 20_000_000;
@@ -1362,7 +1355,7 @@ fn every_wall_names_the_reason_it_refused() {
     cmd.arg("--exact");
     cmd.arg("--nocapture");
     cmd.arg("--test-threads=1");
-    cmd.arg("wall_reason_harness_entrypoint");
+    cmd.arg("cff_conditional_reloop::wall_reason_harness_entrypoint");
     let out: Output = cmd.output().expect("spawn wall-reason harness child");
     assert!(out.status.success(), "child failed: {out:?}");
     let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -1687,8 +1680,8 @@ fn cff_conditional_reloop_refuses_to_report_success_without_the_sandbox_feature(
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "cff_conditional_reloop`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "cff_conditional_reloop::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

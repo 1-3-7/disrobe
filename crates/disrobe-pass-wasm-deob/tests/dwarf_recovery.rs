@@ -407,8 +407,8 @@ fn dwarf_recovery_refuses_to_report_success_without_the_dwarf_feature() {
     panic!(concat!(
         "DR-WASMDEOB-DWARF: this target grades recovered debug information against ",
         "tracked artifacts. The missing prerequisite is the crate feature `dwarf`. ",
-        "Re-run it as `cargo test -p disrobe-pass-wasm-deob --features dwarf --test ",
-        "dwarf_recovery`. Without that feature every graded test in this target is ",
+        "Re-run it as `cargo test -p disrobe-pass-wasm-deob --features dwarf --test it ",
+        "dwarf_recovery::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

@@ -1,9 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #[cfg(feature = "sandbox")]
 use std::path::PathBuf;
-#[cfg(feature = "sandbox")]
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
 
 #[cfg(feature = "sandbox")]
 use disrobe_pass_wasm_deob::{ModuleSignatures, extract_signatures, lift_module_faithful_wat};
@@ -153,13 +150,13 @@ fn measure() -> Outcome {
     let mut equiv: usize = 0;
     let mut diverged: Vec<String> = Vec::new();
     let mut lift_failures: Vec<String> = Vec::new();
-    let plugin_dir: PathBuf = wat_corpus::workspace_root().join("corpus/wasm/plugins");
+    let plugin_dir: PathBuf = crate::wat_corpus::workspace_root().join("corpus/wasm/plugins");
 
-    for path in wat_corpus::verified_wat_files()
+    for path in crate::wat_corpus::verified_wat_files()
         .into_iter()
         .filter(|path: &PathBuf| !path.starts_with(&plugin_dir))
     {
-        let text: String = wat_corpus::verified_wat_text(&path);
+        let text: String = crate::wat_corpus::verified_wat_text(&path);
         let Ok(original): Result<Vec<u8>, _> = wat::parse_str(&text) else {
             continue;
         };
@@ -268,8 +265,8 @@ fn wholemodule_behavioral_oracle_refuses_to_report_success_without_the_sandbox_f
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wholemodule_behavioral_oracle`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wholemodule_behavioral_oracle::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

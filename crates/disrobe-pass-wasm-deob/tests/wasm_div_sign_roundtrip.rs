@@ -1,12 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-#[cfg(feature = "sandbox")]
-#[path = "common/div_cases.rs"]
-mod div_cases;
 
 #[cfg(feature = "sandbox")]
-use disrobe_pass_wasm_deob::lift_module_faithful_wat;
+use crate::div_cases::{DIV_REM_MODULE as SOURCE, i32_cases, i64_cases};
 #[cfg(feature = "sandbox")]
-use div_cases::{DIV_REM_MODULE as SOURCE, i32_cases, i64_cases};
+use disrobe_pass_wasm_deob::lift_module_faithful_wat;
 #[cfg(feature = "sandbox")]
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
@@ -212,8 +209,8 @@ fn wasm_div_sign_roundtrip_refuses_to_report_success_without_the_sandbox_feature
     panic!(concat!(
         "DR-WASMDEOB-SANDBOX: this target grades recovered output against a real ",
         "runtime. The missing prerequisite is the crate feature `sandbox`. Re-run ",
-        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test ",
-        "wasm_div_sign_roundtrip`. Without that feature every graded test in this target is ",
+        "it as `cargo test -p disrobe-pass-wasm-deob --features sandbox --test it ",
+        "wasm_div_sign_roundtrip::`. Without that feature every graded test in this target is ",
         "compiled out and its `ok` result line grades nothing."
     ));
 }

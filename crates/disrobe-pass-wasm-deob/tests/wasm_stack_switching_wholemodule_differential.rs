@@ -6,9 +6,6 @@ use disrobe_pass_wasm_deob::{
 };
 use wasmparser::{Validator, WasmFeatures};
 
-#[path = "common/wat_corpus.rs"]
-mod wat_corpus;
-
 fn validate(bytes: &[u8]) -> Result<(), String> {
     Validator::new_with_features(WasmFeatures::all())
         .validate_all(bytes)
@@ -17,7 +14,7 @@ fn validate(bytes: &[u8]) -> Result<(), String> {
 }
 
 fn lift(path: &Path) -> (Vec<u8>, Vec<u8>, String) {
-    let text: String = wat_corpus::verified_wat_text(path);
+    let text: String = crate::wat_corpus::verified_wat_text(path);
     let original: Vec<u8> = wat::parse_str(&text).expect("source wat must assemble");
     let lifted_wat: String =
         lift_module_faithful_wat(&original).expect("faithful lift must produce output");
