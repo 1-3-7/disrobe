@@ -1,0 +1,316 @@
+
+corpus/recon/android-audit/native/lib/arm64-v8a/libantidebug.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+00000000000019c4 <antidebug_ptrace_self>:
+    19c4:      	stp	x29, x30, [sp, #-0x10]!
+    19c8:      	mov	x29, sp
+    19cc:      	mov	w0, wzr
+    19d0:      	mov	w1, wzr
+    19d4:      	mov	x2, xzr
+    19d8:      	mov	x3, xzr
+    19dc:      	bl	0x1d10 <ptrace@plt>
+    19e0:      	cmn	x0, #0x1
+    19e4:      	cset	w0, eq
+    19e8:      	ldp	x29, x30, [sp], #0x10
+    19ec:      	ret
+
+00000000000019f0 <antidebug_tracer_pid>:
+    19f0:      	stp	x29, x30, [sp, #-0x30]!
+    19f4:      	str	x21, [sp, #0x10]
+    19f8:      	stp	x20, x19, [sp, #0x20]
+    19fc:      	mov	x29, sp
+    1a00:      	nop
+    1a04:      	adr	x0, 0x73c <strstr+0x73c>
+    1a08:      	mov	w1, wzr
+    1a0c:      	bl	0x1d20 <open@plt>
+    1a10:      	tbnz	w0, #0x1f, 0x1a64 <antidebug_tracer_pid+0x74>
+    1a14:      	nop
+    1a18:      	adr	x19, 0x3f20 <status_buffer>
+    1a1c:      	mov	w2, #0xfff              // =4095
+    1a20:      	mov	x1, x19
+    1a24:      	mov	w21, w0
+    1a28:      	bl	0x1d30 <read@plt>
+    1a2c:      	mov	x20, x0
+    1a30:      	mov	w0, w21
+    1a34:      	bl	0x1d40 <close@plt>
+    1a38:      	cmp	x20, #0x1
+    1a3c:      	b.lt	0x1a64 <antidebug_tracer_pid+0x74>
+    1a40:      	adrp	x1, 0x0 <strstr>
+    1a44:      	add	x1, x1, #0x799
+    1a48:      	mov	x0, x19
+    1a4c:      	strb	wzr, [x19, x20]
+    1a50:      	bl	0x1d50 <strstr@plt>
+    1a54:      	cbz	x0, 0x1a68 <antidebug_tracer_pid+0x78>
+    1a58:      	ldrb	w8, [x0, #0xa]
+    1a5c:      	cmp	w8, #0x9
+    1a60:      	b.ne	0x1a78 <antidebug_tracer_pid+0x88>
+    1a64:      	mov	w0, wzr
+    1a68:      	ldp	x20, x19, [sp, #0x20]
+    1a6c:      	ldr	x21, [sp, #0x10]
+    1a70:      	ldp	x29, x30, [sp], #0x30
+    1a74:      	ret
+    1a78:      	ldrb	w8, [x0, #0xb]
+    1a7c:      	cmp	w8, #0x30
+    1a80:      	cset	w0, ne
+    1a84:      	b	0x1a68 <antidebug_tracer_pid+0x78>
+
+0000000000001a88 <antidebug_frida_maps>:
+    1a88:      	stp	x29, x30, [sp, #-0x30]!
+    1a8c:      	str	x21, [sp, #0x10]
+    1a90:      	stp	x20, x19, [sp, #0x20]
+    1a94:      	mov	x29, sp
+    1a98:      	adrp	x0, 0x0 <strstr>
+    1a9c:      	add	x0, x0, #0x74e
+    1aa0:      	mov	w1, wzr
+    1aa4:      	bl	0x1d20 <open@plt>
+    1aa8:      	tbnz	w0, #0x1f, 0x1b10 <antidebug_frida_maps+0x88>
+    1aac:      	nop
+    1ab0:      	adr	x19, 0x3f20 <status_buffer>
+    1ab4:      	mov	w2, #0xfff              // =4095
+    1ab8:      	mov	x1, x19
+    1abc:      	mov	w21, w0
+    1ac0:      	bl	0x1d30 <read@plt>
+    1ac4:      	mov	x20, x0
+    1ac8:      	mov	w0, w21
+    1acc:      	bl	0x1d40 <close@plt>
+    1ad0:      	cmp	x20, #0x1
+    1ad4:      	b.lt	0x1b10 <antidebug_frida_maps+0x88>
+    1ad8:      	adrp	x1, 0x0 <strstr>
+    1adc:      	add	x1, x1, #0x730
+    1ae0:      	mov	x0, x19
+    1ae4:      	strb	wzr, [x19, x20]
+    1ae8:      	bl	0x1d50 <strstr@plt>
+    1aec:      	cbnz	x0, 0x1b08 <antidebug_frida_maps+0x80>
+    1af0:      	nop
+    1af4:      	adr	x0, 0x3f20 <status_buffer>
+    1af8:      	adrp	x1, 0x0 <strstr>
+    1afc:      	add	x1, x1, #0x75e
+    1b00:      	bl	0x1d50 <strstr@plt>
+    1b04:      	cbz	x0, 0x1b24 <antidebug_frida_maps+0x9c>
+    1b08:      	mov	w0, #0x1                // =1
+    1b0c:      	b	0x1b14 <antidebug_frida_maps+0x8c>
+    1b10:      	mov	w0, wzr
+    1b14:      	ldp	x20, x19, [sp, #0x20]
+    1b18:      	ldr	x21, [sp, #0x10]
+    1b1c:      	ldp	x29, x30, [sp], #0x30
+    1b20:      	ret
+    1b24:      	nop
+    1b28:      	adr	x0, 0x3f20 <status_buffer>
+    1b2c:      	adrp	x1, 0x0 <strstr>
+    1b30:      	add	x1, x1, #0x768
+    1b34:      	bl	0x1d50 <strstr@plt>
+    1b38:      	cmp	x0, #0x0
+    1b3c:      	cset	w0, ne
+    1b40:      	b	0x1b14 <antidebug_frida_maps+0x8c>
+
+0000000000001b44 <antidebug_frida_thread>:
+    1b44:      	stp	x29, x30, [sp, #-0x20]!
+    1b48:      	str	x19, [sp, #0x10]
+    1b4c:      	mov	x29, sp
+    1b50:      	adrp	x1, 0x0 <strstr>
+    1b54:      	add	x1, x1, #0x778
+    1b58:      	mov	x19, x0
+    1b5c:      	bl	0x1d70 <strcmp@plt>
+    1b60:      	cbz	w0, 0x1b80 <antidebug_frida_thread+0x3c>
+    1b64:      	adrp	x1, 0x0 <strstr>
+    1b68:      	add	x1, x1, #0x784
+    1b6c:      	mov	x0, x19
+    1b70:      	bl	0x1d70 <strcmp@plt>
+    1b74:      	cmp	w0, #0x0
+    1b78:      	cset	w0, eq
+    1b7c:      	b	0x1b84 <antidebug_frida_thread+0x40>
+    1b80:      	mov	w0, #0x1                // =1
+    1b84:      	ldr	x19, [sp, #0x10]
+    1b88:      	ldp	x29, x30, [sp], #0x20
+    1b8c:      	ret
+
+0000000000001b90 <antidebug_watch_memory>:
+    1b90:      	stp	x29, x30, [sp, #-0x10]!
+    1b94:      	mov	x29, sp
+    1b98:      	bl	0x1d80 <inotify_init@plt>
+    1b9c:      	tbnz	w0, #0x1f, 0x1bc0 <antidebug_watch_memory+0x30>
+    1ba0:      	adrp	x1, 0x0 <strstr>
+    1ba4:      	add	x1, x1, #0x78a
+    1ba8:      	mov	w2, #0x1                // =1
+    1bac:      	bl	0x1d90 <inotify_add_watch@plt>
+    1bb0:      	mvn	w8, w0
+    1bb4:      	lsr	w0, w8, #31
+    1bb8:      	ldp	x29, x30, [sp], #0x10
+    1bbc:      	ret
+    1bc0:      	mov	w0, wzr
+    1bc4:      	ldp	x29, x30, [sp], #0x10
+    1bc8:      	ret
+
+0000000000001bcc <antidebug_parent_is_zygote>:
+    1bcc:      	stp	x29, x30, [sp, #-0x10]!
+    1bd0:      	mov	x29, sp
+    1bd4:      	bl	0x1da0 <getppid@plt>
+    1bd8:      	mov	w1, wzr
+    1bdc:      	bl	0x1db0 <kill@plt>
+    1be0:      	cmp	w0, #0x0
+    1be4:      	cset	w0, eq
+    1be8:      	ldp	x29, x30, [sp], #0x10
+    1bec:      	ret
+
+0000000000001bf0 <antidebug_sigtrap_probe>:
+    1bf0:      	stp	x29, x30, [sp, #-0x10]!
+    1bf4:      	mov	x29, sp
+    1bf8:      	adrp	x1, 0x1000 <strstr+0x1000>
+    1bfc:      	add	x1, x1, #0xc20
+    1c00:      	mov	w0, #0x5                // =5
+    1c04:      	bl	0x1dc0 <signal@plt>
+    1c08:      	mov	w0, #0x5                // =5
+    1c0c:      	bl	0x1dd0 <raise@plt>
+    1c10:      	cmp	w0, #0x0
+    1c14:      	cset	w0, eq
+    1c18:      	ldp	x29, x30, [sp], #0x10
+    1c1c:      	ret
+
+0000000000001c20 <on_trap>:
+    1c20:      	ret
+
+0000000000001c24 <Java_com_planted_audit_Native_antidebugPtraceSelf>:
+    1c24:      	stp	x29, x30, [sp, #-0x10]!
+    1c28:      	mov	x29, sp
+    1c2c:      	mov	w0, wzr
+    1c30:      	mov	w1, wzr
+    1c34:      	mov	x2, xzr
+    1c38:      	mov	x3, xzr
+    1c3c:      	bl	0x1d10 <ptrace@plt>
+    1c40:      	cmn	x0, #0x1
+    1c44:      	cset	w0, eq
+    1c48:      	ldp	x29, x30, [sp], #0x10
+    1c4c:      	ret
+
+0000000000001c50 <Java_com_planted_audit_Native_antidebugTracerPid>:
+    1c50:      	stp	x29, x30, [sp, #-0x30]!
+    1c54:      	str	x21, [sp, #0x10]
+    1c58:      	stp	x20, x19, [sp, #0x20]
+    1c5c:      	mov	x29, sp
+    1c60:      	nop
+    1c64:      	adr	x0, 0x73c <strstr+0x73c>
+    1c68:      	mov	w1, wzr
+    1c6c:      	bl	0x1d20 <open@plt>
+    1c70:      	tbnz	w0, #0x1f, 0x1cd0 <Java_com_planted_audit_Native_antidebugTracerPid+0x80>
+    1c74:      	nop
+    1c78:      	adr	x19, 0x3f20 <status_buffer>
+    1c7c:      	mov	w2, #0xfff              // =4095
+    1c80:      	mov	x1, x19
+    1c84:      	mov	w21, w0
+    1c88:      	bl	0x1d30 <read@plt>
+    1c8c:      	mov	x20, x0
+    1c90:      	mov	w0, w21
+    1c94:      	bl	0x1d40 <close@plt>
+    1c98:      	cmp	x20, #0x1
+    1c9c:      	b.lt	0x1cd0 <Java_com_planted_audit_Native_antidebugTracerPid+0x80>
+    1ca0:      	adrp	x1, 0x0 <strstr>
+    1ca4:      	add	x1, x1, #0x799
+    1ca8:      	mov	x0, x19
+    1cac:      	strb	wzr, [x19, x20]
+    1cb0:      	bl	0x1d50 <strstr@plt>
+    1cb4:      	cbz	x0, 0x1cd0 <Java_com_planted_audit_Native_antidebugTracerPid+0x80>
+    1cb8:      	ldrb	w8, [x0, #0xa]
+    1cbc:      	cmp	w8, #0x9
+    1cc0:      	b.eq	0x1cd0 <Java_com_planted_audit_Native_antidebugTracerPid+0x80>
+    1cc4:      	ldrb	w8, [x0, #0xb]
+    1cc8:      	cmp	w8, #0x30
+    1ccc:      	b.ne	0x1ce4 <Java_com_planted_audit_Native_antidebugTracerPid+0x94>
+    1cd0:      	bl	0x1d60 <antidebug_frida_maps@plt>
+    1cd4:      	ldp	x20, x19, [sp, #0x20]
+    1cd8:      	ldr	x21, [sp, #0x10]
+    1cdc:      	ldp	x29, x30, [sp], #0x30
+    1ce0:      	ret
+    1ce4:      	mov	w0, #0x1                // =1
+    1ce8:      	b	0x1cd4 <Java_com_planted_audit_Native_antidebugTracerPid+0x84>
+
+Disassembly of section .plt:
+
+0000000000001cf0 <.plt>:
+    1cf0:      	stp	x16, x30, [sp, #-0x10]!
+    1cf4:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1cf8:      	ldr	x17, [x16, #0xeb0]
+    1cfc:      	add	x16, x16, #0xeb0
+    1d00:      	br	x17
+    1d04:      	nop
+    1d08:      	nop
+    1d0c:      	nop
+
+0000000000001d10 <ptrace@plt>:
+    1d10:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d14:      	ldr	x17, [x16, #0xeb8]
+    1d18:      	add	x16, x16, #0xeb8
+    1d1c:      	br	x17
+
+0000000000001d20 <open@plt>:
+    1d20:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d24:      	ldr	x17, [x16, #0xec0]
+    1d28:      	add	x16, x16, #0xec0
+    1d2c:      	br	x17
+
+0000000000001d30 <read@plt>:
+    1d30:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d34:      	ldr	x17, [x16, #0xec8]
+    1d38:      	add	x16, x16, #0xec8
+    1d3c:      	br	x17
+
+0000000000001d40 <close@plt>:
+    1d40:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d44:      	ldr	x17, [x16, #0xed0]
+    1d48:      	add	x16, x16, #0xed0
+    1d4c:      	br	x17
+
+0000000000001d50 <strstr@plt>:
+    1d50:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d54:      	ldr	x17, [x16, #0xed8]
+    1d58:      	add	x16, x16, #0xed8
+    1d5c:      	br	x17
+
+0000000000001d60 <antidebug_frida_maps@plt>:
+    1d60:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d64:      	ldr	x17, [x16, #0xee0]
+    1d68:      	add	x16, x16, #0xee0
+    1d6c:      	br	x17
+
+0000000000001d70 <strcmp@plt>:
+    1d70:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d74:      	ldr	x17, [x16, #0xee8]
+    1d78:      	add	x16, x16, #0xee8
+    1d7c:      	br	x17
+
+0000000000001d80 <inotify_init@plt>:
+    1d80:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d84:      	ldr	x17, [x16, #0xef0]
+    1d88:      	add	x16, x16, #0xef0
+    1d8c:      	br	x17
+
+0000000000001d90 <inotify_add_watch@plt>:
+    1d90:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1d94:      	ldr	x17, [x16, #0xef8]
+    1d98:      	add	x16, x16, #0xef8
+    1d9c:      	br	x17
+
+0000000000001da0 <getppid@plt>:
+    1da0:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1da4:      	ldr	x17, [x16, #0xf00]
+    1da8:      	add	x16, x16, #0xf00
+    1dac:      	br	x17
+
+0000000000001db0 <kill@plt>:
+    1db0:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1db4:      	ldr	x17, [x16, #0xf08]
+    1db8:      	add	x16, x16, #0xf08
+    1dbc:      	br	x17
+
+0000000000001dc0 <signal@plt>:
+    1dc0:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1dc4:      	ldr	x17, [x16, #0xf10]
+    1dc8:      	add	x16, x16, #0xf10
+    1dcc:      	br	x17
+
+0000000000001dd0 <raise@plt>:
+    1dd0:      	adrp	x16, 0x2000 <raise@plt+0x230>
+    1dd4:      	ldr	x17, [x16, #0xf18]
+    1dd8:      	add	x16, x16, #0xf18
+    1ddc:      	br	x17

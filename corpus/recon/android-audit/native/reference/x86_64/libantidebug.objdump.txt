@@ -1,0 +1,326 @@
+
+corpus/recon/android-audit/native/lib/x86_64/libantidebug.so:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000001980 <antidebug_ptrace_self>:
+    1980:      	pushq	%rbp
+    1981:      	movq	%rsp, %rbp
+    1984:      	xorl	%edi, %edi
+    1986:      	xorl	%esi, %esi
+    1988:      	xorl	%edx, %edx
+    198a:      	xorl	%ecx, %ecx
+    198c:      	callq	0x1c50 <ptrace@plt>
+    1991:      	xorl	%ecx, %ecx
+    1993:      	cmpq	$-0x1, %rax
+    1997:      	sete	%cl
+    199a:      	movl	%ecx, %eax
+    199c:      	popq	%rbp
+    199d:      	retq
+    199e:      	nop
+
+00000000000019a0 <antidebug_tracer_pid>:
+    19a0:      	pushq	%rbp
+    19a1:      	movq	%rsp, %rbp
+    19a4:      	pushq	%r15
+    19a6:      	pushq	%r14
+    19a8:      	pushq	%r12
+    19aa:      	pushq	%rbx
+    19ab:      	leaq	-0x1276(%rip), %rdi     # 0x73c <strstr+0x73c>
+    19b2:      	xorl	%ebx, %ebx
+    19b4:      	xorl	%esi, %esi
+    19b6:      	xorl	%eax, %eax
+    19b8:      	callq	0x1c60 <open@plt>
+    19bd:      	testl	%eax, %eax
+    19bf:      	js	0x1a12 <antidebug_tracer_pid+0x72>
+    19c1:      	movl	%eax, %r15d
+    19c4:      	leaq	0x2495(%rip), %r14      # 0x3e60 <status_buffer>
+    19cb:      	movl	$0xfff, %edx            # imm = 0xFFF
+    19d0:      	movl	%eax, %edi
+    19d2:      	movq	%r14, %rsi
+    19d5:      	callq	0x1c70 <read@plt>
+    19da:      	movq	%rax, %r12
+    19dd:      	movl	%r15d, %edi
+    19e0:      	callq	0x1c80 <close@plt>
+    19e5:      	testq	%r12, %r12
+    19e8:      	jle	0x1a12 <antidebug_tracer_pid+0x72>
+    19ea:      	movb	$0x0, (%r12,%r14)
+    19ef:      	leaq	-0x125d(%rip), %rsi     # 0x799 <strstr+0x799>
+    19f6:      	movq	%r14, %rdi
+    19f9:      	callq	0x1c90 <strstr@plt>
+    19fe:      	testq	%rax, %rax
+    1a01:      	je	0x1a12 <antidebug_tracer_pid+0x72>
+    1a03:      	cmpb	$0x9, 0xa(%rax)
+    1a07:      	je	0x1a12 <antidebug_tracer_pid+0x72>
+    1a09:      	xorl	%ebx, %ebx
+    1a0b:      	cmpb	$0x30, 0xb(%rax)
+    1a0f:      	setne	%bl
+    1a12:      	movl	%ebx, %eax
+    1a14:      	popq	%rbx
+    1a15:      	popq	%r12
+    1a17:      	popq	%r14
+    1a19:      	popq	%r15
+    1a1b:      	popq	%rbp
+    1a1c:      	retq
+    1a1d:      	nopl	(%rax)
+
+0000000000001a20 <antidebug_frida_maps>:
+    1a20:      	pushq	%rbp
+    1a21:      	movq	%rsp, %rbp
+    1a24:      	pushq	%r15
+    1a26:      	pushq	%r14
+    1a28:      	pushq	%r12
+    1a2a:      	pushq	%rbx
+    1a2b:      	leaq	-0x12e4(%rip), %rdi     # 0x74e <strstr+0x74e>
+    1a32:      	xorl	%ebx, %ebx
+    1a34:      	xorl	%esi, %esi
+    1a36:      	xorl	%eax, %eax
+    1a38:      	callq	0x1c60 <open@plt>
+    1a3d:      	testl	%eax, %eax
+    1a3f:      	js	0x1abb <antidebug_frida_maps+0x9b>
+    1a41:      	movl	%eax, %r15d
+    1a44:      	leaq	0x2415(%rip), %r14      # 0x3e60 <status_buffer>
+    1a4b:      	movl	$0xfff, %edx            # imm = 0xFFF
+    1a50:      	movl	%eax, %edi
+    1a52:      	movq	%r14, %rsi
+    1a55:      	callq	0x1c70 <read@plt>
+    1a5a:      	movq	%rax, %r12
+    1a5d:      	movl	%r15d, %edi
+    1a60:      	callq	0x1c80 <close@plt>
+    1a65:      	testq	%r12, %r12
+    1a68:      	jle	0x1abb <antidebug_frida_maps+0x9b>
+    1a6a:      	movb	$0x0, (%r12,%r14)
+    1a6f:      	leaq	-0x1346(%rip), %rsi     # 0x730 <strstr+0x730>
+    1a76:      	movq	%r14, %rdi
+    1a79:      	callq	0x1c90 <strstr@plt>
+    1a7e:      	movl	$0x1, %ebx
+    1a83:      	testq	%rax, %rax
+    1a86:      	jne	0x1abb <antidebug_frida_maps+0x9b>
+    1a88:      	leaq	0x23d1(%rip), %rdi      # 0x3e60 <status_buffer>
+    1a8f:      	leaq	-0x1338(%rip), %rsi     # 0x75e <strstr+0x75e>
+    1a96:      	callq	0x1c90 <strstr@plt>
+    1a9b:      	testq	%rax, %rax
+    1a9e:      	jne	0x1abb <antidebug_frida_maps+0x9b>
+    1aa0:      	leaq	0x23b9(%rip), %rdi      # 0x3e60 <status_buffer>
+    1aa7:      	leaq	-0x1346(%rip), %rsi     # 0x768 <strstr+0x768>
+    1aae:      	callq	0x1c90 <strstr@plt>
+    1ab3:      	xorl	%ebx, %ebx
+    1ab5:      	testq	%rax, %rax
+    1ab8:      	setne	%bl
+    1abb:      	movl	%ebx, %eax
+    1abd:      	popq	%rbx
+    1abe:      	popq	%r12
+    1ac0:      	popq	%r14
+    1ac2:      	popq	%r15
+    1ac4:      	popq	%rbp
+    1ac5:      	retq
+    1ac6:      	nopw	%cs:(%rax,%rax)
+
+0000000000001ad0 <antidebug_frida_thread>:
+    1ad0:      	pushq	%rbp
+    1ad1:      	movq	%rsp, %rbp
+    1ad4:      	pushq	%rbx
+    1ad5:      	pushq	%rax
+    1ad6:      	movq	%rdi, %rbx
+    1ad9:      	leaq	-0x1368(%rip), %rsi     # 0x778 <strstr+0x778>
+    1ae0:      	callq	0x1cb0 <strcmp@plt>
+    1ae5:      	testl	%eax, %eax
+    1ae7:      	je	0x1b03 <antidebug_frida_thread+0x33>
+    1ae9:      	leaq	-0x136c(%rip), %rsi     # 0x784 <strstr+0x784>
+    1af0:      	movq	%rbx, %rdi
+    1af3:      	callq	0x1cb0 <strcmp@plt>
+    1af8:      	movl	%eax, %ecx
+    1afa:      	xorl	%eax, %eax
+    1afc:      	testl	%ecx, %ecx
+    1afe:      	sete	%al
+    1b01:      	jmp	0x1b08 <antidebug_frida_thread+0x38>
+    1b03:      	movl	$0x1, %eax
+    1b08:      	addq	$0x8, %rsp
+    1b0c:      	popq	%rbx
+    1b0d:      	popq	%rbp
+    1b0e:      	retq
+    1b0f:      	nop
+
+0000000000001b10 <antidebug_watch_memory>:
+    1b10:      	pushq	%rbp
+    1b11:      	movq	%rsp, %rbp
+    1b14:      	callq	0x1cc0 <inotify_init@plt>
+    1b19:      	testl	%eax, %eax
+    1b1b:      	js	0x1b37 <antidebug_watch_memory+0x27>
+    1b1d:      	leaq	-0x139a(%rip), %rsi     # 0x78a <strstr+0x78a>
+    1b24:      	movl	%eax, %edi
+    1b26:      	movl	$0x1, %edx
+    1b2b:      	callq	0x1cd0 <inotify_add_watch@plt>
+    1b30:      	notl	%eax
+    1b32:      	shrl	$0x1f, %eax
+    1b35:      	popq	%rbp
+    1b36:      	retq
+    1b37:      	xorl	%eax, %eax
+    1b39:      	popq	%rbp
+    1b3a:      	retq
+    1b3b:      	nopl	(%rax,%rax)
+
+0000000000001b40 <antidebug_parent_is_zygote>:
+    1b40:      	pushq	%rbp
+    1b41:      	movq	%rsp, %rbp
+    1b44:      	callq	0x1ce0 <getppid@plt>
+    1b49:      	movl	%eax, %edi
+    1b4b:      	xorl	%esi, %esi
+    1b4d:      	callq	0x1cf0 <kill@plt>
+    1b52:      	xorl	%ecx, %ecx
+    1b54:      	testl	%eax, %eax
+    1b56:      	sete	%cl
+    1b59:      	movl	%ecx, %eax
+    1b5b:      	popq	%rbp
+    1b5c:      	retq
+    1b5d:      	nopl	(%rax)
+
+0000000000001b60 <antidebug_sigtrap_probe>:
+    1b60:      	pushq	%rbp
+    1b61:      	movq	%rsp, %rbp
+    1b64:      	leaq	0x25(%rip), %rsi        # 0x1b90 <on_trap>
+    1b6b:      	movl	$0x5, %edi
+    1b70:      	callq	0x1d00 <signal@plt>
+    1b75:      	movl	$0x5, %edi
+    1b7a:      	callq	0x1d10 <raise@plt>
+    1b7f:      	xorl	%ecx, %ecx
+    1b81:      	testl	%eax, %eax
+    1b83:      	sete	%cl
+    1b86:      	movl	%ecx, %eax
+    1b88:      	popq	%rbp
+    1b89:      	retq
+    1b8a:      	nopw	(%rax,%rax)
+
+0000000000001b90 <on_trap>:
+    1b90:      	retq
+    1b91:      	nopw	%cs:(%rax,%rax)
+    1b9b:      	nopl	(%rax,%rax)
+
+0000000000001ba0 <Java_com_planted_audit_Native_antidebugPtraceSelf>:
+    1ba0:      	pushq	%rbp
+    1ba1:      	movq	%rsp, %rbp
+    1ba4:      	xorl	%edi, %edi
+    1ba6:      	xorl	%esi, %esi
+    1ba8:      	xorl	%edx, %edx
+    1baa:      	xorl	%ecx, %ecx
+    1bac:      	callq	0x1c50 <ptrace@plt>
+    1bb1:      	cmpq	$-0x1, %rax
+    1bb5:      	sete	%al
+    1bb8:      	popq	%rbp
+    1bb9:      	retq
+    1bba:      	nopw	(%rax,%rax)
+
+0000000000001bc0 <Java_com_planted_audit_Native_antidebugTracerPid>:
+    1bc0:      	pushq	%rbp
+    1bc1:      	movq	%rsp, %rbp
+    1bc4:      	pushq	%r15
+    1bc6:      	pushq	%r14
+    1bc8:      	pushq	%rbx
+    1bc9:      	pushq	%rax
+    1bca:      	leaq	-0x1495(%rip), %rdi     # 0x73c <strstr+0x73c>
+    1bd1:      	xorl	%esi, %esi
+    1bd3:      	xorl	%eax, %eax
+    1bd5:      	callq	0x1c60 <open@plt>
+    1bda:      	testl	%eax, %eax
+    1bdc:      	js	0x1c2e <Java_com_planted_audit_Native_antidebugTracerPid+0x6e>
+    1bde:      	movl	%eax, %r14d
+    1be1:      	leaq	0x2278(%rip), %rbx      # 0x3e60 <status_buffer>
+    1be8:      	movl	$0xfff, %edx            # imm = 0xFFF
+    1bed:      	movl	%eax, %edi
+    1bef:      	movq	%rbx, %rsi
+    1bf2:      	callq	0x1c70 <read@plt>
+    1bf7:      	movq	%rax, %r15
+    1bfa:      	movl	%r14d, %edi
+    1bfd:      	callq	0x1c80 <close@plt>
+    1c02:      	testq	%r15, %r15
+    1c05:      	jle	0x1c2e <Java_com_planted_audit_Native_antidebugTracerPid+0x6e>
+    1c07:      	movb	$0x0, (%r15,%rbx)
+    1c0c:      	leaq	-0x147a(%rip), %rsi     # 0x799 <strstr+0x799>
+    1c13:      	movq	%rbx, %rdi
+    1c16:      	callq	0x1c90 <strstr@plt>
+    1c1b:      	testq	%rax, %rax
+    1c1e:      	je	0x1c2e <Java_com_planted_audit_Native_antidebugTracerPid+0x6e>
+    1c20:      	cmpb	$0x9, 0xa(%rax)
+    1c24:      	je	0x1c2e <Java_com_planted_audit_Native_antidebugTracerPid+0x6e>
+    1c26:      	cmpb	$0x30, 0xb(%rax)
+    1c2a:      	movb	$0x1, %al
+    1c2c:      	jne	0x1c33 <Java_com_planted_audit_Native_antidebugTracerPid+0x73>
+    1c2e:      	callq	0x1ca0 <antidebug_frida_maps@plt>
+    1c33:      	addq	$0x8, %rsp
+    1c37:      	popq	%rbx
+    1c38:      	popq	%r14
+    1c3a:      	popq	%r15
+    1c3c:      	popq	%rbp
+    1c3d:      	retq
+
+Disassembly of section .plt:
+
+0000000000001c40 <.plt>:
+    1c40:      	pushq	0x11a2(%rip)            # 0x2de8 <strstr+0x2de8>
+    1c46:      	jmpq	*0x11a4(%rip)           # 0x2df0 <strstr+0x2df0>
+    1c4c:      	nopl	(%rax)
+
+0000000000001c50 <ptrace@plt>:
+    1c50:      	jmpq	*0x11a2(%rip)           # 0x2df8 <strstr+0x2df8>
+    1c56:      	pushq	$0x0
+    1c5b:      	jmp	0x1c40 <.plt>
+
+0000000000001c60 <open@plt>:
+    1c60:      	jmpq	*0x119a(%rip)           # 0x2e00 <strstr+0x2e00>
+    1c66:      	pushq	$0x1
+    1c6b:      	jmp	0x1c40 <.plt>
+
+0000000000001c70 <read@plt>:
+    1c70:      	jmpq	*0x1192(%rip)           # 0x2e08 <strstr+0x2e08>
+    1c76:      	pushq	$0x2
+    1c7b:      	jmp	0x1c40 <.plt>
+
+0000000000001c80 <close@plt>:
+    1c80:      	jmpq	*0x118a(%rip)           # 0x2e10 <strstr+0x2e10>
+    1c86:      	pushq	$0x3
+    1c8b:      	jmp	0x1c40 <.plt>
+
+0000000000001c90 <strstr@plt>:
+    1c90:      	jmpq	*0x1182(%rip)           # 0x2e18 <strstr+0x2e18>
+    1c96:      	pushq	$0x4
+    1c9b:      	jmp	0x1c40 <.plt>
+
+0000000000001ca0 <antidebug_frida_maps@plt>:
+    1ca0:      	jmpq	*0x117a(%rip)           # 0x2e20 <strstr+0x2e20>
+    1ca6:      	pushq	$0x5
+    1cab:      	jmp	0x1c40 <.plt>
+
+0000000000001cb0 <strcmp@plt>:
+    1cb0:      	jmpq	*0x1172(%rip)           # 0x2e28 <strstr+0x2e28>
+    1cb6:      	pushq	$0x6
+    1cbb:      	jmp	0x1c40 <.plt>
+
+0000000000001cc0 <inotify_init@plt>:
+    1cc0:      	jmpq	*0x116a(%rip)           # 0x2e30 <strstr+0x2e30>
+    1cc6:      	pushq	$0x7
+    1ccb:      	jmp	0x1c40 <.plt>
+
+0000000000001cd0 <inotify_add_watch@plt>:
+    1cd0:      	jmpq	*0x1162(%rip)           # 0x2e38 <strstr+0x2e38>
+    1cd6:      	pushq	$0x8
+    1cdb:      	jmp	0x1c40 <.plt>
+
+0000000000001ce0 <getppid@plt>:
+    1ce0:      	jmpq	*0x115a(%rip)           # 0x2e40 <strstr+0x2e40>
+    1ce6:      	pushq	$0x9
+    1ceb:      	jmp	0x1c40 <.plt>
+
+0000000000001cf0 <kill@plt>:
+    1cf0:      	jmpq	*0x1152(%rip)           # 0x2e48 <strstr+0x2e48>
+    1cf6:      	pushq	$0xa
+    1cfb:      	jmp	0x1c40 <.plt>
+
+0000000000001d00 <signal@plt>:
+    1d00:      	jmpq	*0x114a(%rip)           # 0x2e50 <strstr+0x2e50>
+    1d06:      	pushq	$0xb
+    1d0b:      	jmp	0x1c40 <.plt>
+
+0000000000001d10 <raise@plt>:
+    1d10:      	jmpq	*0x1142(%rip)           # 0x2e58 <strstr+0x2e58>
+    1d16:      	pushq	$0xc
+    1d1b:      	jmp	0x1c40 <.plt>

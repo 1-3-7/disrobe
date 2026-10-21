@@ -1,0 +1,52 @@
+
+corpus/recon/android-audit/native/lib/arm64-v8a/libclean.so:	file format elf64-littleaarch64
+
+Disassembly of section .text:
+
+0000000000001434 <clean_add>:
+    1434:      	add	w0, w1, w0
+    1438:      	ret
+
+000000000000143c <clean_greeting_length>:
+    143c:      	nop
+    1440:      	adr	x0, 0x370 <strstr+0x370>
+    1444:      	b	0x14a0 <strlen@plt>
+
+0000000000001448 <clean_has_word>:
+    1448:      	stp	x29, x30, [sp, #-0x10]!
+    144c:      	mov	x29, sp
+    1450:      	adrp	x1, 0x0 <strstr>
+    1454:      	add	x1, x1, #0x37d
+    1458:      	bl	0x14b0 <strstr@plt>
+    145c:      	cmp	x0, #0x0
+    1460:      	cset	w0, ne
+    1464:      	ldp	x29, x30, [sp], #0x10
+    1468:      	ret
+
+000000000000146c <Java_com_planted_audit_Native_cleanAdd>:
+    146c:      	add	w0, w3, w2
+    1470:      	ret
+
+Disassembly of section .plt:
+
+0000000000001480 <.plt>:
+    1480:      	stp	x16, x30, [sp, #-0x10]!
+    1484:      	adrp	x16, 0x2000 <strstr@plt+0xb50>
+    1488:      	ldr	x17, [x16, #0x590]
+    148c:      	add	x16, x16, #0x590
+    1490:      	br	x17
+    1494:      	nop
+    1498:      	nop
+    149c:      	nop
+
+00000000000014a0 <strlen@plt>:
+    14a0:      	adrp	x16, 0x2000 <strstr@plt+0xb50>
+    14a4:      	ldr	x17, [x16, #0x598]
+    14a8:      	add	x16, x16, #0x598
+    14ac:      	br	x17
+
+00000000000014b0 <strstr@plt>:
+    14b0:      	adrp	x16, 0x2000 <strstr@plt+0xb50>
+    14b4:      	ldr	x17, [x16, #0x5a0]
+    14b8:      	add	x16, x16, #0x5a0
+    14bc:      	br	x17

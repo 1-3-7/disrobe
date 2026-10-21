@@ -10,7 +10,7 @@ build = [
     "d8 --release --min-api 21 over the compiled com/planted/audit classes",
     "aapt2 compile --dir res, aapt2 link -I android-4.1.1.4.jar --manifest AndroidManifest.xml res.zip (a real resources.arsc with the app label, so apktool can rebuild the APK), classes.dex added with jar --update --no-manifest, zipalign -f 4",
     "keytool RSA-2048 keystore (CN=Disrobe Audit Fixture) generated per build with a random store password; apksigner sign (v1 to v3) and apksigner verify",
-    "native/build.sh: zig 0.17.0 `zig cc -target aarch64-linux-android|x86_64-linux-android -shared -nostdlib -fPIC -O2 -fno-builtin` over native/antidebug.c and native/clean.c (libc functions stay undefined imports, as bionic resolves them at load); `build.sh Native` adds lib/<abi>/*.so to audit-native.apk with jar --update",
+    "native/build.sh: zig 0.17.0 `zig cc -target aarch64-linux-android|x86_64-linux-android -shared -nostdlib -fPIC -O2 -g0 -fno-builtin -ffile-prefix-map -fdebug-prefix-map` over native/antidebug.c and native/clean.c (libc functions stay undefined imports, as bionic resolves them at load; no debug info or host path survives); native/reference/<abi>/lib<name>.objdump.txt holds `llvm-objdump -d --no-show-raw-insn` of each library as the call-edge reference; `build.sh Native` adds lib/<abi>/*.so to audit-native.apk with jar --update",
     "obfuscate.sh: Obfuscapk 8ac7cf4c (MIT; source inspected before use, no network obfuscator enabled) over audit-plants.apk with -i and an ignore-packages file naming com.google.android, one transform family per output plus the full chain",
 ]
 sources = ["src/com/planted/audit/Plants.java", "src/com/planted/audit/Control.java", "src/com/planted/audit/Flows.java", "src/com/google/android/play/core/integrity/IntegrityManager.java", "src/com/google/android/gms/safetynet/SafetyNetClient.java", "AndroidManifest.xml", "res/values/strings.xml", "src/com/planted/audit/Native.java", "native/antidebug.c", "native/clean.c"]
@@ -77,27 +77,27 @@ note = "same build with ConstStringEncryption, Reflection, AdvancedReflection, A
 
 [[fixture]]
 path = "audit-native.apk"
-sha256 = "f9b0772d1968fcb87d084259113a8854153349f67bcd9666efbb14103ad48a7e"
-bytes = 21170
+sha256 = "f63c67272e34579bba7e2b3852a164960b4b7570f6e82ea7aa8d36e2630e4aa5"
+bytes = 17074
 classes = ["Lcom/planted/audit/Native;"]
 note = "native anti-analysis fixture: Native.java loads libantidebug and libclean and declares three JNI natives; lib/arm64-v8a and lib/x86_64 each carry libantidebug.so (ptrace self-attach, TracerPid read from /proc/self/status, frida literals in /proc/self/maps and thread names, inotify watch on /proc/self/mem, getppid/kill and a SIGTRAP probe) and libclean.so (add, strlen, strstr only); graded by tests/android_audit.rs"
 
 [[fixture]]
 path = "native/lib/arm64-v8a/libantidebug.so"
-sha256 = "8a05a4416e433c1899f06beab2c4223db667e4782104d12313bca2e01c32cb2d"
-bytes = 10768
+sha256 = "edb928f73d9f7197a50a5142f709b8b4247d24a4e6ba6e4a1c4a4df5c8a7959d"
+bytes = 6376
 
 [[fixture]]
 path = "native/lib/arm64-v8a/libclean.so"
-sha256 = "43de3a4071115514c0bf61b7aa207ae042e9a6798151ad497d383b773d1f43f7"
-bytes = 5136
+sha256 = "dfcca5b49660ecd1d58e3bf4a7212c97fc3bcfb5d30300d8ec9346e7d57bd5f2"
+bytes = 3168
 
 [[fixture]]
 path = "native/lib/x86_64/libantidebug.so"
-sha256 = "2c47ccc26ce672d8226f1c858e509524931162380a26cb0c83e279d0c37acf65"
-bytes = 10320
+sha256 = "2635f26785565b2c2fc2cb7fe94e0028cbfa17dbe2abadec4c43ae36015aa7cd"
+bytes = 6048
 
 [[fixture]]
 path = "native/lib/x86_64/libclean.so"
-sha256 = "83960d3a61789de479adc1df667e50e01cb7ba7bdc7a131da6c179c2e94e7b39"
-bytes = 4760
+sha256 = "dcc3ce4e637dcec7c302e42f34899d41870b9236f1a3dee7380eb733905f1680"
+bytes = 3064

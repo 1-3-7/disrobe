@@ -9,7 +9,8 @@ build() {
     target="$2"
     mkdir -p "$here/lib/$abi"
     for name in antidebug clean; do
-        "$ZIG" cc -target "$target" -shared -nostdlib -fPIC -O2 -fno-builtin \
+        "$ZIG" cc -target "$target" -shared -nostdlib -fPIC -O2 -g0 -fno-builtin \
+            -ffile-prefix-map="$here"=. -fdebug-prefix-map="$here"=. \
             -Wl,--hash-style=gnu -Wl,-z,max-page-size=4096 \
             -o "$here/lib/$abi/lib$name.so" "$here/$name.c"
     done

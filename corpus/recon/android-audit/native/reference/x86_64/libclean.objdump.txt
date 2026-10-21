@@ -1,0 +1,49 @@
+
+corpus/recon/android-audit/native/lib/x86_64/libclean.so:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000001440 <clean_add>:
+    1440:      	leal	(%rdi,%rsi), %eax
+    1443:      	retq
+    1444:      	nopw	%cs:(%rax,%rax)
+    144e:      	nop
+
+0000000000001450 <clean_greeting_length>:
+    1450:      	leaq	-0x10e7(%rip), %rdi     # 0x370 <strstr+0x370>
+    1457:      	jmp	0x14a0 <strlen@plt>
+    145c:      	nopl	(%rax)
+
+0000000000001460 <clean_has_word>:
+    1460:      	pushq	%rbp
+    1461:      	movq	%rsp, %rbp
+    1464:      	leaq	-0x10ee(%rip), %rsi     # 0x37d <strstr+0x37d>
+    146b:      	callq	0x14b0 <strstr@plt>
+    1470:      	xorl	%ecx, %ecx
+    1472:      	testq	%rax, %rax
+    1475:      	setne	%cl
+    1478:      	movl	%ecx, %eax
+    147a:      	popq	%rbp
+    147b:      	retq
+    147c:      	nopl	(%rax)
+
+0000000000001480 <Java_com_planted_audit_Native_cleanAdd>:
+    1480:      	leal	(%rdx,%rcx), %eax
+    1483:      	retq
+
+Disassembly of section .plt:
+
+0000000000001490 <.plt>:
+    1490:      	pushq	0x10f2(%rip)            # 0x2588 <strstr+0x2588>
+    1496:      	jmpq	*0x10f4(%rip)           # 0x2590 <strstr+0x2590>
+    149c:      	nopl	(%rax)
+
+00000000000014a0 <strlen@plt>:
+    14a0:      	jmpq	*0x10f2(%rip)           # 0x2598 <strstr+0x2598>
+    14a6:      	pushq	$0x0
+    14ab:      	jmp	0x1490 <.plt>
+
+00000000000014b0 <strstr@plt>:
+    14b0:      	jmpq	*0x10ea(%rip)           # 0x25a0 <strstr+0x25a0>
+    14b6:      	pushq	$0x1
+    14bb:      	jmp	0x1490 <.plt>
