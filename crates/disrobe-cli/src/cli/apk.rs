@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_jvm::{
-    ApkResourceReport, CertificateInfo, JniSurfaceReport, ResolvedNative, ResourceEntrySummary,
-    analyze_apk_resources,
+    AndroidAuditReport, ApkResourceReport, CertificateInfo, JniSurfaceReport, ResolvedNative,
+    ResourceEntrySummary, analyze_apk_resources, audit_android_apk,
 };
 use serde::Serialize;
 
@@ -33,6 +33,7 @@ struct ApkAnalysis {
     report: ApkResourceReport,
     jni_unresolved: Vec<JniUnresolvedEntry>,
     jni_ambiguous: Vec<JniAmbiguousEntry>,
+    audit: AndroidAuditReport,
 }
 
 fn derive_jni_unresolved(surface: &JniSurfaceReport) -> Vec<JniUnresolvedEntry> {
@@ -87,9 +88,12 @@ pub(crate) fn run(path: PathBuf, out: Option<PathBuf>, fmt: OutputFormat) -> mie
     if let Some(out_dir) = out.as_deref() {
         write_outputs(out_dir, &report)?;
     }
+    let audit: AndroidAuditReport = audit_android_apk(&bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0995: apk code-pattern audit: {e}"))?;
     let analysis: ApkAnalysis = ApkAnalysis {
         jni_unresolved: derive_jni_unresolved(&report.jni),
         jni_ambiguous: derive_jni_ambiguous(&report.jni),
+        audit,
         report,
     };
     output::emit(fmt, &analysis, || render_text(&path, &analysis))
@@ -160,6 +164,29 @@ fn render_text(path: &std::path::Path, analysis: &ApkAnalysis) {
     render_certificates(&report.certificates);
     render_manifest(report.manifest_xml.as_deref());
     render_jni(report, analysis);
+    render_audit(&analysis.audit);
+}
+
+fn render_audit(audit: &AndroidAuditReport) {
+    println!(
+        "  audit:        {} finding{} over {} method{}{}",
+        audit.findings.len(),
+        plural(audit.findings.len(), "", "s"),
+        audit.methods_scanned,
+        plural(audit.methods_scanned, "", "s"),
+        if audit.truncated { " (truncated)" } else { "" },
+    );
+    for finding in &audit.findings {
+        println!(
+            "    {} [{}] {}->{} @{:#x}: {}",
+            finding.rule_id,
+            finding.severity.label(),
+            finding.class,
+            finding.method,
+            finding.pc,
+            finding.evidence
+        );
+    }
 }
 
 fn render_jni(report: &ApkResourceReport, analysis: &ApkAnalysis) {

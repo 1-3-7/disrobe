@@ -31,7 +31,7 @@ disrobe jvm jni app.apk                       # link native methods against the 
 disrobe jvm jni App.class --native libnative.so --json
 disrobe jvm jni module.aar                    # nested classes.jar against jni/<abi>/*.so
 disrobe jvm jni base.apk --native split.apk    # cross-split link against an APK Set member
-disrobe apk app.apk                           # also prints the JNI link table for the embedded dex/.so pair
+disrobe apk app.apk                           # resources, certificates, the JNI link table and the code-pattern audit
 disrobe auto app.apk --out recovered/         # recursively process recognized payloads
 disrobe auto classes.dex --format json --out recovered/
 ```
@@ -103,6 +103,23 @@ The tests below run in `cargo xtask prepush` when `disrobe-pass-jvm` or `disrobe
 Not graded by any test: AAB input, a Windows `.dll` or macOS `.dylib` passed with `--native`, the JNI table that `disrobe apk` prints, ambiguous symbols, a real `dex2oat` `.oat`, and an NDK-built library or the NDK's `jni.h`.
 
 Only two things are absent from the static artifact and therefore unrecoverable: a `fnPtr` computed at runtime rather than stored as a relocatable pointer, and a `FindClass` target name built dynamically rather than passed as a string literal. The native function body at a recovered address is not this surface's job; it goes to the native pseudo-C decompiler.
+
+### Code-pattern audit
+
+`disrobe apk` audits every DEX in the package for insecure API use and reports each site as a `DR-APK-*` finding anchored to the class, method and instruction offset, with the resolved argument as evidence. The rules are evaluated on the bytecode, not on decompiled text: a `Cipher.getInstance` call is graded by the transformation string that reaches its argument register, a `SecretKeySpec` by whether its key bytes came from a string literal, a storage call by the mode constant it receives, and a `WebSettings` setter by the boolean it is passed. Eight categories are covered.
+
+| Category | Rules |
+|---|---|
+| Weak cryptography | DES, 3DES, RC2, RC4 and Blowfish ciphers; ECB mode and bare `AES`; RSA without OAEP; MD2, MD4, MD5 and SHA-1 digests; `SecureRandom` seeded with a constant; `java.util.Random` feeding key material; keys and IVs built from string literals |
+| Transport security | empty `X509TrustManager` checks and a null `getAcceptedIssuers`; a `HostnameVerifier` that returns `true`; the Apache `ALLOW_ALL_HOSTNAME_VERIFIER`; `SslErrorHandler.proceed`; `SSLContext` on SSL, SSLv3, TLSv1 or TLSv1.1 |
+| Insecure storage | world-readable or world-writable file, preference, database and directory modes; external storage directories and literal `/sdcard` paths; temporary files; `execSQL` and `rawQuery` with a statement that is not a literal |
+| WebView | JavaScript enabled, file and content access from file URLs, mixed content always allowed, saved passwords, `addJavascriptInterface`, remote debugging |
+| Logging | every `android.util.Log` call, raised when a literal in the message mentions a password, token, secret, key or credential |
+| Dangerous APIs | `Runtime.exec` and `ProcessBuilder`; `DexClassLoader`, `PathClassLoader` and in-memory class loaders; `System.load` by path; `Method.invoke` |
+| Privacy | IMEI, MEID, IMSI, SIM serial, line number, `ANDROID_ID` and `Build.SERIAL`; SMS sending; clipboard reads; microphone, camera and location access; installed package enumeration |
+| Anti-analysis | `su` execution and root-indicator paths and packages; emulator fingerprints compared against `Build` properties; `Debug.isDebuggerConnected` |
+
+The grader is the authored `corpus/recon/android-audit` pair: a plant APK with one insecure use per method and a control APK that uses the same API families correctly, both built by `javac`, `d8`, `aapt2` and `apksigner` from committed sources. The test requires every plant to be reported at its own method and nothing else, and no finding on the control. Register values are tracked linearly within a method, so an argument that reaches the call through a branch merge is reported only when the literal is still the last write to that register; a transformation or mode computed at run time is not reported.
 
 ## Limits
 

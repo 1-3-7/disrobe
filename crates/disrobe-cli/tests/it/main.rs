@@ -334,6 +334,8 @@ mod jvm_dex_native_decompile;
 
 #[path = "../jvm_dex2jar.rs"]
 mod jvm_dex2jar;
+#[path = "../jvm_dex_sources.rs"]
+mod jvm_dex_sources;
 
 #[path = "../jvm_jar_native_decompile.rs"]
 mod jvm_jar_native_decompile;
@@ -520,3 +522,6 @@ mod taint_pe_parity;
 
 #[path = "../yara_loader.rs"]
 mod yara_loader;
+
+#[path = "../apk_audit.rs"]
+mod apk_audit;
