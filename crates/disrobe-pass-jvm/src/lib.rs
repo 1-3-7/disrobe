@@ -16,9 +16,11 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_attrs;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod android_audit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod android_backend;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod android_identify;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apk_resources;
@@ -98,6 +100,7 @@ pub mod jar;
 pub mod jni;
 pub mod jsr_inline;
 pub mod kotlin;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod manifest_facts;
 pub mod name_disambig;
 #[cfg(not(target_arch = "wasm32"))]
@@ -133,6 +136,7 @@ pub mod stub_emulator;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod yguard;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use android_audit::{
     AndroidAuditReport, AuditCategory, AuditFinding, AuditSeverity, audit_apk as audit_android_apk,
 };
@@ -141,6 +145,7 @@ pub use android_backend::{
     AndroidDecompileOutput, AndroidDecompiler, BackendPreference, JadxOutcome, JadxRefusal,
     decompile_dex as android_decompile_dex, run_jadx_on_bytes, run_jadx_on_bytes_detailed,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use android_identify::{
     AndroidIdentity, AndroidIdentityHit, AndroidIdentityKind, identify_android,
 };
@@ -279,6 +284,7 @@ pub use jni::{
 };
 pub use jsr_inline::{JsrInlineReport, JsrInlined, contains_jsr, inline_jsr_subroutines};
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
+#[cfg(not(target_arch = "wasm32"))]
 pub use manifest_facts::{ComponentKind, ManifestComponent, ManifestFacts, manifest_facts};
 pub use name_disambig::{
     CollisionReport, NameDisambiguator, classify as classify_name_collisions,
