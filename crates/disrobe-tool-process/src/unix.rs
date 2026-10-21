@@ -606,7 +606,11 @@ mod macos_tests {
             }
             std::thread::sleep(OBSERVATION_INTERVAL);
         }
-        let zombie_only: bool = macos_group_contains_only_zombies(process_group);
+        let mut zombie_only: bool = macos_group_contains_only_zombies(process_group);
+        while !zombie_only && Instant::now() < deadline {
+            std::thread::sleep(OBSERVATION_INTERVAL);
+            zombie_only = macos_group_contains_only_zombies(process_group);
+        }
         let status: ExitStatus = child.wait()?;
         assert!(status.success());
         let source: io::Error = result.ok_or_else(|| {
