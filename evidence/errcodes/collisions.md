@@ -4,7 +4,7 @@
 
 | Measure | Count |
 | --- | ---: |
-| Scanned source files | 2133 |
+| Scanned source files | 2134 |
 | Emission sites | 2768 |
 | Sites carrying a message | 2668 |
 | Distinct emitted codes | 2028 |
