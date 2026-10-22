@@ -285,9 +285,9 @@ pub use hierarchy::{HierarchyKind, HierarchyNode, classfile_hierarchy_node, dex_
 #[cfg(not(target_arch = "wasm32"))]
 pub use jar::{
     AabExtract, AabModule, AarExtract, ApkExtract, ApksExtract, JIMAGE_MAGIC, JMOD_MAGIC, JarEntry,
-    JarExtract, Jimage, JimageHeader, JimageMembers, JimageResource, JmodExtract,
+    JarExtract, Jimage, JimageHeader, JimageMembers, JimageResource, JmodExtract, SplitSetMerge,
     extract as extract_jar, extract_aab, extract_aar, extract_apk, extract_apks, extract_jmod,
-    jimage_members, parse_jimage, parse_jimage_header,
+    jimage_members, merge_split_set, parse_jimage, parse_jimage_header,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use jni::{

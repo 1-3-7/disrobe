@@ -712,6 +712,136 @@ fn apk_extract_decompressed_bytes(split: &ApkExtract) -> u64 {
         .sum()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitSetMerge {
+    pub base: String,
+    pub base_bytes: Vec<u8>,
+    pub merged: Vec<u8>,
+    pub members: Vec<String>,
+}
+
+fn split_is_base(name: &str, extract: &ApkExtract) -> bool {
+    let file: &str = name.rsplit('/').next().unwrap_or(name);
+    let lower: String = file.to_ascii_lowercase();
+    if lower == "base.apk" || lower == "base-master.apk" {
+        return true;
+    }
+    let manifest_split: bool = extract
+        .manifest_bytes
+        .as_deref()
+        .is_some_and(|bytes: &[u8]| {
+            crate::axml::parse(bytes).is_ok_and(|tree: crate::axml::AxmlTree| {
+                tree.events.iter().any(|event: &crate::axml::AxmlNode| {
+                    matches!(event, crate::axml::AxmlNode::StartElement { name, attributes, .. }
+                    if name == "manifest"
+                        && attributes
+                            .iter()
+                            .any(|a: &crate::axml::AxmlAttribute| a.name == "split"))
+                })
+            })
+        });
+    !manifest_split && !extract.dex_files.is_empty()
+}
+
+pub fn merge_split_set(bytes: &[u8]) -> Result<SplitSetMerge> {
+    use std::io::Write as _;
+    let set: ApksExtract = extract_apks(bytes)?;
+    let base_name: String = set
+        .splits
+        .iter()
+        .find(|(name, extract): &(&String, &ApkExtract)| split_is_base(name, extract))
+        .or_else(|| {
+            set.splits
+                .iter()
+                .find(|(_, e): &(&String, &ApkExtract)| !e.dex_files.is_empty())
+        })
+        .map(|(name, _): (&String, &ApkExtract)| name.clone())
+        .ok_or_else(|| {
+            Error::Zip("the bundle has no member APK with a manifest and code".to_owned())
+        })?;
+    let base: &ApkExtract = &set.splits[&base_name];
+    let mut names: BTreeSet<String> = base
+        .jar
+        .entries
+        .iter()
+        .map(|e: &JarEntry| e.path.clone())
+        .collect();
+    let mut dex_index: usize = base.dex_files.len();
+    let mut total: u64 = 0;
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+    let mut zip: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+    let opts: zip::write::SimpleFileOptions =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut put =
+        |zip: &mut zip::ZipWriter<Cursor<Vec<u8>>>, path: &str, data: &[u8]| -> Result<()> {
+            total = total.saturating_add(data.len() as u64);
+            if total > ZIP_TOTAL_BYTES_CAP {
+                return Err(Error::Zip(
+                    "merged bundle exceeds the zip total cap".to_owned(),
+                ));
+            }
+            zip.start_file(path, opts)
+                .map_err(|e| Error::Zip(format!("merged bundle: {e}")))?;
+            zip.write_all(data)
+                .map_err(|e| Error::Zip(format!("merged bundle: {e}")))?;
+            Ok(())
+        };
+    for entry in &base.jar.entries {
+        put(&mut zip, &entry.path, &entry.bytes)?;
+    }
+    let mut members: Vec<String> = vec![base_name.clone()];
+    for (name, extract) in &set.splits {
+        if *name == base_name {
+            continue;
+        }
+        members.push(name.clone());
+        for entry in &extract.jar.entries {
+            let lower: String = entry.path.to_ascii_lowercase();
+            if lower.starts_with("meta-inf/")
+                || lower == "androidmanifest.xml"
+                || lower == "resources.arsc"
+            {
+                continue;
+            }
+            let target: String = if lower.starts_with("classes") && lower.ends_with(".dex") {
+                dex_index += 1;
+                if dex_index == 1 {
+                    "classes.dex".to_owned()
+                } else {
+                    format!("classes{dex_index}.dex")
+                }
+            } else {
+                entry.path.clone()
+            };
+            if !names.insert(target.clone()) {
+                continue;
+            }
+            put(&mut zip, &target, &entry.bytes)?;
+        }
+    }
+    let merged: Vec<u8> = zip
+        .finish()
+        .map_err(|e| Error::Zip(format!("merged bundle: {e}")))?
+        .into_inner();
+    let base_bytes: Vec<u8> = raw_member(bytes, &base_name)?;
+    Ok(SplitSetMerge {
+        base: base_name,
+        base_bytes,
+        merged,
+        members,
+    })
+}
+
+fn raw_member(bytes: &[u8], name: &str) -> Result<Vec<u8>> {
+    let outer: JarExtract = extract(bytes)?;
+    outer
+        .entries
+        .into_iter()
+        .find(|entry: &JarEntry| entry.path == name)
+        .map(|entry: JarEntry| entry.bytes)
+        .ok_or_else(|| Error::Zip(format!("bundle member {name} is not readable")))
+}
+
 pub fn extract_apks(bytes: &[u8]) -> Result<ApksExtract> {
     let jar: JarExtract = extract(bytes)?;
     let mut splits: BTreeMap<String, ApkExtract> = BTreeMap::new();

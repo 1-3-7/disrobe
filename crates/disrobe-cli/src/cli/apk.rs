@@ -41,6 +41,14 @@ struct ApkAnalysis {
     audit: AndroidAuditReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     neutralization: Option<NeutralizationSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bundle: Option<BundleSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BundleSummary {
+    base: String,
+    members: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +152,14 @@ fn neutralize_apk(
     Ok(summary)
 }
 
+fn is_bundle_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext: &str| {
+            matches!(ext.to_ascii_lowercase().as_str(), "apks" | "xapk" | "apkm")
+        })
+}
+
 fn derive_jni_unresolved(surface: &JniSurfaceReport) -> Vec<JniUnresolvedEntry> {
     let mut out: Vec<JniUnresolvedEntry> = surface
         .native_methods
@@ -194,10 +210,39 @@ pub(crate) fn run(
     neutralize: Option<NeutralizeMode>,
     fmt: OutputFormat,
 ) -> miette::Result<()> {
-    let bytes: Vec<u8> =
+    let raw: Vec<u8> =
         std::fs::read(&path).map_err(|e| miette::miette!("DR-CLI-0700: cannot read apk: {e}"))?;
-    let report: ApkResourceReport = analyze_apk_resources(&bytes)
+    let bundle: Option<disrobe_pass_jvm::SplitSetMerge> = if is_bundle_path(&path) {
+        Some(
+            disrobe_pass_jvm::merge_split_set(&raw)
+                .map_err(|e| miette::miette!("DR-CLI-0518: split bundle: {e}"))?,
+        )
+    } else {
+        None
+    };
+    if bundle.is_some() && neutralize.is_some() {
+        return Err(miette::miette!(
+            "DR-CLI-0519: --neutralize works on a single APK; extract the base member of the bundle first"
+        ));
+    }
+    let bytes: Vec<u8> = bundle.as_ref().map_or_else(
+        || raw.clone(),
+        |merge: &disrobe_pass_jvm::SplitSetMerge| merge.merged.clone(),
+    );
+    let mut report: ApkResourceReport = analyze_apk_resources(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0701: apk resource analysis: {e}"))?;
+    if let Some(merge) = bundle.as_ref() {
+        let base: ApkResourceReport = analyze_apk_resources(&merge.base_bytes)
+            .map_err(|e| miette::miette!("DR-CLI-0701: apk resource analysis: {e}"))?;
+        report.certificates = base.certificates;
+    }
+    let bundle_summary: Option<BundleSummary> =
+        bundle
+            .as_ref()
+            .map(|merge: &disrobe_pass_jvm::SplitSetMerge| BundleSummary {
+                base: merge.base.clone(),
+                members: merge.members.clone(),
+            });
     if let Some(out_dir) = out.as_deref() {
         write_outputs(out_dir, &report)?;
     }
@@ -212,6 +257,7 @@ pub(crate) fn run(
         jni_ambiguous: derive_jni_ambiguous(&report.jni),
         audit,
         neutralization,
+        bundle: bundle_summary,
         report,
     };
     output::emit(fmt, &analysis, || render_text(&path, &analysis))
@@ -267,6 +313,13 @@ fn render_text(path: &std::path::Path, analysis: &ApkAnalysis) {
     let report: &ApkResourceReport = &analysis.report;
     println!("apk: OK");
     println!("  input:        {}", path.display());
+    if let Some(bundle) = &analysis.bundle {
+        println!(
+            "  bundle:       {} member APK(s), base {}",
+            bundle.members.len(),
+            bundle.base
+        );
+    }
     println!(
         "  package:      {}",
         report.package.as_deref().unwrap_or("(none)")

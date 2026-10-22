@@ -120,3 +120,38 @@ fn apk_text_names_native_library_checks_by_path() {
         );
     }
 }
+
+#[test]
+fn apk_on_a_bundle_merges_the_members_and_keeps_the_base_certificate() {
+    for name in ["audit.xapk", "audit.apkm"] {
+        let path: PathBuf = fixture(&format!("bundles/{name}"));
+        let run = run_disrobe(&["apk", path.to_str().expect("utf-8 path"), "--json"]);
+        assert_eq!(run.code, 0, "{name}: {}", run.stderr);
+        let value: serde_json::Value = serde_json::from_str(&run.stdout).expect("apk json");
+        assert_eq!(value["package"], "com.planted.audit", "{name}");
+        assert_eq!(
+            value["dex_count"], 2,
+            "{name}: both members' dex files are analysed"
+        );
+        assert_eq!(
+            value["native_lib_count"], 4,
+            "{name}: the native split's libraries are linked"
+        );
+        let certs: &Vec<serde_json::Value> =
+            value["certificates"].as_array().expect("certificates");
+        assert_eq!(certs.len(), 1, "{name}: the base member's signer");
+        assert_eq!(
+            certs[0]["schemes"].as_array().expect("schemes").len(),
+            3,
+            "{name}: v1, v2 and v3 from the base member"
+        );
+        let findings: &Vec<serde_json::Value> =
+            value["audit"]["findings"].as_array().expect("findings");
+        assert_eq!(
+            findings.len(),
+            51 + 8,
+            "{name}: the plants' 51 sites plus 8 native rules"
+        );
+        assert_eq!(value["audit"]["native_libs"], 4, "{name}");
+    }
+}
