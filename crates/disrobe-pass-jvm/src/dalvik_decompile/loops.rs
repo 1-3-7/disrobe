@@ -25,6 +25,12 @@ pub(super) fn resugar(body: &str) -> String {
             lines = rewrite_ternary(lines, start, &found);
             continue;
         }
+        if let Some((start, found)) = (0..lines.len())
+            .find_map(|i: usize| resource_try_at(&lines, i).map(|found: ResourceTry| (i, found)))
+        {
+            lines = rewrite_resource_try(lines, start, &found);
+            continue;
+        }
         break;
     }
     drop_trailing_return(&mut lines);
@@ -535,6 +541,119 @@ fn rewrite_ternary(lines: Vec<String>, start: usize, found: &Ternary) -> Vec<Str
     rebuilt
 }
 
+struct ResourceTry {
+    pad: String,
+    resource: String,
+    init: String,
+    body_start: usize,
+    body_end: usize,
+    end: usize,
+}
+
+fn resource_try_at(lines: &[String], start: usize) -> Option<ResourceTry> {
+    let init_line: &str = lines.get(start)?;
+    let pad: String = indentation(init_line).to_owned();
+    let (resource, init): (&str, &str) = init_line.trim().split_once(" = ")?;
+    let init: &str = init.strip_suffix(';')?;
+    if !is_identifier(resource) || init.contains(" = ") {
+        return None;
+    }
+    if lines.get(start + 1)? != &format!("{pad}try {{") {
+        return None;
+    }
+    let catch_at: usize = (start + 2..lines.len()).find(|&i: &usize| {
+        lines[i].starts_with(&format!("{pad}}} catch (Throwable ")) && indentation(&lines[i]) == pad
+    })?;
+    let primary: &str = lines[catch_at]
+        .trim()
+        .strip_prefix("} catch (Throwable ")?
+        .strip_suffix(") {")?;
+    if !is_identifier(primary) {
+        return None;
+    }
+    let inner: String = format!("{pad}    ");
+    let deep: String = format!("{pad}        ");
+    let deeper: String = format!("{pad}            ");
+    let expected_close: [String; 6] = [
+        format!("{inner}if ({resource} != null) {{"),
+        format!("{deep}try {{"),
+        format!("{deeper}{resource}.close();"),
+        String::new(),
+        String::new(),
+        format!("{deep}}}"),
+    ];
+    let block: &[String] = lines.get(catch_at + 1..catch_at + 11)?;
+    if block[0] != expected_close[0]
+        || block[1] != expected_close[1]
+        || block[2] != expected_close[2]
+        || block[5] != expected_close[5]
+    {
+        return None;
+    }
+    let secondary: &str = block[3]
+        .trim()
+        .strip_prefix("} catch (Throwable ")?
+        .strip_suffix(") {")?;
+    let suppress: &str = block[4].trim();
+    let suppressed: bool = suppress == format!("{primary}.addSuppressed({secondary});")
+        || (suppress.ends_with(&format!("({primary}, {secondary});")) && suppress.contains(".m("));
+    if !suppressed
+        || block[6] != format!("{inner}}}")
+        || block[7] != format!("{inner}throw {primary};")
+        || block[8] != format!("{pad}}}")
+        || block[9] != format!("{pad}if ({resource} != null) {{")
+    {
+        return None;
+    }
+    let close_at: usize = catch_at + 11;
+    if lines.get(close_at)? != &format!("{inner}{resource}.close();")
+        || lines.get(close_at + 1)? != &format!("{pad}}}")
+    {
+        return None;
+    }
+    let body: &[String] = &lines[start + 2..catch_at];
+    if body
+        .iter()
+        .any(|line: &String| mentions_assignment(line, resource))
+    {
+        return None;
+    }
+    if lines[close_at + 2..]
+        .iter()
+        .any(|line: &String| mentions(line, resource))
+    {
+        return None;
+    }
+    Some(ResourceTry {
+        pad,
+        resource: resource.to_owned(),
+        init: init.to_owned(),
+        body_start: start + 2,
+        body_end: catch_at,
+        end: close_at + 1,
+    })
+}
+
+fn rewrite_resource_try(lines: Vec<String>, start: usize, found: &ResourceTry) -> Vec<String> {
+    let ResourceTry {
+        pad,
+        resource,
+        init,
+        body_start,
+        body_end,
+        end,
+    } = found;
+    let Some(ty) = declared_type(&lines, resource) else {
+        return lines;
+    };
+    let mut rebuilt: Vec<String> = lines[..start].to_vec();
+    rebuilt.push(format!("{pad}try ({ty} {resource} = {init}) {{"));
+    rebuilt.extend(lines[*body_start..*body_end].iter().cloned());
+    rebuilt.push(format!("{pad}}}"));
+    rebuilt.extend(lines[end + 1..].iter().cloned());
+    drop_declaration(rebuilt, resource)
+}
+
 #[cfg(test)]
 mod tests {
     use super::resugar;
@@ -735,6 +854,63 @@ mod tests {
             "        } else {",
             "            y = 2;",
             "        }",
+        ]);
+        assert_eq!(resugar(&body), body);
+    }
+
+    #[test]
+    fn the_d8_resource_close_shape_becomes_try_with_resources() {
+        let body: String = lines(&[
+            "        java.lang.foreign.Arena var0;",
+            "        String var1;",
+            "        var0 = java.lang.foreign.Arena.ofConfined();",
+            "        try {",
+            "            var1 = work(var0);",
+            "        } catch (Throwable exc1) {",
+            "            if (var0 != null) {",
+            "                try {",
+            "                    var0.close();",
+            "                } catch (Throwable ex1) {",
+            "                    EdgeCases$_0.m(exc1, ex1);",
+            "                }",
+            "            }",
+            "            throw exc1;",
+            "        }",
+            "        if (var0 != null) {",
+            "            var0.close();",
+            "        }",
+            "        return var1;",
+        ]);
+        let expected: String = lines(&[
+            "        String var1;",
+            "        try (java.lang.foreign.Arena var0 = java.lang.foreign.Arena.ofConfined()) {",
+            "            var1 = work(var0);",
+            "        }",
+            "        return var1;",
+        ]);
+        assert_eq!(resugar(&body), expected);
+    }
+
+    #[test]
+    fn a_resource_used_after_the_close_keeps_the_lowered_form() {
+        let body: String = lines(&[
+            "        var0 = open();",
+            "        try {",
+            "            work(var0);",
+            "        } catch (Throwable exc1) {",
+            "            if (var0 != null) {",
+            "                try {",
+            "                    var0.close();",
+            "                } catch (Throwable ex1) {",
+            "                    exc1.addSuppressed(ex1);",
+            "                }",
+            "            }",
+            "            throw exc1;",
+            "        }",
+            "        if (var0 != null) {",
+            "            var0.close();",
+            "        }",
+            "        return var0;",
         ]);
         assert_eq!(resugar(&body), body);
     }
