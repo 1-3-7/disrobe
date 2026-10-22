@@ -78,3 +78,25 @@ fn identify_on_a_minified_dex_reports_renaming_and_the_clean_dex_does_not() {
         clean.stdout
     );
 }
+
+#[test]
+fn identify_names_a_split_bundle_and_its_base_signatures() {
+    let run = run_disrobe(&[
+        "identify",
+        &corpus("recon/android-audit/bundles/audit.xapk"),
+    ]);
+    assert_eq!(run.code, 0, "identify failed: {}", run.stderr);
+    for needle in [
+        "format: apk-bundle (2 dex files, 0 class files)",
+        "format        split APK bundle  (100%)",
+        "             - 2 member APK(s), base com.planted.audit.apk, merged for analysis",
+        "signature     v2  (100%)",
+        "anti-analysis root check  (90%)",
+    ] {
+        assert!(
+            run.stdout.contains(needle),
+            "missing {needle:?} in:\n{}",
+            run.stdout
+        );
+    }
+}
