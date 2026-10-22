@@ -96,7 +96,7 @@ fn dex_decompilation_writes_one_source_per_top_level_class_and_the_tree_compiles
     );
 }
 
-const WHOLE_TREE_JAVAC_ERRORS: usize = 15;
+const WHOLE_TREE_JAVAC_ERRORS: usize = 10;
 
 #[test]
 fn a_source_path_that_escapes_the_output_directory_is_refused_by_name() {
