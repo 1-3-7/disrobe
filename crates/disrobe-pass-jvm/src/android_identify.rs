@@ -7,7 +7,7 @@ use crate::apk_sig::{ApkSignatureReport, SchemeReport};
 use crate::classfile::{self, ClassFile};
 use crate::dalvik_pack_recover::{PackageRecoveryReport, SchemeCandidate, recover_packed_dex};
 use crate::dex::{DexFile, DexHeader, parse as parse_dex, parse_header};
-use crate::jar::{ApkExtract, JarExtract, extract_apk};
+use crate::jar::{ApkExtract, JarExtract, SplitSetMerge, extract_apk, merge_split_set};
 use crate::obfuscators::{Detection, Protector, detect_all};
 use crate::rasp::{RaspReport, RaspSignal, detect_in_apk};
 
@@ -118,7 +118,7 @@ pub fn identify_android(bytes: &[u8], path_hint: Option<&str>) -> Option<Android
         let has_dex: bool = !apk.dex_files.is_empty();
         let has_classes: bool = !apk.jar.classes.is_empty();
         if !has_manifest && !has_dex && !has_classes {
-            return None;
+            return identify_bundle(bytes);
         }
         let looks_apk: bool = has_manifest
             || path_hint.is_some_and(|p: &str| p.to_ascii_lowercase().ends_with(".apk"));
@@ -137,6 +137,34 @@ pub fn identify_android(bytes: &[u8], path_hint: Option<&str>) -> Option<Android
         return Some(identity);
     }
     None
+}
+
+fn identify_bundle(bytes: &[u8]) -> Option<AndroidIdentity> {
+    let merge: SplitSetMerge = merge_split_set(bytes).ok()?;
+    let mut identity: AndroidIdentity = identify_android(&merge.merged, Some("base.apk"))?;
+    "apk-bundle".clone_into(&mut identity.format);
+    identity
+        .hits
+        .retain(|hit: &AndroidIdentityHit| hit.kind != AndroidIdentityKind::Signature);
+    let mut base: AndroidIdentity = AndroidIdentity::default();
+    identify_apk(&merge.base_bytes, &mut base);
+    identity.hits.extend(
+        base.hits
+            .into_iter()
+            .filter(|hit: &AndroidIdentityHit| hit.kind == AndroidIdentityKind::Signature),
+    );
+    identity.push(
+        AndroidIdentityKind::Format,
+        "split APK bundle".to_owned(),
+        format!(
+            "{} member APK(s), base {}, merged for analysis",
+            merge.members.len(),
+            merge.base
+        ),
+        100,
+    );
+    finish(&mut identity);
+    Some(identity)
 }
 
 fn finish(identity: &mut AndroidIdentity) {

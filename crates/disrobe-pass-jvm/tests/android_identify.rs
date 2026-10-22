@@ -185,3 +185,38 @@ fn obfuscapk_builds_name_the_smali_writer_and_the_obfuscator_helpers() {
         );
     }
 }
+
+#[test]
+fn a_split_bundle_is_identified_through_its_base_member() {
+    let plants: AndroidIdentity = identify("recon/android-audit/audit-plants.apk");
+    for (name, base) in [
+        ("audit.xapk", "com.planted.audit.apk"),
+        ("audit.apkm", "base.apk"),
+    ] {
+        let bundle: AndroidIdentity = identify(&format!("recon/android-audit/bundles/{name}"));
+        assert_eq!(bundle.format, "apk-bundle", "{name}");
+        assert_eq!(bundle.dex_files, 2, "{name}: both members' dex files");
+        let format: &AndroidIdentityHit = bundle
+            .hits
+            .iter()
+            .find(|h: &&AndroidIdentityHit| {
+                h.kind == AndroidIdentityKind::Format && h.name == "split APK bundle"
+            })
+            .unwrap_or_else(|| panic!("{name}: bundle hit in {:#?}", bundle.hits));
+        assert_eq!(
+            format.detail,
+            format!("2 member APK(s), base {base}, merged for analysis"),
+            "{name}"
+        );
+        assert_eq!(
+            names(&bundle, AndroidIdentityKind::Signature),
+            names(&plants, AndroidIdentityKind::Signature),
+            "{name}: the base member's signing schemes"
+        );
+        assert_eq!(
+            names(&bundle, AndroidIdentityKind::AntiAnalysis),
+            names(&plants, AndroidIdentityKind::AntiAnalysis),
+            "{name}: the plants' checks survive the merge"
+        );
+    }
+}
