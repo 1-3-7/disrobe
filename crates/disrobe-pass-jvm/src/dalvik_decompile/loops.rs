@@ -7,12 +7,19 @@ pub(super) fn resugar(body: &str) -> String {
     let mut passes: usize = 0;
     while passes < MAX_LOOP_PASSES {
         passes += 1;
-        let Some((start, found)) = (0..lines.len())
+        if let Some((start, found)) = (0..lines.len())
             .find_map(|i: usize| counted_loop_at(&lines, i).map(|found: CountedLoop| (i, found)))
-        else {
-            break;
-        };
-        lines = rewrite(lines, start, &found);
+        {
+            lines = rewrite(lines, start, &found);
+            continue;
+        }
+        if let Some((start, found)) = (0..lines.len())
+            .find_map(|i: usize| iterator_loop_at(&lines, i).map(|found: IteratorLoop| (i, found)))
+        {
+            lines = rewrite_iterator(lines, start, &found);
+            continue;
+        }
+        break;
     }
     let mut out: String = String::new();
     for line in &lines {
@@ -299,6 +306,132 @@ fn drop_declaration(mut lines: Vec<String>, name: &str) -> Vec<String> {
     lines
 }
 
+const MAX_ITERATOR_DISTANCE: usize = 8;
+
+struct IteratorLoop {
+    pad: String,
+    iterator: String,
+    collection: String,
+    element: String,
+    element_type: Option<String>,
+    iterator_line: usize,
+    end: usize,
+}
+
+fn iterator_loop_at(lines: &[String], start: usize) -> Option<IteratorLoop> {
+    let head: &str = lines.get(start)?;
+    let pad: String = indentation(head).to_owned();
+    let iterator: &str = head
+        .trim()
+        .strip_prefix("while (")?
+        .strip_suffix(".hasNext()) {")?;
+    if !is_identifier(iterator) {
+        return None;
+    }
+    let inner_pad: String = format!("{pad}    ");
+    let end: usize = block_end(lines, start, &pad)?;
+    let first: &str = lines.get(start + 1)?;
+    if indentation(first) != inner_pad {
+        return None;
+    }
+    let (element, source): (&str, &str) = first.trim().split_once(" = ")?;
+    if !is_identifier(element) {
+        return None;
+    }
+    let source: &str = source.strip_suffix(';')?;
+    let call: String = format!("{iterator}.next()");
+    let element_type: Option<String> = if source == call {
+        None
+    } else {
+        let inner: &str = source
+            .strip_prefix("((")?
+            .strip_suffix(')')?
+            .strip_suffix(&call)?
+            .strip_suffix(") ")?;
+        Some(inner.to_owned())
+    };
+    let iterator_line: usize = (start.saturating_sub(MAX_ITERATOR_DISTANCE)..start)
+        .rev()
+        .take_while(|&i: &usize| indentation(&lines[i]) == pad && !lines[i].trim().ends_with('{'))
+        .find(|&i: &usize| {
+            lines[i]
+                .trim()
+                .strip_prefix(&format!("{iterator} = "))
+                .and_then(|rest: &str| rest.strip_suffix(".iterator();"))
+                .is_some_and(is_identifier)
+        })?;
+    let collection: String = lines[iterator_line]
+        .trim()
+        .strip_prefix(&format!("{iterator} = "))?
+        .strip_suffix(".iterator();")?
+        .to_owned();
+    let between_touches: bool = lines[iterator_line + 1..start]
+        .iter()
+        .any(|line: &String| mentions(line, iterator) || mentions(line, element));
+    let body_touches: bool = lines[start + 2..end]
+        .iter()
+        .any(|line: &String| mentions(line, iterator));
+    let after_touches: bool = lines[end + 1..]
+        .iter()
+        .any(|line: &String| mentions(line, iterator));
+    let before_touches: bool = lines[..iterator_line]
+        .iter()
+        .any(|line: &String| !is_declaration_of(line, iterator) && mentions(line, iterator));
+    if between_touches || body_touches || after_touches || before_touches {
+        return None;
+    }
+    Some(IteratorLoop {
+        pad,
+        iterator: iterator.to_owned(),
+        collection,
+        element: element.to_owned(),
+        element_type,
+        iterator_line,
+        end,
+    })
+}
+
+fn is_declaration_of(line: &str, name: &str) -> bool {
+    let t: &str = line.trim();
+    t.ends_with(&format!(" {name};")) && !t.contains('=') && t.split(' ').count() == 2
+}
+
+fn rewrite_iterator(lines: Vec<String>, start: usize, found: &IteratorLoop) -> Vec<String> {
+    let IteratorLoop {
+        pad,
+        iterator,
+        collection,
+        element,
+        element_type,
+        iterator_line,
+        end,
+    } = found;
+    let mut rebuilt: Vec<String> = Vec::with_capacity(lines.len());
+    rebuilt.extend(lines[..*iterator_line].iter().cloned());
+    rebuilt.extend(lines[iterator_line + 1..start].iter().cloned());
+    match element_type {
+        Some(cast) => {
+            rebuilt.push(format!("{pad}for (Object {iterator} : {collection}) {{"));
+            rebuilt.push(format!("{pad}    {element} = (({cast}) {iterator});"));
+            rebuilt.extend(lines[start + 2..*end].iter().cloned());
+            rebuilt.push(format!("{pad}}}"));
+            rebuilt.extend(lines[end + 1..].iter().cloned());
+            drop_declaration(rebuilt, iterator)
+        }
+        None => {
+            let Some(ty) = declared_type(&lines, element) else {
+                return lines;
+            };
+            rebuilt.push(format!("{pad}for ({ty} {element} : {collection}) {{"));
+            rebuilt.extend(lines[start + 2..*end].iter().cloned());
+            rebuilt.push(format!("{pad}}}"));
+            rebuilt.extend(lines[end + 1..].iter().cloned());
+            let rebuilt: Vec<String> = drop_declaration(rebuilt, element);
+            drop_declaration(rebuilt, iterator)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::resugar;
@@ -407,5 +540,45 @@ mod tests {
             "        return i;",
         ]);
         assert_eq!(resugar(&body), expected);
+    }
+
+    #[test]
+    fn an_iterator_walk_becomes_an_enhanced_for() {
+        let body: String = lines(&[
+            "        java.util.Iterator var0;",
+            "        Object var5;",
+            "        double var1;",
+            "        var0 = arg0.iterator();",
+            "        var1 = 0.0;",
+            "        while (var0.hasNext()) {",
+            "            var5 = ((EdgeCases.Vector2D) var0.next());",
+            "            var1 = (var1 + ((EdgeCases.Vector2D) var5).x);",
+            "        }",
+            "        return var1;",
+        ]);
+        let expected: String = lines(&[
+            "        Object var5;",
+            "        double var1;",
+            "        var1 = 0.0;",
+            "        for (Object var0 : arg0) {",
+            "            var5 = ((EdgeCases.Vector2D) var0);",
+            "            var1 = (var1 + ((EdgeCases.Vector2D) var5).x);",
+            "        }",
+            "        return var1;",
+        ]);
+        assert_eq!(resugar(&body), expected);
+    }
+
+    #[test]
+    fn an_iterator_read_twice_keeps_the_while() {
+        let body: String = lines(&[
+            "        var2 = arg0.iterator();",
+            "        while (var2.hasNext()) {",
+            "            if (arg1.test(var2.next())) {",
+            "                var0 = (var0 + 1);",
+            "            }",
+            "        }",
+        ]);
+        assert_eq!(resugar(&body), body);
     }
 }
