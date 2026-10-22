@@ -1,0 +1,26 @@
+schema = "disrobe.jvm.d8-enum-fixture/v1"
+source = "EnumBodies.java"
+source_sha256 = "aeb3a45f150938e9f0edcd1712bd9cb9a2dce4a88dde9e5f985c58f8dc8afb86"
+expected_stdout = "ADD+10;SUB-4;MULx21;f;s1;1\n"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4.1"
+command = "javac -Xlint:-options --release 8 -d classes EnumBodies.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/*.class"
+note = "no --lib: d8 warns that java.lang.Enum was not found for interface-method desugaring, which this program does not use"
+output = "EnumBodies-min21.dex"
+output_sha256 = "b5a93136fe6092f461e99e4608f5fa5d9adf45ddc2de0da5ff8450ed6b4fbb8b"
+output_bytes = 4512
+
+[shapes]
+enums = ["EnumBodies$Op", "EnumBodies$Mode"]
+constant_body_classes = ["EnumBodies$Op$1", "EnumBodies$Op$2", "EnumBodies$Op$3", "EnumBodies$Mode$1"]
+abstract_enum_method = "Op.apply"
+overridden_concrete_method = "Mode.tag"
+constants_without_body = 1

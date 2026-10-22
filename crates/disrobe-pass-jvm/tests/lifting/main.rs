@@ -6,6 +6,7 @@ mod d8_constructor_delegate;
 mod d8_core_library_recovery;
 mod d8_date_retarget_recovery;
 mod d8_default_interface_recovery;
+mod d8_enum_bodies;
 mod d8_enum_recovery;
 mod d8_functional_wrapper_lowering;
 mod d8_lambda_helper_elision;

@@ -279,6 +279,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         }
         rendered_classes.insert(class_descriptor.clone(), rendered);
     }
+    enums::fold_constant_bodies(&mut rendered_classes);
     let class_count: usize = rendered_classes.len();
     let method_count: usize = rendered_classes
         .values()
@@ -426,6 +427,7 @@ struct RenderedClass {
     method_count: usize,
     fully_lifted: usize,
     fallback: usize,
+    enum_parts: Option<enums::EnumParts>,
 }
 
 fn indent_nested_class(rendered: &str) -> String {
@@ -1406,21 +1408,33 @@ fn render_class(
             },
             &fields_text,
             &member_texts,
+            &BTreeMap::new(),
         )
     } else {
         None
     };
+    let mut enum_parts: Option<enums::EnumParts> = None;
     match enum_body {
         Some(body) => {
-            let keyword: String = class_declaration
-                .replace("abstract ", "")
-                .replace("final ", "")
-                .replace("class", "enum");
+            let keyword: String = enums::enum_keyword(&class_declaration);
             let _ = writeln!(text, "{keyword} {simple}{supertypes} {{");
             text.push_str(&annotation_text);
             text.push_str(&body);
         }
         None => {
+            if is_enum {
+                enum_parts = Some(enums::EnumParts {
+                    prefix: text.clone(),
+                    declaration: class_declaration.clone(),
+                    simple: simple.to_owned(),
+                    qualified,
+                    supertypes: supertypes.clone(),
+                    annotation_text: annotation_text.clone(),
+                    fields_text: fields_text.clone(),
+                    member_texts: member_texts.clone(),
+                    constants: enum_constants,
+                });
+            }
             let _ = writeln!(text, "{class_declaration} {simple}{supertypes} {{");
             text.push_str(&annotation_text);
             text.push_str(&fields_text);
@@ -1437,6 +1451,7 @@ fn render_class(
         method_count,
         fully_lifted,
         fallback,
+        enum_parts,
     }
 }
 
@@ -4684,6 +4699,7 @@ mod tests {
 
     fn rendered_class_fixture(name: &str, text: &str) -> RenderedClass {
         RenderedClass {
+            enum_parts: None,
             text: text.to_owned(),
             source_path: format!("{name}.java"),
             method_count: 1,
