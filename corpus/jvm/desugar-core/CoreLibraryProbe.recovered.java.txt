@@ -3,7 +3,6 @@ package fixtures.desugar;
 public class CoreLibraryProbe {
     public CoreLibraryProbe() {
         super();
-        return;
     }
     public static java.util.stream.Stream collection(java.util.Collection arg0) {
         return arg0.stream();
@@ -19,7 +18,6 @@ public class CoreLibraryProbe {
     }
     public static void main(String[] arg0) {
         System.out.print(arg0.length);
-        return;
     }
     public static java.util.Optional optional(String arg0) {
         return java.util.Optional.of(arg0);

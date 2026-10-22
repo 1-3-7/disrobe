@@ -21,11 +21,27 @@ pub(super) fn resugar(body: &str) -> String {
         }
         break;
     }
+    drop_trailing_return(&mut lines);
     let mut out: String = String::new();
     for line in &lines {
         let _ = writeln!(out, "{line}");
     }
     out
+}
+
+fn drop_trailing_return(lines: &mut Vec<String>) {
+    let base: Option<usize> = lines
+        .iter()
+        .filter(|line: &&String| !line.trim().is_empty())
+        .map(|line: &String| indentation(line).len())
+        .min();
+    if let (Some(base), Some(last)) = (base, lines.last())
+        && last.trim() == "return;"
+        && indentation(last).len() == base
+        && lines.len() > 1
+    {
+        lines.pop();
+    }
 }
 
 struct CountedLoop {
@@ -540,6 +556,21 @@ mod tests {
             "        return i;",
         ]);
         assert_eq!(resugar(&body), expected);
+    }
+
+    #[test]
+    fn a_trailing_bare_return_is_dropped_but_an_inner_one_stays() {
+        let body: String = lines(&["        work();", "        return;"]);
+        assert_eq!(resugar(&body), lines(&["        work();"]));
+        let inner: String = lines(&[
+            "        if (x) {",
+            "            return;",
+            "        }",
+            "        work();",
+        ]);
+        assert_eq!(resugar(&inner), inner);
+        let only: String = lines(&["        return;"]);
+        assert_eq!(resugar(&only), only);
     }
 
     #[test]
