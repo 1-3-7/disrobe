@@ -781,15 +781,7 @@ struct RenderedMethod {
     refused: bool,
 }
 
-const RECOMPILE_SAFE_LAMBDA_PREFIX: &str = "synthLambda$";
-
-fn recompile_safe_method_name(name: &str) -> String {
-    let delambdad: String = name.strip_prefix("lambda$").map_or_else(
-        || name.to_string(),
-        |rest: &str| format!("{RECOMPILE_SAFE_LAMBDA_PREFIX}{rest}"),
-    );
-    descriptor::java_writable_identifier(&delambdad)
-}
+use crate::descriptor::{RECOMPILE_SAFE_LAMBDA_PREFIX, recompile_safe_method_name};
 
 fn refused_metadata_signature(name: &str, class_simple: &str) -> String {
     if name == "<init>" {

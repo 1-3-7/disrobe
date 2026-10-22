@@ -1,0 +1,398 @@
+[
+  {
+    "fingerprint": "D:(D)I invoke-static M:Ljava/lang/Double;.doubleToLongBits(D)J const/16=32 ushr-long xor-long/2addr long-to-int return",
+    "api": {
+      "owner": "Ljava/lang/Double;",
+      "name": "hashCode",
+      "descriptor": "(D)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(II)I div-int mul-int sub-int if-nez goto xor-int/2addr shr-int/lit8=31 or-int/lit8=1 if-gez add-int/lit8=-1 return",
+    "api": {
+      "owner": "Ljava/lang/Math;",
+      "name": "floorDiv",
+      "descriptor": "(II)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(II)I if-ltz if-ge return new-instance T:Ljava/lang/IndexOutOfBoundsException; new-instance T:Ljava/lang/StringBuilder; const-string S:Index  invoke-direct M:Ljava/lang/StringBuilder;.<init>(Ljava/lang/String;)V invoke-virtual M:Ljava/lang/StringBuilder;.append(I)Ljava/lang/StringBuilder; const-string S: out of bounds for length  invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/String;)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.append(I)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; invoke-direct M:Ljava/lang/IndexOutOfBoundsException;.<init>(Ljava/lang/String;)V throw",
+    "api": {
+      "owner": "Ljava/util/Objects;",
+      "name": "checkIndex",
+      "descriptor": "(II)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(II)I int-to-long int-to-long add-long/2addr long-to-int int-to-long cmp-long if-nez return new-instance T:Ljava/lang/ArithmeticException; invoke-direct M:Ljava/lang/ArithmeticException;.<init>()V throw",
+    "api": {
+      "owner": "Ljava/lang/Math;",
+      "name": "addExact",
+      "descriptor": "(II)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(II)I int-to-long int-to-long mul-long long-to-int int-to-long cmp-long if-nez return new-instance T:Ljava/lang/ArithmeticException; invoke-direct M:Ljava/lang/ArithmeticException;.<init>()V throw",
+    "api": {
+      "owner": "Ljava/lang/Math;",
+      "name": "multiplyExact",
+      "descriptor": "(II)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(II)I rem-int if-nez const/4=0 return xor-int/2addr shr-int/lit8=31 or-int/lit8=1 if-lez return add-int/2addr return",
+    "api": {
+      "owner": "Ljava/lang/Math;",
+      "name": "floorMod",
+      "descriptor": "(II)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(J)I const/16=32 ushr-long xor-long/2addr long-to-int return",
+    "api": {
+      "owner": "Ljava/lang/Long;",
+      "name": "hashCode",
+      "descriptor": "(J)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(J)I long-to-int int-to-long cmp-long if-nez return new-instance T:Ljava/lang/ArithmeticException; invoke-direct M:Ljava/lang/ArithmeticException;.<init>()V throw",
+    "api": {
+      "owner": "Ljava/lang/Math;",
+      "name": "toIntExact",
+      "descriptor": "(J)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/CharSequence;Ljava/lang/Iterable;)Ljava/lang/String; if-eqz new-instance T:Ljava/lang/StringBuilder; invoke-direct M:Ljava/lang/StringBuilder;.<init>()V invoke-interface M:Ljava/lang/Iterable;.iterator()Ljava/util/Iterator; invoke-interface M:Ljava/util/Iterator;.hasNext()Z if-eqz invoke-interface M:Ljava/util/Iterator;.next()Ljava/lang/Object; check-cast T:Ljava/lang/CharSequence; invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/CharSequence;)Ljava/lang/StringBuilder; invoke-interface M:Ljava/util/Iterator;.hasNext()Z if-eqz invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/CharSequence;)Ljava/lang/StringBuilder; goto invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; return-object new-instance T:Ljava/lang/NullPointerException; const-string S:delimiter invoke-direct M:Ljava/lang/NullPointerException;.<init>(Ljava/lang/String;)V throw",
+    "api": {
+      "owner": "Ljava/lang/String;",
+      "name": "join",
+      "descriptor": "(Ljava/lang/CharSequence;Ljava/lang/Iterable;)Ljava/lang/String;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;)Ljava/util/List; const/4=1 new-array T:[Ljava/lang/Object; const/4=0 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;)Ljava/util/Set; const/4=1 new-array T:[Ljava/lang/Object; const/4=0 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;)V instance-of T:Ljava/lang/AutoCloseable; if-eqz check-cast T:Ljava/lang/AutoCloseable; invoke-interface M:Ljava/lang/AutoCloseable;.close()V return-void instance-of T:Ljava/util/concurrent/ExecutorService; if-eqz check-cast T:Ljava/util/concurrent/ExecutorService; invoke-static M:<self>.<helper>(Ljava/util/concurrent/ExecutorService;)V return-void instance-of T:Landroid/content/res/TypedArray; if-eqz check-cast T:Landroid/content/res/TypedArray; invoke-virtual M:Landroid/content/res/TypedArray;.recycle()V return-void instance-of T:Landroid/media/MediaMetadataRetriever; if-eqz check-cast T:Landroid/media/MediaMetadataRetriever; invoke-virtual M:Landroid/media/MediaMetadataRetriever;.release()V return-void instance-of T:Landroid/media/MediaDrm; if-eqz check-cast T:Landroid/media/MediaDrm; invoke-virtual M:Landroid/media/MediaDrm;.release()V return-void instance-of T:Landroid/drm/DrmManagerClient; if-eqz check-cast T:Landroid/drm/DrmManagerClient; invoke-virtual M:Landroid/drm/DrmManagerClient;.release()V return-void instance-of T:Landroid/content/ContentProviderClient; if-eqz check-cast T:Landroid/content/ContentProviderClient; invoke-virtual M:Landroid/content/ContentProviderClient;.release()Z return-void invoke-static M:<self>.<helper>(Ljava/lang/Object;)V return-void",
+    "api": {
+      "owner": "Ljava/util/concurrent/ExecutorService;",
+      "name": "close",
+      "descriptor": "()V",
+      "receiver_first": true
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;)Z if-eqz const/4=1 return const/4=0 return",
+    "api": {
+      "owner": "Ljava/util/Objects;",
+      "name": "nonNull",
+      "descriptor": "(Ljava/lang/Object;)Z",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;)Z if-nez const/4=1 return const/4=0 return",
+    "api": {
+      "owner": "Ljava/util/Objects;",
+      "name": "isNull",
+      "descriptor": "(Ljava/lang/Object;)Z",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object; if-eqz return-object const-string S:defaultObj invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/Object; return-object",
+    "api": {
+      "owner": "Ljava/util/Objects;",
+      "name": "requireNonNullElse",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/4=2 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry; new-instance T:Ljava/util/AbstractMap$SimpleImmutableEntry; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-direct M:Ljava/util/AbstractMap$SimpleImmutableEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "entry",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map$Entry;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map; const/4=1 new-array T:[Ljava/util/Map$Entry; new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=0 aput-object invoke-static M:<self>.<helper>([Ljava/util/Map$Entry;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set; const/4=2 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/4=3 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set; const/4=3 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/4=4 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map; const/4=2 new-array T:[Ljava/util/Map$Entry; new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=0 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=1 aput-object invoke-static M:<self>.<helper>([Ljava/util/Map$Entry;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set; const/4=4 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/4=5 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set; const/4=5 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/4=6 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object const/4=5 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map; const/4=3 new-array T:[Ljava/util/Map$Entry; new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=0 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=1 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=2 aput-object invoke-static M:<self>.<helper>([Ljava/util/Map$Entry;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/4=7 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object const/4=5 aput-object const/4=6 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/16=8 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object const/4=5 aput-object const/4=6 aput-object const/4=7 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map; const/4=4 new-array T:[Ljava/util/Map$Entry; new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=0 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=1 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=2 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=3 aput-object invoke-static M:<self>.<helper>([Ljava/util/Map$Entry;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/16=9 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object const/4=5 aput-object const/4=6 aput-object const/4=7 aput-object const/16=8 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List; const/16=10 new-array T:[Ljava/lang/Object; const/4=0 aput-object const/4=1 aput-object const/4=2 aput-object const/4=3 aput-object const/4=4 aput-object const/4=5 aput-object const/4=6 aput-object const/4=7 aput-object const/16=8 aput-object const/16=9 aput-object invoke-static M:<self>.<helper>([Ljava/lang/Object;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map; const/4=5 new-array T:[Ljava/util/Map$Entry; new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=0 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=1 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=2 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=3 aput-object new-instance T:Ljava/util/AbstractMap$SimpleEntry; invoke-direct M:Ljava/util/AbstractMap$SimpleEntry;.<init>(Ljava/lang/Object;Ljava/lang/Object;)V const/4=4 aput-object invoke-static M:<self>.<helper>([Ljava/util/Map$Entry;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "of",
+      "descriptor": "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/String;)Ljava/lang/String; invoke-virtual M:Ljava/lang/String;.length()I const/4=0 if-ge invoke-virtual M:Ljava/lang/String;.codePointAt(I)I invoke-static M:Ljava/lang/Character;.isWhitespace(I)Z if-nez goto invoke-static M:Ljava/lang/Character;.charCount(I)I add-int/2addr goto if-le invoke-static M:Ljava/lang/Character;.codePointBefore(Ljava/lang/CharSequence;I)I invoke-static M:Ljava/lang/Character;.isWhitespace(I)Z if-nez goto invoke-static M:Ljava/lang/Character;.charCount(I)I sub-int/2addr goto invoke-virtual M:Ljava/lang/String;.substring(II)Ljava/lang/String; return-object",
+    "api": {
+      "owner": "Ljava/lang/String;",
+      "name": "strip",
+      "descriptor": "()Ljava/lang/String;",
+      "receiver_first": true
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/String;)Z invoke-virtual M:Ljava/lang/String;.length()I const/4=0 const/4=0 if-ge invoke-virtual M:Ljava/lang/String;.codePointAt(I)I invoke-static M:Ljava/lang/Character;.isWhitespace(I)Z if-nez return invoke-static M:Ljava/lang/Character;.charCount(I)I add-int/2addr goto const/4=1 return",
+    "api": {
+      "owner": "Ljava/lang/String;",
+      "name": "isBlank",
+      "descriptor": "()Z",
+      "receiver_first": true
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/lang/String;I)Ljava/lang/String; if-ltz invoke-virtual M:Ljava/lang/String;.length()I if-eqz if-nez goto const/4=1 if-ne return-object invoke-virtual M:Ljava/lang/String;.length()I const=2147483647 div-int/2addr if-gt new-instance T:Ljava/lang/StringBuilder; mul-int invoke-direct M:Ljava/lang/StringBuilder;.<init>(I)V const/4=0 if-ge invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/String;)Ljava/lang/StringBuilder; add-int/lit8=1 goto invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; return-object new-instance T:Ljava/lang/OutOfMemoryError; new-instance T:Ljava/lang/StringBuilder; const-string S:Repeating  invoke-direct M:Ljava/lang/StringBuilder;.<init>(Ljava/lang/String;)V invoke-virtual M:Ljava/lang/String;.length()I invoke-virtual M:Ljava/lang/StringBuilder;.append(I)Ljava/lang/StringBuilder; const-string S: bytes String  invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/String;)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.append(I)Ljava/lang/StringBuilder; const-string S: times will produce a String exceeding maximum size. invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/String;)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; invoke-direct M:Ljava/lang/OutOfMemoryError;.<init>(Ljava/lang/String;)V throw const-string S: return-object new-instance T:Ljava/lang/IllegalArgumentException; new-instance T:Ljava/lang/StringBuilder; const-string S:count is negative:  invoke-direct M:Ljava/lang/StringBuilder;.<init>(Ljava/lang/String;)V invoke-virtual M:Ljava/lang/StringBuilder;.append(I)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; invoke-direct M:Ljava/lang/IllegalArgumentException;.<init>(Ljava/lang/String;)V throw",
+    "api": {
+      "owner": "Ljava/lang/String;",
+      "name": "repeat",
+      "descriptor": "(I)Ljava/lang/String;",
+      "receiver_first": true
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/util/Collection;)Ljava/util/List; new-instance T:Ljava/util/ArrayList; invoke-interface M:Ljava/util/Collection;.size()I invoke-direct M:Ljava/util/ArrayList;.<init>(I)V invoke-interface M:Ljava/util/Collection;.iterator()Ljava/util/Iterator; invoke-interface M:Ljava/util/Iterator;.hasNext()Z if-eqz invoke-interface M:Ljava/util/Iterator;.next()Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-virtual M:Ljava/util/ArrayList;.add(Ljava/lang/Object;)Z goto invoke-static M:Ljava/util/Collections;.unmodifiableList(Ljava/util/List;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "copyOf",
+      "descriptor": "(Ljava/util/Collection;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/util/Collection;)Ljava/util/Set; new-instance T:Ljava/util/HashSet; invoke-interface M:Ljava/util/Collection;.size()I invoke-direct M:Ljava/util/HashSet;.<init>(I)V invoke-interface M:Ljava/util/Collection;.iterator()Ljava/util/Iterator; invoke-interface M:Ljava/util/Iterator;.hasNext()Z if-eqz invoke-interface M:Ljava/util/Iterator;.next()Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-virtual M:Ljava/util/HashSet;.add(Ljava/lang/Object;)Z goto invoke-static M:Ljava/util/Collections;.unmodifiableSet(Ljava/util/Set;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "copyOf",
+      "descriptor": "(Ljava/util/Collection;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Ljava/util/Map;)Ljava/util/Map; new-instance T:Ljava/util/HashMap; invoke-interface M:Ljava/util/Map;.size()I invoke-direct M:Ljava/util/HashMap;.<init>(I)V invoke-interface M:Ljava/util/Map;.entrySet()Ljava/util/Set; invoke-interface M:Ljava/util/Set;.iterator()Ljava/util/Iterator; invoke-interface M:Ljava/util/Iterator;.hasNext()Z if-eqz invoke-interface M:Ljava/util/Iterator;.next()Ljava/lang/Object; check-cast T:Ljava/util/Map$Entry; invoke-interface M:Ljava/util/Map$Entry;.getKey()Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-interface M:Ljava/util/Map$Entry;.getValue()Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-virtual M:Ljava/util/HashMap;.put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object; goto invoke-static M:Ljava/util/Collections;.unmodifiableMap(Ljava/util/Map;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "copyOf",
+      "descriptor": "(Ljava/util/Map;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:(Z)I if-eqz const/16=1231 return const/16=1237 return",
+    "api": {
+      "owner": "Ljava/lang/Boolean;",
+      "name": "hashCode",
+      "descriptor": "(Z)I",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:([Ljava/lang/Object;)Ljava/util/List; new-instance T:Ljava/util/ArrayList; array-length invoke-direct M:Ljava/util/ArrayList;.<init>(I)V array-length const/4=0 if-ge aget-object invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-virtual M:Ljava/util/ArrayList;.add(Ljava/lang/Object;)Z add-int/lit8=1 goto invoke-static M:Ljava/util/Collections;.unmodifiableList(Ljava/util/List;)Ljava/util/List; return-object",
+    "api": {
+      "owner": "Ljava/util/List;",
+      "name": "of",
+      "descriptor": "([Ljava/lang/Object;)Ljava/util/List;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:([Ljava/lang/Object;)Ljava/util/Set; new-instance T:Ljava/util/HashSet; array-length invoke-direct M:Ljava/util/HashSet;.<init>(I)V array-length const/4=0 if-ge aget-object invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-virtual M:Ljava/util/HashSet;.add(Ljava/lang/Object;)Z if-eqz add-int/lit8=1 goto new-instance T:Ljava/lang/IllegalArgumentException; new-instance T:Ljava/lang/StringBuilder; const-string S:duplicate element:  invoke-direct M:Ljava/lang/StringBuilder;.<init>(Ljava/lang/String;)V invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/Object;)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; invoke-direct M:Ljava/lang/IllegalArgumentException;.<init>(Ljava/lang/String;)V throw invoke-static M:Ljava/util/Collections;.unmodifiableSet(Ljava/util/Set;)Ljava/util/Set; return-object",
+    "api": {
+      "owner": "Ljava/util/Set;",
+      "name": "of",
+      "descriptor": "([Ljava/lang/Object;)Ljava/util/Set;",
+      "receiver_first": false
+    }
+  },
+  {
+    "fingerprint": "D:([Ljava/util/Map$Entry;)Ljava/util/Map; new-instance T:Ljava/util/HashMap; array-length invoke-direct M:Ljava/util/HashMap;.<init>(I)V array-length const/4=0 if-ge aget-object invoke-interface M:Ljava/util/Map$Entry;.getKey()Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-interface M:Ljava/util/Map$Entry;.getValue()Ljava/lang/Object; invoke-static M:Ljava/util/Objects;.requireNonNull(Ljava/lang/Object;)Ljava/lang/Object; invoke-virtual M:Ljava/util/HashMap;.put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object; if-nez add-int/lit8=1 goto new-instance T:Ljava/lang/IllegalArgumentException; new-instance T:Ljava/lang/StringBuilder; const-string S:duplicate key:  invoke-direct M:Ljava/lang/StringBuilder;.<init>(Ljava/lang/String;)V invoke-virtual M:Ljava/lang/StringBuilder;.append(Ljava/lang/Object;)Ljava/lang/StringBuilder; invoke-virtual M:Ljava/lang/StringBuilder;.toString()Ljava/lang/String; invoke-direct M:Ljava/lang/IllegalArgumentException;.<init>(Ljava/lang/String;)V throw invoke-static M:Ljava/util/Collections;.unmodifiableMap(Ljava/util/Map;)Ljava/util/Map; return-object",
+    "api": {
+      "owner": "Ljava/util/Map;",
+      "name": "ofEntries",
+      "descriptor": "([Ljava/util/Map$Entry;)Ljava/util/Map;",
+      "receiver_first": false
+    }
+  }
+]

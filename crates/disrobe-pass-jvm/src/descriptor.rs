@@ -126,6 +126,17 @@ pub fn java_writable_identifier(raw: &str) -> String {
     crate::name_disambig::writable_identifier(raw)
 }
 
+pub const RECOMPILE_SAFE_LAMBDA_PREFIX: &str = "synthLambda$";
+
+#[must_use]
+pub fn recompile_safe_method_name(name: &str) -> String {
+    let delambdad: String = name.strip_prefix("lambda$").map_or_else(
+        || name.to_string(),
+        |rest: &str| format!("{RECOMPILE_SAFE_LAMBDA_PREFIX}{rest}"),
+    );
+    java_writable_identifier(&delambdad)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MethodDescriptor {
     pub params: Vec<JavaType>,

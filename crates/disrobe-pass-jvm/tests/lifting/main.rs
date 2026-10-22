@@ -1,6 +1,7 @@
 mod anonymous_inner_declaration_type;
 mod anonymous_inner_recursion;
 mod d8_api_outline_projection;
+mod d8_backport_recovery;
 mod d8_captured_lambda_recovery;
 mod d8_constructor_delegate;
 mod d8_core_library_recovery;

@@ -1489,8 +1489,12 @@ fn invoke(
             recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
         },
     );
-    let core_projection: Option<crate::dalvik_core_library::CoreMethodProjection> =
-        ctx.desugar.core_library.project_method(method).filter(
+    let core_projection: Option<crate::dalvik_core_library::CoreMethodProjection> = ctx
+        .desugar
+        .core_library
+        .project_method(method)
+        .or_else(|| ctx.desugar.backports.project_method(method))
+        .filter(
             |projection: &crate::dalvik_core_library::CoreMethodProjection| {
                 core_projection_matches_invoke(projection, method, is_static, insn.regs.len())
             },
@@ -1515,10 +1519,11 @@ fn invoke(
                         method.proto.parameters.join(""),
                         method.proto.return_type
                     );
-                    ctx.desugar
-                        .renames
-                        .java_name(&method.class, &method.name, &descriptor)
-                        .to_owned()
+                    descriptor::recompile_safe_method_name(ctx.desugar.renames.java_name(
+                        &method.class,
+                        &method.name,
+                        &descriptor,
+                    ))
                 },
                 |projection| projection.name.clone(),
             )
@@ -2019,7 +2024,7 @@ fn render_captured_lambda(
     passed.extend(typed_parameters);
     Some(format!(
         "{head} -> {target}.{}({})",
-        descriptor::java_writable_identifier(&recovered.helper_name),
+        descriptor::recompile_safe_method_name(&recovered.helper_name),
         passed.join(", ")
     ))
 }
@@ -2507,6 +2512,8 @@ mod tests {
         let interfaces: DefaultInterfaceRecovery = DefaultInterfaceRecovery::default();
         let functionals: FunctionalRecovery = FunctionalRecovery::default();
         let core_library: CoreLibraryRecovery = CoreLibraryRecovery::default();
+        let backports: crate::dalvik_backports::BackportRecovery =
+            crate::dalvik_backports::BackportRecovery::default();
         let renames: crate::dalvik_desugar::OverloadRenames =
             crate::dalvik_desugar::OverloadRenames::default();
         let inlined_helpers: InlinedHelpers = InlinedHelpers::default();
@@ -2526,6 +2533,7 @@ mod tests {
                 functionals: &functionals,
                 core_library: &core_library,
                 renames: &renames,
+                backports: &backports,
             },
             &inlined_helpers,
         );

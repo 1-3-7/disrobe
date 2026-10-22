@@ -1,0 +1,24 @@
+schema = "disrobe.jvm.d8-backport-fixture/v1"
+source = "BackportProbe.java"
+source_sha256 = "c0c8d2761cd0a2712bd893ef17c797a6ec54c83148a11ef3fcab9528d923bf4c"
+expected_stdout = "[][1][1, 2][1, 2, 3][1, 2, 3, 4][1, 2, 3, 4, 5][1, 2, 3, 4, 5, 6][1, 2, 3, 4, 5, 6, 7][1, 2, 3, 4, 5, 6, 7, 8][1, 2, 3, 4, 5, 6, 7, 8, 9][1, 2, 3, 4, 5, 6, 7, 8, 9, 10][1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11][1, 2, 3][]12345112{}{a=1}2345{a=1}2k=91dtruefalse56107321753612319934112-38261-2ababtruextruev1[p, q]-1131226oknull04066true\n"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4.1"
+command = "javac -Xlint:-options --release 21 -d classes BackportProbe.java"
+
+[d8]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --output dex classes/*.class"
+note = "no --lib: d8 warns that core-library types were not found; the backports it emits do not depend on them"
+output = "BackportProbe-min21.dex"
+output_sha256 = "1fe8dd0d04201dfbbeda040a6423cc7921af70f1c6428744420d25d32a5869d7"
+output_bytes = 20268
+
+[catalog]
+apis = "apis.json"
+note = "each probe method calls one API that d8 9.1.31 backports at min-api 21; the last static call to a synthetic class in the probe body names the helper, and crates/disrobe-pass-jvm/data/d8_backports.json pins the helper fingerprints"
+probes_without_backports = ["listOf0", "setOf0", "mapOf0", "integerHashCode", "characterHashCode", "integerSum", "integerMax", "longSum", "optionalIsEmpty", "optionalOrElseThrow", "optionalStream", "streamToList", "comparatorNaturalOrder", "comparatorComparingInt", "intStreamRange", "streamOf1", "streamOfN", "streamGenerate", "arraysStream", "objectsToString", "objectsCompare", "objectsHash"]

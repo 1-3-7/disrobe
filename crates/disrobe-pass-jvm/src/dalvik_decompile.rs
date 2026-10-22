@@ -104,11 +104,14 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
     let renames: crate::dalvik_desugar::OverloadRenames =
         crate::dalvik_desugar::OverloadRenames::analyze(&code_report);
+    let backports: crate::dalvik_backports::BackportRecovery =
+        crate::dalvik_backports::BackportRecovery::analyze(dex, &code_report);
     let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
         interfaces: &interfaces,
         functionals: &functionals,
         core_library: &core_library,
         renames: &renames,
+        backports: &backports,
     };
     let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
     for descriptor_name in &dex.class_descriptors {
@@ -192,6 +195,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         by_class.contains_key(class)
             && !desugar.interfaces.suppresses_class(class)
             && !desugar.functionals.suppresses_class(class)
+            && !desugar.backports.suppresses_class(class)
     };
     let (mut children, mut member_owner): (
         BTreeMap<String, Vec<String>>,
@@ -226,6 +230,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     for (class_descriptor, methods) in &by_class {
         if desugar.interfaces.suppresses_class(class_descriptor)
             || desugar.functionals.suppresses_class(class_descriptor)
+            || desugar.backports.suppresses_class(class_descriptor)
         {
             continue;
         }
@@ -333,11 +338,14 @@ pub(crate) fn translated_default_methods(
         crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
     let renames: crate::dalvik_desugar::OverloadRenames =
         crate::dalvik_desugar::OverloadRenames::analyze(&code_report);
+    let backports: crate::dalvik_backports::BackportRecovery =
+        crate::dalvik_backports::BackportRecovery::analyze(dex, &code_report);
     let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
         interfaces: &interfaces,
         functionals: &functionals,
         core_library: &core_library,
         renames: &renames,
+        backports: &backports,
     };
     let inlined_helpers: crate::dalvik_desugar::InlinedHelpers =
         crate::dalvik_desugar::InlinedHelpers::default();
@@ -373,17 +381,22 @@ pub(crate) fn translated_default_methods(
                     None,
                     desugar,
                     Some(recovered),
-                    None,
+                    MethodHeader::default(),
                     &inlined_helpers,
                 );
                 if !rendered.fully_lifted {
                     return None;
                 }
-                let abstract_declaration: String =
-                    render_unavailable_method(simple, target, None, desugar, None)
-                        .text
-                        .trim()
-                        .to_owned();
+                let abstract_declaration: String = render_unavailable_method(
+                    simple,
+                    target,
+                    None,
+                    desugar,
+                    MethodHeader::default(),
+                )
+                .text
+                .trim()
+                .to_owned();
                 Some(TranslatedDefaultMethod {
                     source_stem,
                     owner,
@@ -1288,11 +1301,20 @@ fn render_class(
             &method.class,
             &method.method_name,
             &method.method_descriptor,
+        ) || desugar.backports.suppresses_method(
+            &method.class,
+            &method.method_name,
+            &method.method_descriptor,
         ) {
             continue;
         }
         let method_generic: Option<crate::signature::RecoveredMethodSignature> =
             generics::method_signature(members.generics, method, class_generic.as_ref(), desugar);
+        let method_throws: Vec<String> = generics::method_throws(members.generics, method, desugar);
+        let header: MethodHeader<'_> = MethodHeader {
+            generic: method_generic.as_ref(),
+            throws: &method_throws,
+        };
         let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> =
             desugar.interfaces.recovered_method(
                 &method.class,
@@ -1318,7 +1340,7 @@ fn render_class(
                         method,
                         Some("default interface bridge is absent"),
                         desugar,
-                        None,
+                        MethodHeader::default(),
                     )
                 },
                 |bridge: &CodeItem| {
@@ -1330,7 +1352,7 @@ fn render_class(
                         None,
                         desugar,
                         Some(recovered),
-                        None,
+                        MethodHeader::default(),
                         &inlined_helpers,
                     )
                 },
@@ -1343,7 +1365,7 @@ fn render_class(
                     method,
                     Some("code item is present on a bodyless declaration"),
                     desugar,
-                    method_generic.as_ref(),
+                    header,
                 )
             }
             (DexCodeState::Decoded(_), Some(item), None) => render_method(
@@ -1354,7 +1376,7 @@ fn render_class(
                 generic_sites,
                 desugar,
                 None,
-                method_generic.as_ref(),
+                header,
                 &inlined_helpers,
             ),
             (DexCodeState::Decoded(_), None, None) => render_unavailable_method(
@@ -1362,37 +1384,25 @@ fn render_class(
                 method,
                 Some("decoded body is absent"),
                 desugar,
-                method_generic.as_ref(),
+                header,
             ),
             (DexCodeState::Absent, _, None) => {
                 let expected_absence: bool = method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
                 if expected_absence {
-                    render_unavailable_method(
-                        simple,
-                        method,
-                        None,
-                        desugar,
-                        method_generic.as_ref(),
-                    )
+                    render_unavailable_method(simple, method, None, desugar, header)
                 } else {
                     render_unavailable_method(
                         simple,
                         method,
                         Some("code item is absent"),
                         desugar,
-                        method_generic.as_ref(),
+                        header,
                     )
                 }
             }
             (DexCodeState::Refused(error), _, None) => {
                 let reason: String = error.to_string();
-                render_unavailable_method(
-                    simple,
-                    method,
-                    Some(&reason),
-                    desugar,
-                    method_generic.as_ref(),
-                )
+                render_unavailable_method(simple, method, Some(&reason), desugar, header)
             }
         };
         declared.push((method.method_index, rendered));
@@ -1434,7 +1444,7 @@ fn render_class(
                             method,
                             Some("static interface companion body is absent"),
                             desugar,
-                            None,
+                            MethodHeader::default(),
                         )
                     },
                 )
@@ -1448,7 +1458,7 @@ fn render_class(
                     None,
                     desugar,
                     Some(recovered),
-                    None,
+                    MethodHeader::default(),
                     &inlined_helpers,
                 )
             },
@@ -1707,6 +1717,26 @@ struct RenderedMethod {
     refused: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+struct MethodHeader<'a> {
+    generic: Option<&'a crate::signature::RecoveredMethodSignature>,
+    throws: &'a [String],
+}
+
+impl MethodHeader<'_> {
+    fn throws_clause(self) -> String {
+        let rendered: &[String] = match self.generic {
+            Some(generic) if !generic.throws.is_empty() => generic.throws.as_slice(),
+            _ => self.throws,
+        };
+        if rendered.is_empty() {
+            String::new()
+        } else {
+            format!(" throws {}", rendered.join(", "))
+        }
+    }
+}
+
 fn generic_type_parameters(generic: &crate::signature::RecoveredMethodSignature) -> String {
     if generic.type_parameters.is_empty() {
         String::new()
@@ -1720,7 +1750,7 @@ fn render_unavailable_method(
     method: &DexMethodCode,
     refusal: Option<&str>,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
-    generic: Option<&crate::signature::RecoveredMethodSignature>,
+    header: MethodHeader<'_>,
 ) -> RenderedMethod {
     let projected_descriptor: String = desugar.core_library.project_type(&method.method_descriptor);
     let parsed: Option<MethodDescriptor> = descriptor::parse_method(&projected_descriptor);
@@ -1739,13 +1769,15 @@ fn render_unavailable_method(
     }
     let modifier: String = modifiers.join(" ");
     let generic: Option<&crate::signature::RecoveredMethodSignature> =
-        generic.filter(|generic: &&crate::signature::RecoveredMethodSignature| {
-            parsed
-                .as_ref()
-                .is_some_and(|descriptor: &MethodDescriptor| {
-                    descriptor.params.len() == generic.parameters.len()
-                })
-        });
+        header
+            .generic
+            .filter(|generic: &&crate::signature::RecoveredMethodSignature| {
+                parsed
+                    .as_ref()
+                    .is_some_and(|descriptor: &MethodDescriptor| {
+                        descriptor.params.len() == generic.parameters.len()
+                    })
+            });
     let params: String = parsed.as_ref().map_or_else(String::new, |descriptor| {
         descriptor
             .params
@@ -1781,9 +1813,10 @@ fn render_unavailable_method(
         );
         format!(
             "    {modifier} {type_parameters}{result} {}({params})",
-            crate::descriptor::java_writable_identifier(&method.method_name)
+            crate::descriptor::recompile_safe_method_name(&method.method_name)
         )
     };
+    signature.push_str(&header.throws_clause());
     let Some(reason): Option<&str> = refusal else {
         signature.push(';');
         return RenderedMethod {
@@ -1830,7 +1863,7 @@ fn render_method(
     generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
     recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod>,
-    generic: Option<&crate::signature::RecoveredMethodSignature>,
+    header: MethodHeader<'_>,
     inlined_helpers: &crate::dalvik_desugar::InlinedHelpers,
 ) -> RenderedMethod {
     let method_descriptor: &str = recovered_default.map_or(
@@ -1924,11 +1957,13 @@ fn render_method(
         debug_name_offset,
     );
     let generic: Option<&crate::signature::RecoveredMethodSignature> =
-        generic.filter(|generic: &&crate::signature::RecoveredMethodSignature| {
-            parsed
-                .as_ref()
-                .is_some_and(|md: &MethodDescriptor| md.params.len() == generic.parameters.len())
-        });
+        header
+            .generic
+            .filter(|generic: &&crate::signature::RecoveredMethodSignature| {
+                parsed.as_ref().is_some_and(|md: &MethodDescriptor| {
+                    md.params.len() == generic.parameters.len()
+                })
+            });
     let params: String = match &parsed {
         Some(md) => md
             .params
@@ -1983,9 +2018,10 @@ fn render_method(
         let _ = write!(
             signature,
             "    {modifier}{type_parameters}{ret} {}({params})",
-            crate::descriptor::java_writable_identifier(header_name)
+            crate::descriptor::recompile_safe_method_name(header_name)
         );
     }
+    signature.push_str(&header.throws_clause());
 
     let rewired: Option<DalvikMethodCfg> = cff
         .filter(|method: &&crate::dalvik_dexguard::DalvikMethodCff| method.fully_unflattened)
@@ -5209,6 +5245,7 @@ mod tests {
                 functionals: &functionals,
                 core_library: &core_library,
                 renames: &renames,
+                backports: &crate::dalvik_backports::BackportRecovery::default(),
             },
             &helpers,
             &names,

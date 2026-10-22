@@ -92,6 +92,10 @@ fn recovered_unit(bytes: &[u8], unit: &str) -> String {
         .clone()
 }
 
+fn rendered_helper(name: &str) -> String {
+    name.replacen("lambda$", "synthLambda$", 1)
+}
+
 fn declared_method_names(source: &str) -> BTreeSet<String> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for line in source.lines() {
@@ -117,6 +121,9 @@ fn declared_method_names(source: &str) -> BTreeSet<String> {
         names.insert(name.to_owned());
     }
     names
+        .into_iter()
+        .map(|name: String| name.replacen("synthLambda$", "lambda$", 1))
+        .collect()
 }
 
 fn helper_names_in_artifact(bytes: &[u8], owner: &str) -> BTreeSet<String> {
@@ -510,7 +517,10 @@ fn a_helper_the_recovery_cannot_inline_keeps_its_declaration() {
          still calls it, and the helper that inlined must be elided\n{unit}"
     );
     assert!(
-        unit.contains(&format!("DuplicatingLambdaProbe.{DUPLICATION_RETAINED}(")),
+        unit.contains(&format!(
+            "DuplicatingLambdaProbe.{}(",
+            rendered_helper(DUPLICATION_RETAINED)
+        )),
         "the retained helper must still be reached from the recovered lambda\n{unit}"
     );
     eprintln!(
@@ -556,7 +566,7 @@ fn a_helper_reached_by_a_second_consumer_keeps_its_declaration() {
         "a helper reached by two invoke instructions is shared and must remain declared\n{unit}"
     );
     assert!(
-        unit.contains(&format!("ElisionProbe.{helper}(")),
+        unit.contains(&format!("ElisionProbe.{}(", rendered_helper(helper))),
         "the recovered stateless lambda must keep its call to the shared helper\n{unit}"
     );
 }

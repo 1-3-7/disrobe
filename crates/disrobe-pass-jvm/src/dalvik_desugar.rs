@@ -684,6 +684,7 @@ pub(crate) struct DesugarView<'a> {
     pub(crate) functionals: &'a FunctionalRecovery,
     pub(crate) core_library: &'a crate::dalvik_core_library::CoreLibraryRecovery,
     pub(crate) renames: &'a OverloadRenames,
+    pub(crate) backports: &'a crate::dalvik_backports::BackportRecovery,
 }
 
 const MAX_OVERLOAD_RENAMES: usize = 65_536;

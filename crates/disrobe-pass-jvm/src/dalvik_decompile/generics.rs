@@ -8,6 +8,7 @@ pub(super) struct MemberGenerics {
     classes: BTreeMap<String, String>,
     methods: BTreeMap<u32, String>,
     fields: BTreeMap<(String, String, String), String>,
+    throws: BTreeMap<u32, Vec<String>>,
 }
 
 impl MemberGenerics {
@@ -41,6 +42,7 @@ impl MemberGenerics {
             classes,
             methods: metadata.method_signatures.clone(),
             fields,
+            throws: metadata.method_throws.clone(),
         }
     }
 }
@@ -96,6 +98,27 @@ pub(super) fn method_signature(
         return None;
     }
     Some(recovered)
+}
+
+pub(super) fn method_throws(
+    generics: &MemberGenerics,
+    method: &DexMethodCode,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
+) -> Vec<String> {
+    generics
+        .throws
+        .get(&method.method_index)
+        .map(|types: &Vec<String>| {
+            types
+                .iter()
+                .map(|descriptor: &String| {
+                    crate::descriptor::binary_to_source(
+                        &desugar.core_library.project_type(descriptor),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(super) fn field_type(

@@ -238,6 +238,7 @@ fn declared_helpers(source: &str) -> BTreeSet<String> {
     source
         .lines()
         .filter_map(declares_any_method)
+        .map(|name: String| name.replacen("synthLambda$", "lambda$", 1))
         .filter(|name: &String| is_generated_helper(name))
         .collect()
 }
@@ -406,7 +407,7 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
     );
     for helper in LAMBDA_HELPERS {
         assert!(
-            unit.contains(helper),
+            unit.contains(&helper.replacen("lambda$", "synthLambda$", 1)),
             "the recovered source must retain the non-private D8 lambda helper {helper}"
         );
     }
@@ -766,7 +767,7 @@ fn a_helper_whose_result_is_read_twice_is_not_inlined() {
          recovery must keep the call to the helper: {duplicating}"
     );
     assert_eq!(
-        duplicating, "p0 -> DuplicatingLambdaProbe.lambda$duplicating$0(arg0, p0)",
+        duplicating, "p0 -> DuplicatingLambdaProbe.synthLambda$duplicating$0(arg0, p0)",
         "the abstaining form must still be a lambda over the D8 helper"
     );
 }
@@ -835,10 +836,13 @@ fn lambda_bearing_methods(source: &str) -> BTreeSet<String> {
 }
 
 fn authored_owner(method: &str) -> String {
-    method.strip_prefix("lambda$").map_or_else(
-        || method.to_owned(),
-        |rest: &str| rest.split('$').next().unwrap_or(rest).to_owned(),
-    )
+    method
+        .strip_prefix("lambda$")
+        .or_else(|| method.strip_prefix("synthLambda$"))
+        .map_or_else(
+            || method.to_owned(),
+            |rest: &str| rest.split('$').next().unwrap_or(rest).to_owned(),
+        )
 }
 
 #[test]

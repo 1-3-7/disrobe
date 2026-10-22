@@ -265,6 +265,8 @@ pub struct DexSystemMetadata {
     pub classes: BTreeMap<String, DexClassMetadata>,
     pub field_signatures: BTreeMap<u32, String>,
     pub method_signatures: BTreeMap<u32, String>,
+    #[serde(default)]
+    pub method_throws: BTreeMap<u32, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -375,6 +377,7 @@ enum ParsedSystemAnnotation {
     EnclosingClass(String),
     EnclosingMethod(DexEnclosingMethod),
     Signature(String),
+    Throws(Vec<String>),
 }
 
 const fn system_metadata_error(offset: usize, reason: &'static str) -> Error {
@@ -1006,6 +1009,36 @@ fn parse_relevant_annotation(
                 },
             ))
         }
+        "Ldalvik/annotation/Throws;" => {
+            let elements: BTreeMap<String, SystemAnnotationValue> =
+                annotation_elements(dex, bytes, cursor, 1, budget)?;
+            let SystemAnnotationValue::Array(values) =
+                take_only_element(elements, annotation_offset)?
+            else {
+                return Err(system_metadata_error(
+                    annotation_offset,
+                    "DEX Throws value is not an array",
+                ));
+            };
+            let mut types: Vec<String> = Vec::new();
+            for value in values {
+                let SystemAnnotationValue::Type(index) = value else {
+                    return Err(system_metadata_error(
+                        annotation_offset,
+                        "DEX Throws element is not a type",
+                    ));
+                };
+                let name: &String = dex.type_names.get(index as usize).ok_or_else(|| {
+                    system_metadata_error(
+                        annotation_offset,
+                        "DEX Throws type index is out of range",
+                    )
+                })?;
+                budget.claim_bytes(name.len(), annotation_offset)?;
+                types.push(name.clone());
+            }
+            Ok(ParsedSystemAnnotation::Throws(types))
+        }
         "Ldalvik/annotation/Signature;" => {
             let elements: BTreeMap<String, SystemAnnotationValue> =
                 annotation_elements(dex, bytes, cursor, 1, budget)?;
@@ -1184,6 +1217,7 @@ fn parse_annotation_set(
                 | "Ldalvik/annotation/EnclosingClass;"
                 | "Ldalvik/annotation/EnclosingMethod;"
                 | "Ldalvik/annotation/Signature;"
+                | "Ldalvik/annotation/Throws;"
         );
         if !relevant {
             continue;
@@ -1238,6 +1272,12 @@ fn assign_class_annotations(
                     invalid_signatures.push(offset);
                     false
                 }
+            }
+            ParsedSystemAnnotation::Throws(_) => {
+                return Err(system_metadata_error(
+                    offset,
+                    "DEX Throws annotation is attached to a class",
+                ));
             }
         };
         if duplicate {
@@ -1466,6 +1506,7 @@ struct ParsedClassMetadata {
     class: DexClassMetadata,
     field_signatures: Vec<(u32, String)>,
     method_signatures: Vec<(u32, String)>,
+    method_throws: Vec<(u32, Vec<String>)>,
     invalid_signatures: Vec<usize>,
 }
 
@@ -1483,6 +1524,7 @@ fn parse_class_metadata(
         class: DexClassMetadata::default(),
         field_signatures: Vec::new(),
         method_signatures: Vec::new(),
+        method_throws: Vec::new(),
         invalid_signatures: Vec::new(),
     };
     let directory_offset: u32 = required_u32_at(parser.bytes, class_offset + 20)?;
@@ -1583,6 +1625,23 @@ fn parse_class_metadata(
         }
         previous_method = Some(method_index);
         let annotations: Vec<ParsedSystemAnnotation> = parser.annotation_set(set_offset)?;
+        let (throws, annotations): (Vec<ParsedSystemAnnotation>, Vec<ParsedSystemAnnotation>) =
+            annotations
+                .into_iter()
+                .partition(|annotation: &ParsedSystemAnnotation| {
+                    matches!(annotation, ParsedSystemAnnotation::Throws(_))
+                });
+        if throws.len() > 1 {
+            return Err(system_metadata_error(
+                cursor,
+                "DEX Throws annotation is duplicated",
+            ));
+        }
+        if let Some(ParsedSystemAnnotation::Throws(types)) = throws.into_iter().next()
+            && !types.is_empty()
+        {
+            parsed.method_throws.push((method_index, types));
+        }
         if let Some(signature) = assign_signature_annotations(
             annotations,
             cursor,
@@ -1680,6 +1739,7 @@ pub fn parse_system_metadata(dex: &DexFile, bytes: &[u8]) -> DexSystemMetadataRe
                     .metadata
                     .method_signatures
                     .extend(parsed.method_signatures);
+                report.metadata.method_throws.extend(parsed.method_throws);
                 report
                     .metadata
                     .classes

@@ -46,6 +46,8 @@ pub mod const_fold;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod dalvik_backports;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_blackobf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_call_graph;
@@ -54,7 +56,6 @@ pub mod dalvik_cfg;
 mod dalvik_core_library;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_decompile;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod dalvik_desugar;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dalvik_dexguard;
@@ -142,7 +143,6 @@ pub mod stub_emulator;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod yguard;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub use android_audit::{
     AndroidAuditReport, AuditCategory, AuditFinding, AuditSeverity, audit_android_bytes,
     audit_apk as audit_android_apk,
@@ -211,6 +211,8 @@ pub use dalvik::{
     disassemble_units as disassemble_dalvik, opcode as dalvik_opcode, parse_packed_switch,
     parse_sparse_switch,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use dalvik_backports::{BackportApi, backport_catalog_json, derive_backport_catalog};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_blackobf::{
     BlackObfDeflatten, BlackObfReport, deflatten_blackobfuscator, detect_blackobfuscator,
