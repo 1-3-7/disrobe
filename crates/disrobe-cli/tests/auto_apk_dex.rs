@@ -357,3 +357,56 @@ fn auto_chain_apk_links_registered_natives_against_the_embedded_native_library()
         registered.len(),
     );
 }
+
+#[test]
+fn auto_writes_the_android_audit_sidecar_for_the_plants_and_not_the_control() {
+    let mut fixtures: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fixtures.pop();
+    fixtures.pop();
+    fixtures.push("corpus/recon/android-audit");
+    for (name, expected_findings) in [
+        ("audit-plants.apk", Some(51usize)),
+        ("audit-control.apk", None),
+    ] {
+        let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+            tmp_path("audit-out");
+        let proc_out: std::process::Output = run_chain_capture(&fixtures.join(name), &out_dir);
+        assert!(
+            proc_out.status.success(),
+            "{name}: chain failed: {}",
+            String::from_utf8_lossy(&proc_out.stderr)
+        );
+        let sidecar_path: PathBuf = out_dir.join("extracted").join("android-audit.json");
+        match expected_findings {
+            Some(count) => {
+                let text: String =
+                    std::fs::read_to_string(&sidecar_path).unwrap_or_else(|e: std::io::Error| {
+                        panic!("{name}: read {sidecar_path:?}: {e}")
+                    });
+                let sidecar: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or_else(|e: serde_json::Error| {
+                        panic!("{name}: android-audit.json: {e}")
+                    });
+                assert_eq!(
+                    sidecar["schema"], "disrobe.mobile.android-audit/v1",
+                    "{name}"
+                );
+                let findings: &Vec<serde_json::Value> = sidecar["audit"]["findings"]
+                    .as_array()
+                    .expect("findings array");
+                assert_eq!(findings.len(), count, "{name}: {text}");
+                assert!(
+                    findings
+                        .iter()
+                        .any(|f: &serde_json::Value| f["rule_id"] == "DR-APK-SSL-TRUST-ALL"),
+                    "{name}: {text}"
+                );
+            }
+            None => assert!(
+                !sidecar_path.exists(),
+                "{name}: a clean application writes no audit sidecar"
+            ),
+        }
+        let _ = std::fs::remove_dir_all(&out_dir);
+    }
+}

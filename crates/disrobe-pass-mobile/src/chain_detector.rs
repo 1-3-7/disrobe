@@ -115,8 +115,11 @@ impl Pass for MobilePassAdapter {
                     })?;
                 let sidecar_children: Vec<ChildArtifact> =
                     android_jni_sidecar_children(bytes, &dex_children, dex_children.len());
+                let audit_children: Vec<ChildArtifact> =
+                    android_audit_sidecar_children(bytes, dex_children.len() + 1);
                 let mut children: Vec<ChildArtifact> = to_children(dex_children, "android-dex");
                 children.extend(sidecar_children);
+                children.extend(audit_children);
                 Ok(children)
             }
             DetectedKind::AndroidBundle => {
@@ -244,6 +247,39 @@ fn android_jni_sidecar_children(
     _dex_children: &[(String, Vec<u8>)],
     _index: usize,
 ) -> Vec<ChildArtifact> {
+    Vec::new()
+}
+
+#[cfg(feature = "jni")]
+fn android_audit_sidecar_children(apk_bytes: &[u8], index: usize) -> Vec<ChildArtifact> {
+    let Ok(audit): Result<disrobe_pass_jvm::AndroidAuditReport, _> =
+        disrobe_pass_jvm::audit_android_apk(apk_bytes)
+    else {
+        return Vec::new();
+    };
+    if audit.findings.is_empty() {
+        return Vec::new();
+    }
+    let json_value: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.mobile.android-audit/v1",
+        "audit": audit,
+    });
+    let Ok(encoded): Result<Vec<u8>, _> = serde_json::to_vec_pretty(&json_value) else {
+        return Vec::new();
+    };
+    vec![ChildArtifact {
+        handle: ChildHandle {
+            artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
+            relative_path: "android-audit.json".to_string(),
+            hint: Some(TERMINAL_HINT.to_string()),
+            materialization: disrobe_core::chain::ChildMaterialization::default(),
+        },
+        bytes: encoded,
+    }]
+}
+
+#[cfg(not(feature = "jni"))]
+fn android_audit_sidecar_children(_apk_bytes: &[u8], _index: usize) -> Vec<ChildArtifact> {
     Vec::new()
 }
 
