@@ -661,6 +661,7 @@ pub(crate) struct RecoveredCapturedLambda {
     pub(crate) receiver_capture: bool,
     pub(crate) capture_count: usize,
     pub(crate) parameter_count: usize,
+    pub(crate) parameter_casts: Vec<Option<String>>,
     pub(crate) helper_index: u32,
     pub(crate) helper_body: Option<HelperBody>,
 }
@@ -1689,16 +1690,19 @@ fn classify_captured_lambda(
     if method.proto.parameters.len() != forwarded.len().checked_add(interface_arity)? {
         return None;
     }
+    let mut parameter_casts: Vec<Option<String>> = Vec::with_capacity(interface_arity);
     for (position, declared) in method.proto.parameters.iter().enumerate() {
         let matches: bool = match forwarded.get(position) {
             Some(capture) => declared.as_str() == *capture,
-            None => erasure_compatible(
-                declared,
-                implementation
+            None => {
+                let erased: &String = implementation
                     .proto
                     .parameters
-                    .get(position.checked_sub(forwarded.len())?)?,
-            ),
+                    .get(position.checked_sub(forwarded.len())?)?;
+                let narrower: bool = declared != erased && declared.starts_with('L');
+                parameter_casts.push(narrower.then(|| declared.clone()));
+                erasure_compatible(declared, erased)
+            }
         };
         if !matches {
             return None;
@@ -1710,6 +1714,7 @@ fn classify_captured_lambda(
         receiver_capture,
         capture_count: captures.len(),
         parameter_count: interface_arity,
+        parameter_casts,
         helper_index: target.method_index,
         helper_body: None,
     })

@@ -2002,7 +2002,21 @@ fn render_captured_lambda(
         )
     };
     let mut passed: Vec<String> = forwarded.to_vec();
-    passed.extend(parameters);
+    passed.extend(
+        parameters
+            .iter()
+            .enumerate()
+            .map(|(position, name): (usize, &String)| {
+                match recovered
+                    .parameter_casts
+                    .get(position)
+                    .and_then(Option::as_deref)
+                {
+                    Some(declared) => format!("({}) {name}", source_type(ctx, declared)),
+                    None => name.clone(),
+                }
+            }),
+    );
     Some(format!(
         "{head} -> {target}.{}({})",
         descriptor::java_writable_identifier(&recovered.helper_name),
