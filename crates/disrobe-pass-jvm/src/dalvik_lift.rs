@@ -1965,6 +1965,20 @@ fn render_captured_lambda(
     } else {
         (None, args)
     };
+    let typed_parameters: Vec<String> = parameters
+        .iter()
+        .enumerate()
+        .map(|(position, name): (usize, &String)| {
+            match recovered
+                .parameter_casts
+                .get(position)
+                .and_then(Option::as_deref)
+            {
+                Some(declared) => format!("(({}) {name})", source_type(ctx, declared)),
+                None => name.clone(),
+            }
+        })
+        .collect();
     if let Some(body) = recovered.helper_body.as_ref() {
         let reached: crate::dalvik_desugar::InlinedHelpers =
             crate::dalvik_desugar::InlinedHelpers::default();
@@ -1973,7 +1987,7 @@ fn render_captured_lambda(
             body,
             receiver_arg,
             forwarded_args,
-            &parameters,
+            &typed_parameters,
             &reached,
         ) {
             ctx.inlined_helpers.absorb(&reached);
@@ -2002,21 +2016,7 @@ fn render_captured_lambda(
         )
     };
     let mut passed: Vec<String> = forwarded.to_vec();
-    passed.extend(
-        parameters
-            .iter()
-            .enumerate()
-            .map(|(position, name): (usize, &String)| {
-                match recovered
-                    .parameter_casts
-                    .get(position)
-                    .and_then(Option::as_deref)
-                {
-                    Some(declared) => format!("({}) {name}", source_type(ctx, declared)),
-                    None => name.clone(),
-                }
-            }),
-    );
+    passed.extend(typed_parameters);
     Some(format!(
         "{head} -> {target}.{}({})",
         descriptor::java_writable_identifier(&recovered.helper_name),
