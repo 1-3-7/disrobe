@@ -19,6 +19,12 @@ pub(super) fn resugar(body: &str) -> String {
             lines = rewrite_iterator(lines, start, &found);
             continue;
         }
+        if let Some((start, found)) = (0..lines.len())
+            .find_map(|i: usize| ternary_at(&lines, i).map(|found: Ternary| (i, found)))
+        {
+            lines = rewrite_ternary(lines, start, &found);
+            continue;
+        }
         break;
     }
     drop_trailing_return(&mut lines);
@@ -448,6 +454,87 @@ fn rewrite_iterator(lines: Vec<String>, start: usize, found: &IteratorLoop) -> V
     }
 }
 
+struct Ternary {
+    pad: String,
+    condition: String,
+    target: Option<String>,
+    then_value: String,
+    else_value: String,
+}
+
+fn simple_value(text: &str) -> bool {
+    !text.is_empty()
+        && !text.contains("? ")
+        && text.chars().filter(|&c: &char| c == '(').count()
+            == text.chars().filter(|&c: &char| c == ')').count()
+}
+
+fn ternary_at(lines: &[String], start: usize) -> Option<Ternary> {
+    let head: &str = lines.get(start)?;
+    let pad: String = indentation(head).to_owned();
+    let inner_pad: String = format!("{pad}    ");
+    let condition: &str = head.trim().strip_prefix("if (")?.strip_suffix(") {")?;
+    let then_line: &str = lines.get(start + 1)?;
+    let else_head: &str = lines.get(start + 2)?;
+    let else_line: &str = lines.get(start + 3)?;
+    let close: &str = lines.get(start + 4)?;
+    if indentation(then_line) != inner_pad
+        || indentation(else_line) != inner_pad
+        || else_head != format!("{pad}}} else {{")
+        || close != format!("{pad}}}")
+    {
+        return None;
+    }
+    let then_stmt: &str = then_line.trim().strip_suffix(';')?;
+    let else_stmt: &str = else_line.trim().strip_suffix(';')?;
+    let (target, then_value, else_value): (Option<String>, &str, &str) = match (
+        then_stmt.strip_prefix("return "),
+        else_stmt.strip_prefix("return "),
+    ) {
+        (Some(a), Some(b)) => (None, a, b),
+        (None, None) => {
+            let (x, a): (&str, &str) = then_stmt.split_once(" = ")?;
+            let (y, b): (&str, &str) = else_stmt.split_once(" = ")?;
+            if x != y || !is_identifier(x) || a.contains(" = ") || b.contains(" = ") {
+                return None;
+            }
+            (Some(x.to_owned()), a, b)
+        }
+        _ => return None,
+    };
+    if !simple_value(then_value) || !simple_value(else_value) || !simple_value(condition) {
+        return None;
+    }
+    if then_value.starts_with("new ") || else_value.starts_with("new ") {
+        return None;
+    }
+    Some(Ternary {
+        pad,
+        condition: condition.to_owned(),
+        target,
+        then_value: then_value.to_owned(),
+        else_value: else_value.to_owned(),
+    })
+}
+
+fn rewrite_ternary(lines: Vec<String>, start: usize, found: &Ternary) -> Vec<String> {
+    let Ternary {
+        pad,
+        condition,
+        target,
+        then_value,
+        else_value,
+    } = found;
+    let statement: String = match target {
+        Some(x) => format!("{pad}{x} = (({condition}) ? {then_value} : {else_value});"),
+        None => format!("{pad}return (({condition}) ? {then_value} : {else_value});"),
+    };
+    let mut rebuilt: Vec<String> = lines[..start].to_vec();
+    rebuilt.push(statement);
+    rebuilt.extend(lines[start + 5..].iter().cloned());
+    rebuilt
+}
+
 #[cfg(test)]
 mod tests {
     use super::resugar;
@@ -608,6 +695,45 @@ mod tests {
             "            if (arg1.test(var2.next())) {",
             "                var0 = (var0 + 1);",
             "            }",
+            "        }",
+        ]);
+        assert_eq!(resugar(&body), body);
+    }
+
+    #[test]
+    fn a_two_way_assignment_and_a_two_way_return_become_ternaries() {
+        let body: String = lines(&[
+            "        if (a > b) {",
+            "            m = a;",
+            "        } else {",
+            "            m = b;",
+            "        }",
+            "        if (m > 0) {",
+            "            return m;",
+            "        } else {",
+            "            return 0;",
+            "        }",
+        ]);
+        let expected: String = lines(&[
+            "        m = ((a > b) ? a : b);",
+            "        return ((m > 0) ? m : 0);",
+        ]);
+        assert_eq!(resugar(&body), expected);
+    }
+
+    #[test]
+    fn branches_with_more_than_one_statement_or_different_targets_stay_ifs() {
+        let body: String = lines(&[
+            "        if (a > b) {",
+            "            m = a;",
+            "            n = b;",
+            "        } else {",
+            "            m = b;",
+            "        }",
+            "        if (c) {",
+            "            x = 1;",
+            "        } else {",
+            "            y = 2;",
             "        }",
         ]);
         assert_eq!(resugar(&body), body);

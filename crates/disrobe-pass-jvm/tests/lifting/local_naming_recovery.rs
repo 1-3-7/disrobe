@@ -215,7 +215,14 @@ fn dalvik_route_renames_an_int_lifetime_that_reuses_a_boolean_parameter_slot() {
         .find_map(|line: &str| line.strip_prefix("int ")?.strip_suffix(';'))
         .expect("the replacement integer lifetime must have a declaration");
     assert_ne!(fresh, "arg1", "{unit}");
-    assert!(unit.contains(&format!("{fresh} = 7;")), "{unit}");
+    assert!(
+        unit.contains(&format!("{fresh} = 7;"))
+            || unit.lines().any(|line: &str| {
+                let line: &str = line.trim();
+                line.starts_with(&format!("{fresh} = ((")) && line.contains(" 7")
+            }),
+        "the integer lifetime is written through the fresh name, as a plain store or inside a ternary:\n{unit}"
+    );
 
     let (_, authored_tail): (&str, &str) = AUTHORED
         .split_once("\nfinal class LocalProbe {")
@@ -263,7 +270,14 @@ fn classfile_backend_renames_an_int_lifetime_that_reuses_a_boolean_parameter_slo
         .find_map(|line: &str| line.strip_prefix("int ")?.strip_suffix(';'))
         .expect("the replacement integer lifetime must have a declaration");
     assert_ne!(fresh, "arg1", "{unit}");
-    assert!(unit.contains(&format!("{fresh} = 7;")), "{unit}");
+    assert!(
+        unit.contains(&format!("{fresh} = 7;"))
+            || unit.lines().any(|line: &str| {
+                let line: &str = line.trim();
+                line.starts_with(&format!("{fresh} = ((")) && line.contains(" 7")
+            }),
+        "the integer lifetime is written through the fresh name, as a plain store or inside a ternary:\n{unit}"
+    );
     assert!(!unit.contains("arg1 = 7;"), "{unit}");
 
     let javac: PathBuf =
