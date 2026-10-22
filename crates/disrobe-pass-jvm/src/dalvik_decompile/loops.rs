@@ -13,6 +13,14 @@ pub(super) fn resugar(body: &str) -> String {
             lines = rewrite(lines, start, &found);
             continue;
         }
+        if let Some((sunk, start, found)) = (0..lines.len()).find_map(|i: usize| {
+            let (sunk, at): (Vec<String>, usize) = sink_counter_init(&lines, i)?;
+            let found: CountedLoop = counted_loop_at(&sunk, at)?;
+            Some((sunk, at, found))
+        }) {
+            lines = rewrite(sunk, start, &found);
+            continue;
+        }
         if let Some((start, found)) = (0..lines.len())
             .find_map(|i: usize| iterator_loop_at(&lines, i).map(|found: IteratorLoop| (i, found)))
         {
@@ -192,6 +200,36 @@ fn counted_loop_at(lines: &[String], start: usize) -> Option<CountedLoop> {
         body_start,
         end,
     })
+}
+
+fn sink_counter_init(lines: &[String], start: usize) -> Option<(Vec<String>, usize)> {
+    let init: &str = lines.get(start)?;
+    let pad: &str = indentation(init);
+    let counter: &str = init.trim().strip_suffix(" = 0;")?;
+    if !is_identifier(counter) {
+        return None;
+    }
+    let mut cursor: usize = start + 1;
+    while let Some(line) = lines.get(cursor)
+        && indentation(line) == pad
+        && is_constant_assignment(line).is_some_and(|name: &str| name != counter)
+    {
+        cursor += 1;
+    }
+    if cursor == start + 1 {
+        return None;
+    }
+    let head: &str = lines.get(cursor)?;
+    if indentation(head) != pad
+        || !(head.trim() == "while (true) {"
+            || head.trim().starts_with(&format!("while ({counter} < ")))
+    {
+        return None;
+    }
+    let mut sunk: Vec<String> = lines.to_vec();
+    let moved: String = sunk.remove(start);
+    sunk.insert(cursor - 1, moved);
+    Some((sunk, cursor - 1))
 }
 
 fn block_end(lines: &[String], open: usize, pad: &str) -> Option<usize> {
@@ -682,6 +720,31 @@ mod tests {
             "        for (i = 0; i < n; i++) {",
             "            sum = (sum + i);",
             "        }",
+        ]);
+        assert_eq!(resugar(&body), expected);
+    }
+
+    #[test]
+    fn a_counter_init_sinks_past_independent_constants_into_the_for() {
+        let body: String = lines(&[
+            "        int i;",
+            "        int acc;",
+            "        i = 0;",
+            "        acc = 1;",
+            "        while (i < n) {",
+            "            acc = (acc + i);",
+            "            i = (i + 1);",
+            "        }",
+            "        return acc;",
+        ]);
+        let expected: String = lines(&[
+            "        int i;",
+            "        int acc;",
+            "        acc = 1;",
+            "        for (i = 0; i < n; i++) {",
+            "            acc = (acc + i);",
+            "        }",
+            "        return acc;",
         ]);
         assert_eq!(resugar(&body), expected);
     }
