@@ -73,13 +73,15 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-jvm",
-        16,
+        17,
         "most are convenience wrappers a sibling function already exposes to real callers \
          (assemble_jar, decompile_classfile_bytes, emit_method_body and friends) and detector \
          variants proven by their own gauntlet test (detect_rasp_in_apk, \
          detect_allatori_watermarks, upstream_status); the JNI header emitter pair this count \
          once carried is now wired to `disrobe jvm jni`, and the parse_oat, parse_odex, \
-         extract_jmod and parse_jimage container parsers are now wired to the JVM chain pass",
+         extract_jmod and parse_jimage container parsers are now wired to the JVM chain pass; \
+         derive_backport_catalog regenerates the committed d8 backport catalog from the \
+         authored probe and is called only by that fixture's gate",
     ),
     (
         "disrobe-pass-mobile",

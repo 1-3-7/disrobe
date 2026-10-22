@@ -5,8 +5,7 @@ use std::process::{Command, Output};
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{
-    BackportApi, DecompiledDex, DexFile, backport_catalog_json, decompile_dex,
-    derive_backport_catalog, parse_dex,
+    BackportApi, DecompiledDex, DexFile, decompile_dex, derive_backport_catalog, parse_dex,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -17,6 +16,7 @@ const DEX: &[u8] = include_bytes!("../fixtures/d8_backports/BackportProbe-min21.
 const AUTHORED: &str = include_str!("../fixtures/d8_backports/BackportProbe.java");
 const PROVENANCE: &str = include_str!("../fixtures/d8_backports/provenance.toml");
 const APIS: &str = include_str!("../fixtures/d8_backports/apis.json");
+const CATALOG: &str = include_str!("../../data/d8_backports.json");
 const DEX_SHA256: &str = "1fe8dd0d04201dfbbeda040a6423cc7921af70f1c6428744420d25d32a5869d7";
 const AUTHORED_SHA256: &str = "c0c8d2761cd0a2712bd893ef17c797a6ec54c83148a11ef3fcab9528d923bf4c";
 const PROGRAM_UNIT: &str = "BackportProbe.java";
@@ -119,7 +119,7 @@ fn the_committed_catalog_is_derived_from_the_probe() {
     let dex: DexFile = parse_dex(DEX).expect("parse the backport fixture dex");
     let derived: String =
         derive_backport_catalog(&dex, DEX, &probes()).expect("derive the backport catalog");
-    if derived != backport_catalog_json() {
+    if derived != CATALOG {
         let path: PathBuf =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/d8_backports.json");
         if std::env::var_os("DISROBE_REGEN_BACKPORT_CATALOG").is_some() {

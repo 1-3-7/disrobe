@@ -212,7 +212,7 @@ pub use dalvik::{
     parse_sparse_switch,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use dalvik_backports::{BackportApi, backport_catalog_json, derive_backport_catalog};
+pub use dalvik_backports::{BackportApi, derive_backport_catalog};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dalvik_blackobf::{
     BlackObfDeflatten, BlackObfReport, deflatten_blackobfuscator, detect_blackobfuscator,

@@ -268,11 +268,6 @@ pub fn derive_backport_catalog(
     Ok(text)
 }
 
-#[must_use]
-pub const fn backport_catalog_json() -> &'static str {
-    CATALOG_JSON
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
