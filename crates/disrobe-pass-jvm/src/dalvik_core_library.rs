@@ -89,6 +89,15 @@ const EXACT_HELPERS: &[ExactHelperProjection] = &[
 ];
 
 impl CoreLibraryRecovery {
+    #[cfg(test)]
+    pub(crate) const fn for_tests(broad_relocation: bool) -> Self {
+        Self {
+            broad_relocation,
+            defined_classes: BTreeSet::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
     pub(crate) fn analyze(dex: &DexFile) -> Self {
         let mut marker_matches: bool = false;
         let mut marker_conflicts: bool = false;

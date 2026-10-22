@@ -518,9 +518,9 @@ fn edgecases_named_members_share_the_authoritative_outer_compilation_unit() {
     for identity in [
         "public static EdgeCases.Adder adderFn()",
         "public static int callInner()",
-        "public EdgeCases.FluentBuilder set(String arg0, Object arg1)",
+        "public EdgeCases.FluentBuilder<java.util.Map<String, Object>> set(String arg0, Object arg1)",
         "public static int runWorker(EdgeCases.CounterWorker arg0)",
-        "public static String unpackPair(EdgeCases.Pair arg0)",
+        "public static String unpackPair(EdgeCases.Pair<Integer, String> arg0)",
         "public static java.util.List windowed(java.util.List arg0)",
     ] {
         assert!(

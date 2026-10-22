@@ -244,7 +244,7 @@ fn mentions_assignment(line: &str, name: &str) -> bool {
         || t.starts_with(&format!("{name}--"))
 }
 
-fn mentions(line: &str, name: &str) -> bool {
+pub(super) fn mentions(line: &str, name: &str) -> bool {
     let bytes: &[u8] = line.as_bytes();
     let mut from: usize = 0;
     while let Some(at) = line[from..].find(name) {

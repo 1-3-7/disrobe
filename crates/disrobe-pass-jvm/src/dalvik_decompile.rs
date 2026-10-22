@@ -47,6 +47,7 @@ pub(crate) struct TranslatedDefaultMethod {
 }
 
 mod enums;
+mod generics;
 mod loops;
 mod nested_blocks;
 mod region_check;
@@ -89,6 +90,8 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         });
     }
     let metadata: DexSystemMetadata = metadata_report.metadata;
+    let generics: generics::MemberGenerics =
+        generics::MemberGenerics::from_metadata(dex, &metadata);
     let code_report: CodeItemsReport = parse_code_items(dex, bytes);
     let code_scan_complete: bool = code_report.is_fully_decoded();
     let decode_error_count: usize = code_report.error_count();
@@ -242,6 +245,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             ),
             decoded: &items,
             declaration: declarations.get(class_descriptor),
+            generics: &generics,
         };
         let kotlin_evidence: KotlinClassEvidence<'_> = KotlinClassEvidence {
             source_file: source_file_for_class(dex, bytes, class_descriptor),
@@ -369,13 +373,14 @@ pub(crate) fn translated_default_methods(
                     None,
                     desugar,
                     Some(recovered),
+                    None,
                     &inlined_helpers,
                 );
                 if !rendered.fully_lifted {
                     return None;
                 }
                 let abstract_declaration: String =
-                    render_unavailable_method(simple, target, None, desugar)
+                    render_unavailable_method(simple, target, None, desugar, None)
                         .text
                         .trim()
                         .to_owned();
@@ -1037,6 +1042,9 @@ fn field_declarations(
     fields: &[crate::dex::DexFieldDecl],
     class_descriptor: &str,
     static_values: &StaticValues,
+    generics: &generics::MemberGenerics,
+    class_generic: Option<&crate::signature::RecoveredClassSignature>,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
 ) -> String {
     let mut out: String = String::new();
     if let Err(reason) = static_values {
@@ -1061,7 +1069,10 @@ fn field_declarations(
             None
         };
         let Some(rendered): Option<String> =
-            descriptor::parse_field(&field.type_name).map(|ty: descriptor::JavaType| ty.render())
+            generics::field_type(generics, field, class_generic, desugar).or_else(|| {
+                descriptor::parse_field(&field.type_name)
+                    .map(|ty: descriptor::JavaType| ty.render())
+            })
         else {
             continue;
         };
@@ -1121,6 +1132,7 @@ struct ClassMembers<'a> {
     static_values: StaticValues,
     decoded: &'a [CodeItem],
     declaration: Option<&'a crate::dalvik_desugar::ClassDeclaration>,
+    generics: &'a generics::MemberGenerics,
 }
 
 #[derive(Clone, Copy)]
@@ -1201,8 +1213,28 @@ fn render_class(
         inner_class,
         kotlin_evidence.source_member_name.is_some(),
     );
-    let supertypes: String =
-        supertype_clause(class_descriptor, members.declaration, is_interface, desugar);
+    let class_generic: Option<crate::signature::RecoveredClassSignature> =
+        generics::class_signature(
+            members.generics,
+            class_descriptor,
+            members.declaration,
+            desugar,
+        );
+    let supertypes: String = format!(
+        "{}{}",
+        class_generic
+            .as_ref()
+            .map_or("", |generic: &crate::signature::RecoveredClassSignature| {
+                generic.type_parameters.as_str()
+            }),
+        supertype_clause(
+            class_descriptor,
+            members.declaration,
+            is_interface,
+            desugar,
+            class_generic.as_ref(),
+        )
+    );
     let enum_constants: Vec<String> = members
         .fields
         .iter()
@@ -1229,6 +1261,9 @@ fn render_class(
         members.fields,
         class_descriptor,
         &members.static_values,
+        members.generics,
+        class_generic.as_ref(),
+        desugar,
     );
     let mut member_texts: Vec<String> = Vec::new();
 
@@ -1256,6 +1291,8 @@ fn render_class(
         ) {
             continue;
         }
+        let method_generic: Option<crate::signature::RecoveredMethodSignature> =
+            generics::method_signature(members.generics, method, class_generic.as_ref(), desugar);
         let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> =
             desugar.interfaces.recovered_method(
                 &method.class,
@@ -1281,6 +1318,7 @@ fn render_class(
                         method,
                         Some("default interface bridge is absent"),
                         desugar,
+                        None,
                     )
                 },
                 |bridge: &CodeItem| {
@@ -1292,6 +1330,7 @@ fn render_class(
                         None,
                         desugar,
                         Some(recovered),
+                        None,
                         &inlined_helpers,
                     )
                 },
@@ -1304,6 +1343,7 @@ fn render_class(
                     method,
                     Some("code item is present on a bodyless declaration"),
                     desugar,
+                    method_generic.as_ref(),
                 )
             }
             (DexCodeState::Decoded(_), Some(item), None) => render_method(
@@ -1314,22 +1354,45 @@ fn render_class(
                 generic_sites,
                 desugar,
                 None,
+                method_generic.as_ref(),
                 &inlined_helpers,
             ),
-            (DexCodeState::Decoded(_), None, None) => {
-                render_unavailable_method(simple, method, Some("decoded body is absent"), desugar)
-            }
+            (DexCodeState::Decoded(_), None, None) => render_unavailable_method(
+                simple,
+                method,
+                Some("decoded body is absent"),
+                desugar,
+                method_generic.as_ref(),
+            ),
             (DexCodeState::Absent, _, None) => {
                 let expected_absence: bool = method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
                 if expected_absence {
-                    render_unavailable_method(simple, method, None, desugar)
+                    render_unavailable_method(
+                        simple,
+                        method,
+                        None,
+                        desugar,
+                        method_generic.as_ref(),
+                    )
                 } else {
-                    render_unavailable_method(simple, method, Some("code item is absent"), desugar)
+                    render_unavailable_method(
+                        simple,
+                        method,
+                        Some("code item is absent"),
+                        desugar,
+                        method_generic.as_ref(),
+                    )
                 }
             }
             (DexCodeState::Refused(error), _, None) => {
                 let reason: String = error.to_string();
-                render_unavailable_method(simple, method, Some(&reason), desugar)
+                render_unavailable_method(
+                    simple,
+                    method,
+                    Some(&reason),
+                    desugar,
+                    method_generic.as_ref(),
+                )
             }
         };
         declared.push((method.method_index, rendered));
@@ -1371,6 +1434,7 @@ fn render_class(
                             method,
                             Some("static interface companion body is absent"),
                             desugar,
+                            None,
                         )
                     },
                 )
@@ -1384,6 +1448,7 @@ fn render_class(
                     None,
                     desugar,
                     Some(recovered),
+                    None,
                     &inlined_helpers,
                 )
             },
@@ -1460,6 +1525,7 @@ fn supertype_clause(
     declaration: Option<&crate::dalvik_desugar::ClassDeclaration>,
     is_interface: bool,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
+    generic: Option<&crate::signature::RecoveredClassSignature>,
 ) -> String {
     let source = |descriptor_text: &str| -> String {
         descriptor::binary_to_source(&desugar.core_library.project_type(descriptor_text))
@@ -1469,9 +1535,19 @@ fn supertype_clause(
         &[],
         |declaration: &crate::dalvik_desugar::ClassDeclaration| declaration.interfaces.as_slice(),
     );
+    for (position, interface) in declared.iter().enumerate() {
+        let rendered: String = generic
+            .and_then(|generic: &crate::signature::RecoveredClassSignature| {
+                generic.interfaces.get(position).cloned()
+            })
+            .unwrap_or_else(|| source(interface));
+        if !interfaces.contains(&rendered) {
+            interfaces.push(rendered);
+        }
+    }
     let recovered: Option<&std::collections::BTreeSet<String>> =
         desugar.interfaces.implemented_interfaces(class_descriptor);
-    for interface in declared.iter().chain(recovered.into_iter().flatten()) {
+    for interface in recovered.into_iter().flatten() {
         let rendered: String = source(interface);
         if !interfaces.contains(&rendered) {
             interfaces.push(rendered);
@@ -1482,7 +1558,12 @@ fn supertype_clause(
             declaration.superclass.as_deref()
         })
         .filter(|superclass: &&str| !is_interface && !IMPLICIT_SUPERCLASSES.contains(superclass))
-        .map(source);
+        .map(|superclass: &str| {
+            generic.map_or_else(
+                || source(superclass),
+                |generic: &crate::signature::RecoveredClassSignature| generic.superclass.clone(),
+            )
+        });
     let mut clause: String = String::new();
     if let Some(superclass) = superclass {
         let _: std::fmt::Result = write!(clause, " extends {superclass}");
@@ -1626,11 +1707,20 @@ struct RenderedMethod {
     refused: bool,
 }
 
+fn generic_type_parameters(generic: &crate::signature::RecoveredMethodSignature) -> String {
+    if generic.type_parameters.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", generic.type_parameters)
+    }
+}
+
 fn render_unavailable_method(
     class_simple: &str,
     method: &DexMethodCode,
     refusal: Option<&str>,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
+    generic: Option<&crate::signature::RecoveredMethodSignature>,
 ) -> RenderedMethod {
     let projected_descriptor: String = desugar.core_library.project_type(&method.method_descriptor);
     let parsed: Option<MethodDescriptor> = descriptor::parse_method(&projected_descriptor);
@@ -1648,6 +1738,14 @@ fn render_unavailable_method(
         modifiers.push("native");
     }
     let modifier: String = modifiers.join(" ");
+    let generic: Option<&crate::signature::RecoveredMethodSignature> =
+        generic.filter(|generic: &&crate::signature::RecoveredMethodSignature| {
+            parsed
+                .as_ref()
+                .is_some_and(|descriptor: &MethodDescriptor| {
+                    descriptor.params.len() == generic.parameters.len()
+                })
+        });
     let params: String = parsed.as_ref().map_or_else(String::new, |descriptor| {
         descriptor
             .params
@@ -1655,23 +1753,34 @@ fn render_unavailable_method(
             .enumerate()
             .map(
                 |(index, parameter): (usize, &crate::descriptor::JavaType)| {
-                    format!("{} arg{index}", parameter.render())
+                    let rendered: String = generic
+                        .and_then(|generic: &crate::signature::RecoveredMethodSignature| {
+                            generic.parameters.get(index).cloned()
+                        })
+                        .unwrap_or_else(|| parameter.render());
+                    format!("{rendered} arg{index}")
                 },
             )
             .collect::<Vec<String>>()
             .join(", ")
     });
+    let type_parameters: String = generic.map_or_else(String::new, generic_type_parameters);
     let mut signature: String = if is_constructor {
-        format!("    {modifier} {class_simple}({params})")
+        format!("    {modifier} {type_parameters}{class_simple}({params})")
     } else if is_clinit {
         "    static".to_string()
     } else {
-        let result: String = parsed.as_ref().map_or_else(
-            || "void".to_string(),
-            |descriptor| descriptor.returns.render(),
+        let result: String = generic.map_or_else(
+            || {
+                parsed.as_ref().map_or_else(
+                    || "void".to_string(),
+                    |descriptor| descriptor.returns.render(),
+                )
+            },
+            |generic: &crate::signature::RecoveredMethodSignature| generic.result.clone(),
         );
         format!(
-            "    {modifier} {result} {}({params})",
+            "    {modifier} {type_parameters}{result} {}({params})",
             crate::descriptor::java_writable_identifier(&method.method_name)
         )
     };
@@ -1712,6 +1821,7 @@ fn render_unavailable_method(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_method(
     dex: &DexFile,
     class: ClassRenderInfo<'_>,
@@ -1720,6 +1830,7 @@ fn render_method(
     generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
     recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod>,
+    generic: Option<&crate::signature::RecoveredMethodSignature>,
     inlined_helpers: &crate::dalvik_desugar::InlinedHelpers,
 ) -> RenderedMethod {
     let method_descriptor: &str = recovered_default.map_or(
@@ -1812,6 +1923,12 @@ fn render_method(
             .map_or(0, |md: &MethodDescriptor| md.params.len()),
         debug_name_offset,
     );
+    let generic: Option<&crate::signature::RecoveredMethodSignature> =
+        generic.filter(|generic: &&crate::signature::RecoveredMethodSignature| {
+            parsed
+                .as_ref()
+                .is_some_and(|md: &MethodDescriptor| md.params.len() == generic.parameters.len())
+        });
     let params: String = match &parsed {
         Some(md) => md
             .params
@@ -1824,23 +1941,38 @@ fn render_method(
                 },
             )
             .map(
-                |(_, (p, name)): (usize, (&crate::descriptor::JavaType, &String))| {
-                    format!("{} {name}", p.render())
+                |(i, (p, name)): (usize, (&crate::descriptor::JavaType, &String))| {
+                    let rendered: String = generic
+                        .and_then(|generic: &crate::signature::RecoveredMethodSignature| {
+                            generic.parameters.get(i).cloned()
+                        })
+                        .unwrap_or_else(|| p.render());
+                    format!("{rendered} {name}")
                 },
             )
             .collect::<Vec<String>>()
             .join(", "),
         None => String::new(),
     };
+    let type_parameters: String = generic.map_or_else(String::new, generic_type_parameters);
 
     if is_constructor {
-        let _ = write!(signature, "    {modifier}{}({params})", class.simple);
+        let _ = write!(
+            signature,
+            "    {modifier}{type_parameters}{}({params})",
+            class.simple
+        );
     } else if is_clinit {
         let _ = write!(signature, "    static");
     } else {
-        let ret: String = parsed
-            .as_ref()
-            .map_or_else(|| "void".to_string(), |md| md.returns.render());
+        let ret: String = generic.map_or_else(
+            || {
+                parsed
+                    .as_ref()
+                    .map_or_else(|| "void".to_string(), |md| md.returns.render())
+            },
+            |generic: &crate::signature::RecoveredMethodSignature| generic.result.clone(),
+        );
         let header_name: &str = if recovered_default.is_none() {
             desugar
                 .renames
@@ -1850,7 +1982,7 @@ fn render_method(
         };
         let _ = write!(
             signature,
-            "    {modifier}{ret} {}({params})",
+            "    {modifier}{type_parameters}{ret} {}({params})",
             crate::descriptor::java_writable_identifier(header_name)
         );
     }

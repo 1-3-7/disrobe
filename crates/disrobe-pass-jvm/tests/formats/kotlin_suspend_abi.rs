@@ -404,8 +404,9 @@ fn metadata_present_compiled_kotlin_retains_the_continuation_abi() {
     let dex = parse_dex(EDGECASES_KT_DEX).expect("tracked Kotlin 2.1.20 D8 artifact parses");
     let out = decompile_dex(&dex, EDGECASES_KT_DEX);
     assert!(
-        out.source
-            .contains("asyncDouble(int arg0, kotlin.coroutines.Continuation arg1)"),
+        out.source.contains(
+            "asyncDouble(int arg0, kotlin.coroutines.Continuation<? super Integer> arg1)"
+        ),
         "metadata-present Kotlin must retain its JVM continuation ABI: {}",
         out.source
     );
@@ -416,8 +417,9 @@ fn generated_kotlin_d8_artifact_covers_the_suspend_abi_matrix() {
     let dex = parse_dex(GENERATED_KOTLIN_DEX).expect("Kotlin 2.1.20 D8 9.1.31 fixture parses");
     let out = decompile_dex(&dex, GENERATED_KOTLIN_DEX);
     assert!(
-        out.source
-            .contains("unusedContinuation(kotlin.coroutines.Continuation $completion)"),
+        out.source.contains(
+            "unusedContinuation(kotlin.coroutines.Continuation<? super Integer> $completion)"
+        ),
         "metadata-present Kotlin retains its continuation ABI: {}",
         out.source
     );
@@ -496,7 +498,7 @@ fn generated_kotlin_d8_artifact_covers_the_suspend_abi_matrix() {
     );
     assert!(
         stripped_out.source.contains(&format!(
-            "public {class_name}(kotlin.coroutines.Continuation arg0)"
+            "public {class_name}(kotlin.coroutines.Continuation<? super "
         )),
         "the actual ContinuationImpl constructor remains explicit for {descriptor}: {}",
         stripped_out.source
@@ -634,7 +636,7 @@ fn malformed_annotation_evidence_fails_closed() {
         let out = decompile_dex(&dex, &bytes);
         assert!(
             out.source
-                .contains("unusedContinuation(kotlin.coroutines.Continuation $completion)"),
+                .contains("unusedContinuation(kotlin.coroutines.Continuation"),
             "malformed metadata evidence must retain the ABI parameter: {}",
             out.source
         );

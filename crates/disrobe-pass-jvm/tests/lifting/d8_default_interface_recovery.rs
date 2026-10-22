@@ -147,7 +147,7 @@ fn execute_authored_repository(javac: &Path, java: &Path) -> Output {
 fn assert_companion_preserved(dex: &DexFile, bytes: &[u8], label: &str) {
     let recovered: DecompiledDex = decompile_dex(dex, bytes);
     let unit: &str = edgecases_unit(&recovered);
-    let repository: &str = member_source(unit, "public interface Repository {");
+    let repository: &str = member_source(unit, "public interface Repository<K, V> {");
     assert!(
         repository.contains("public abstract boolean containsKey(Object arg0);"),
         "{label}: {repository}"
@@ -275,7 +275,7 @@ fn real_d8_static_interface_methods_return_to_source_shape() {
     let dex: DexFile = parse_dex(EDGECASES_DEX).expect("parse real D8 artifact");
     let recovered: DecompiledDex = decompile_dex(&dex, EDGECASES_DEX);
     let unit: &str = edgecases_unit(&recovered);
-    let repository: &str = member_source(unit, "public interface Repository {");
+    let repository: &str = member_source(unit, "public interface Repository<K, V> {");
 
     assert!(
         repository.contains("default boolean containsKey("),

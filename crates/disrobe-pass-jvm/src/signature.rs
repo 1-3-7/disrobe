@@ -77,6 +77,12 @@ pub(crate) struct RecoveredClassSignature {
     scope: TypeScope,
 }
 
+impl RecoveredClassSignature {
+    pub(crate) fn type_parameter_names(&self) -> impl Iterator<Item = &str> {
+        self.scope.parameters.keys().map(String::as_str)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveredMethodSignature {
     pub(crate) type_parameters: String,
@@ -925,48 +931,19 @@ pub(crate) fn recover_class(cf: &ClassFile) -> Option<RecoveredClassSignature> {
         }
     };
     let recovered: Result<RecoveredClassSignature, String> = (|| {
-        let parsed: ParsedClassSignature = parse_class(raw)?;
-        let scope: TypeScope = build_scope(None, &parsed.type_parameters)?;
-        validate_class_header_type(&parsed.superclass, &scope)?;
-        for interface in &parsed.interfaces {
-            validate_class_header_type(interface, &scope)?;
-        }
-        let actual_superclass: JavaType = erase_class_type(&parsed.superclass)?;
-        let expected_superclass: JavaType = JavaType::Object(format!(
+        let superclass: String = format!(
             "L{};",
             cf.class_name(cf.super_class)
                 .map_err(|error| error.to_string())?
-        ));
-        if !java_type_matches(&actual_superclass, &expected_superclass) {
-            return Err(
-                "class signature superclass erasure mismatches the class header".to_string(),
-            );
-        }
-        if parsed.interfaces.len() != cf.interfaces.len() {
-            return Err("class signature interface count mismatches the class header".to_string());
-        }
-        for (signature, index) in parsed.interfaces.iter().zip(&cf.interfaces) {
-            let actual: JavaType = erase_class_type(signature)?;
-            let expected: JavaType = JavaType::Object(format!(
+        );
+        let mut interfaces: Vec<String> = Vec::with_capacity(cf.interfaces.len());
+        for index in &cf.interfaces {
+            interfaces.push(format!(
                 "L{};",
                 cf.class_name(*index).map_err(|error| error.to_string())?
             ));
-            if !java_type_matches(&actual, &expected) {
-                return Err(
-                    "class signature interface erasure mismatches the class header".to_string(),
-                );
-            }
         }
-        Ok(RecoveredClassSignature {
-            type_parameters: render_type_parameters(&parsed.type_parameters)?,
-            superclass: render_class_type(&parsed.superclass)?,
-            interfaces: parsed
-                .interfaces
-                .iter()
-                .map(render_class_type)
-                .collect::<Result<Vec<String>, String>>()?,
-            scope,
-        })
+        recover_class_raw(raw, &superclass, &interfaces)
     })();
     match recovered {
         Ok(signature) => Some(signature),
@@ -975,6 +952,46 @@ pub(crate) fn recover_class(cf: &ClassFile) -> Option<RecoveredClassSignature> {
             None
         }
     }
+}
+
+pub(crate) fn recover_class_raw(
+    raw: &str,
+    superclass: &str,
+    interfaces: &[String],
+) -> Result<RecoveredClassSignature, String> {
+    let parsed: ParsedClassSignature = parse_class(raw)?;
+    let scope: TypeScope = build_scope(None, &parsed.type_parameters)?;
+    validate_class_header_type(&parsed.superclass, &scope)?;
+    for interface in &parsed.interfaces {
+        validate_class_header_type(interface, &scope)?;
+    }
+    let actual_superclass: JavaType = erase_class_type(&parsed.superclass)?;
+    let expected_superclass: JavaType = JavaType::Object(superclass.to_owned());
+    if !java_type_matches(&actual_superclass, &expected_superclass) {
+        return Err("class signature superclass erasure mismatches the class header".to_string());
+    }
+    if parsed.interfaces.len() != interfaces.len() {
+        return Err("class signature interface count mismatches the class header".to_string());
+    }
+    for (signature, expected_name) in parsed.interfaces.iter().zip(interfaces) {
+        let actual: JavaType = erase_class_type(signature)?;
+        let expected: JavaType = JavaType::Object(expected_name.clone());
+        if !java_type_matches(&actual, &expected) {
+            return Err(
+                "class signature interface erasure mismatches the class header".to_string(),
+            );
+        }
+    }
+    Ok(RecoveredClassSignature {
+        type_parameters: render_type_parameters(&parsed.type_parameters)?,
+        superclass: render_class_type(&parsed.superclass)?,
+        interfaces: parsed
+            .interfaces
+            .iter()
+            .map(render_class_type)
+            .collect::<Result<Vec<String>, String>>()?,
+        scope,
+    })
 }
 
 pub(crate) fn recover_field(
@@ -991,23 +1008,10 @@ pub(crate) fn recover_field(
         }
     };
     let recovered: Result<String, String> = (|| {
-        let signature: ReferenceTypeSignature = parse_field(raw)?;
-        let empty_scope: TypeScope = TypeScope {
-            parameters: BTreeMap::new(),
-        };
-        let scope: &TypeScope = class_signature.map_or(&empty_scope, |value| &value.scope);
-        validate_reference(&signature, scope)?;
-        let mut visiting: BTreeSet<String> = BTreeSet::new();
-        let actual: JavaType = erase_reference(&signature, scope, &mut visiting)?;
         let descriptor: &str = cf
             .utf8_at(field.descriptor_index)
             .map_err(|error| error.to_string())?;
-        let expected: JavaType = descriptor::parse_field(descriptor)
-            .ok_or_else(|| "field descriptor is malformed".to_string())?;
-        if !java_type_matches(&actual, &expected) {
-            return Err("field signature erasure mismatches its descriptor".to_string());
-        }
-        render_reference(&signature)
+        recover_field_raw(raw, descriptor, class_signature)
     })();
     match recovered {
         Ok(signature) => Some(signature),
@@ -1016,6 +1020,27 @@ pub(crate) fn recover_field(
             None
         }
     }
+}
+
+pub(crate) fn recover_field_raw(
+    raw: &str,
+    descriptor: &str,
+    class_signature: Option<&RecoveredClassSignature>,
+) -> Result<String, String> {
+    let signature: ReferenceTypeSignature = parse_field(raw)?;
+    let empty_scope: TypeScope = TypeScope {
+        parameters: BTreeMap::new(),
+    };
+    let scope: &TypeScope = class_signature.map_or(&empty_scope, |value| &value.scope);
+    validate_reference(&signature, scope)?;
+    let mut visiting: BTreeSet<String> = BTreeSet::new();
+    let actual: JavaType = erase_reference(&signature, scope, &mut visiting)?;
+    let expected: JavaType = descriptor::parse_field(descriptor)
+        .ok_or_else(|| "field descriptor is malformed".to_string())?;
+    if !java_type_matches(&actual, &expected) {
+        return Err("field signature erasure mismatches its descriptor".to_string());
+    }
+    render_reference(&signature)
 }
 
 fn exceptions(cf: &ClassFile, method: &MethodInfo) -> Result<Option<Vec<String>>, String> {
@@ -1080,92 +1105,11 @@ pub(crate) fn recover_method(
         }
     };
     let recovered: Result<RecoveredMethodSignature, String> = (|| {
-        let signature: ParsedMethodSignature = parse_method(raw)?;
-        let scope: TypeScope = build_scope(
-            class_signature.map(|value: &RecoveredClassSignature| &value.scope),
-            &signature.type_parameters,
-        )?;
-        for parameter in &signature.parameters {
-            validate_java_type(parameter, &scope)?;
-        }
-        if let Some(result) = &signature.result {
-            validate_java_type(result, &scope)?;
-        }
         let descriptor: &str = cf
             .utf8_at(method.descriptor_index)
             .map_err(|error| error.to_string())?;
-        let expected: MethodDescriptor = descriptor::parse_method(descriptor)
-            .ok_or_else(|| "method descriptor is malformed".to_string())?;
-        if signature.parameters.len() != expected.params.len() {
-            return Err("method signature parameter count mismatches its descriptor".to_string());
-        }
-        for (actual_signature, expected_type) in signature.parameters.iter().zip(&expected.params) {
-            let actual: JavaType = erase_java_type(actual_signature, &scope)?;
-            if !java_type_matches(&actual, expected_type) {
-                return Err(
-                    "method signature parameter erasure mismatches its descriptor".to_string(),
-                );
-            }
-        }
-        let actual_result: JavaType = signature.result.as_ref().map_or_else(
-            || Ok(JavaType::Void),
-            |value| erase_java_type(value, &scope),
-        )?;
-        if !java_type_matches(&actual_result, &expected.returns) {
-            return Err("method signature return erasure mismatches its descriptor".to_string());
-        }
-        let mut rendered_throws: Vec<String> = Vec::new();
-        let mut erased_throws: Vec<String> = Vec::new();
-        for throws_signature in &signature.throws {
-            match throws_signature {
-                ThrowsSignature::Class(class_type) => {
-                    validate_class_type(class_type, &scope)?;
-                    if has_type_arguments(class_type) {
-                        return Err(
-                            "parameterized class in a throws signature is not source representable"
-                                .to_string(),
-                        );
-                    }
-                    rendered_throws.push(render_class_type(class_type)?);
-                    erased_throws.push(class_binary_name(class_type)?);
-                }
-                ThrowsSignature::TypeVariable(name) => {
-                    erased_throws.push(throwable_type_variable_erasure(name, &scope)?);
-                    rendered_throws.push(name.clone());
-                }
-            }
-        }
-        if !signature.throws.is_empty() {
-            let declared: Vec<String> = exceptions(cf, method)?.ok_or_else(|| {
-                "generic throws signature has no Exceptions attribute".to_string()
-            })?;
-            if erased_throws != declared {
-                return Err("method signature throws erasures mismatch Exceptions".to_string());
-            }
-        }
-        Ok(RecoveredMethodSignature {
-            type_parameters: render_type_parameters(&signature.type_parameters)?,
-            parameters: signature
-                .parameters
-                .iter()
-                .map(render_java_type)
-                .collect::<Result<Vec<String>, String>>()?,
-            result: signature
-                .result
-                .as_ref()
-                .map_or_else(|| Ok("void".to_string()), render_java_type)?,
-            throws: rendered_throws,
-            type_parameter_names: scope.parameters.keys().cloned().collect(),
-            type_parameter_erasures: scope
-                .parameters
-                .keys()
-                .map(|name: &String| {
-                    let mut visiting: BTreeSet<String> = BTreeSet::new();
-                    erase_type_variable(name, &scope, &mut visiting)
-                        .map(|erasure: JavaType| (name.clone(), erasure.render()))
-                })
-                .collect::<Result<BTreeMap<String, String>, String>>()?,
-        })
+        let declared: Option<Vec<String>> = exceptions(cf, method)?;
+        recover_method_raw(raw, descriptor, class_signature, declared.as_deref(), true)
     })();
     match recovered {
         Ok(signature) => Some(signature),
@@ -1174,6 +1118,101 @@ pub(crate) fn recover_method(
             None
         }
     }
+}
+
+pub(crate) fn recover_method_raw(
+    raw: &str,
+    descriptor: &str,
+    class_signature: Option<&RecoveredClassSignature>,
+    declared_throws: Option<&[String]>,
+    require_declared_throws: bool,
+) -> Result<RecoveredMethodSignature, String> {
+    let signature: ParsedMethodSignature = parse_method(raw)?;
+    let scope: TypeScope = build_scope(
+        class_signature.map(|value: &RecoveredClassSignature| &value.scope),
+        &signature.type_parameters,
+    )?;
+    for parameter in &signature.parameters {
+        validate_java_type(parameter, &scope)?;
+    }
+    if let Some(result) = &signature.result {
+        validate_java_type(result, &scope)?;
+    }
+    let expected: MethodDescriptor = descriptor::parse_method(descriptor)
+        .ok_or_else(|| "method descriptor is malformed".to_string())?;
+    if signature.parameters.len() != expected.params.len() {
+        return Err("method signature parameter count mismatches its descriptor".to_string());
+    }
+    for (actual_signature, expected_type) in signature.parameters.iter().zip(&expected.params) {
+        let actual: JavaType = erase_java_type(actual_signature, &scope)?;
+        if !java_type_matches(&actual, expected_type) {
+            return Err("method signature parameter erasure mismatches its descriptor".to_string());
+        }
+    }
+    let actual_result: JavaType = signature.result.as_ref().map_or_else(
+        || Ok(JavaType::Void),
+        |value| erase_java_type(value, &scope),
+    )?;
+    if !java_type_matches(&actual_result, &expected.returns) {
+        return Err("method signature return erasure mismatches its descriptor".to_string());
+    }
+    let mut rendered_throws: Vec<String> = Vec::new();
+    let mut erased_throws: Vec<String> = Vec::new();
+    for throws_signature in &signature.throws {
+        match throws_signature {
+            ThrowsSignature::Class(class_type) => {
+                validate_class_type(class_type, &scope)?;
+                if has_type_arguments(class_type) {
+                    return Err(
+                        "parameterized class in a throws signature is not source representable"
+                            .to_string(),
+                    );
+                }
+                rendered_throws.push(render_class_type(class_type)?);
+                erased_throws.push(class_binary_name(class_type)?);
+            }
+            ThrowsSignature::TypeVariable(name) => {
+                erased_throws.push(throwable_type_variable_erasure(name, &scope)?);
+                rendered_throws.push(name.clone());
+            }
+        }
+    }
+    if !signature.throws.is_empty() {
+        match declared_throws {
+            Some(declared) => {
+                if erased_throws != declared {
+                    return Err("method signature throws erasures mismatch Exceptions".to_string());
+                }
+            }
+            None if require_declared_throws => {
+                return Err("generic throws signature has no Exceptions attribute".to_string());
+            }
+            None => {}
+        }
+    }
+    Ok(RecoveredMethodSignature {
+        type_parameters: render_type_parameters(&signature.type_parameters)?,
+        parameters: signature
+            .parameters
+            .iter()
+            .map(render_java_type)
+            .collect::<Result<Vec<String>, String>>()?,
+        result: signature
+            .result
+            .as_ref()
+            .map_or_else(|| Ok("void".to_string()), render_java_type)?,
+        throws: rendered_throws,
+        type_parameter_names: scope.parameters.keys().cloned().collect(),
+        type_parameter_erasures: scope
+            .parameters
+            .keys()
+            .map(|name: &String| {
+                let mut visiting: BTreeSet<String> = BTreeSet::new();
+                erase_type_variable(name, &scope, &mut visiting)
+                    .map(|erasure: JavaType| (name.clone(), erasure.render()))
+            })
+            .collect::<Result<BTreeMap<String, String>, String>>()?,
+    })
 }
 
 #[cfg(test)]

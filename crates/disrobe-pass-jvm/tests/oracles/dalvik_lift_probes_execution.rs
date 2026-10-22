@@ -303,7 +303,7 @@ fn nested_classes_declare_their_supertypes_without_the_clashing_bridge() {
     let recovered: String = recovered_unit();
     assert!(
         recovered.contains(
-            "public static abstract class Worker implements java.util.concurrent.Callable, Runnable {"
+            "public static abstract class Worker implements java.util.concurrent.Callable<Integer>, Runnable {"
         ),
         "{recovered}"
     );
