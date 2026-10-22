@@ -15,9 +15,9 @@ The exceeded column states what happens when input goes past the bound. It comes
 
 The scan does not resolve types or trait dispatch, so an outcome names the construct it found rather than proving the behaviour.
 
-2590 bounds (count 244, other 1227, output 72, recursion 253, size 592, work 202).
+2591 bounds (count 244, other 1228, output 72, recursion 253, size 592, work 202).
 
-Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1180, unclassified 17, allocation 33, unused 9.
+Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1181, unclassified 17, allocation 33, unused 9.
 
 | Crate | Constant | Kind | Exceeded | Type | Value | File |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1140,6 +1140,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1180, unclassi
 | `disrobe-pass-jvm` | `MAX_RENDER_BYTES` | output | silent: `return` in `render_region` | `usize` | `4 * 1024 * 1024` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_SOURCE_PATH_DEPTH` | recursion | silent: `while` condition in `find` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_SOURCE_TREE_FILES` | count | error: `Error::UnsafeSourcePath` (DR-JVM-0102) | `usize` | `65_536` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
+| `disrobe-pass-jvm` | `MAX_LOOP_PASSES` | other | silent: `while` condition in `resugar` | `usize` | `64` | `crates/disrobe-pass-jvm/src/dalvik_decompile/loops.rs` |
 | `disrobe-pass-jvm` | `MAX_LAYERS` | other | error: `CROSSING_TRIES` | `usize` | `512` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
 | `disrobe-pass-jvm` | `MAX_NEST_DEPTH` | recursion | error: `TOO_DEEP` | `usize` | `384` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | work | silent: `for` range in `fixup_path`; `for` range in `trampoline_end` | `usize` | `16` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
@@ -2614,7 +2615,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1180, unclassi
 
 ## Silent stops
 
-1180 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
+1181 bounds stop a loop, clamp a value or skip work with no typed error and no record when input exceeds them. Each is a defect: a parser recovers or refuses with a label, and malformed input is a typed error.
 
 | Crate | Constant | Use | File |
 | --- | --- | --- | --- |
@@ -3059,6 +3060,7 @@ Exceeded: error 1063, recorded 234, panic 0, delegated 54, silent 1180, unclassi
 | `disrobe-pass-jvm` | `MAX_NESTED_CLASS_DEPTH` | `for` range in `lexically_encloses`; `for` range in `translated_owner_path`; no action in `compose_rendered_class` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_RENDER_BYTES` | `return` in `render_region` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
 | `disrobe-pass-jvm` | `MAX_SOURCE_PATH_DEPTH` | `while` condition in `find` | `crates/disrobe-pass-jvm/src/dalvik_decompile.rs` |
+| `disrobe-pass-jvm` | `MAX_LOOP_PASSES` | `while` condition in `resugar` | `crates/disrobe-pass-jvm/src/dalvik_decompile/loops.rs` |
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | `for` range in `fixup_path`; `for` range in `trampoline_end` | `crates/disrobe-pass-jvm/src/dalvik_decompile/nested_blocks.rs` |
 | `disrobe-pass-jvm` | `MAX_TRAMPOLINE_STEPS` | `for` range in `canonical` | `crates/disrobe-pass-jvm/src/dalvik_decompile/region_check.rs` |
 | `disrobe-pass-jvm` | `MAX_DESUGAR_SCAN_INSNS` | `return` in `exclusively_constructed`; `return` in `helper_references`; `return` in `scan_references` | `crates/disrobe-pass-jvm/src/dalvik_desugar.rs` |
