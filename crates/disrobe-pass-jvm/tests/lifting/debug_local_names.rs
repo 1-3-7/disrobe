@@ -47,6 +47,11 @@ fn the_debug_build_carries_the_authored_local_names() {
             && debug.contains("all = EnumProbe.Level.values();"),
         "{debug}"
     );
+    assert!(
+        debug.contains("for (EnumProbe.Level level : var1) {"),
+        "the enhanced for over the values array is recovered with the debug name of its element:
+{debug}"
+    );
     let javac: PathBuf = common::find_on_path("javac").expect("javac on PATH");
     let java: PathBuf = common::find_on_path("java").expect("java on PATH");
     let scratch: ScratchDir = ScratchDir::create("debug-locals").expect("scratch");

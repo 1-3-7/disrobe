@@ -47,6 +47,7 @@ pub(crate) struct TranslatedDefaultMethod {
 }
 
 mod enums;
+mod loops;
 mod nested_blocks;
 mod region_check;
 mod simplify;
@@ -1874,7 +1875,7 @@ fn render_method(
         .unwrap_or_default();
     let text: String = format!(
         "{signature} {{\n{cff_note}{generic_note}{}    }}",
-        body.text
+        loops::resugar(&body.text)
     );
     RenderedMethod {
         text,
