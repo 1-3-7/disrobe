@@ -149,12 +149,14 @@ pub(crate) enum JvmCmd {
         about = "link declared `native` methods across the DEX/classfile <-> .so/.dll/.dylib JNI boundary and emit C prototypes"
     )]
     Jni {
-        #[arg(help = "input .class / .jar / .dex / .apk / .aab / .aar / .apks / .oat file")]
+        #[arg(
+            help = "input .class / .jar / .dex / .apk / .aab / .aar / .apks / .xapk / .apkm / .oat file"
+        )]
         input: PathBuf,
         #[arg(
             long = "native",
             value_name = "LIB",
-            help = "native library (.so / .dll / .dylib) or a split .apk/.apks, repeatable; required for a bare .class/.jar/.dex input, additive on top of the native libraries and dex a self-contained .apk/.aab/.aar/.apks already carries"
+            help = "native library (.so / .dll / .dylib) or a split .apk/.apks/.xapk/.apkm, repeatable; required for a bare .class/.jar/.dex input, additive on top of the native libraries and dex a self-contained .apk/.aab/.aar/.apks already carries"
         )]
         native: Vec<PathBuf>,
         #[arg(long, help = "emit the JNI link table as machine-clean JSON to stdout")]
@@ -687,7 +689,7 @@ fn classify_jni_input(bytes: &[u8], path: &std::path::Path) -> JniInputKind {
             Some("apk") => JniInputKind::Apk,
             Some("aab") => JniInputKind::Aab,
             Some("aar") => JniInputKind::Aar,
-            Some("apks") => JniInputKind::Apks,
+            Some("apks" | "xapk" | "apkm") => JniInputKind::Apks,
             _ => JniInputKind::Jar,
         };
     }
@@ -754,7 +756,7 @@ fn read_native_args(paths: &[PathBuf]) -> miette::Result<NativeArgSet> {
                     dex_files.insert(format!("{label}/{entry_path}"), dex_bytes);
                 }
             }
-            (true, Some("apks")) => {
+            (true, Some("apks" | "xapk" | "apkm")) => {
                 let extract: ApksExtract = extract_apks(&bytes).map_err(|e| {
                     miette::miette!("DR-CLI-0473: --native apks extract for {label}: {e}")
                 })?;

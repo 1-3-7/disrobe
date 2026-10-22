@@ -106,3 +106,15 @@ bytes = 3064
 path = "reference/plants.androguard-cg.gml"
 bytes = 38002
 note = "androguard 4.1.4 `androguard cg -o plants.cg.gml audit-plants.apk` (Apache-2.0): 114 nodes (57 external) and 77 caller-to-callee edges; the reference for tests/dalvik_call_graph.rs, which requires Disrobe's DEX call graph to carry the same edge set"
+
+[[fixture]]
+path = "bundles/audit.xapk"
+sha256 = "0ac9b0b519aacfb9b9f24344a35dbe35a33f0f12b11042b37ae4c30f20565c81"
+bytes = 22150
+note = "XAPK bundle authored with Python zipfile (deflate, 1980-01-01 timestamps): manifest.json naming the two members, audit-plants.apk as com.planted.audit.apk and audit-native.apk as config.native.apk; graded by the CLI jni tests as a split set"
+
+[[fixture]]
+path = "bundles/audit.apkm"
+sha256 = "523bde32e7e60ce0806db6dbedd8f431ad9c99f791825e230f8effa30a8f6c05"
+bytes = 21912
+note = "APKM bundle authored the same way: base.apk (audit-plants.apk) and split_config.arm64_v8a.apk (audit-native.apk)"

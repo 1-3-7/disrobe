@@ -712,3 +712,43 @@ fn jni_link_oat_input_wiring_reaches_extract_oat_dex_on_a_header_shaped_fixture(
         json_run.stdout
     );
 }
+
+fn bundle(name: &str) -> PathBuf {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.push("corpus/recon/android-audit/bundles");
+    path.push(name);
+    path
+}
+
+#[test]
+fn xapk_and_apkm_bundles_link_natives_across_their_member_apks() {
+    for name in ["audit.xapk", "audit.apkm"] {
+        let path: PathBuf = bundle(name);
+        let run: common::Run = run_disrobe(&["jvm", "jni", path.to_str().unwrap(), "--json"]);
+        assert_eq!(run.code, 0, "{name}: {}", run.stderr);
+        let doc: serde_json::Value = serde_json::from_str(&run.stdout).expect("jni json");
+        let surface: &serde_json::Value = &doc["surface"];
+        assert_eq!(surface["native_method_count"], 3, "{name}: {surface}");
+        assert_eq!(surface["resolved_statically"], 3, "{name}: {surface}");
+        let resolved: Vec<&str> = surface["native_methods"]
+            .as_array()
+            .expect("native methods")
+            .iter()
+            .filter_map(|m: &serde_json::Value| m["resolved_in"].as_str())
+            .collect();
+        assert_eq!(resolved.len(), 3, "{name}: {surface}");
+        assert!(
+            resolved
+                .iter()
+                .all(|lib: &&str| lib.contains("libantidebug.so") || lib.contains("libclean.so")),
+            "{name}: {resolved:?}"
+        );
+        let libraries: usize = surface["libraries"].as_array().expect("libraries").len();
+        assert_eq!(
+            libraries, 4,
+            "{name}: every member APK's lib/ tree is scanned"
+        );
+    }
+}
